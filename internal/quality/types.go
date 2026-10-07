@@ -18,7 +18,14 @@ var (
 	ErrGateTimeout    = errors.New("quality gate timed out")
 	ErrRetryExhausted = errors.New("quality gate retries exhausted")
 	ErrGateNotFound   = errors.New("quality gate not found")
+	// ErrGateRunnerMissing means the gate's command could not be started because
+	// the runner binary (e.g. `make`) is not installed (shell exit 127). It is not
+	// a code failure, so retrying — with the gate or with Claude — cannot fix it.
+	ErrGateRunnerMissing = errors.New("quality gate runner missing")
 )
+
+// exitCodeCommandNotFound is the POSIX shell exit status for "command not found".
+const exitCodeCommandNotFound = 127
 
 // GateType identifies built-in gate types
 type GateType string
@@ -85,6 +92,7 @@ func (g *Gate) DefaultTimeout() time.Duration {
 type Result struct {
 	GateName    string        `json:"gate_name"`
 	Status      GateStatus    `json:"status"`
+	Command     string        `json:"command"` // Command actually executed (after any toolchain fallback)
 	ExitCode    int           `json:"exit_code"`
 	Output      string        `json:"output"` // stdout + stderr
 	Error       string        `json:"error"`  // Error message if failed
@@ -93,6 +101,14 @@ type Result struct {
 	Coverage    float64       `json:"coverage"`    // Parsed coverage percentage (for coverage gates)
 	StartedAt   time.Time     `json:"started_at"`
 	CompletedAt time.Time     `json:"completed_at"`
+	// Err wraps ErrGateRunnerMissing when the gate command was not found (exit 127).
+	Err error `json:"-"`
+}
+
+// RunnerMissing reports whether the gate failed because its runner binary is
+// not installed rather than because the checked code is wrong.
+func (r *Result) RunnerMissing() bool {
+	return errors.Is(r.Err, ErrGateRunnerMissing)
 }
 
 // Passed returns true if the gate passed
@@ -353,6 +369,13 @@ func DetectTestCommand(projectPath string) string {
 	if hasMakefileTarget(filepath.Join(projectPath, "Makefile"), "test") {
 		return "make test"
 	}
+	return detectNativeTestCommand(projectPath)
+}
+
+// detectNativeTestCommand is DetectTestCommand without the Makefile preference:
+// the language-native test command for the project. It is also the fallback
+// used when a gate's `make test` cannot run because make is not installed.
+func detectNativeTestCommand(projectPath string) string {
 	if hasPythonProject(projectPath) {
 		return "pytest -v 2>&1"
 	}

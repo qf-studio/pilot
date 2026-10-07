@@ -300,11 +300,15 @@ func (w *qualityCheckerWrapper) Check(ctx context.Context) (*executor.QualityOut
 		result.GateDetails = make([]executor.QualityGateDetail, len(outcome.Results.Results))
 		for i, r := range outcome.Results.Results {
 			result.GateDetails[i] = executor.QualityGateDetail{
-				Name:       r.GateName,
-				Passed:     r.Status == quality.StatusPassed,
-				Duration:   r.Duration,
-				RetryCount: r.RetryCount,
-				Error:      r.Error,
+				Name:          r.GateName,
+				Passed:        r.Status == quality.StatusPassed,
+				Duration:      r.Duration,
+				RetryCount:    r.RetryCount,
+				Error:         r.Error,
+				Command:       r.Command,
+				ExitCode:      r.ExitCode,
+				Output:        r.Output,
+				RunnerMissing: r.RunnerMissing(),
 			}
 		}
 	}
