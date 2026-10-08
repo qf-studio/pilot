@@ -2,6 +2,8 @@ package executor
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -629,18 +631,116 @@ func deleteLineFromContent(content string, line int) (string, error) {
 	return out, nil
 }
 
-// buildMutationTestCommand chooses the `go test` invocation for a mutation
-// item's target: a bare Go test name runs with -run anchored to that exact
-// name; a package path (leading "./") runs directly; anything else falls
-// back to the whole module.
-func buildMutationTestCommand(target string) string {
-	target = strings.TrimSpace(target)
+// Mutation toolchains reported by detectMutationToolchain.
+const (
+	mutationToolchainGo      = "go"
+	mutationToolchainVitest  = "vitest"
+	mutationToolchainPytest  = "pytest"
+	mutationToolchainCargo   = "cargo"
+	mutationToolchainUnknown = "unknown"
+)
+
+// noMutationToolchainReason is the Not-verified reason runMutationItem
+// reports when detectMutationToolchain finds no supported test toolchain.
+const noMutationToolchainReason = "no supported test toolchain detected in worktree"
+
+func regularFileExists(dir, name string) bool {
+	info, err := os.Stat(filepath.Join(dir, name))
+	return err == nil && !info.IsDir()
+}
+
+// detectMutationToolchain decides which test runner a mutation item should
+// use from marker files in the worktree root (GH-5625): go.mod -> go;
+// package.json -> vitest; pyproject.toml/pytest.ini -> pytest; Cargo.toml ->
+// cargo; otherwise unknown. go.mod wins when several markers exist.
+func detectMutationToolchain(dir string) string {
 	switch {
-	case testNameRe.MatchString(target) && !strings.ContainsAny(target, "/ "):
-		return fmt.Sprintf("go test -run '^%s$' ./...", target)
-	case strings.HasPrefix(target, "./"):
-		return "go test " + target
+	case regularFileExists(dir, "go.mod"):
+		return mutationToolchainGo
+	case regularFileExists(dir, "package.json"):
+		return mutationToolchainVitest
+	case regularFileExists(dir, "pyproject.toml"), regularFileExists(dir, "pytest.ini"):
+		return mutationToolchainPytest
+	case regularFileExists(dir, "Cargo.toml"):
+		return mutationToolchainCargo
 	default:
-		return "go test ./..."
+		return mutationToolchainUnknown
+	}
+}
+
+// detectJSRunnerPrefix picks the package-runner prefix for vitest from the
+// lockfile in the worktree root: bun.lock/bun.lockb -> "bunx",
+// pnpm-lock.yaml -> "pnpm exec", otherwise "npx".
+func detectJSRunnerPrefix(dir string) string {
+	switch {
+	case regularFileExists(dir, "bun.lock"), regularFileExists(dir, "bun.lockb"):
+		return "bunx"
+	case regularFileExists(dir, "pnpm-lock.yaml"):
+		return "pnpm exec"
+	default:
+		return "npx"
+	}
+}
+
+var (
+	// jsSpecPathRe finds a vitest/jest-style spec path ("src/x.spec.ts").
+	jsSpecPathRe = regexp.MustCompile(`[A-Za-z0-9_./@-]*\.(?:spec|test)\.[A-Za-z0-9_.]+`)
+	// quotedTitleRe finds a bare quoted test title ("resets the cursor").
+	quotedTitleRe = regexp.MustCompile("[\"'`]([^\"'`$\\\\;&|<>#\\n]+)[\"'`]")
+	// pyTestNameRe finds a pytest function/class name (test_x / TestX).
+	pyTestNameRe = regexp.MustCompile(`\b(?:Test[A-Za-z0-9_]+|test_[A-Za-z0-9_]+)\b`)
+	// pyPathRe finds a Python test file path ("tests/test_x.py").
+	pyPathRe = regexp.MustCompile(`[A-Za-z0-9_./-]+\.py\b`)
+	// cargoTestNameRe finds a Rust test name, optionally module-qualified.
+	cargoTestNameRe = regexp.MustCompile(`\b(?:Test[A-Za-z0-9_]+|test_[A-Za-z0-9_]+|[a-z_][a-z0-9_]*(?:::[A-Za-z0-9_]+)+)\b`)
+)
+
+// buildMutationTestCommand chooses the test invocation for a mutation item's
+// target in the given toolchain (see detectMutationToolchain). runnerPrefix is
+// the JS package runner ("bunx", "pnpm exec", "npx"; empty means "npx") and is
+// only used for vitest. For go: a bare Go test name runs with -run anchored to
+// that exact name; a package path (leading "./") runs directly; anything else
+// falls back to the whole module. Returns "" for an unknown toolchain. Every
+// produced command is shell-operator free and starts with an allowlisted
+// binary; quoted titles use single quotes, which splitCommandFields keeps
+// intact.
+func buildMutationTestCommand(target, toolchain, runnerPrefix string) string {
+	target = strings.TrimSpace(target)
+	switch toolchain {
+	case mutationToolchainGo:
+		switch {
+		case testNameRe.MatchString(target) && !strings.ContainsAny(target, "/ "):
+			return fmt.Sprintf("go test -run '^%s$' ./...", target)
+		case strings.HasPrefix(target, "./"):
+			return "go test " + target
+		default:
+			return "go test ./..."
+		}
+	case mutationToolchainVitest:
+		if strings.TrimSpace(runnerPrefix) == "" {
+			runnerPrefix = "npx"
+		}
+		if path := jsSpecPathRe.FindString(target); path != "" {
+			return runnerPrefix + " vitest run " + path
+		}
+		if m := quotedTitleRe.FindStringSubmatch(target); m != nil && strings.TrimSpace(m[1]) != "" {
+			return fmt.Sprintf("%s vitest run -t '%s'", runnerPrefix, strings.TrimSpace(m[1]))
+		}
+		return runnerPrefix + " vitest run"
+	case mutationToolchainPytest:
+		if path := pyPathRe.FindString(target); path != "" {
+			return "pytest " + path
+		}
+		if name := pyTestNameRe.FindString(target); name != "" {
+			return fmt.Sprintf("pytest -k '%s'", name)
+		}
+		return "pytest"
+	case mutationToolchainCargo:
+		if name := cargoTestNameRe.FindString(target); name != "" {
+			return "cargo test " + name
+		}
+		return "cargo test"
+	default:
+		return ""
 	}
 }

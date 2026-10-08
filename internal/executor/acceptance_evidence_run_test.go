@@ -287,6 +287,7 @@ func TestSplitCommandFields(t *testing.T) {
 
 func TestRunMutationItem_DeleteLineMutation(t *testing.T) {
 	dir := t.TempDir()
+	seedToolchainMarker(t, dir, "go.mod")
 	targetFile := "main.go"
 	original := "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"
 	if err := os.WriteFile(filepath.Join(dir, targetFile), []byte(original), 0o600); err != nil {
@@ -388,6 +389,7 @@ func TestRunMutationItem_DeleteLineMutation(t *testing.T) {
 // tree left untouched.
 func TestRunMutationItem_WorktreeConfinement(t *testing.T) {
 	worktree := t.TempDir()
+	seedToolchainMarker(t, worktree, "go.mod")
 	outside := t.TempDir()
 
 	seed := func(dir, name, content string) string {
@@ -657,6 +659,7 @@ func TestRunPasteOutputItem_TimeoutIsNotVerified(t *testing.T) {
 
 func TestRunMutationItem_TimeoutIsNotVerifiedAndReverts(t *testing.T) {
 	dir := t.TempDir()
+	seedToolchainMarker(t, dir, "go.mod")
 	original := "package main\n\nfunc main() {}\n"
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(original), 0o600); err != nil {
 		t.Fatalf("failed to seed test file: %v", err)
@@ -761,6 +764,7 @@ func TestRenderAcceptanceEvidenceSections_RedactsSecrets_PasteOutputItem(t *test
 
 func TestRenderAcceptanceEvidenceSections_RedactsSecrets_MutationItem(t *testing.T) {
 	dir := t.TempDir()
+	seedToolchainMarker(t, dir, "go.mod")
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
 		t.Fatalf("failed to seed test file: %v", err)
 	}

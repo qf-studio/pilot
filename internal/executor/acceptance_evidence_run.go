@@ -341,8 +341,9 @@ func runPasteOutputItem(ctx context.Context, runner AcceptanceCommandRunner, dir
 // or a symlink inside the worktree pointing outside it is refused with
 // reason "path escapes worktree" and no filesystem access at all. The test
 // command is subject to the same command allowlist as paste-output items
-// (in practice always a "go test ..." invocation from buildMutationTestCommand,
-// so this only bites when an operator's allowed_commands excludes "go").
+// (a go/vitest/pytest/cargo invocation from buildMutationTestCommand, chosen by
+// detectMutationToolchain (GH-5625), so this only bites when an operator's
+// allowed_commands excludes that runner).
 // The file is never left mutated on disk: a read/parse/escape failure
 // aborts before any write, and every path past the write — including a
 // killed-by-timeout test run — reverts before returning.
@@ -381,12 +382,20 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 		return result
 	}
 
+	// GH-5625: pick the test command for the repo's toolchain before touching
+	// the file, so an unsupported repo records the gap with the tree untouched.
+	toolchain := detectMutationToolchain(dir)
+	testCmd := buildMutationTestCommand(item.MutationTarget, toolchain, detectJSRunnerPrefix(dir))
+	if testCmd == "" {
+		result.NotVerifiedReason = noMutationToolchainReason
+		return result
+	}
+
 	if err := os.WriteFile(fullPath, []byte(mutated), 0o600); err != nil {
 		result.NotVerifiedReason = fmt.Sprintf("could not write mutated %s: %v", file, err)
 		return result
 	}
 
-	testCmd := buildMutationTestCommand(item.MutationTarget)
 	var output string
 	var testErr error
 	if reason := validateEvidenceCommand(testCmd, allowedCommands); reason == "" {
