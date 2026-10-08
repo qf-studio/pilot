@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-10-07T08:00:49.670015+00:00",
+  "updated": "2026-10-08T10:37:40.283027+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -2777,6 +2777,13 @@
           "reconciler",
           "pilot-console"
         ]
+      },
+      "TASK-513": {
+        "title": "Real allowance exhaustion on a prod test org — both branches proven; three fleet regressions found and fixed",
+        "path": "tasks/archive/TASK-513-allowance-exhaustion-prod-test.md",
+        "status": "done",
+        "created": "2026-10-07",
+        "completed": "2026-10-08"
       }
     },
     "memories": {
@@ -7655,6 +7662,34 @@
         ],
         "created": "2026-10-07",
         "last_validated": "2026-10-07"
+      },
+      "mem-218": {
+        "type": "pitfall",
+        "summary": "A per-tick deadline ctx leaked into every goroutine the reconciler tick spawned (provision, config push); the comment promised otherwise; prod provisioning was dead for 13 days after console PR#321. Spawned work takes runCtx; settle paths use WithoutCancel; concurrency comments need a pinning test; provision one real box after reconciler changes.",
+        "path": "memories/pitfalls/mem-218.md",
+        "confidence": 0.95,
+        "concepts": [
+          "pilot-console",
+          "reconciler",
+          "concurrency",
+          "context",
+          "prod-verification"
+        ],
+        "created": "2026-10-08"
+      },
+      "mem-219": {
+        "type": "learning",
+        "summary": "Prod test-org discipline: never deprovision (retires the pool key, no stop in UI); one browser = one org (credential saves land on the logged-in org); SPA freezes long tabs — verify via reconciler log, EC2 tags, SSM on the box; PATCH connections config needs X-Requested-With; swap repos to avoid two boxes racing one label.",
+        "path": "memories/learnings/mem-219.md",
+        "confidence": 0.9,
+        "concepts": [
+          "pilot-console",
+          "operations",
+          "testing",
+          "prod-verification",
+          "platform-key"
+        ],
+        "created": "2026-10-08"
       }
     }
   },
@@ -10473,6 +10508,26 @@
       "from": "mem-217",
       "to": "TASK-512",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-218",
+      "to": "TASK-513",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-219",
+      "to": "TASK-513",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-219",
+      "to": "mem-218",
+      "type": "related"
+    },
+    {
+      "from": "TASK-513",
+      "to": "TASK-502",
+      "type": "closes-item-of"
     }
   ],
   "concept_index": {
@@ -10893,7 +10948,8 @@
     ],
     "concurrency": [
       "mem-101",
-      "mem-102"
+      "mem-102",
+      "mem-218"
     ],
     "config": [
       "TASK-477",
@@ -11053,7 +11109,8 @@
       "TASK-505",
       "TASK-502",
       "TASK-510",
-      "TASK-511"
+      "TASK-511",
+      "mem-218"
     ],
     "conversational-bot": [
       "mem-036",
@@ -12002,7 +12059,9 @@
       "secrets-live-in-doppler-pilot-console-project",
       "mem-216",
       "mem-217",
-      "TASK-512"
+      "TASK-512",
+      "mem-218",
+      "mem-219"
     ],
     "pilot-task-command": [
       "TASK-03",
@@ -12050,7 +12109,8 @@
       "merged-feature-dead-callback-not-bridged-onprcreated",
       "mem-198",
       "mem-200",
-      "TASK-512"
+      "TASK-512",
+      "mem-218"
     ],
     "release": [
       "approvals-off-stage-auto-merge",
@@ -12368,7 +12428,8 @@
       "TASK-509",
       "TASK-508",
       "TASK-511",
-      "mem-214"
+      "mem-214",
+      "mem-219"
     ],
     "testing-quality": [
       "TASK-384",
@@ -12663,7 +12724,8 @@
       "mem-200",
       "mem-202",
       "mem-216",
-      "mem-217"
+      "mem-217",
+      "mem-219"
     ],
     "deploy-gates": [
       "mem-196"
@@ -12854,7 +12916,8 @@
       "mem-212"
     ],
     "platform-key": [
-      "mem-212"
+      "mem-212",
+      "mem-219"
     ],
     "tenant-provisioning": [
       "mem-212"
@@ -12876,13 +12939,17 @@
     ],
     "allowance": [
       "TASK-512"
+    ],
+    "prod-verification": [
+      "mem-218",
+      "mem-219"
     ]
   },
-  "last_updated": "2026-10-07T08:00:49.670015+00:00",
+  "last_updated": "2026-10-08T10:37:40.283027+00:00",
   "stats": {
-    "total_nodes": 647,
-    "total_edges": 563,
-    "memory_count": 351
+    "total_nodes": 650,
+    "total_edges": 567,
+    "memory_count": 353
   },
   "metadata": {}
 }
