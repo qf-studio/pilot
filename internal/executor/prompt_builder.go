@@ -241,7 +241,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 			sb.WriteString("IMPORTANT: Verify ALL criteria are met before committing:\n")
 			sb.WriteString("Items marked MUTATION PIN are not run by Pilot's gate: you must run them and paste the failing test output into your PR body.\n")
 			for i, criterion := range task.AcceptanceCriteria {
-				sb.WriteString(fmt.Sprintf("%d. [ ] %s\n", i+1, annotateAcceptanceCriterion(criterion)))
+				fmt.Fprintf(&sb, "%d. [ ] %s\n", i+1, annotateAcceptanceCriterion(criterion))
 			}
 			sb.WriteString("\n")
 		}
@@ -343,7 +343,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 		if len(task.AcceptanceCriteria) > 0 {
 			sb.WriteString("## Acceptance Criteria\n\n")
 			for i, criterion := range task.AcceptanceCriteria {
-				sb.WriteString(fmt.Sprintf("%d. [ ] %s\n", i+1, annotateAcceptanceCriterion(criterion)))
+				fmt.Fprintf(&sb, "%d. [ ] %s\n", i+1, annotateAcceptanceCriterion(criterion))
 			}
 			sb.WriteString("\n")
 		}
@@ -371,7 +371,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 		if len(task.AcceptanceCriteria) > 0 {
 			sb.WriteString("## Acceptance Criteria\n\n")
 			for i, criterion := range task.AcceptanceCriteria {
-				sb.WriteString(fmt.Sprintf("%d. [ ] %s\n", i+1, annotateAcceptanceCriterion(criterion)))
+				fmt.Fprintf(&sb, "%d. [ ] %s\n", i+1, annotateAcceptanceCriterion(criterion))
 			}
 			sb.WriteString("\n")
 		}
