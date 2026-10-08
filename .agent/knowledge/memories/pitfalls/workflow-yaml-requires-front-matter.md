@@ -36,4 +36,4 @@ newly-onboarded repo — one WARN line is the only signal you get.
 valid v1 with gates in the body. Consider a future loader change: fail
 loudly (or surface in dashboard) instead of WARN-and-default.
 
-**Recurrence 2026-10-08:** `pilot-console-ui/.pilot/workflow.yaml` is plain YAML too (comment line, then `quality:`); the GH-205 dispatch log shows `Failed to load .pilot/workflow.yaml, using defaults`. Same fix as console. Not yet filed.
+**Recurrence 2026-10-08:** `pilot-console-ui/.pilot/workflow.yaml` is plain YAML too (comment line, then `quality:`); the GH-205 dispatch log shows `Failed to load .pilot/workflow.yaml, using defaults`. Same fix as console. Filed 2026-10-08 as pilot-console-ui#218.
