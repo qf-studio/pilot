@@ -1450,3 +1450,50 @@ func TestBuildRetryPrompt_StripsInvisibleFromFeedback(t *testing.T) {
 		t.Errorf("retry prompt leaked invisible runes: %q", prompt)
 	}
 }
+
+// GH-5625: freeform mutation pins are annotated in the prompt so the executor
+// runs them; deterministic pins (run by the gate) and other items are not.
+func TestBuildPromptAnnotatesFreeformMutationPins(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tempDir, ".agent"), 0755); err != nil {
+		t.Fatalf("Failed to create .agent dir: %v", err)
+	}
+
+	freeform := "drop the `generation++` in `reset()` -> the GH-217 specs fail"
+	deterministic := "delete line 12 in foo.go -> TestFoo fails"
+	pasteOutput := "paste the output of `go test ./...`"
+	plain := "docs updated"
+
+	runner := NewRunner()
+	task := &Task{
+		ID:                 "GH-5625",
+		Title:              "annotate pins",
+		Description:        "do the thing",
+		ProjectPath:        tempDir,
+		Branch:             "pilot/GH-5625",
+		AcceptanceCriteria: []string{freeform, deterministic, pasteOutput, plain},
+	}
+	prompt := runner.BuildPrompt(task, tempDir)
+
+	lineFor := func(criterion string) string {
+		for _, l := range strings.Split(prompt, "\n") {
+			if strings.Contains(l, criterion) {
+				return l
+			}
+		}
+		t.Fatalf("criterion %q not found in prompt", criterion)
+		return ""
+	}
+
+	if l := lineFor(freeform); !strings.Contains(l, "MUTATION PIN") || !strings.Contains(l, `"## Evidence (manual pins)"`) {
+		t.Errorf("freeform mutation pin should be annotated on the same line, got %q", l)
+	}
+	for _, c := range []string{deterministic, pasteOutput, plain} {
+		if l := lineFor(c); strings.Contains(l, "MUTATION PIN") {
+			t.Errorf("criterion %q must not be annotated, got %q", c, l)
+		}
+	}
+	if !strings.Contains(prompt, "Items marked MUTATION PIN") {
+		t.Error("acceptance block header should explain MUTATION PIN items")
+	}
+}

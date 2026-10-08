@@ -239,8 +239,9 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 		if len(task.AcceptanceCriteria) > 0 {
 			sb.WriteString("## Acceptance Criteria\n\n")
 			sb.WriteString("IMPORTANT: Verify ALL criteria are met before committing:\n")
+			sb.WriteString("Items marked MUTATION PIN are not run by Pilot's gate: you must run them and paste the failing test output into your PR body.\n")
 			for i, criterion := range task.AcceptanceCriteria {
-				sb.WriteString(fmt.Sprintf("%d. [ ] %s\n", i+1, criterion))
+				sb.WriteString(fmt.Sprintf("%d. [ ] %s\n", i+1, annotateAcceptanceCriterion(criterion)))
 			}
 			sb.WriteString("\n")
 		}
@@ -342,7 +343,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 		if len(task.AcceptanceCriteria) > 0 {
 			sb.WriteString("## Acceptance Criteria\n\n")
 			for i, criterion := range task.AcceptanceCriteria {
-				sb.WriteString(fmt.Sprintf("%d. [ ] %s\n", i+1, criterion))
+				sb.WriteString(fmt.Sprintf("%d. [ ] %s\n", i+1, annotateAcceptanceCriterion(criterion)))
 			}
 			sb.WriteString("\n")
 		}
@@ -370,7 +371,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 		if len(task.AcceptanceCriteria) > 0 {
 			sb.WriteString("## Acceptance Criteria\n\n")
 			for i, criterion := range task.AcceptanceCriteria {
-				sb.WriteString(fmt.Sprintf("%d. [ ] %s\n", i+1, criterion))
+				sb.WriteString(fmt.Sprintf("%d. [ ] %s\n", i+1, annotateAcceptanceCriterion(criterion)))
 			}
 			sb.WriteString("\n")
 		}
@@ -941,4 +942,26 @@ func extractTaskKeywords(description string) []string {
 	}
 
 	return found
+}
+
+// freeformMutationPinAnnotation is appended to a freeform mutation-pin
+// acceptance criterion (GH-5625). The evidence gate can only apply the
+// deterministic "delete/remove line N in <file>" shape; every other pin would
+// otherwise be listed under "## Not verified" for the reviewer, while the
+// executor — which already has the worktree and toolchain — was never asked
+// to run it.
+const freeformMutationPinAnnotation = ` — MUTATION PIN: after your tests pass, apply exactly this change, run the named test, confirm it FAILS, paste the failing output under a "## Evidence (manual pins)" section in your PR body, then revert the change before committing.`
+
+// annotateAcceptanceCriterion returns criterion unchanged unless it is a
+// freeform mutation pin (mutation shape that parseLineMutation cannot apply),
+// in which case the MUTATION PIN instruction is appended on the same line.
+func annotateAcceptanceCriterion(criterion string) string {
+	item := ClassifyAcceptanceItem(criterion)
+	if item.Kind != AcceptanceItemMutation {
+		return criterion
+	}
+	if _, _, ok := parseLineMutation(item.MutationDescription); ok {
+		return criterion
+	}
+	return criterion + freeformMutationPinAnnotation
 }
