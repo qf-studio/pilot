@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-10-08T10:37:40.283027+00:00",
+  "updated": "2026-10-08T15:51:08.646114+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -7690,6 +7690,32 @@
           "platform-key"
         ],
         "created": "2026-10-08"
+      },
+      "mem-220": {
+        "type": "pitfall",
+        "summary": "Pilot PR Evidence blocks list mutation-pin acceptance items as 'Not verified' — the gate records the pin shape but never applies the mutation; the post-merge reviewer must run it on a git-archive export of origin/main and report proven/vacuous (all 4 pins in the 2026-10-08 wave were real).",
+        "path": "memories/pitfalls/mem-220.md",
+        "confidence": 0.9,
+        "concepts": [
+          "acceptance-evidence",
+          "review",
+          "issue-authoring",
+          "pilot-product-gap"
+        ],
+        "created": "2026-10-08"
+      },
+      "mem-221": {
+        "type": "learning",
+        "summary": "Review-wave loop (2026-10-08, 10 PRs across console-ui + console in one session): post-merge review with pins → per-repo navigator-research briefs with git cat-file-verified path:line refs → issues with H2 Context/Implementation/Acceptance + no-decompose + Blocked-by for same-file siblings → all merged in <30 min → reviewed again. Only friction: a cross-repo docs path in a body (hold) and two EOF test appends (conflict).",
+        "path": "memories/learnings/mem-221.md",
+        "confidence": 0.85,
+        "concepts": [
+          "review",
+          "issue-authoring",
+          "autopilot",
+          "navigator-research"
+        ],
+        "created": "2026-10-08"
       }
     }
   },
@@ -10528,6 +10554,21 @@
       "from": "TASK-513",
       "to": "TASK-502",
       "type": "closes-item-of"
+    },
+    {
+      "from": "mem-220",
+      "to": "mem-221",
+      "type": "related"
+    },
+    {
+      "from": "mem-221",
+      "to": "mem-220",
+      "type": "related"
+    },
+    {
+      "from": "mem-221",
+      "to": "TASK-513",
+      "type": "related"
     }
   ],
   "concept_index": {
@@ -10877,7 +10918,8 @@
       "pilot-never-reads-gh-comments-by-design",
       "terminal-status-without-rearm-probe-kills-operator-recovery",
       "deadlock-alert-idle-refire-mark-sent-asymmetry",
-      "ci-post-merge-fix-issue-borrows-merged-branch-short-circuits"
+      "ci-post-merge-fix-issue-borrows-merged-branch-short-circuits",
+      "mem-221"
     ],
     "aws": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -11781,7 +11823,9 @@
       "no-decompose-spec-sizing-one-subsystem",
       "pilot-issue-missing-no-decompose-fragments-single-fix",
       "mem-203",
-      "mem-211"
+      "mem-211",
+      "mem-220",
+      "mem-221"
     ],
     "knowledge": [
       "TASK-368",
@@ -12716,7 +12760,9 @@
       "s3-accessdenied-from-admin-role-is-bucket-policy-condition",
       "mem-203",
       "mem-204",
-      "use-nav-research-agent-for-all-project-research"
+      "use-nav-research-agent-for-all-project-research",
+      "mem-220",
+      "mem-221"
     ],
     "operations": [
       "dead-cdk-stack-carried-live-founder-box-backup-policy",
@@ -12798,7 +12844,8 @@
     ],
     "acceptance-evidence": [
       "mem-203",
-      "mem-205"
+      "mem-205",
+      "mem-220"
     ],
     "git-history": [
       "main-history-rewritten-2026-09-24-internal-notes-purge"
@@ -12943,13 +12990,19 @@
     "prod-verification": [
       "mem-218",
       "mem-219"
+    ],
+    "pilot-product-gap": [
+      "mem-220"
+    ],
+    "navigator-research": [
+      "mem-221"
     ]
   },
-  "last_updated": "2026-10-08T10:37:40.283027+00:00",
+  "last_updated": "2026-10-08T15:51:08.646114+00:00",
   "stats": {
-    "total_nodes": 650,
-    "total_edges": 567,
-    "memory_count": 353
+    "total_nodes": 652,
+    "total_edges": 570,
+    "memory_count": 355
   },
   "metadata": {}
 }
