@@ -1,6 +1,6 @@
 ---
 name: reference_paddle_account
-description: Paddle account facts for Pilot Cloud billing — live (Quantflow) and sandbox accounts, catalog ids in both (live pro_01m2az5r1fm3pm71f3hpdyh704 / pri_01m2azamdhj869n9vg6hc1wy85 $500 / pri_01m4g870rh98m207cjwhjn8taq $499 live twin 10-09; live client token ctkn_01m4g87ga97b6stpk4hxp5zg41; sandbox pro_01m2b1xhwtvnmh5atk6zpdagdb / pri_01m2b1zrqvpp1388t77wqystqt; USD 500/month, SaaS), sandbox→live mapping, what is still unset.
+description: Paddle account facts for Pilot Cloud billing — live (Quantflow) and sandbox accounts, catalog ids in both (live pro_01m2az5r1fm3pm71f3hpdyh704 / pri_01m2azamdhj869n9vg6hc1wy85 $500 / pri_01m4g870rh98m207cjwhjn8taq $499 live twin 10-09; live client token ctkn_01m4g87ga97b6stpk4hxp5zg41; live webhook destination ntfset_01m4gbtxeevnar9mma451sbh1w; Doppler prd has all three secrets; sandbox pro_01m2b1xhwtvnmh5atk6zpdagdb / pri_01m2b1zrqvpp1388t77wqystqt; USD 500/month, SaaS), sandbox→live mapping, what is still unset.
 type: reference
 ---
 
@@ -52,9 +52,12 @@ Sandbox → live mapping: `pro_01m2b1xhwtvnmh5atk6zpdagdb` → `pro_01m2az5r1fm3
 ## Live API key (2026-10-09)
 - `pilot-console-prod`, created in the dashboard (form filled by Navigator via Chrome, Save + copy by founder), **rotatable**, expires **2027-01-07** (90 days — rotation runbook line needed before then), **24 scopes** = the 23 sandbox scopes + `customer_portal_session.write` (portal route). Value in Doppler `pilot-console`/`prd` as `PADDLE_API_KEY` (prefix `pdl_live_` verified; `GET /products` → 200 via `doppler run`). SSM `/pilot-fleet/console/BILLING_PADDLE_API_KEY` still to be written once Nelya's template lands. Value never entered chat.
 
+## Live notification destination (2026-10-09)
+- `ntfset_01m4gbtxeevnar9mma451sbh1w` → `https://console.pilotcloud.dev/api/v1/billing/webhook`, type url, active, api_version 1, traffic `platform`, events: `subscription.{activated,canceled,created,imported,past_due,paused,resumed,trialing,updated}` + `transaction.completed`. Created by API (`curl` under `doppler run`, secret piped straight into Doppler `prd` `PADDLE_WEBHOOK_SECRET`, prefix `pdl_ntfset_`; never printed). **Never delete/recreate** — that rotates the secret. Deliveries fail (404) until Nelya flips `BillingEnabled`; harmless.
+- Doppler `pilot-console`/`prd` now holds all three: `PADDLE_API_KEY`, `PADDLE_CLIENT_TOKEN`, `PADDLE_WEBHOOK_SECRET`. SSM `/pilot-fleet/console/BILLING_PADDLE_{API_KEY,WEBHOOK_SECRET,CLIENT_TOKEN}` still to be written (needs Nelya's `ssm:PutParameter` grant or out-of-band handoff).
+
 ## Still unset in live
 - Default payment link (Checkout → Checkout settings): needs the console's real domain; live checkout requires an approved domain.
-- Notification destination (Developer tools → Notifications): needs the public webhook URL.
 - Website approval, business/identity verification, payouts: founder.
 - Live prices are immutable once used: a price change = new price + code pointing at it.
 
