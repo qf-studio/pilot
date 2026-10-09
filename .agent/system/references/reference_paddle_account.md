@@ -6,7 +6,7 @@ type: reference
 
 # Paddle account — Pilot Cloud
 
-**Live vendor account**: `vendors.paddle.com`, account name "Quantflow", founder login. Onboarding at 0/3 (migrate · verify · go live). **Sandbox account created 2026-09-12** (`sandbox-vendors.paddle.com`, same email; business type Private, Montenegro). Ids differ from live.
+**Live vendor account**: `vendors.paddle.com`, account name "Quantflow", founder login. **Onboarding 2026-10-09: step 01 "Set up your live account" = done on our side (catalog, token, destination, payment link, domain submitted); step 02 "Verify your account" = NOT STARTED, founder-only (personal D.O.B + home address, business legal name + address, website link, product info) and Paddle's checklist requires public ToS/Privacy/Refund pages + on-site pricing + contact → gated on the landing-page session; step 03 "Test and go live" after 02 (Paddle's own prompt: 100 % discount, real card, zero-cost checkout, then archive the discount). Payouts → Payout Settings is EMPTY (country, account type, representative, Payoneer/wire, threshold) — founder.** **Sandbox account created 2026-09-12** (`sandbox-vendors.paddle.com`, same email; business type Private, Montenegro). Ids differ from live.
 
 ## Live catalog (created 2026-09-12 via dashboard, founder decision: one plan, no trial, monthly only)
 
