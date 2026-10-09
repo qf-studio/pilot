@@ -60,6 +60,9 @@ Sandbox → live mapping: `pro_01m2b1xhwtvnmh5atk6zpdagdb` → `pro_01m2az5r1fm3
 - **Default payment link** = `https://console.pilotcloud.dev/billing/checkout` (saved; page warns the domain is not yet approved). Statement descriptor `QUANTFLOW` (pre-existing).
 - **Website approval**: `console.pilotcloud.dev` submitted 2026-10-09, status **In review**. Paddle's form note: "Your website must link through to, or contain, your: terms of service, privacy notice and refund policy to be successfully approved." → readiness audit (L7 step 5) is now on the critical path for approval.
 
+## Live config proven through the Go client (2026-10-09)
+- Throwaway `cmd/l7check` in a detached worktree ran the real `config.Load()` with the Doppler `prd` values mapped to the D6 env names + `PRICE_ID=pri_01m4g870rh98m207cjwhjn8taq`: all prefix checks pass; `billing.NewPaddleClient(live)` + `ResolveConfigPrice` returned **49900 USD month/1**. This is the L7 acceptance item "live env verified by a read-only status call through the Go client". Runbook: `sops/operations/paddle-live-secrets-rotation-and-ssm-handoff.md`.
+
 ## Still unset in live
 - Nothing on the Paddle side. Remaining: SSM write of the three values (Nelya grant), Nelya template sync + flag flip, readiness audit (policy pages), live checkout smoke.
 - Website approval, business/identity verification, payouts: founder.
