@@ -49,9 +49,11 @@ Sandbox → live mapping: `pro_01m2b1xhwtvnmh5atk6zpdagdb` → `pro_01m2az5r1fm3
 ## Live client-side token (2026-10-09)
 - `ctkn_01m4g87ga97b6stpk4hxp5zg41` name `pilot-console-ui`, Active, created via MCP. Value `live_315cd0503ade84f882cd7679662` (public-safe by design; Paddle.js browser token). Stored in Doppler `pilot-console`/`prd` as `PADDLE_CLIENT_TOKEN`; SSM `/pilot-fleet/console/BILLING_PADDLE_CLIENT_TOKEN` still to be written once Nelya's template lands.
 
+## Live API key (2026-10-09)
+- `pilot-console-prod`, created in the dashboard (form filled by Navigator via Chrome, Save + copy by founder), **rotatable**, expires **2027-01-07** (90 days — rotation runbook line needed before then), **24 scopes** = the 23 sandbox scopes + `customer_portal_session.write` (portal route). Value in Doppler `pilot-console`/`prd` as `PADDLE_API_KEY` (prefix `pdl_live_` verified; `GET /products` → 200 via `doppler run`). SSM `/pilot-fleet/console/BILLING_PADDLE_API_KEY` still to be written once Nelya's template lands. Value never entered chat.
+
 ## Still unset in live
 - Default payment link (Checkout → Checkout settings): needs the console's real domain; live checkout requires an approved domain.
-- API key (Developer tools → Authentication): founder creates in the dashboard with the 23 sandbox scopes; value → Doppler `prd` `PADDLE_API_KEY` + SSM; never enters chat.
 - Notification destination (Developer tools → Notifications): needs the public webhook URL.
 - Website approval, business/identity verification, payouts: founder.
 - Live prices are immutable once used: a price change = new price + code pointing at it.
