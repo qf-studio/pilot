@@ -427,7 +427,13 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 	}
 
 	trimmed := finalizeEvidenceOutput(output)
-	failing := extractFailingTests(output)
+	failing := extractFailingTests(output, toolchain)
+	if len(failing) == 0 && exitErr != nil {
+		// GH-5627: the runner exited non-zero but no parser recognised a
+		// failure line. That is still a kill, not a vacuous pin — record it
+		// (Output carries the real run) instead of NoTestFailed.
+		failing = []string{unparsedFailingTest}
+	}
 	mo := &MutationOutcome{
 		Description: item.MutationDescription,
 		Target:      item.MutationTarget,
