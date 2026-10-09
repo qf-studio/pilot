@@ -160,7 +160,7 @@ func TestRunMutationItem_Toolchains(t *testing.T) {
 
 		runner := &fakeAcceptanceCommandRunner{responses: map[string]fakeCommandResponse{
 			"bunx vitest run src/x.spec.ts": {
-				output: "FAIL src/x.spec.ts > reset\n",
+				output: " × reset clears the cursor 12ms\n FAIL  src/x.spec.ts > reset clears the cursor\n",
 				err:    &exec.ExitError{},
 			},
 		}}
@@ -172,6 +172,12 @@ func TestRunMutationItem_Toolchains(t *testing.T) {
 		}
 		if result.MutationOutcome == nil {
 			t.Fatal("expected a MutationOutcome")
+		}
+		if result.MutationOutcome.NoTestFailed {
+			t.Error("vitest run exited non-zero with a × line: NoTestFailed must be false")
+		}
+		if got := strings.Join(result.MutationOutcome.FailingTests, "|"); got != "reset clears the cursor|src/x.spec.ts > reset clears the cursor" {
+			t.Errorf("FailingTests = %q, want the parsed vitest failures (not the unparsed fallback)", got)
 		}
 		if len(runner.calls) != 1 || runner.calls[0] != "bunx vitest run src/x.spec.ts" {
 			t.Fatalf("runner calls = %q, want exactly [bunx vitest run src/x.spec.ts]", runner.calls)
@@ -187,6 +193,55 @@ func TestRunMutationItem_Toolchains(t *testing.T) {
 		}
 		if string(got) != original {
 			t.Fatalf("file not reverted byte-identical: got %q, want %q", got, original)
+		}
+	})
+
+	t.Run("non-zero exit with unparseable output is a kill, not no-test-failed", func(t *testing.T) {
+		dir := t.TempDir()
+		seedToolchainMarker(t, dir, "package.json")
+		original := "a\nb\nc\n"
+		if err := os.WriteFile(filepath.Join(dir, "f.ts"), []byte(original), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runner := &fakeAcceptanceCommandRunner{responses: map[string]fakeCommandResponse{
+			"npx vitest run src/x.spec.ts": {output: "something exploded\n", err: &exec.ExitError{}},
+		}}
+		item := ClassifyAcceptanceItem("delete line 2 in f.ts -> src/x.spec.ts fails")
+		result := runMutationItem(context.Background(), runner, dir, item, defaultTestAllowedCommands)
+
+		mo := result.MutationOutcome
+		if mo == nil {
+			t.Fatalf("expected a MutationOutcome, NotVerifiedReason=%q", result.NotVerifiedReason)
+		}
+		if mo.NoTestFailed {
+			t.Error("non-zero exit must not be reported as NoTestFailed")
+		}
+		if len(mo.FailingTests) != 1 || mo.FailingTests[0] != unparsedFailingTest {
+			t.Errorf("FailingTests = %q, want [%s]", mo.FailingTests, unparsedFailingTest)
+		}
+		if !strings.Contains(mo.Output, "something exploded") {
+			t.Errorf("Output should carry the real run, got %q", mo.Output)
+		}
+	})
+
+	t.Run("exit 0 with no fail lines is NoTestFailed", func(t *testing.T) {
+		dir := t.TempDir()
+		seedToolchainMarker(t, dir, "package.json")
+		if err := os.WriteFile(filepath.Join(dir, "f.ts"), []byte("a\nb\nc\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runner := &fakeAcceptanceCommandRunner{responses: map[string]fakeCommandResponse{
+			"npx vitest run src/x.spec.ts": {output: " ✓ all good 3ms\n"},
+		}}
+		item := ClassifyAcceptanceItem("delete line 2 in f.ts -> src/x.spec.ts fails")
+		result := runMutationItem(context.Background(), runner, dir, item, defaultTestAllowedCommands)
+
+		mo := result.MutationOutcome
+		if mo == nil {
+			t.Fatalf("expected a MutationOutcome, NotVerifiedReason=%q", result.NotVerifiedReason)
+		}
+		if !mo.NoTestFailed || len(mo.FailingTests) != 0 {
+			t.Errorf("NoTestFailed=%v FailingTests=%q, want true/empty", mo.NoTestFailed, mo.FailingTests)
 		}
 	})
 
@@ -211,4 +266,73 @@ func TestRunMutationItem_Toolchains(t *testing.T) {
 			t.Fatalf("file modified: err=%v content=%q", err, got)
 		}
 	})
+}
+
+func TestExtractFailingTests(t *testing.T) {
+	tests := []struct {
+		name      string
+		toolchain string
+		output    string
+		want      []string
+	}{
+		{"go", "go", "=== RUN   TestFoo\n--- FAIL: TestFoo (0.00s)\n    --- FAIL: TestFoo/sub (0.00s)\n--- FAIL: TestFoo (0.00s)\nFAIL\n", []string{"TestFoo", "TestFoo/sub"}},
+		{"go no failure", "go", "ok  \tpkg\t0.01s\n", []string{}},
+		{
+			"vitest x line and FAIL summary",
+			"vitest",
+			" ❯ src/x.spec.ts (2 tests | 1 failed) 15ms\n   ✓ keeps cursor 2ms\n   × reset clears the cursor 12ms\n\n FAIL  src/x.spec.ts > reset clears the cursor\nAssertionError: expected 0 to be 1\n Test Files  1 failed (1)\n",
+			[]string{"reset clears the cursor", "src/x.spec.ts > reset clears the cursor"},
+		},
+		{"vitest x line nested title", "vitest", "   × chat store > reset > clears the cursor 12ms\n", []string{"chat store > reset > clears the cursor"}},
+		{"vitest dedupes", "vitest", " × a 1ms\n × a 2ms\n", []string{"a"}},
+		{"vitest passing", "vitest", " ✓ a 1ms\n Test Files  1 passed (1)\n", []string{}},
+		{
+			"pytest",
+			"pytest",
+			"=== short test summary info ===\nFAILED tests/test_x.py::test_y - AssertionError: assert 0 == 1\nFAILED tests/test_x.py::test_z\n=== 2 failed in 0.12s ===\n",
+			[]string{"tests/test_x.py::test_y", "tests/test_x.py::test_z"},
+		},
+		{"pytest passing", "pytest", "=== 3 passed in 0.01s ===\n", []string{}},
+		{
+			"cargo",
+			"cargo",
+			"running 2 tests\ntest chat::tests::ok ... ok\ntest chat::tests::reset ... FAILED\n\nfailures:\n    chat::tests::reset\n",
+			[]string{"chat::tests::reset"},
+		},
+		{"cargo passing", "cargo", "test chat::tests::ok ... ok\n", []string{}},
+		{"unknown", "unknown", "--- FAIL: TestFoo\nFAILED a::b\n × x 1ms\n", []string{}},
+		{"go pattern is not applied to pytest", "pytest", "--- FAIL: TestFoo\n", []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractFailingTests(tt.output, tt.toolchain)
+			if strings.Join(got, "|") != strings.Join(tt.want, "|") {
+				t.Errorf("extractFailingTests(%q) = %q, want %q", tt.toolchain, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRenderAcceptanceEvidenceSections_VitestKillNotVacuous(t *testing.T) {
+	dir := t.TempDir()
+	seedToolchainMarker(t, dir, "package.json")
+	if err := os.WriteFile(filepath.Join(dir, "f.ts"), []byte("a\nb\nc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeAcceptanceCommandRunner{responses: map[string]fakeCommandResponse{
+		"npx vitest run src/x.spec.ts": {output: " × reset clears the cursor 12ms\n", err: &exec.ExitError{}},
+	}}
+	item := ClassifyAcceptanceItem("delete line 2 in f.ts -> src/x.spec.ts fails")
+	result := runMutationItem(context.Background(), runner, dir, item, defaultTestAllowedCommands)
+
+	out := RenderAcceptanceEvidenceSections([]AcceptanceEvidenceResult{result})
+	if !strings.Contains(out, "## Evidence") {
+		t.Fatalf("missing ## Evidence:\n%s", out)
+	}
+	if strings.Contains(out, "no test failed") {
+		t.Errorf("vitest kill rendered as vacuous:\n%s", out)
+	}
+	if !strings.Contains(out, "failing test(s): reset clears the cursor") {
+		t.Errorf("failing test not listed:\n%s", out)
+	}
 }

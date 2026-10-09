@@ -556,13 +556,46 @@ func RenderAcceptanceEvidenceSections(results []AcceptanceEvidenceResult) string
 	return out.String()
 }
 
-// failLineRe matches Go test's "--- FAIL: TestName" output lines.
-var failLineRe = regexp.MustCompile(`(?m)^\s*--- FAIL: (\S+)`)
+// Per-toolchain failing-test line patterns (GH-5627). Each regexp captures the
+// failing test's identifier in group 1. The toolchain names are the ones
+// detectMutationToolchain returns.
+var (
+	// goFailLineRe matches Go test's "--- FAIL: TestName" lines.
+	goFailLineRe = regexp.MustCompile(`(?m)^\s*--- FAIL: (\S+)`)
+	// vitestFailLineRe matches vitest's per-test "× suite > title 12ms" line
+	// and the summary's "FAIL  path > suite > title" line.
+	vitestFailLineRe = regexp.MustCompile(`(?m)^\s*(?:×|✗|FAIL)\s+(.+?)\s*(?:\d+ms)?$`)
+	// pytestFailLineRe matches pytest's short-summary
+	// "FAILED tests/test_x.py::test_y - AssertionError" lines.
+	pytestFailLineRe = regexp.MustCompile(`(?m)^FAILED\s+(\S+)`)
+	// cargoFailLineRe matches cargo test's "test path::name ... FAILED" lines.
+	cargoFailLineRe = regexp.MustCompile(`(?m)^test (\S+) \.\.\. FAILED\s*$`)
+)
+
+// unparsedFailingTest is recorded as the failing test when the test command
+// exited non-zero but extractFailingTests found no recognisable failure line
+// (a toolchain/format the parsers don't know) — the run still killed the
+// mutation, so it must not be reported as "no test failed".
+const unparsedFailingTest = "<exit 1, unparsed>"
 
 // extractFailingTests returns the deduplicated, first-seen-order list of
-// test names Go test's output reported as failed.
-func extractFailingTests(output string) []string {
-	matches := failLineRe.FindAllStringSubmatch(output, -1)
+// test names the toolchain's test output reported as failed. An unknown
+// toolchain yields an empty list.
+func extractFailingTests(output, toolchain string) []string {
+	var re *regexp.Regexp
+	switch toolchain {
+	case "go":
+		re = goFailLineRe
+	case "vitest":
+		re = vitestFailLineRe
+	case "pytest":
+		re = pytestFailLineRe
+	case "cargo":
+		re = cargoFailLineRe
+	default:
+		return nil
+	}
+	matches := re.FindAllStringSubmatch(output, -1)
 	seen := make(map[string]bool, len(matches))
 	names := make([]string, 0, len(matches))
 	for _, m := range matches {
