@@ -1,6 +1,6 @@
 # TASK-514: Console side chat shows "Chat isn't enabled for this org" on every tenant
 
-**Status:** ✅ 3 of 4 legs MERGED + REVIEWED 2026-10-09 (console PR#385 13:07Z, ui PR#222 13:08Z, console PR#386 autopilot ~13:30Z; all APPROVE-w-notes, every mutation pin run by the reviewer and proven real — Pilot listed them "Not verified"). Leg 4 pilot#5629 → PR#5630 reviewed APPROVE-w-notes (CI pending at review time; autopilot merges on green). **Premise correction:** the example yaml already had the `adapters.chat` stanza (line ~250); the issue text was wrong (truncated grep in research). PR still adds a real load-test guard. **Console deployed 13:13Z (750c5f1 = #385+#386, prod-0.1.23); UI deployed 13:11Z (#222). Sweep is 60 s, so tenant daemons were bumped + restarted ~13:14Z. Awaiting founder's browser confirmation.**
+**Status:** ✅ DONE 2026-10-09 — founder confirmed in the browser ~13:55Z: chat works on prod. All 4 legs merged + reviewed (console PR#385/#386 in prod-0.1.23 @13:13Z, ui PR#222 @13:11Z, pilot PR#5630 autopilot on green). Verified by a direct events call from the console tab: HTTP 200 `{"events":[],"latestSeq":0}` where the pre-fix answer was 409. Archived.
 **Created:** 2026-10-09
 **Last Updated:** 2026-10-09
 **Trigger:** founder screenshot 2026-10-09: banner "Chat isn't enabled for this org. Reach out to your admin." in the prod console side chat.
