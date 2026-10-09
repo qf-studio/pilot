@@ -242,13 +242,18 @@ adapters:
   # Chat - HTTP transport backing the console's Operator chat panel (GH-4835).
   # Feeds the same comms brain as Telegram/Slack/Discord via a per-conversation,
   # in-memory poll-drain event buffer (no SSE/WS, no chat-history persistence).
-  # Routes (bearer auth inherited from `auth:` above; absent entirely when
-  # disabled): POST /api/v1/chat/messages, GET
+  # Serves the console side chat over the gateway at /api/v1/chat. Needs the
+  # gateway bearer token (`auth.token` above, type "api-token"; the console
+  # sends it as `Authorization: Bearer <token>`). Disabled (default) removes the
+  # routes entirely, so they 404 like any unknown path.
+  # Routes: POST /api/v1/chat/messages, GET
   # /api/v1/chat/conversations/{id}/events?after=<seq>. Approval decisions do
   # NOT go through this API — the console calls
   # POST /api/v1/approvals/{requestId}/decision directly.
   chat:
-    enabled: false
+    enabled: false                     # default false
+    # Optional; per-conversation limits. Omit to use the comms default shown
+    # here (same as Telegram/Slack): 20 msgs/min, 10 tasks/hour, burst 5.
     rate_limit:
       enabled: true
       messages_per_minute: 20
