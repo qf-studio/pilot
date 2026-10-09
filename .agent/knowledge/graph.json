@@ -7341,10 +7341,12 @@
       },
       "file-pilot-issues-via-nav-pilot-skill-only": {
         "type": "learning",
-        "summary": "Founder instruction 2026-09-30 — every Pilot issue is filed through the nav-pilot skill from a Navigator task doc (nav-task authors .agent/tasks/TASK-N-slug.md with H2 Context/Implementation/Acceptance; nav-pilot dispatches it with the H1 as title and the doc as --body-file, records the URL under Refs). Never raw gh issue create with an inline or /tmp body.",
+        "summary": "Founder instruction 2026-09-30, repeated 2026-10-09 after a recurrence (TASK-514 filed 4 issues raw) — nav-task slices work into tickets (one task doc per leg, also across repos) and nav-pilot sends each to Pilot (H1 as title, doc as --body-file, URL under Refs). Never raw gh issue create for a Pilot issue, regardless of size or urgency.",
         "file": ".agent/knowledge/memories/learnings/file-pilot-issues-via-nav-pilot-skill-only.md",
         "created": "2026-09-30",
-        "last_validated": "2026-09-30"
+        "last_validated": "2026-10-09",
+        "confidence": 0.99,
+        "recurrences": 1
       },
       "mem-205": {
         "type": "decision",
