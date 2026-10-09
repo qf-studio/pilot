@@ -56,8 +56,12 @@ Sandbox → live mapping: `pro_01m2b1xhwtvnmh5atk6zpdagdb` → `pro_01m2az5r1fm3
 - `ntfset_01m4gbtxeevnar9mma451sbh1w` → `https://console.pilotcloud.dev/api/v1/billing/webhook`, type url, active, api_version 1, traffic `platform`, events: `subscription.{activated,canceled,created,imported,past_due,paused,resumed,trialing,updated}` + `transaction.completed`. Created by API (`curl` under `doppler run`, secret piped straight into Doppler `prd` `PADDLE_WEBHOOK_SECRET`, prefix `pdl_ntfset_`; never printed). **Never delete/recreate** — that rotates the secret. Deliveries fail (404) until Nelya flips `BillingEnabled`; harmless.
 - Doppler `pilot-console`/`prd` now holds all three: `PADDLE_API_KEY`, `PADDLE_CLIENT_TOKEN`, `PADDLE_WEBHOOK_SECRET`. SSM `/pilot-fleet/console/BILLING_PADDLE_{API_KEY,WEBHOOK_SECRET,CLIENT_TOKEN}` still to be written (needs Nelya's `ssm:PutParameter` grant or out-of-band handoff).
 
+## Live checkout settings (2026-10-09, via Chrome, founder said "save")
+- **Default payment link** = `https://console.pilotcloud.dev/billing/checkout` (saved; page warns the domain is not yet approved). Statement descriptor `QUANTFLOW` (pre-existing).
+- **Website approval**: `console.pilotcloud.dev` submitted 2026-10-09, status **In review**. Paddle's form note: "Your website must link through to, or contain, your: terms of service, privacy notice and refund policy to be successfully approved." → readiness audit (L7 step 5) is now on the critical path for approval.
+
 ## Still unset in live
-- Default payment link (Checkout → Checkout settings): needs the console's real domain; live checkout requires an approved domain.
+- Nothing on the Paddle side. Remaining: SSM write of the three values (Nelya grant), Nelya template sync + flag flip, readiness audit (policy pages), live checkout smoke.
 - Website approval, business/identity verification, payouts: founder.
 - Live prices are immutable once used: a price change = new price + code pointing at it.
 
