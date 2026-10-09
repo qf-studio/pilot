@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -2822,5 +2823,50 @@ func TestTypeSafe_Defaults(t *testing.T) {
 	}
 	if got := ts.EffectiveModel(); got != "jev-latest" {
 		t.Errorf("model = %q, want jev-latest", got)
+	}
+}
+
+// TestLoadExampleConfigChatStanza covers GH-5629: the adapters.chat stanza in
+// configs/pilot.example.yaml must load through Load() into web.Config with the
+// documented defaults, and flipping enabled must round-trip.
+func TestLoadExampleConfigChatStanza(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "configs", "pilot.example.yaml"))
+	if err != nil {
+		t.Fatalf("read example config: %v", err)
+	}
+	// The env-var pre-scan (GH-3755) also inspects commented sample lines.
+	for _, m := range regexp.MustCompile(`\$\{([A-Z0-9_]+)\}`).FindAllStringSubmatch(string(data), -1) {
+		t.Setenv(m[1], "test-value")
+	}
+
+	for _, enabled := range []bool{false, true} {
+		content := string(data)
+		if enabled {
+			old := "  chat:\n    enabled: false"
+			if !strings.Contains(content, old) {
+				t.Fatalf("example config missing %q", old)
+			}
+			content = strings.Replace(content, old, "  chat:\n    enabled: true", 1)
+		}
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load(example, chat.enabled=%v): %v", enabled, err)
+		}
+		chat := cfg.Adapters.Chat
+		if chat == nil {
+			t.Fatal("Adapters.Chat is nil")
+		}
+		if chat.Enabled != enabled {
+			t.Errorf("Chat.Enabled = %v, want %v", chat.Enabled, enabled)
+		}
+		rl := chat.RateLimit
+		if rl == nil || !rl.Enabled || rl.MessagesPerMinute != 20 || rl.TasksPerHour != 10 || rl.BurstSize != 5 {
+			t.Errorf("Chat.RateLimit = %+v, want enabled 20/min 10/h burst 5", rl)
+		}
 	}
 }
