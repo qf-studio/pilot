@@ -1394,7 +1394,7 @@ func TestFetchOriginMainForWorktree(t *testing.T) {
 			tt.setup(t, localRepo, remoteRepo)
 
 			ctx := context.Background()
-			baseRef, err := fetchOriginMainForWorktree(ctx, localRepo)
+			baseRef, err := fetchOriginBranchForWorktree(ctx, localRepo, "main")
 
 			if tt.wantErr {
 				if err == nil {
