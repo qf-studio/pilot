@@ -371,9 +371,9 @@ func (b *chatTestBackend) Execute(ctx context.Context, opts executor.ExecuteOpti
 }
 
 // TestChatAPI_Composed exercises the full GH-4835 acceptance flow on a real
-// HTTP listener: auth enforcement, text replies from agentic chat turns (with
-// a fake executor backend), plus the approvals scope fence
-// (#4748 / GH-4411 / GH-4431).
+// HTTP listener: auth enforcement, an operational-query text reply, and a
+// full task confirmation -> execute -> result flow (with a fake executor
+// backend), plus the approvals scope fence (#4748 / GH-4411 / GH-4431).
 func TestChatAPI_Composed(t *testing.T) {
 	backend := &chatTestBackend{}
 	runner := executor.NewRunnerWithBackend(backend)
@@ -483,8 +483,7 @@ func TestChatAPI_Composed(t *testing.T) {
 		t.Errorf("operational reply type = %q, want text", opEvents.Events[0].Type)
 	}
 
-	// 3. Task-shaped message -> 202, events poll shows the agentic chat-turn
-	// reply as a text event (web turns no longer produce a task confirmation).
+	// 3. Task-shaped message -> 202, events poll shows a confirmation event.
 	taskConv := "task-conv"
 	taskResp := post(t, `{"conversationId":"`+taskConv+`","text":"build the project"}`, true)
 	defer func() { _ = taskResp.Body.Close() }()
@@ -497,20 +496,25 @@ func TestChatAPI_Composed(t *testing.T) {
 	}
 
 	deadline = time.Now().Add(5 * time.Second)
-	var chatEvents chatEventsResponse
+	var confirmEvents chatEventsResponse
 	for time.Now().Before(deadline) {
-		chatEvents = getEvents(t, taskConv, taskAccept.Seq)
-		if len(chatEvents.Events) > 0 {
+		confirmEvents = getEvents(t, taskConv, taskAccept.Seq)
+		if len(confirmEvents.Events) > 0 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if len(chatEvents.Events) == 0 {
-		t.Fatal("no chat reply event landed")
+	if len(confirmEvents.Events) == 0 {
+		t.Fatal("no confirmation event landed")
 	}
-	if ev := chatEvents.Events[0]; ev.Type != web.EventText {
-		t.Fatalf("event type = %q, want text", ev.Type)
+	confirmEv := confirmEvents.Events[0]
+	if confirmEv.Type != web.EventConfirmation {
+		t.Fatalf("event type = %q, want confirmation", confirmEv.Type)
 	}
+	if confirmEv.TaskID == "" || confirmEv.MessageRef != confirmEv.TaskID {
+		t.Fatalf("confirmation event = %+v, want TaskID set and MessageRef == TaskID", confirmEv)
+	}
+	lastSeq := confirmEv.Seq
 
 	// 4. An approval-shaped callback must be rejected with 400 — approvals do
 	// not route through the chat API (scope fence, #4748 / GH-4411/GH-4431).
@@ -518,5 +522,50 @@ func TestChatAPI_Composed(t *testing.T) {
 	_ = approvalResp.Body.Close()
 	if approvalResp.StatusCode != http.StatusBadRequest {
 		t.Errorf("approval-shaped callback status = %d, want 400", approvalResp.StatusCode)
+	}
+
+	// 5. Execute callback -> 202, then poll until a result event lands;
+	// assert at least one progress event shares the confirmation's messageRef,
+	// and the result carries Success=true with the same messageRef.
+	execResp := post(t, `{"conversationId":"`+taskConv+`","isCallback":true,"callbackId":"execute-cb","actionId":"execute"}`, true)
+	defer func() { _ = execResp.Body.Close() }()
+	if execResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("execute callback status = %d, want 202", execResp.StatusCode)
+	}
+
+	deadline = time.Now().Add(15 * time.Second)
+	var sawProgress bool
+	var resultEv *web.Event
+	for time.Now().Before(deadline) {
+		more := getEvents(t, taskConv, lastSeq)
+		for i := range more.Events {
+			ev := more.Events[i]
+			if ev.Type == web.EventProgress && ev.MessageRef == confirmEv.MessageRef {
+				sawProgress = true
+			}
+			if ev.Type == web.EventResult {
+				e := ev
+				resultEv = &e
+			}
+			if ev.Seq > lastSeq {
+				lastSeq = ev.Seq
+			}
+		}
+		if resultEv != nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if resultEv == nil {
+		t.Fatal("no result event landed after execute callback")
+	}
+	if !sawProgress {
+		t.Error("no progress event with the confirmation's messageRef was observed")
+	}
+	if resultEv.Success == nil || !*resultEv.Success {
+		t.Errorf("result event Success = %v, want true", resultEv.Success)
+	}
+	if resultEv.MessageRef != confirmEv.MessageRef {
+		t.Errorf("result MessageRef = %q, want %q", resultEv.MessageRef, confirmEv.MessageRef)
 	}
 }
