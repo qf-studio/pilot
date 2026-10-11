@@ -66,7 +66,11 @@ type Handler struct {
 	pendingIssues map[string]*IssueDraft  // contextID -> in-progress issue draft
 	runningTasks  map[string]*RunningTask // contextID -> running task
 	lastSender    map[string]string       // contextID -> senderID
-	mu            sync.Mutex
+	// chatSessions maps a web contextID to its Claude Code chat session id.
+	chatSessions map[string]string
+	// pendingIssueCards maps a web contextID to the issue card awaiting a decision.
+	pendingIssueCards map[string]*pendingIssueCard
+	mu                sync.Mutex
 }
 
 // NewHandler creates a shared Handler from the given config.
@@ -107,6 +111,9 @@ func NewHandler(cfg *HandlerConfig) *Handler {
 		pendingIssues:  make(map[string]*IssueDraft),
 		runningTasks:   make(map[string]*RunningTask),
 		lastSender:     make(map[string]string),
+
+		chatSessions:      make(map[string]string),
+		pendingIssueCards: make(map[string]*pendingIssueCard),
 	}
 
 	// Wire command handler — must be built after h exists so callbacks can close over h.
@@ -199,6 +206,34 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 		return
 	}
 
+	// Web console: agentic chat turns and the pilot-issue confirmation card.
+	if msg.Platform == webPlatform {
+		trimmed := strings.TrimSpace(text)
+		lowerText := strings.ToLower(trimmed)
+		if msg.IsCallback {
+			if h.hasPendingIssueCard(contextID) {
+				switch msg.ActionID {
+				case "execute", "confirm", "yes", "file":
+					_ = h.messenger.AcknowledgeCallback(ctx, msg.CallbackID)
+					h.handleIssueCardDecision(ctx, contextID, msg.ThreadID, true)
+					return
+				case "cancel", "no", "discard":
+					_ = h.messenger.AcknowledgeCallback(ctx, msg.CallbackID)
+					h.handleIssueCardDecision(ctx, contextID, msg.ThreadID, false)
+					return
+				}
+			}
+		} else if isYesShortcut(lowerText) || isNoShortcut(lowerText) {
+			if h.hasPendingIssueCard(contextID) {
+				h.handleIssueCardDecision(ctx, contextID, msg.ThreadID, isYesShortcut(lowerText))
+				return
+			}
+		} else if trimmed != "" && !strings.HasPrefix(trimmed, "/") {
+			h.handleChatTurn(ctx, contextID, msg.ThreadID, text)
+			return
+		}
+	}
+
 	// Handle callback (button press) — check pending confirmation
 	if msg.IsCallback {
 		_ = h.messenger.AcknowledgeCallback(ctx, msg.CallbackID)
@@ -225,11 +260,11 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 
 	// Text-based confirmation shortcuts
 	lower := strings.ToLower(strings.TrimSpace(text))
-	if lower == "yes" || lower == "y" || lower == "confirm" || lower == "ok" {
+	if isYesShortcut(lower) {
 		h.handleConfirmation(ctx, contextID, msg.ThreadID, true)
 		return
 	}
-	if lower == "no" || lower == "n" || lower == "cancel" || lower == "nope" {
+	if isNoShortcut(lower) {
 		h.handleConfirmation(ctx, contextID, msg.ThreadID, false)
 		return
 	}
@@ -266,6 +301,14 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 		// Unknown intent — clarify rather than auto-creating a task.
 		_ = h.messenger.SendText(ctx, contextID, msg.ThreadID, "I didn't quite catch that — try /help, or rephrase your request.")
 	}
+}
+
+func isYesShortcut(lower string) bool {
+	return lower == "yes" || lower == "y" || lower == "confirm" || lower == "ok"
+}
+
+func isNoShortcut(lower string) bool {
+	return lower == "no" || lower == "n" || lower == "cancel" || lower == "nope"
 }
 
 // ---------- intent detection ----------
@@ -931,6 +974,7 @@ func (h *Handler) SetActiveProject(contextID, projectName string) error {
 	}
 	h.mu.Lock()
 	h.activeProject[contextID] = proj.Path
+	delete(h.chatSessions, contextID)
 	h.mu.Unlock()
 	return nil
 }
