@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -359,33 +360,62 @@ func TestChatAPI_RoutesAbsentWhenDisabled(t *testing.T) {
 }
 
 // chatTestBackend is a fake executor.Backend (GH-4835): it lets the composed
-// test drive a real *executor.Runner end to end (confirmation -> execution ->
-// result) without invoking a real Claude Code subprocess, matching the
-// pattern established by runner_integration_test.go's mockIntegrationBackend.
+// test drive a real *executor.Runner end to end without invoking a real Claude
+// Code subprocess. A prompt containing "file an issue" replays one Read tool
+// call and answers with a valid pilot-issue block (GH-5638).
 type chatTestBackend struct{}
+
+const chatBackendOutput = "chat test task done"
+
+const chatIssueOutput = "Here is the draft.\n\n```pilot-issue\n" +
+	"title: \"feat(chat): composed test issue\"\nlabels: [pilot]\nbody: |\n" +
+	"  ## Context\n  Composed test.\n  ## Scope\n  One file.\n  ## Acceptance Criteria\n  Passes.\n" +
+	"  ## Out of scope\n  Everything else.\n  ## Refs\n  None.\n```"
 
 func (b *chatTestBackend) Name() string      { return "chat-test-backend" }
 func (b *chatTestBackend) IsAvailable() bool { return true }
 func (b *chatTestBackend) Execute(ctx context.Context, opts executor.ExecuteOptions) (*executor.BackendResult, error) {
-	return &executor.BackendResult{Success: true, Output: "chat test task done"}, nil
+	if strings.Contains(opts.Prompt, "file an issue") {
+		opts.EventHandler(executor.BackendEvent{
+			Type:      executor.EventTypeToolUse,
+			ToolName:  "Read",
+			ToolInput: map[string]interface{}{"file_path": "README.md"},
+		})
+		return &executor.BackendResult{Success: true, Output: chatIssueOutput}, nil
+	}
+	return &executor.BackendResult{Success: true, Output: chatBackendOutput}, nil
+}
+
+// chatIssueCreator is a stub comms.IssueCreator recording its calls.
+type chatIssueCreator struct {
+	calls []comms.IssueDraft
+	err   error
+}
+
+func (c *chatIssueCreator) CreateIssue(_ context.Context, _ string, d comms.IssueDraft) (string, error) {
+	c.calls = append(c.calls, d)
+	return "https://github.com/qf-studio/pilot/issues/1", c.err
 }
 
 // TestChatAPI_Composed exercises the full GH-4835 acceptance flow on a real
 // HTTP listener: auth enforcement, an operational-query text reply, and a
-// full task confirmation -> execute -> result flow (with a fake executor
-// backend), plus the approvals scope fence (#4748 / GH-4411 / GH-4431).
+// chat-turn text reply, and the pilot-issue flow (progress -> confirmation ->
+// execute -> filed URL) with a fake executor backend and issue creator, plus
+// the approvals scope fence (#4748 / GH-4411 / GH-4431).
 func TestChatAPI_Composed(t *testing.T) {
 	backend := &chatTestBackend{}
 	runner := executor.NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.SetSkipPreflightChecks(true)
 
+	creator := &chatIssueCreator{}
 	messenger := web.NewMessenger()
 	handler := comms.BuildHandler(comms.HandlerDeps{
 		Messenger:    messenger,
 		Runner:       runner,
 		ProjectPath:  t.TempDir(),
 		TaskIDPrefix: "WEBTEST",
+		IssueCreator: creator,
 	})
 	chatAPI := web.NewAPI(handler, messenger)
 
@@ -483,7 +513,23 @@ func TestChatAPI_Composed(t *testing.T) {
 		t.Errorf("operational reply type = %q, want text", opEvents.Events[0].Type)
 	}
 
-	// 3. Task-shaped message -> 202, events poll shows a confirmation event.
+	// pollEvents polls a conversation until done reports true for the events
+	// seen after the given seq, or fails after the timeout.
+	pollEvents := func(t *testing.T, conv string, after int64, done func([]web.Event) bool) []web.Event {
+		t.Helper()
+		var evs []web.Event
+		for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+			evs = getEvents(t, conv, after).Events
+			if done(evs) {
+				return evs
+			}
+		}
+		t.Fatalf("conversation %s: expected events never landed; got %+v", conv, evs)
+		return nil
+	}
+
+	// 3. Task-shaped message -> 202, and the chat turn answers with a text
+	// event carrying the backend output (no confirmation card).
 	taskConv := "task-conv"
 	taskResp := post(t, `{"conversationId":"`+taskConv+`","text":"build the project"}`, true)
 	defer func() { _ = taskResp.Body.Close() }()
@@ -494,27 +540,10 @@ func TestChatAPI_Composed(t *testing.T) {
 	if err := json.NewDecoder(taskResp.Body).Decode(&taskAccept); err != nil {
 		t.Fatalf("decode task accept body: %v", err)
 	}
-
-	deadline = time.Now().Add(5 * time.Second)
-	var confirmEvents chatEventsResponse
-	for time.Now().Before(deadline) {
-		confirmEvents = getEvents(t, taskConv, taskAccept.Seq)
-		if len(confirmEvents.Events) > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	textEvents := pollEvents(t, taskConv, taskAccept.Seq, func(evs []web.Event) bool { return len(evs) > 0 })
+	if textEvents[0].Type != web.EventText || textEvents[0].Text != chatBackendOutput {
+		t.Fatalf("first event = %+v, want text event %q", textEvents[0], chatBackendOutput)
 	}
-	if len(confirmEvents.Events) == 0 {
-		t.Fatal("no confirmation event landed")
-	}
-	confirmEv := confirmEvents.Events[0]
-	if confirmEv.Type != web.EventConfirmation {
-		t.Fatalf("event type = %q, want confirmation", confirmEv.Type)
-	}
-	if confirmEv.TaskID == "" || confirmEv.MessageRef != confirmEv.TaskID {
-		t.Fatalf("confirmation event = %+v, want TaskID set and MessageRef == TaskID", confirmEv)
-	}
-	lastSeq := confirmEv.Seq
 
 	// 4. An approval-shaped callback must be rejected with 400 — approvals do
 	// not route through the chat API (scope fence, #4748 / GH-4411/GH-4431).
@@ -524,48 +553,67 @@ func TestChatAPI_Composed(t *testing.T) {
 		t.Errorf("approval-shaped callback status = %d, want 400", approvalResp.StatusCode)
 	}
 
-	// 5. Execute callback -> 202, then poll until a result event lands;
-	// assert at least one progress event shares the confirmation's messageRef,
-	// and the result carries Success=true with the same messageRef.
-	execResp := post(t, `{"conversationId":"`+taskConv+`","isCallback":true,"callbackId":"execute-cb","actionId":"execute"}`, true)
+	// 5. Pilot-issue flow: a chat turn reads a file (progress), drafts a
+	// pilot-issue block (confirmation card), and the execute callback files it.
+	issueConv := "task-conv"
+	issueResp := post(t, `{"conversationId":"`+issueConv+`","text":"please file an issue"}`, true)
+	defer func() { _ = issueResp.Body.Close() }()
+	if issueResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("issue POST status = %d, want 202", issueResp.StatusCode)
+	}
+	var issueAccept chatMessageResponse
+	if err := json.NewDecoder(issueResp.Body).Decode(&issueAccept); err != nil {
+		t.Fatalf("decode issue accept body: %v", err)
+	}
+	var progressEv, cardEv *web.Event
+	for _, ev := range pollEvents(t, issueConv, issueAccept.Seq, func(evs []web.Event) bool {
+		for _, ev := range evs {
+			if ev.Type == web.EventConfirmation {
+				return true
+			}
+		}
+		return false
+	}) {
+		e := ev
+		switch {
+		case e.Type == web.EventProgress && e.TaskID == "chat-task-conv" && progressEv == nil:
+			progressEv = &e
+		case e.Type == web.EventConfirmation:
+			cardEv = &e
+		}
+	}
+	if progressEv == nil {
+		t.Fatal("no progress event with TaskID chat-task-conv")
+	}
+	if !strings.HasPrefix(cardEv.TaskID, "issue-") || cardEv.MessageRef != cardEv.TaskID {
+		t.Fatalf("confirmation event = %+v, want issue- TaskID and MessageRef == TaskID", cardEv)
+	}
+	if progressEv.Seq >= cardEv.Seq {
+		t.Errorf("progress seq %d not before confirmation seq %d", progressEv.Seq, cardEv.Seq)
+	}
+
+	execResp := post(t, `{"conversationId":"`+issueConv+`","isCallback":true,"callbackId":"execute-cb","actionId":"execute"}`, true)
 	defer func() { _ = execResp.Body.Close() }()
 	if execResp.StatusCode != http.StatusAccepted {
 		t.Fatalf("execute callback status = %d, want 202", execResp.StatusCode)
 	}
-
-	deadline = time.Now().Add(15 * time.Second)
-	var sawProgress bool
-	var resultEv *web.Event
-	for time.Now().Before(deadline) {
-		more := getEvents(t, taskConv, lastSeq)
-		for i := range more.Events {
-			ev := more.Events[i]
-			if ev.Type == web.EventProgress && ev.MessageRef == confirmEv.MessageRef {
-				sawProgress = true
-			}
-			if ev.Type == web.EventResult {
-				e := ev
-				resultEv = &e
-			}
-			if ev.Seq > lastSeq {
-				lastSeq = ev.Seq
+	const issueURL = "https://github.com/qf-studio/pilot/issues/1"
+	pollEvents(t, issueConv, cardEv.Seq, func(evs []web.Event) bool {
+		for _, ev := range evs {
+			if ev.Type == web.EventText && strings.Contains(ev.Text, issueURL) {
+				return true
 			}
 		}
-		if resultEv != nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+		return false
+	})
+	if len(creator.calls) != 1 {
+		t.Fatalf("CreateIssue calls = %d, want 1", len(creator.calls))
 	}
-	if resultEv == nil {
-		t.Fatal("no result event landed after execute callback")
+	var hasPilot bool
+	for _, l := range creator.calls[0].Labels {
+		hasPilot = hasPilot || l == "pilot"
 	}
-	if !sawProgress {
-		t.Error("no progress event with the confirmation's messageRef was observed")
-	}
-	if resultEv.Success == nil || !*resultEv.Success {
-		t.Errorf("result event Success = %v, want true", resultEv.Success)
-	}
-	if resultEv.MessageRef != confirmEv.MessageRef {
-		t.Errorf("result MessageRef = %q, want %q", resultEv.MessageRef, confirmEv.MessageRef)
+	if !hasPilot {
+		t.Errorf("CreateIssue labels = %v, want pilot", creator.calls[0].Labels)
 	}
 }

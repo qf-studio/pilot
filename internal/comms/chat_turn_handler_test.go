@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // webChatBackend records calls; call n returns outputs[n] and sessions[n]
@@ -111,6 +112,26 @@ func TestWebChat_NonWebPlatformUnchanged(t *testing.T) {
 		if isChatTurn(c) {
 			t.Fatalf("telegram text ran a chat turn (call %d)", i)
 		}
+	}
+}
+
+func TestWebChat_OperationalQueryKeepsOldPath(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	b := &webChatBackend{}
+	msgr := &webChatMessenger{}
+	h := NewHandler(&HandlerConfig{Messenger: msgr, Runner: executor.NewRunnerWithBackend(b), ProjectPath: "/work/proj", Store: store})
+	send(h, "web", "queue status")
+	for i, c := range b.calls {
+		if isChatTurn(c) {
+			t.Fatalf("operational query ran a chat turn (call %d)", i)
+		}
+	}
+	if len(msgr.messages) != 1 || msgr.messages[0] != "📋 Queue is empty" {
+		t.Errorf("messages = %q, want the operational queue reply", msgr.messages)
 	}
 }
 

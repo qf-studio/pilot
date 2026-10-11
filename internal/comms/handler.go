@@ -228,7 +228,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 		case !msg.IsCallback && hasCard && (yes || no):
 			h.handleIssueCardDecision(ctx, contextID, msg.ThreadID, yes)
 			return
-		case !msg.IsCallback && !yes && !no && lowerText != "" && !strings.HasPrefix(lowerText, "/"):
+		case !msg.IsCallback && !yes && !no && lowerText != "" && !strings.HasPrefix(lowerText, "/") && !intent.IsOperationalQuery(text):
 			h.handleChatTurn(ctx, contextID, msg.ThreadID, text)
 			return
 		}
