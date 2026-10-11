@@ -210,13 +210,9 @@ func (s *Server) handleChatProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projects := api.Projects()
-	if projects == nil {
-		projects = []web.ProjectSummary{}
-	}
 	writeJSON(w, struct {
 		Projects []web.ProjectSummary `json:"projects"`
-	}{projects})
+	}{api.Projects()})
 }
 
 // writeJSONStatus is writeJSON with an explicit non-200 status code.

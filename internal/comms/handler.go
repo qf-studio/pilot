@@ -967,9 +967,8 @@ func (h *Handler) SetActiveProject(contextID, projectName string) error {
 		return fmt.Errorf("project '%s' not found", projectName)
 	}
 	h.mu.Lock()
-	// Decision: only drop the resumable chat session when the project actually
-	// changes — the web console sends projectId on every message, and
-	// re-selecting the current project must not discard conversation context.
+	// Only drop the chat session when the project changes: the console sends
+	// projectId on every message.
 	if prev, ok := h.activeProject[contextID]; !ok || prev != proj.Path {
 		delete(h.chatSessions, contextID)
 	}

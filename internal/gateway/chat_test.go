@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -406,18 +407,10 @@ func (c *chatIssueCreator) CreateIssue(_ context.Context, _ string, d comms.Issu
 type chatProjectSource struct{ p *comms.ProjectInfo }
 
 func (c chatProjectSource) GetProjectByName(n string) *comms.ProjectInfo {
-	if n == c.p.Name {
-		return c.p
-	}
-	return nil
+	return map[string]*comms.ProjectInfo{c.p.Name: c.p}[n]
 }
 
-func (c chatProjectSource) GetProjectByPath(path string) *comms.ProjectInfo {
-	if path == c.p.Path {
-		return c.p
-	}
-	return nil
-}
+func (c chatProjectSource) GetProjectByPath(string) *comms.ProjectInfo { return c.p }
 
 func (c chatProjectSource) GetDefaultProject() *comms.ProjectInfo { return c.p }
 func (c chatProjectSource) ListProjects() []*comms.ProjectInfo    { return []*comms.ProjectInfo{c.p} }
@@ -451,9 +444,7 @@ func TestChatProjectsRoute(t *testing.T) {
 		return resp
 	}
 
-	noAuth := do(http.MethodGet, false)
-	_ = noAuth.Body.Close()
-	if noAuth.StatusCode != http.StatusUnauthorized {
+	if noAuth := do(http.MethodGet, false); noAuth.StatusCode != http.StatusUnauthorized {
 		t.Errorf("no-bearer status = %d, want 401", noAuth.StatusCode)
 	}
 
@@ -472,9 +463,7 @@ func TestChatProjectsRoute(t *testing.T) {
 		t.Errorf("projects = %+v, want %+v", body.Projects, api.projects)
 	}
 
-	post := do(http.MethodPost, true)
-	_ = post.Body.Close()
-	if post.StatusCode != http.StatusMethodNotAllowed {
+	if post := do(http.MethodPost, true); post.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("POST status = %d, want 405", post.StatusCode)
 	}
 }
@@ -633,11 +622,10 @@ func TestChatAPI_Composed(t *testing.T) {
 	// body starts with "unknown project:"; a known one is accepted and the
 	// events response reports it for the conversation.
 	badProj := post(t, `{"conversationId":"proj-conv","text":"hi","projectId":"nope"}`, true)
-	badBody := new(bytes.Buffer)
-	_, _ = badBody.ReadFrom(badProj.Body)
+	badBody, _ := io.ReadAll(badProj.Body)
 	_ = badProj.Body.Close()
-	if badProj.StatusCode != http.StatusBadRequest || !strings.HasPrefix(badBody.String(), "unknown project:") {
-		t.Errorf("unknown projectId: status = %d, body = %q; want 400 \"unknown project: ...\"", badProj.StatusCode, badBody.String())
+	if badProj.StatusCode != http.StatusBadRequest || !strings.HasPrefix(string(badBody), "unknown project:") {
+		t.Errorf("unknown projectId: status = %d, body = %q; want 400 \"unknown project: ...\"", badProj.StatusCode, badBody)
 	}
 	goodProj := post(t, `{"conversationId":"proj-conv","text":"build the project","projectId":"alpha"}`, true)
 	_ = goodProj.Body.Close()

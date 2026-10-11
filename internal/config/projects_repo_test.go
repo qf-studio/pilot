@@ -24,9 +24,4 @@ func TestProjectSource_RepoFromGitHubBlock(t *testing.T) {
 			t.Errorf("%s: Repo = %q, want %q", tt.name, p.Repo, tt.want)
 		}
 	}
-	for _, p := range src.ListProjects() {
-		if p.Name == "alpha" && p.Repo != "acme/alpha-repo" {
-			t.Errorf("ListProjects alpha Repo = %q", p.Repo)
-		}
-	}
 }

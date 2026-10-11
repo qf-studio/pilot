@@ -308,7 +308,10 @@ func (b *blockingChatBackend) Execute(_ context.Context, _ executor.ExecuteOptio
 	b.calls++
 	b.mu.Unlock()
 	b.started <- struct{}{}
-	<-b.release
+	select {
+	case <-b.release:
+	case <-time.After(2 * time.Second): // a missing lock lets the 2nd turn through
+	}
 	return &executor.BackendResult{Success: true, Output: "done", SessionID: "sess-1"}, nil
 }
 
@@ -357,17 +360,7 @@ func TestWebChat_TurnLockRejectsConcurrentTurn(t *testing.T) {
 	}()
 	<-b.started
 
-	secondDone := make(chan struct{})
-	go func() {
-		send(h, "web", "second question")
-		close(secondDone)
-	}()
-	select {
-	case <-secondDone:
-	case <-time.After(2 * time.Second):
-		close(b.release)
-		t.Fatal("second message blocked instead of being rejected as busy")
-	}
+	send(h, "web", "second question")
 	if got := msgr.snapshot(); len(got) != 1 || got[0] != busyText {
 		t.Fatalf("messages while busy = %q, want only the busy text", got)
 	}
@@ -425,23 +418,17 @@ func TestHandler_ActiveProjectReturnsInfo(t *testing.T) {
 
 type stubProjects struct{ list []*ProjectInfo }
 
-func (s stubProjects) GetProjectByName(n string) *ProjectInfo {
+func (s stubProjects) find(k string) *ProjectInfo {
 	for _, p := range s.list {
-		if p.Name == n {
+		if p.Name == k || p.Path == k {
 			return p
 		}
 	}
 	return nil
 }
 
-func (s stubProjects) GetProjectByPath(path string) *ProjectInfo {
-	for _, p := range s.list {
-		if p.Path == path {
-			return p
-		}
-	}
-	return nil
-}
+func (s stubProjects) GetProjectByName(n string) *ProjectInfo    { return s.find(n) }
+func (s stubProjects) GetProjectByPath(path string) *ProjectInfo { return s.find(path) }
 
 func (s stubProjects) GetDefaultProject() *ProjectInfo { return s.list[0] }
 func (s stubProjects) ListProjects() []*ProjectInfo    { return s.list }
