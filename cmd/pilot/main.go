@@ -271,6 +271,54 @@ func newGitHubClient(cfg *config.Config) *github.Client {
 	return github.NewClientWithTokenFuncAndInvalidate(githubTokenFunc(cfg), invalidateGitHubAppToken(cfg))
 }
 
+// newCommsGitHubClient is the client constructor buildCommsIssueCreator uses;
+// a var so tests can point it at an httptest server.
+var newCommsGitHubClient = newGitHubClient
+
+// buildCommsIssueCreator builds the IssueCreator shared by the bot handlers
+// and the web chat. It carries one entry per project with a github
+// owner/repo (keyed by project path) plus, when not already covered, the
+// adapters.github.repo default. Returns nil when GitHub is disabled, no token
+// resolves, or no repo is configured — comms.Handler degrades gracefully.
+func buildCommsIssueCreator(cfg *config.Config) comms.IssueCreator {
+	if cfg == nil || cfg.Adapters == nil || cfg.Adapters.GitHub == nil || !cfg.Adapters.GitHub.Enabled {
+		return nil
+	}
+	if ghToken, _ := resolveGitHubToken(cfg); ghToken == "" {
+		return nil
+	}
+
+	var entries []github.IssueCreatorEntry
+	covered := make(map[string]bool)
+	for _, proj := range cfg.Projects {
+		if proj == nil || proj.GitHub == nil || proj.GitHub.Owner == "" || proj.GitHub.Repo == "" {
+			continue
+		}
+		entries = append(entries, github.IssueCreatorEntry{
+			ProjectPath: proj.Path,
+			Owner:       proj.GitHub.Owner,
+			Repo:        proj.GitHub.Repo,
+		})
+		covered[proj.Path] = true
+	}
+	if repo := cfg.Adapters.GitHub.Repo; repo != "" && !covered[cfg.Adapters.GitHub.ProjectPath] {
+		if parts := strings.SplitN(repo, "/", 2); len(parts) == 2 {
+			entries = append(entries, github.IssueCreatorEntry{
+				ProjectPath: cfg.Adapters.GitHub.ProjectPath,
+				Owner:       parts[0],
+				Repo:        parts[1],
+			})
+		}
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+
+	// GH-4747: the creator is held for the daemon's lifetime, so build from
+	// the token source rather than a one-off token string.
+	return github.NewIssueCreator(newCommsGitHubClient(cfg), github.AllowAllIssueRepos(), entries...)
+}
+
 // newGitHubSDKClient builds a studio-sdk GitHub client whose token is
 // re-resolved on every request via githubTokenFunc (TASK-461 Leg 2 — the
 // studio-sdk client family's counterpart to newGitHubClient's GH-4747 fix).
@@ -1169,6 +1217,7 @@ Examples:
 			// that left the handler unwired (GH-4843 D1).
 			if chatEnabled {
 				pilotOpts = append(pilotOpts, pilot.WithChatHandler(gwRunner, projectPath))
+				pilotOpts = append(pilotOpts, pilot.WithChatIssueCreator(buildCommsIssueCreator(cfg)))
 				if gwRunner != nil {
 					logging.WithComponent("start").Info("Chat API enabled in gateway mode")
 				} else {
@@ -2784,9 +2833,14 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		// don't exist in that daemon mode; see SetChatAPI's doc comment.
 		if cfg.Adapters.Chat != nil && cfg.Adapters.Chat.Enabled {
 			webMessenger := web.NewMessenger()
+			webIssueCreator := buildCommsIssueCreator(cfg)
+			if webIssueCreator == nil {
+				logging.WithComponent("start").Info("Chat issue filing disabled: GitHub not configured")
+			}
 			webCommsHandler := comms.BuildHandler(comms.HandlerDeps{
 				Messenger:       webMessenger,
 				Runner:          runner,
+				IssueCreator:    webIssueCreator,
 				Projects:        config.NewProjectSource(cfg),
 				ProjectPath:     projectPath,
 				RateLimit:       cfg.Adapters.Chat.RateLimit,
@@ -2913,28 +2967,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 	// Build a shared IssueCreator for comms.Handler (bot /draft-issue + NL intake).
 	// Nil when GitHub is not configured — Handler degrades gracefully.
-	var commsIssueCreator comms.IssueCreator
-	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled && cfg.Adapters.GitHub.Repo != "" {
-		ghToken, _ := resolveGitHubToken(cfg)
-		if ghToken != "" {
-			repoParts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
-			if len(repoParts) == 2 {
-				// GH-4747: commsIssueCreator is held by comms.Handler for the
-				// daemon's lifetime, so build from the token source rather
-				// than the one-off ghToken string.
-				ghIssueClient := newGitHubClient(cfg)
-				commsIssueCreator = github.NewIssueCreator(
-					ghIssueClient,
-					github.AllowAllIssueRepos(),
-					github.IssueCreatorEntry{
-						ProjectPath: cfg.Adapters.GitHub.ProjectPath,
-						Owner:       repoParts[0],
-						Repo:        repoParts[1],
-					},
-				)
-			}
-		}
-	}
+	commsIssueCreator := buildCommsIssueCreator(cfg)
 
 	// Initialize Telegram handler if enabled
 	var tgHandler *telegram.Handler

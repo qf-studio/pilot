@@ -67,6 +67,7 @@ type Pilot struct {
 	slackHandler           *slack.Handler                   // Slack Socket Mode handler (GH-652)
 	slackRunner            *executor.Runner                 // Runner for Slack tasks (GH-652)
 	slackMemberResolver    slack.MemberResolver             // Team member resolver for Slack RBAC (GH-786)
+	chatIssueCreator       comms.IssueCreator               // Per-project issue filer for the web chat API
 	chatRunner             *executor.Runner                 // Runner for the web chat API's tasks (GH-4835)
 	alertEngine            *alerts.Engine
 	teamsService           *teams.Service // Teams RBAC service (GH-633)
@@ -197,6 +198,14 @@ func WithChatHandler(runner *executor.Runner, projectPath string) Option {
 		if projectPath != "" && len(p.config.Projects) > 0 {
 			p.config.Projects[0].Path = projectPath
 		}
+	}
+}
+
+// WithChatIssueCreator sets the IssueCreator the web chat handler uses to file
+// pilot issues in gateway mode. Nil leaves issue filing disabled.
+func WithChatIssueCreator(ic comms.IssueCreator) Option {
+	return func(p *Pilot) {
+		p.chatIssueCreator = ic
 	}
 }
 
@@ -832,16 +841,10 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		}
 
 		webMessenger := web.NewMessenger()
-		webCommsHandler := comms.BuildHandler(comms.HandlerDeps{
-			Messenger:       webMessenger,
-			Runner:          p.chatRunner,
-			Projects:        config.NewProjectSource(cfg),
-			ProjectPath:     projectPath,
-			RateLimit:       cfg.Adapters.Chat.RateLimit,
-			Store:           p.store,
-			TaskIDPrefix:    "WEB",
-			ExecutorBackend: cfg.Executor,
-		})
+		if p.chatIssueCreator == nil {
+			logging.WithComponent("pilot").Info("Chat issue filing disabled: GitHub not configured")
+		}
+		webCommsHandler := comms.BuildHandler(p.chatHandlerDeps(webMessenger, projectPath))
 
 		p.gateway.SetChatAPI(web.NewAPI(webCommsHandler, webMessenger))
 
@@ -849,6 +852,22 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	}
 
 	return p, nil
+}
+
+// chatHandlerDeps assembles the comms.HandlerDeps for the gateway-mode web
+// chat handler.
+func (p *Pilot) chatHandlerDeps(messenger comms.Messenger, projectPath string) comms.HandlerDeps {
+	return comms.HandlerDeps{
+		Messenger:       messenger,
+		Runner:          p.chatRunner,
+		Projects:        config.NewProjectSource(p.config),
+		ProjectPath:     projectPath,
+		RateLimit:       p.config.Adapters.Chat.RateLimit,
+		Store:           p.store,
+		TaskIDPrefix:    "WEB",
+		ExecutorBackend: p.config.Executor,
+		IssueCreator:    p.chatIssueCreator,
+	}
 }
 
 // parseInt64 parses a string to int64
