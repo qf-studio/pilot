@@ -60,11 +60,16 @@ func (a *ProjectSourceAdapter) ListProjects() []*comms.ProjectInfo {
 
 // toProjectInfo converts ProjectConfig to comms.ProjectInfo.
 func (a *ProjectSourceAdapter) toProjectInfo(proj *ProjectConfig) *comms.ProjectInfo {
+	repo := ""
+	if gh := proj.GitHub; gh != nil && gh.Owner != "" && gh.Repo != "" {
+		repo = gh.Owner + "/" + gh.Repo
+	}
 	return &comms.ProjectInfo{
 		Name:          proj.Name,
 		Path:          proj.Path,
 		Navigator:     proj.Navigator,
 		DefaultBranch: proj.DefaultBranch,
 		Canary:        proj.Canary,
+		Repo:          repo,
 	}
 }

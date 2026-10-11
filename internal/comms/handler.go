@@ -70,6 +70,7 @@ type Handler struct {
 
 	chatSessions      map[string]string            // contextID -> Claude chat session id
 	pendingIssueCards map[string]*pendingIssueCard // contextID -> issue card awaiting a decision
+	chatTurnBusy      map[string]bool              // contextID -> an ExecuteChatTurn is in flight (guarded by mu)
 }
 
 // NewHandler creates a shared Handler from the given config.
@@ -113,6 +114,7 @@ func NewHandler(cfg *HandlerConfig) *Handler {
 
 		chatSessions:      make(map[string]string),
 		pendingIssueCards: make(map[string]*pendingIssueCard),
+		chatTurnBusy:      make(map[string]bool),
 	}
 
 	// Wire command handler — must be built after h exists so callbacks can close over h.
@@ -965,11 +967,28 @@ func (h *Handler) SetActiveProject(contextID, projectName string) error {
 		return fmt.Errorf("project '%s' not found", projectName)
 	}
 	h.mu.Lock()
+	// Decision: only drop the resumable chat session when the project actually
+	// changes — the web console sends projectId on every message, and
+	// re-selecting the current project must not discard conversation context.
+	if prev, ok := h.activeProject[contextID]; !ok || prev != proj.Path {
+		delete(h.chatSessions, contextID)
+	}
 	h.activeProject[contextID] = proj.Path
-	delete(h.chatSessions, contextID)
 	h.mu.Unlock()
 	return nil
 }
+
+// ActiveProject returns the ProjectInfo for the conversation's active path, or
+// nil when there is no project source or the path matches no project.
+func (h *Handler) ActiveProject(contextID string) *ProjectInfo {
+	if h.projects == nil {
+		return nil
+	}
+	return h.projects.GetProjectByPath(h.getActiveProjectPath(contextID))
+}
+
+// ProjectSource returns the handler's project source (nil when none).
+func (h *Handler) ProjectSource() ProjectSource { return h.projects }
 
 // GetActiveProject returns (name, path) for the active project in a given context.
 func (h *Handler) GetActiveProject(contextID string) (string, string) {

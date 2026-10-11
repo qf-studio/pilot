@@ -3,6 +3,8 @@ package web
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -185,5 +187,104 @@ func TestAPI_Events_LatestSeqDetectsReset(t *testing.T) {
 	}
 	if latestSeq >= staleClientCursor {
 		t.Fatalf("latestSeq = %d, want < %d (client cursor) so reset is detectable", latestSeq, staleClientCursor)
+	}
+}
+
+// fakeProjects is a comms.ProjectSource over a fixed list; the first entry is
+// the default.
+type fakeProjects struct{ list []*comms.ProjectInfo }
+
+func (f fakeProjects) GetProjectByName(name string) *comms.ProjectInfo {
+	for _, p := range f.list {
+		if p.Name == name {
+			return p
+		}
+	}
+	return nil
+}
+
+func (f fakeProjects) GetProjectByPath(path string) *comms.ProjectInfo {
+	for _, p := range f.list {
+		if p.Path == path {
+			return p
+		}
+	}
+	return nil
+}
+
+func (f fakeProjects) GetDefaultProject() *comms.ProjectInfo { return f.list[0] }
+func (f fakeProjects) ListProjects() []*comms.ProjectInfo    { return f.list }
+
+func newTestAPIWithProjects() (*API, *WebMessenger) {
+	m := NewMessenger()
+	h := comms.NewHandler(&comms.HandlerConfig{
+		Messenger:    m,
+		TaskIDPrefix: "WEB",
+		ProjectPath:  "/work/alpha",
+		Projects: fakeProjects{list: []*comms.ProjectInfo{
+			{Name: "alpha", Path: "/work/alpha", Repo: "acme/alpha"},
+			{Name: "beta", Path: "/work/beta"},
+		}},
+	})
+	return NewAPI(h, m), m
+}
+
+func TestDispatch_ProjectIDSetsActiveProject(t *testing.T) {
+	api, m := newTestAPIWithProjects()
+	if got := api.ActiveProjectID("c1"); got != "alpha" {
+		t.Fatalf("initial ActiveProjectID = %q, want alpha", got)
+	}
+
+	seq, err := api.Dispatch(context.Background(), DispatchRequest{ConversationID: "c1", Text: "hello", ProjectID: "beta"})
+	if err != nil {
+		t.Fatalf("Dispatch error: %v", err)
+	}
+	if got := api.ActiveProjectID("c1"); got != "beta" {
+		t.Errorf("ActiveProjectID = %q, want beta", got)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if events, _ := m.Events("web:c1", seq); len(events) > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("message was not dispatched after selecting the project")
+}
+
+func TestDispatch_UnknownProjectRejected(t *testing.T) {
+	api, m := newTestAPIWithProjects()
+
+	_, err := api.Dispatch(context.Background(), DispatchRequest{ConversationID: "c1", Text: "hello", ProjectID: "nope"})
+	if !errors.Is(err, ErrUnknownProject) {
+		t.Fatalf("err = %v, want ErrUnknownProject", err)
+	}
+	if !strings.Contains(err.Error(), "nope") {
+		t.Errorf("err = %q, want it to carry the id", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if events, latest := m.Events("web:c1", 0); len(events) != 0 || latest != 0 {
+		t.Errorf("events = %d, latest = %d; want no message dispatched", len(events), latest)
+	}
+	if got := api.ActiveProjectID("c1"); got != "alpha" {
+		t.Errorf("ActiveProjectID = %q, want alpha unchanged", got)
+	}
+}
+
+func TestAPI_ProjectsListsSource(t *testing.T) {
+	api, _ := newTestAPIWithProjects()
+	want := []ProjectSummary{
+		{ID: "alpha", Name: "alpha", Path: "/work/alpha", Repo: "acme/alpha", Default: true},
+		{ID: "beta", Name: "beta", Path: "/work/beta"},
+	}
+	if got := api.Projects(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Projects() = %+v, want %+v", got, want)
+	}
+
+	bare, _ := newTestAPI()
+	if got := bare.Projects(); got == nil || len(got) != 0 {
+		t.Errorf("Projects() without a source = %#v, want empty non-nil slice", got)
 	}
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -284,3 +286,162 @@ func TestExtractPilotIssueBlock(t *testing.T) {
 		})
 	}
 }
+
+// blockingChatBackend blocks every Execute until release is closed, signalling
+// started once the first call is in flight.
+type blockingChatBackend struct {
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+	release chan struct{}
+}
+
+func newBlockingChatBackend() *blockingChatBackend {
+	return &blockingChatBackend{started: make(chan struct{}, 8), release: make(chan struct{})}
+}
+
+func (b *blockingChatBackend) Name() string      { return "web-chat-blocking" }
+func (b *blockingChatBackend) IsAvailable() bool { return true }
+
+func (b *blockingChatBackend) Execute(_ context.Context, _ executor.ExecuteOptions) (*executor.BackendResult, error) {
+	b.mu.Lock()
+	b.calls++
+	b.mu.Unlock()
+	b.started <- struct{}{}
+	<-b.release
+	return &executor.BackendResult{Success: true, Output: "done", SessionID: "sess-1"}, nil
+}
+
+func (b *blockingChatBackend) callCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
+}
+
+const busyText = "A turn is already running for this conversation. Wait for it to finish."
+
+// lockedMessenger serialises message recording so a concurrent turn and the
+// test goroutine can both send.
+type lockedMessenger struct {
+	webChatMessenger
+	mu sync.Mutex
+}
+
+func (m *lockedMessenger) SendText(ctx context.Context, c, t, s string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.webChatMessenger.SendText(ctx, c, t, s)
+}
+
+func (m *lockedMessenger) SendChunked(ctx context.Context, c, t, s, p string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.webChatMessenger.SendChunked(ctx, c, t, s, p)
+}
+
+func (m *lockedMessenger) snapshot() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.messages...)
+}
+
+func TestWebChat_TurnLockRejectsConcurrentTurn(t *testing.T) {
+	b := newBlockingChatBackend()
+	msgr := &lockedMessenger{}
+	h := NewHandler(&HandlerConfig{Messenger: msgr, Runner: executor.NewRunnerWithBackend(b), ProjectPath: "/work/proj"})
+
+	done := make(chan struct{})
+	go func() {
+		send(h, "web", "first question")
+		close(done)
+	}()
+	<-b.started
+
+	secondDone := make(chan struct{})
+	go func() {
+		send(h, "web", "second question")
+		close(secondDone)
+	}()
+	select {
+	case <-secondDone:
+	case <-time.After(2 * time.Second):
+		close(b.release)
+		t.Fatal("second message blocked instead of being rejected as busy")
+	}
+	if got := msgr.snapshot(); len(got) != 1 || got[0] != busyText {
+		t.Fatalf("messages while busy = %q, want only the busy text", got)
+	}
+	if n := b.callCount(); n != 1 {
+		t.Fatalf("backend calls = %d, want 1", n)
+	}
+
+	close(b.release)
+	<-done
+
+	send(h, "web", "third question")
+	if n := b.callCount(); n != 2 {
+		t.Errorf("backend calls after release = %d, want 2", n)
+	}
+}
+
+func TestWebChat_TurnLockClearedAfterTurn(t *testing.T) {
+	b := &webChatBackend{}
+	h, _ := newWebChat(b, nil)
+	send(h, "web", "first")
+	send(h, "web", "second")
+	if len(b.calls) != 2 {
+		t.Fatalf("backend calls = %d, want 2 (lock must clear after a turn)", len(b.calls))
+	}
+	h.mu.Lock()
+	busy := h.chatTurnBusy["web:conv-1"]
+	h.mu.Unlock()
+	if busy {
+		t.Error("chatTurnBusy still set after the turn finished")
+	}
+}
+
+func TestHandler_ActiveProjectReturnsInfo(t *testing.T) {
+	h := NewHandler(&HandlerConfig{
+		Messenger:   &webChatMessenger{},
+		ProjectPath: "/work/alpha",
+		Projects: stubProjects{list: []*ProjectInfo{
+			{Name: "alpha", Path: "/work/alpha", Repo: "acme/alpha"},
+			{Name: "beta", Path: "/work/beta"},
+		}},
+	})
+	if p := h.ActiveProject("web:c1"); p == nil || p.Name != "alpha" || p.Repo != "acme/alpha" {
+		t.Fatalf("default ActiveProject = %+v, want alpha", p)
+	}
+	if err := h.SetActiveProject("web:c1", "beta"); err != nil {
+		t.Fatalf("SetActiveProject: %v", err)
+	}
+	if p := h.ActiveProject("web:c1"); p == nil || p.Name != "beta" {
+		t.Errorf("ActiveProject after switch = %+v, want beta", p)
+	}
+	if p := NewHandler(&HandlerConfig{Messenger: &webChatMessenger{}}).ActiveProject("web:c1"); p != nil {
+		t.Errorf("ActiveProject without a project source = %+v, want nil", p)
+	}
+}
+
+type stubProjects struct{ list []*ProjectInfo }
+
+func (s stubProjects) GetProjectByName(n string) *ProjectInfo {
+	for _, p := range s.list {
+		if p.Name == n {
+			return p
+		}
+	}
+	return nil
+}
+
+func (s stubProjects) GetProjectByPath(path string) *ProjectInfo {
+	for _, p := range s.list {
+		if p.Path == path {
+			return p
+		}
+	}
+	return nil
+}
+
+func (s stubProjects) GetDefaultProject() *ProjectInfo { return s.list[0] }
+func (s stubProjects) ListProjects() []*ProjectInfo    { return s.list }

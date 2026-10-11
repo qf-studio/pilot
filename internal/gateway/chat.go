@@ -20,6 +20,8 @@ import (
 type ChatAPI interface {
 	Dispatch(ctx context.Context, req web.DispatchRequest) (seq int64, err error)
 	Events(conversationID string, after int64) (events []web.Event, latestSeq int64)
+	Projects() []web.ProjectSummary
+	ActiveProjectID(conversationID string) string
 }
 
 // SetChatAPI wires the web chat transport (GH-4835 / C17) backing
@@ -50,6 +52,7 @@ type chatMessageRequest struct {
 	CallbackID     string `json:"callbackId,omitempty"`
 	ActionID       string `json:"actionId,omitempty"`
 	Sender         string `json:"sender,omitempty"`
+	ProjectID      string `json:"projectId,omitempty"`
 }
 
 // chatMessageResponse is the 202 body: Seq is the conversation's newest seq
@@ -58,6 +61,7 @@ type chatMessageRequest struct {
 type chatMessageResponse struct {
 	ConversationID string `json:"conversationId"`
 	Seq            int64  `json:"seq"`
+	ProjectID      string `json:"projectId,omitempty"`
 }
 
 // chatEventsResponse is the GET .../events body. LatestSeq is the newest seq
@@ -72,6 +76,7 @@ type chatEventsResponse struct {
 	ConversationID string      `json:"conversationId"`
 	Events         []web.Event `json:"events"`
 	LatestSeq      int64       `json:"latestSeq"`
+	ProjectID      string      `json:"projectId,omitempty"`
 }
 
 // handleChatMessages serves POST /api/v1/chat/messages (GH-4835 acceptance
@@ -116,9 +121,12 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, r *http.Request) {
 		CallbackID:     body.CallbackID,
 		ActionID:       body.ActionID,
 		Sender:         body.Sender,
+		ProjectID:      body.ProjectID,
 	})
 	if err != nil {
 		switch {
+		case errors.Is(err, web.ErrUnknownProject):
+			http.Error(w, "unknown project: "+body.ProjectID, http.StatusBadRequest)
 		case errors.Is(err, web.ErrMissingConversationID),
 			errors.Is(err, web.ErrMissingText),
 			errors.Is(err, web.ErrMissingCallbackFields),
@@ -133,6 +141,7 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSONStatus(w, http.StatusAccepted, chatMessageResponse{
 		ConversationID: body.ConversationID,
 		Seq:            seq,
+		ProjectID:      api.ActiveProjectID(body.ConversationID),
 	})
 }
 
@@ -180,7 +189,34 @@ func (s *Server) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 		ConversationID: id,
 		Events:         events,
 		LatestSeq:      latestSeq,
+		ProjectID:      api.ActiveProjectID(id),
 	})
+}
+
+// handleChatProjects serves GET /api/v1/chat/projects: the projects a
+// conversation can be pointed at via projectId on POST /api/v1/chat/messages.
+func (s *Server) handleChatProjects(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.RLock()
+	api := s.chatAPI
+	s.mu.RUnlock()
+
+	if api == nil {
+		http.Error(w, "chat API not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	projects := api.Projects()
+	if projects == nil {
+		projects = []web.ProjectSummary{}
+	}
+	writeJSON(w, struct {
+		Projects []web.ProjectSummary `json:"projects"`
+	}{projects})
 }
 
 // writeJSONStatus is writeJSON with an explicit non-200 status code.

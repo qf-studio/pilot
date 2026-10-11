@@ -24,7 +24,12 @@ import (
 type mockChatAPI struct {
 	dispatchFunc func(ctx context.Context, req web.DispatchRequest) (int64, error)
 	eventsFunc   func(conversationID string, after int64) ([]web.Event, int64)
+	projects     []web.ProjectSummary
 }
+
+func (m *mockChatAPI) Projects() []web.ProjectSummary { return m.projects }
+
+func (m *mockChatAPI) ActiveProjectID(string) string { return "" }
 
 func (m *mockChatAPI) Dispatch(ctx context.Context, req web.DispatchRequest) (int64, error) {
 	if m.dispatchFunc != nil {
@@ -397,6 +402,83 @@ func (c *chatIssueCreator) CreateIssue(_ context.Context, _ string, d comms.Issu
 	return "https://github.com/qf-studio/pilot/issues/1", c.err
 }
 
+// chatProjectSource is a one-project comms.ProjectSource for the composed test.
+type chatProjectSource struct{ p *comms.ProjectInfo }
+
+func (c chatProjectSource) GetProjectByName(n string) *comms.ProjectInfo {
+	if n == c.p.Name {
+		return c.p
+	}
+	return nil
+}
+
+func (c chatProjectSource) GetProjectByPath(path string) *comms.ProjectInfo {
+	if path == c.p.Path {
+		return c.p
+	}
+	return nil
+}
+
+func (c chatProjectSource) GetDefaultProject() *comms.ProjectInfo { return c.p }
+func (c chatProjectSource) ListProjects() []*comms.ProjectInfo    { return []*comms.ProjectInfo{c.p} }
+
+// TestChatProjectsRoute covers GET /api/v1/chat/projects: bearer auth, the
+// {"projects":[...]} body and method gating.
+func TestChatProjectsRoute(t *testing.T) {
+	api := &mockChatAPI{projects: []web.ProjectSummary{
+		{ID: "alpha", Name: "alpha", Path: "/work/alpha", Repo: "acme/alpha", Default: true},
+	}}
+	server := NewServerWithAuth(&Config{Host: "127.0.0.1", Port: 19098}, &AuthConfig{Type: AuthTypeAPIToken, Token: "chat-projects-secret"})
+	server.SetChatAPI(api)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = server.Start(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	url := "http://127.0.0.1:19098/api/v1/chat/projects"
+	do := func(method string, auth bool) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(method, url, nil)
+		if auth {
+			req.Header.Set("Authorization", "Bearer chat-projects-secret")
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", method, err)
+		}
+		return resp
+	}
+
+	noAuth := do(http.MethodGet, false)
+	_ = noAuth.Body.Close()
+	if noAuth.StatusCode != http.StatusUnauthorized {
+		t.Errorf("no-bearer status = %d, want 401", noAuth.StatusCode)
+	}
+
+	ok := do(http.MethodGet, true)
+	defer func() { _ = ok.Body.Close() }()
+	if ok.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", ok.StatusCode)
+	}
+	var body struct {
+		Projects []web.ProjectSummary `json:"projects"`
+	}
+	if err := json.NewDecoder(ok.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Projects) != 1 || body.Projects[0] != api.projects[0] {
+		t.Errorf("projects = %+v, want %+v", body.Projects, api.projects)
+	}
+
+	post := do(http.MethodPost, true)
+	_ = post.Body.Close()
+	if post.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("POST status = %d, want 405", post.StatusCode)
+	}
+}
+
 // TestChatAPI_Composed exercises the full GH-4835 acceptance flow on a real
 // HTTP listener: auth enforcement, an operational-query text reply, and a
 // chat-turn text reply, and the pilot-issue flow (progress -> confirmation ->
@@ -410,10 +492,12 @@ func TestChatAPI_Composed(t *testing.T) {
 
 	creator := &chatIssueCreator{}
 	messenger := web.NewMessenger()
+	projectDir := t.TempDir()
 	handler := comms.BuildHandler(comms.HandlerDeps{
 		Messenger:    messenger,
 		Runner:       runner,
-		ProjectPath:  t.TempDir(),
+		ProjectPath:  projectDir,
+		Projects:     chatProjectSource{p: &comms.ProjectInfo{Name: "alpha", Path: projectDir}},
 		TaskIDPrefix: "WEBTEST",
 		IssueCreator: creator,
 	})
@@ -543,6 +627,25 @@ func TestChatAPI_Composed(t *testing.T) {
 	textEvents := pollEvents(t, taskConv, taskAccept.Seq, func(evs []web.Event) bool { return len(evs) > 0 })
 	if textEvents[0].Type != web.EventText || textEvents[0].Text != chatBackendOutput {
 		t.Fatalf("first event = %+v, want text event %q", textEvents[0], chatBackendOutput)
+	}
+
+	// 3b. Project selection on the wire: an unknown projectId is a 400 whose
+	// body starts with "unknown project:"; a known one is accepted and the
+	// events response reports it for the conversation.
+	badProj := post(t, `{"conversationId":"proj-conv","text":"hi","projectId":"nope"}`, true)
+	badBody := new(bytes.Buffer)
+	_, _ = badBody.ReadFrom(badProj.Body)
+	_ = badProj.Body.Close()
+	if badProj.StatusCode != http.StatusBadRequest || !strings.HasPrefix(badBody.String(), "unknown project:") {
+		t.Errorf("unknown projectId: status = %d, body = %q; want 400 \"unknown project: ...\"", badProj.StatusCode, badBody.String())
+	}
+	goodProj := post(t, `{"conversationId":"proj-conv","text":"build the project","projectId":"alpha"}`, true)
+	_ = goodProj.Body.Close()
+	if goodProj.StatusCode != http.StatusAccepted {
+		t.Fatalf("known projectId status = %d, want 202", goodProj.StatusCode)
+	}
+	if got := getEvents(t, "proj-conv", 0).ProjectID; got != "alpha" {
+		t.Errorf("events projectId = %q, want alpha", got)
 	}
 
 	// 4. An approval-shaped callback must be rejected with 400 — approvals do

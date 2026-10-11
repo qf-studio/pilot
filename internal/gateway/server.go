@@ -279,6 +279,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if chatEnabled {
 		apiMux.HandleFunc("POST /api/v1/chat/messages", s.handleChatMessages)
 		apiMux.HandleFunc("GET /api/v1/chat/conversations/{id}/events", s.handleChatEvents)
+		apiMux.HandleFunc("GET /api/v1/chat/projects", s.handleChatProjects)
 	}
 
 	// Apply auth middleware to API routes

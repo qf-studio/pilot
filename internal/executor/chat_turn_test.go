@@ -297,3 +297,10 @@ func TestChatPrompt_IssueContract(t *testing.T) {
 		}
 	}
 }
+
+func TestChatPrompt_ForbidsFencesInBody(t *testing.T) {
+	p := BuildChatPrompt("/repo", "file an issue")
+	if !strings.Contains(p, "never use triple-backtick fences") {
+		t.Error("prompt must forbid triple-backtick fences inside the issue body")
+	}
+}

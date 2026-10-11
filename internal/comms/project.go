@@ -11,6 +11,9 @@ type ProjectInfo struct {
 	// construction time the same way the poller handlers do via
 	// cmd/pilot/handler_common.go's handleIssueGeneric.
 	Canary bool
+	// Repo is the GitHub "owner/name" when the project has a github block,
+	// else empty.
+	Repo string
 }
 
 // GetName satisfies duck-typed interface used by CommandHandler.handleProjects.

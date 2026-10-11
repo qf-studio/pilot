@@ -30,6 +30,21 @@ func (h *Handler) handleChatTurn(ctx context.Context, contextID, threadID, text 
 		send("Chat is not available: no runner configured")
 		return
 	}
+	// Two concurrent turns would resume the same session; reject the second.
+	h.mu.Lock()
+	if h.chatTurnBusy[contextID] {
+		h.mu.Unlock()
+		send("A turn is already running for this conversation. Wait for it to finish.")
+		return
+	}
+	h.chatTurnBusy[contextID] = true
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		delete(h.chatTurnBusy, contextID)
+		h.mu.Unlock()
+	}()
+
 	projectPath := h.getActiveProjectPath(contextID)
 	h.mu.Lock()
 	resume := h.chatSessions[contextID]

@@ -76,6 +76,15 @@ func TestGatewayMode_ChatEnabledNoPollingAdapters_RoutesServe(t *testing.T) {
 		t.Fatalf("POST status = %d, want 202 (was 404 pre-GH-4843 fix)", postResp.StatusCode)
 	}
 
+	projResp, err := client.Get(baseURL + "/api/v1/chat/projects")
+	if err != nil {
+		t.Fatalf("GET chat/projects: %v", err)
+	}
+	_ = projResp.Body.Close()
+	if projResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET chat/projects status = %d, want 200", projResp.StatusCode)
+	}
+
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		getResp, getErr := client.Get(baseURL + "/api/v1/chat/conversations/gh4843-conv/events")

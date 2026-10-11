@@ -21,6 +21,7 @@ const chatIssueContract = `Issue-authoring contract (use only when the user asks
 - title is a conventional-commit title matching ^(feat|fix|chore|refactor|test|docs|perf|build|ci|style)(\([^)]+\))?: .+$
 - labels is a list that contains pilot.
 - body is a markdown string with the H2 sections Context, Scope, Acceptance Criteria, Out of scope and Refs.
+- Inside body, never use triple-backtick fences; use four-space indented code or tilde fences (~~~) instead.
 - Files that do not exist yet are written in plain text, never in backticks. Only files that exist on the default branch may be backticked.
 - Every acceptance bullet names a test.
 - Work above about 500 changed lines is split into several issues, each later one carrying a "Blocked by: #N" line.
