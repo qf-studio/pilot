@@ -664,3 +664,86 @@ func TestStateStore_HoldFieldsSurviveRoundTrip(t *testing.T) {
 	}
 	check("LoadAllPRStates", all[0])
 }
+
+// restoreHeldFixture persists pr into a fresh in-memory store and returns a
+// new controller (simulating a daemon restart) after RestoreState.
+func restoreHeldFixture(t *testing.T, pr *PRState, client *github.Client) *Controller {
+	t.Helper()
+	store := newTestStateStore(t)
+	if err := store.SavePRState("owner/repo", pr); err != nil {
+		t.Fatalf("SavePRState: %v", err)
+	}
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.CIWaitTimeout = time.Hour
+	c := NewController(cfg, client, nil, "owner", "repo")
+	c.SetStateStore(store)
+	if _, err := c.RestoreState(); err != nil {
+		t.Fatalf("RestoreState: %v", err)
+	}
+	return c
+}
+
+// TestRestoreState_RehydratesHeldFailedPR (GH-5644): a human-held row must
+// survive a restart so the tick can fetch its live head and redrive it.
+func TestRestoreState_RehydratesHeldFailedPR(t *testing.T) {
+	c := restoreHeldFixture(t, &PRState{PRNumber: 388, IssueNumber: 380, HeadSHA: "held-sha", Stage: StageFailed, HoldActive: true, HoldHeadSHA: "held-sha", CreatedAt: time.Now()}, github.NewClientWithBaseURL(testutil.FakeGitHubToken, "http://127.0.0.1:1"))
+	got, ok := c.GetPRState(388)
+	if !ok {
+		t.Fatal("held StageFailed PR should be tracked after RestoreState")
+	}
+	if !got.HoldActive || got.HoldHeadSHA != "held-sha" {
+		t.Errorf("hold triple lost: active=%v head=%q", got.HoldActive, got.HoldHeadSHA)
+	}
+}
+
+func TestRestoreState_RehydratesRebaseHeldFailedPR(t *testing.T) {
+	c := restoreHeldFixture(t, &PRState{PRNumber: 389, IssueNumber: 381, HeadSHA: "sha", Stage: StageFailed, RebaseHoldActive: true, CreatedAt: time.Now()}, github.NewClientWithBaseURL(testutil.FakeGitHubToken, "http://127.0.0.1:1"))
+	if _, ok := c.GetPRState(389); !ok {
+		t.Fatal("rebase-held StageFailed PR should be tracked after RestoreState")
+	}
+}
+
+func TestRestoreState_StillSkipsPlainFailedPR(t *testing.T) {
+	c := restoreHeldFixture(t, &PRState{PRNumber: 390, IssueNumber: 382, HeadSHA: "sha", Stage: StageFailed, CreatedAt: time.Now()}, github.NewClientWithBaseURL(testutil.FakeGitHubToken, "http://127.0.0.1:1"))
+	if _, ok := c.GetPRState(390); ok {
+		t.Fatal("plain StageFailed PR must stay untracked after RestoreState")
+	}
+}
+
+// TestController_ProcessAllPRs_RedrivesHeldPRAfterRestart (GH-5644): the
+// PR #388 scenario across a daemon restart — the redrive must still fire.
+func TestController_ProcessAllPRs_RedrivesHeldPRAfterRestart(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/pulls/388" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(github.PullRequest{
+				Number:  388,
+				State:   "open",
+				HTMLURL: "https://github.com/owner/repo/pull/388",
+				Head:    github.PRRef{SHA: "fixed-sha", Ref: "pilot/GH-380"},
+			})
+		case r.URL.Path == "/repos/owner/repo/pulls" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte("[]"))
+		default:
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer srv.Close()
+
+	pr := &PRState{PRNumber: 388, IssueNumber: 380, PRURL: "https://github.com/owner/repo/pull/388", BranchName: "pilot/GH-380", HeadSHA: "held-sha", Stage: StageFailed, Error: "CI failure with zero gathered evidence", HoldActive: true, HoldHeadSHA: "held-sha", CreatedAt: time.Now()}
+	c := restoreHeldFixture(t, pr, github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL))
+
+	c.processAllPRs(context.Background())
+
+	got, ok := c.GetPRState(388)
+	if !ok {
+		t.Fatal("PR 388 should be tracked after restart")
+	}
+	if got.Stage != StageWaitingCI {
+		t.Errorf("Stage = %v, want StageWaitingCI", got.Stage)
+	}
+	if got.HeadSHA != "fixed-sha" || got.HoldActive {
+		t.Errorf("head=%q holdActive=%v, want fixed-sha / false", got.HeadSHA, got.HoldActive)
+	}
+}

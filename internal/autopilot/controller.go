@@ -2711,8 +2711,25 @@ func (c *Controller) RestoreState() (int, error) {
 		// never re-enters c.activePRs, and ReDriveBreakerHeldPRs only scans
 		// c.activePRs — so the hold can never be released. Every other
 		// StageFailed row keeps the unconditional skip.
-		if pr.Stage == StageFailed && !pr.BreakerHoldActive {
-			continue
+		//
+		// GH-5644: the same applies to HoldActive (escalateAndHold, redriven
+		// by redriveHeldPR on a new head) and RebaseHoldActive
+		// (reAdoptHeldRebasePR): both only run on tracked PRs, so a held PR
+		// fixed after a daemon restart (every daily train) was stranded.
+		if pr.Stage == StageFailed {
+			var heldBy string
+			switch {
+			case pr.BreakerHoldActive:
+				heldBy = "BreakerHoldActive"
+			case pr.HoldActive:
+				heldBy = "HoldActive"
+			case pr.RebaseHoldActive:
+				heldBy = "RebaseHoldActive"
+			default:
+				continue
+			}
+			c.log.Info("RestoreState: rehydrating held PR",
+				"pr", pr.PRNumber, "stage", pr.Stage, "hold", heldBy)
 		}
 		// GH-4331: a scope carrier whose scope-release row already resolved
 		// terminal (failed/done) between its last persist and this restart
