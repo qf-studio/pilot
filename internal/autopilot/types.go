@@ -1371,24 +1371,26 @@ type PRState struct {
 	// forever — it eventually stays parked for a human. Never reset
 	// (lifetime counter for the PR). Persisted.
 	BreakerReadoptCount int
-	// SizeGuardHoldActive is true while this PR is parked at StageFailed
-	// specifically because the CI-fix size guard fired (GH-5378):
-	// escalateAndHold sets StageFailed for many unrelated reasons (needs-
-	// manual-rebase, breaker hold, iteration/review caps, etc.); this flag
-	// narrows redriveSizeGuardHeldPR's re-entry scan to the one hold a later
-	// push (that resolves the failing check without growing the PR further)
-	// can actually resolve. Mirrors RebaseHoldActive/BreakerHoldActive's
-	// narrowing role. Cleared once the redrive fires (or a fresh
-	// escalateAndHold call supersedes it with a different label set).
-	// Persisted so the hold survives a daemon restart.
-	SizeGuardHoldActive bool
-	// SizeGuardHoldHeadSHA is the HeadSHA recorded at the moment the size
-	// guard fired. redriveSizeGuardHeldPR compares this against the PR's
-	// live head on every poll — a changed SHA means a new commit landed
-	// since the hold (e.g. a lint fix), which is exactly the signal GH-5378
-	// needs to re-enter the pipeline instead of sitting parked forever even
-	// after CI turns green. Persisted alongside SizeGuardHoldActive.
+	// SizeGuardHoldActive and SizeGuardHoldHeadSHA are the GH-5378 size-guard
+	// hold pair, superseded by HoldActive/HoldHeadSHA (GH-5643).
+	//
+	// Deprecated: no longer written; kept (with their columns) so old rows load.
+	SizeGuardHoldActive  bool
 	SizeGuardHoldHeadSHA string
+	// HoldActive is true while this PR is parked at StageFailed by an
+	// escalateAndHold call flagged redrivable (GH-5643): the CI-side holds a new
+	// branch head can legitimately fix. redriveHeldPR scans only these rows.
+	// Iteration-cap, post-merge and rebase holds leave it false. Persisted.
+	HoldActive bool
+	// HoldHeadSHA is the HeadSHA recorded when the hold was set; a different
+	// live head means a commit landed since the hold. Persisted.
+	HoldHeadSHA string
+	// HoldLabels is the comma-separated label set the hold added to the linked
+	// issue; redriveHeldPR removes them (plus pilot-needs-human). Persisted.
+	HoldLabels string
+	// HoldRedriveCount is the lifetime count of redriveHeldPR revivals, capped
+	// at maxHoldRedrives. Never reset. Persisted.
+	HoldRedriveCount int
 	// PostMergeInfraRerunCount is the post-merge analog of InfraRerunCount
 	// (GH-4813): how many times handlePostMergeCI has auto-retried this
 	// carrier's failed jobs after classifying a post-merge CI failure as a CI
@@ -1505,6 +1507,10 @@ func (ps *PRState) snapshot() *PRState {
 		BreakerReadoptCount:          ps.BreakerReadoptCount,
 		SizeGuardHoldActive:          ps.SizeGuardHoldActive,
 		SizeGuardHoldHeadSHA:         ps.SizeGuardHoldHeadSHA,
+		HoldActive:                   ps.HoldActive,
+		HoldHeadSHA:                  ps.HoldHeadSHA,
+		HoldLabels:                   ps.HoldLabels,
+		HoldRedriveCount:             ps.HoldRedriveCount,
 		PostMergeInfraRerunCount:     ps.PostMergeInfraRerunCount,
 		PostMergeInfraRerunSHA:       ps.PostMergeInfraRerunSHA,
 		ReleaseBackfillAbandoned:     ps.ReleaseBackfillAbandoned,

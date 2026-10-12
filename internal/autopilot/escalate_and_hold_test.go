@@ -220,7 +220,7 @@ func TestEscalateAndHold(t *testing.T) {
 			prState := &PRState{PRNumber: 99, IssueNumber: tt.issueNumber, BranchName: "pilot/GH-99"}
 			reason := "escalation reason: " + tt.name
 
-			c.escalateAndHold(context.Background(), prState, reason, tt.labels, tt.comment)
+			c.escalateAndHold(context.Background(), prState, reason, tt.labels, tt.comment, false)
 
 			if prState.Stage != StageFailed {
 				t.Errorf("Stage = %v, want StageFailed", prState.Stage)
@@ -272,5 +272,44 @@ func TestEscalateAndHold(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestEscalateAndHold_SetsHoldFields: a redrivable hold records the hold
+// triple (GH-5643) from the PR's head at hold time and the labels it added.
+func TestEscalateAndHold_SetsHoldFields(t *testing.T) {
+	_, srv := newRecordingGHServer()
+	defer srv.Close()
+	c := NewController(DefaultConfig(), github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL), nil, "owner", "repo")
+
+	prState := &PRState{PRNumber: 99, IssueNumber: 21, HeadSHA: "head-at-hold"}
+	c.escalateAndHold(context.Background(), prState, "CI failure with zero gathered evidence", []string{labelNeedsHuman, "extra"}, "", true)
+
+	if !prState.HoldActive {
+		t.Error("HoldActive should be set for a redrivable hold")
+	}
+	if prState.HoldHeadSHA != "head-at-hold" {
+		t.Errorf("HoldHeadSHA = %q, want %q", prState.HoldHeadSHA, "head-at-hold")
+	}
+	if prState.HoldLabels != labelNeedsHuman+",extra" {
+		t.Errorf("HoldLabels = %q, want %q", prState.HoldLabels, labelNeedsHuman+",extra")
+	}
+	if prState.SizeGuardHoldActive || prState.SizeGuardHoldHeadSHA != "" {
+		t.Error("deprecated size-guard fields must no longer be written")
+	}
+}
+
+// TestEscalateAndHold_NonRedrivableClearsHoldFields: a non-redrivable hold
+// clears any triple left standing by an earlier redrivable hold (GH-5391).
+func TestEscalateAndHold_NonRedrivableClearsHoldFields(t *testing.T) {
+	_, srv := newRecordingGHServer()
+	defer srv.Close()
+	c := NewController(DefaultConfig(), github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL), nil, "owner", "repo")
+
+	prState := &PRState{PRNumber: 99, IssueNumber: 21, HeadSHA: "sha", HoldActive: true, HoldHeadSHA: "sha", HoldLabels: labelNeedsHuman}
+	c.escalateAndHold(context.Background(), prState, "CI fix iteration limit reached (3/3)", []string{labelNeedsHuman}, "", false)
+
+	if prState.HoldActive || prState.HoldHeadSHA != "" || prState.HoldLabels != "" {
+		t.Errorf("hold triple should be cleared, got active=%v head=%q labels=%q", prState.HoldActive, prState.HoldHeadSHA, prState.HoldLabels)
 	}
 }

@@ -155,7 +155,7 @@ func TestGH5042_EscalateAndHoldRemovesRetryReady(t *testing.T) {
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
 	prState := &PRState{PRNumber: 42, IssueNumber: 10}
-	c.escalateAndHold(context.Background(), prState, "rebase conflict requires manual resolution", []string{labelNeedsManualRebase}, "")
+	c.escalateAndHold(context.Background(), prState, "rebase conflict requires manual resolution", []string{labelNeedsManualRebase}, "", false)
 
 	got := snapshot()
 	if got[github.LabelRetryReady] {

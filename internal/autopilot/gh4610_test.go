@@ -39,7 +39,7 @@ func TestEscalateAndHold_SetsRebaseHoldActive(t *testing.T) {
 			c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
 
 			prState := &PRState{PRNumber: 50, IssueNumber: 5, BranchName: "pilot/GH-5"}
-			c.escalateAndHold(context.Background(), prState, "some reason", tt.labels, "comment")
+			c.escalateAndHold(context.Background(), prState, "some reason", tt.labels, "comment", false)
 
 			if prState.RebaseHoldActive != tt.wantActive {
 				t.Errorf("RebaseHoldActive = %v, want %v", prState.RebaseHoldActive, tt.wantActive)
