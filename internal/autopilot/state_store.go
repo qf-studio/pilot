@@ -243,6 +243,11 @@ func (s *StateStore) migrate() error {
 		`ALTER TABLE autopilot_pr_state ADD COLUMN hold_head_sha TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE autopilot_pr_state ADD COLUMN hold_labels TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE autopilot_pr_state ADD COLUMN hold_redrive_count INTEGER NOT NULL DEFAULT 0`,
+		// GH-5647: backfill rows held by the pre-GH-5643 size guard into the
+		// generic hold fields (redriveHeldPR reads only those). Idempotent:
+		// the hold_active = 0 guard makes a second run a no-op and keeps the
+		// head SHA of rows already carrying a generic hold.
+		`UPDATE autopilot_pr_state SET hold_active = 1, hold_head_sha = size_guard_hold_head_sha WHERE size_guard_hold_active = 1 AND hold_active = 0`,
 		// GH-5351: durably records the origin PR's changed-file set for a
 		// newly spawned CI-fix issue, keyed by fix issue number rather than PR
 		// number — the origin PR's own autopilot_pr_state row does not

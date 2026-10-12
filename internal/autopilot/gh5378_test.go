@@ -665,6 +665,49 @@ func TestStateStore_HoldFieldsSurviveRoundTrip(t *testing.T) {
 	check("LoadAllPRStates", all[0])
 }
 
+// TestStateStore_BackfillsLegacySizeGuardHold (GH-5647): a row held by the
+// pre-GH-5643 size guard must surface as a generic hold after reopening the
+// store, while a row already carrying a generic hold keeps its own head SHA.
+func TestStateStore_BackfillsLegacySizeGuardHold(t *testing.T) {
+	store := newTestStateStore(t)
+
+	const ins = `INSERT INTO autopilot_pr_state
+		(repo, pr_number, pr_url, stage, size_guard_hold_active, size_guard_hold_head_sha, hold_active, hold_head_sha)
+		VALUES ('owner/repo', ?, 'https://github.com/owner/repo/pull/1', 'failed', 1, ?, ?, ?)`
+	if _, err := store.db.Exec(ins, 1, "abc", 0, ""); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	if _, err := store.db.Exec(ins, 2, "other", 1, "keep"); err != nil {
+		t.Fatalf("insert generic row: %v", err)
+	}
+
+	reopened, err := NewStateStore(store.db)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+
+	for pass := 0; pass < 2; pass++ {
+		legacy, err := reopened.GetPRState("owner/repo", 1)
+		if err != nil || legacy == nil {
+			t.Fatalf("GetPRState(1): %v / %v", legacy, err)
+		}
+		if !legacy.HoldActive || legacy.HoldHeadSHA != "abc" {
+			t.Errorf("legacy row: active=%v head=%q, want true/abc", legacy.HoldActive, legacy.HoldHeadSHA)
+		}
+		kept, err := reopened.GetPRState("owner/repo", 2)
+		if err != nil || kept == nil {
+			t.Fatalf("GetPRState(2): %v / %v", kept, err)
+		}
+		if !kept.HoldActive || kept.HoldHeadSHA != "keep" {
+			t.Errorf("generic row: active=%v head=%q, want true/keep", kept.HoldActive, kept.HoldHeadSHA)
+		}
+		// Second pass proves a repeat migration run is idempotent.
+		if reopened, err = NewStateStore(store.db); err != nil {
+			t.Fatalf("second reopen: %v", err)
+		}
+	}
+}
+
 // restoreHeldFixture persists pr into a fresh in-memory store and returns a
 // new controller (simulating a daemon restart) after RestoreState.
 func restoreHeldFixture(t *testing.T, pr *PRState, client *github.Client) *Controller {
