@@ -8232,7 +8232,7 @@ const maxReadoptAttempts = 2
 // specifically via RebaseHoldActive (not any other StageFailed reason — CI-
 // fix size guard, rebase-oscillation cap, CI timeout, etc. all stay parked
 // through a branch push alone, though a fresh escalateAndHold call clears a
-// stale SizeGuardHoldActive flag regardless — GH-5391) means someone pushed
+// stale HoldActive flag regardless — GH-5391) means someone pushed
 // a fix, so re-enter the pipeline at StageWaitingCI for fresh CI on the new
 // head. MergeAttempts/RebaseAttempts are preserved (not reset) so their own
 // caps still apply if the PR conflicts again; the external-merge scan
