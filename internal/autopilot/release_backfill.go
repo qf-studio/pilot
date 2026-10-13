@@ -4,16 +4,17 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
-// maxReleaseBackfillTags bounds how many of the most recent tags
-// earliestReleaseTagContaining inspects. GitHub's tags endpoint returns
-// newest-first and this reconciliation only ever targets recent release-train
-// residue (GH-4370), so 100 (GitHub's per-page max, and ListTags's only
-// supported page) comfortably covers the window without unbounded pagination.
+// maxReleaseBackfillTags is the page size handed to ListTags. It is NOT a
+// window: the SDK's ListTags paginates exhaustively (up to 50 pages), so the
+// whole tag list comes back regardless. Cost is bounded instead by the
+// newest-first probe plus binary search in earliestReleaseTagContaining and by
+// maxReleaseBackfillCompares (GH-5658).
 const maxReleaseBackfillTags = 100
 
 // maxReleaseBackfillRowsPerPass bounds how many rows one reconcileReleaseBackfill
@@ -22,6 +23,19 @@ const maxReleaseBackfillTags = 100
 // every StageFailed/StageReleasing row held the epic-parent pass for the whole
 // 2026-10-13 stall. Remaining rows are picked up on following passes.
 const maxReleaseBackfillRowsPerPass = 5
+
+const (
+	// maxReleaseBackfillCompares is the per-row CompareStatus budget for one
+	// earliestReleaseTagContaining call. A binary search over the ~900 tags the
+	// pilot repo carries needs ~11 compares (1 probe + ceil(log2 n)); 12 leaves
+	// headroom for growth to ~2k tags, and exceeding it returns an error so the
+	// row backs off (GH-4919) rather than holding the controller tick for a
+	// linear walk (2026-10-13: 903 compares, 57 minutes, train never tagged).
+	maxReleaseBackfillCompares = 12
+	// releaseBackfillDivergedScan caps the linear fallback used when the
+	// newest-tag probe reports "diverged" (history not linear at the tip).
+	releaseBackfillDivergedScan = 5
+)
 
 // releaseBackfillRowState is reconcileReleaseBackfill's (GH-4919) per-row
 // backoff and consecutive-failure bookkeeping. Held in
@@ -238,6 +252,10 @@ func (c *Controller) reconcileReleaseBackfill(ctx context.Context) {
 	start := c.releaseBackfillCursor % len(due)
 	c.releaseBackfillMu.Unlock()
 
+	// GH-5658: all rows of this pass share one tag listing per repo, fetched on
+	// first use and reused by every later row (no per-row ListTags).
+	ctx = withReleaseBackfillTagCache(ctx)
+
 	touched := 0
 	for i := 0; i < len(due) && touched < maxReleaseBackfillRowsPerPass; i++ {
 		if ctx.Err() != nil {
@@ -342,29 +360,67 @@ func (c *Controller) recordReleaseBackfillEvent(prState *PRState, mergeSHA, tag 
 	}
 }
 
-// earliestReleaseTagContaining returns the earliest (lowest-semver) release
-// tag whose history contains sha, or "" if no tag among the most recent
-// maxReleaseBackfillTags contains it. The earliest tag is the one that
-// actually shipped the commit — a later tag also contains it by
-// transitivity, but naming that one would misreport when the work released.
-func (c *Controller) earliestReleaseTagContaining(ctx context.Context, owner, repo, sha string) (string, error) {
+// releaseBackfillTag is one semver release tag, ready for ancestry probing.
+type releaseBackfillTag struct {
+	name string
+	sha  string
+	ver  SemVer
+}
+
+// releaseBackfillTagList is one repo's versioned tags, sorted ascending by
+// semver, or the error the listing failed with.
+type releaseBackfillTagList struct {
+	tags []releaseBackfillTag
+	err  error
+}
+
+// releaseBackfillTagCache memoises tag listings for the duration of one
+// reconcileReleaseBackfill pass, keyed "owner/repo". It is carried in the
+// context so earliestReleaseTagContaining keeps its signature. Errors are
+// cached too: a failing listing is not re-hammered once per row.
+type releaseBackfillTagCache struct {
+	mu    sync.Mutex
+	lists map[string]*releaseBackfillTagList
+}
+
+type releaseBackfillTagCacheKey struct{}
+
+func withReleaseBackfillTagCache(ctx context.Context) context.Context {
+	return context.WithValue(ctx, releaseBackfillTagCacheKey{}, &releaseBackfillTagCache{
+		lists: make(map[string]*releaseBackfillTagList),
+	})
+}
+
+// releaseBackfillTags returns owner/repo's semver tags sorted ascending,
+// fetching at most once per pass when ctx carries a cache.
+func (c *Controller) releaseBackfillTags(ctx context.Context, owner, repo string) ([]releaseBackfillTag, error) {
+	cache, _ := ctx.Value(releaseBackfillTagCacheKey{}).(*releaseBackfillTagCache)
+	if cache == nil {
+		return c.fetchReleaseBackfillTags(ctx, owner, repo)
+	}
+	key := owner + "/" + repo
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if l, ok := cache.lists[key]; ok {
+		return l.tags, l.err
+	}
+	tags, err := c.fetchReleaseBackfillTags(ctx, owner, repo)
+	cache.lists[key] = &releaseBackfillTagList{tags: tags, err: err}
+	return tags, err
+}
+
+func (c *Controller) fetchReleaseBackfillTags(ctx context.Context, owner, repo string) ([]releaseBackfillTag, error) {
 	tags, err := c.ghClient.ListTags(ctx, owner, repo, maxReleaseBackfillTags)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-
-	type versionedTag struct {
-		name string
-		sha  string
-		ver  SemVer
-	}
-	versioned := make([]versionedTag, 0, len(tags))
+	versioned := make([]releaseBackfillTag, 0, len(tags))
 	for _, tag := range tags {
 		ver, err := ParseSemVer(tag.Name)
 		if err != nil {
 			continue // not a release tag — not a candidate
 		}
-		versioned = append(versioned, versionedTag{name: tag.Name, sha: tag.Commit.SHA, ver: ver})
+		versioned = append(versioned, releaseBackfillTag{name: tag.Name, sha: tag.Commit.SHA, ver: ver})
 	}
 	sort.Slice(versioned, func(i, j int) bool {
 		a, b := versioned[i].ver, versioned[j].ver
@@ -376,18 +432,94 @@ func (c *Controller) earliestReleaseTagContaining(ctx context.Context, owner, re
 		}
 		return a.Patch < b.Patch
 	})
+	return versioned, nil
+}
 
-	for _, t := range versioned {
+// earliestReleaseTagContaining returns the earliest (lowest-semver) release
+// tag whose history contains sha, or "" if no tag contains it. The earliest tag
+// is the one that actually shipped the commit — a later tag also contains it by
+// transitivity, but naming that one would misreport when the work released.
+//
+// GH-5658: the old ascending linear scan cost one CompareStatus per tag for a
+// sha in no tag (903 on the pilot repo), which wedged the controller tick.
+// On a linear default branch containment is monotonic in tag order, so:
+//  1. probe the newest tag once; if sha is not an ancestor of it ("behind"),
+//     no older tag can contain it — return "" after a single compare;
+//  2. if the probe reports "diverged" the tip is not linear with sha, so fall
+//     back to a scan of the releaseBackfillDivergedScan newest tags;
+//  3. otherwise binary-search for the earliest containing tag.
+//
+// Every CompareStatus counts against maxReleaseBackfillCompares; exceeding it
+// returns an error so the caller's failure path backs the row off.
+func (c *Controller) earliestReleaseTagContaining(ctx context.Context, owner, repo, sha string) (string, error) {
+	tags, err := c.releaseBackfillTags(ctx, owner, repo)
+	if err != nil {
+		return "", err
+	}
+	if len(tags) == 0 {
+		return "", nil
+	}
+
+	compares := 0
+	// status reports how sha relates to tags[i]: contained, or the raw status
+	// when it is not (so the caller can tell "diverged" from "behind").
+	probe := func(i int) (contained bool, status string, err error) {
+		t := tags[i]
 		if t.sha == sha {
-			return t.name, nil
+			return true, "identical", nil
 		}
-		status, err := c.ghClient.CompareStatus(ctx, owner, repo, sha, t.sha)
+		if compares >= maxReleaseBackfillCompares {
+			return false, "", fmt.Errorf("compare budget of %d exhausted resolving %s against %d tags (stopped at tag %s)",
+				maxReleaseBackfillCompares, ShortSHA(sha), len(tags), t.name)
+		}
+		compares++
+		status, err = c.ghClient.CompareStatus(ctx, owner, repo, sha, t.sha)
 		if err != nil {
-			return "", fmt.Errorf("compare %s against tag %s: %w", ShortSHA(sha), t.name, err)
+			return false, "", fmt.Errorf("compare %s against tag %s: %w", ShortSHA(sha), t.name, err)
 		}
-		if status == "ahead" || status == "identical" {
-			return t.name, nil
+		return status == "ahead" || status == "identical", status, nil
+	}
+
+	newest := len(tags) - 1
+	contained, status, err := probe(newest)
+	if err != nil {
+		return "", err
+	}
+	if !contained {
+		if status != "diverged" {
+			return "", nil
+		}
+		// Capped scan of the newest tags, oldest first so the earliest hit wins.
+		// The newest was already probed and is known not to contain sha.
+		start := len(tags) - releaseBackfillDivergedScan
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < newest; i++ {
+			ok, _, err := probe(i)
+			if err != nil {
+				return "", err
+			}
+			if ok {
+				return tags[i].name, nil
+			}
+		}
+		return "", nil
+	}
+
+	// tags[hi] contains sha; find the lowest index that does.
+	lo, hi := 0, newest
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		ok, _, err := probe(mid)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			hi = mid
+		} else {
+			lo = mid + 1
 		}
 	}
-	return "", nil
+	return tags[lo].name, nil
 }

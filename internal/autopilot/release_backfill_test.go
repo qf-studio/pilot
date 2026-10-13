@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,11 +25,20 @@ type releaseBackfillFakeTag struct {
 	sha  string
 }
 
+// releaseBackfillCounts tallies the API traffic releaseBackfillServer sees so
+// tests can pin how many CompareStatus and tag-listing requests a lookup cost
+// (GH-5658). A nil *releaseBackfillCounts is allowed and counts nothing.
+type releaseBackfillCounts struct {
+	compares atomic.Int32
+	// tagRequests counts /tags page requests (not ListTags calls).
+	tagRequests atomic.Int32
+}
+
 // releaseBackfillServer serves the three endpoints GH-4370's reconciliation
 // needs: GetPullRequest (merge status + merge commit SHA), ListTags, and
 // CompareStatus (ancestry). compareStatus is keyed "base...head" exactly as
 // CompareStatus builds its request path.
-func releaseBackfillServer(t *testing.T, prs map[int]*github.PullRequest, tags []releaseBackfillFakeTag, compareStatus map[string]string) *httptest.Server {
+func releaseBackfillServer(t *testing.T, prs map[int]*github.PullRequest, tags []releaseBackfillFakeTag, compareStatus map[string]string, counts *releaseBackfillCounts) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -45,8 +56,23 @@ func releaseBackfillServer(t *testing.T, prs map[int]*github.PullRequest, tags [
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(pr)
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
-			out := make([]*github.Tag, 0, len(tags))
-			for _, tag := range tags {
+			if counts != nil {
+				counts.tagRequests.Add(1)
+			}
+			// Honour per_page/page like GitHub: the SDK's ListTags keeps
+			// paging until it sees a short page.
+			perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+			if perPage <= 0 {
+				perPage = len(tags)
+			}
+			if page <= 0 {
+				page = 1
+			}
+			lo := min((page-1)*perPage, len(tags))
+			hi := min(lo+perPage, len(tags))
+			out := make([]*github.Tag, 0, hi-lo)
+			for _, tag := range tags[lo:hi] {
 				gt := &github.Tag{Name: tag.name}
 				gt.Commit.SHA = tag.sha
 				out = append(out, gt)
@@ -54,6 +80,9 @@ func releaseBackfillServer(t *testing.T, prs map[int]*github.PullRequest, tags [
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(out)
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):
+			if counts != nil {
+				counts.compares.Add(1)
+			}
 			key := r.URL.Path[strings.LastIndex(r.URL.Path, "/compare/")+len("/compare/"):]
 			status, ok := compareStatus[key]
 			if !ok {
@@ -146,7 +175,7 @@ func TestReconcileReleaseBackfill(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			prs := map[int]*github.PullRequest{tt.pr.Number: tt.pr}
-			server := releaseBackfillServer(t, prs, tt.tags, tt.compareStatus)
+			server := releaseBackfillServer(t, prs, tt.tags, tt.compareStatus, nil)
 			defer server.Close()
 
 			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
@@ -736,5 +765,197 @@ func TestReconcileReleaseBackfill_StopsOnCancelledContext(t *testing.T) {
 	c.releaseBackfillMu.Unlock()
 	if tracked != 0 {
 		t.Fatalf("cancelled ctx: %d rows were attempted (failure bookkeeping recorded), want 0", tracked)
+	}
+}
+
+// backfillTagFixture builds n semver tags v1.0.0..v1.(n-1).0 served
+// newest-first (like GitHub's tags endpoint). shaFor(i) is the commit SHA of
+// the i-th oldest tag.
+func backfillTagFixture(n int) []releaseBackfillFakeTag {
+	tags := make([]releaseBackfillFakeTag, 0, n)
+	for i := n - 1; i >= 0; i-- {
+		tags = append(tags, releaseBackfillFakeTag{name: backfillTagName(i), sha: backfillTagSHA(i)})
+	}
+	return tags
+}
+
+func backfillTagName(i int) string { return fmt.Sprintf("v1.%d.0", i) }
+func backfillTagSHA(i int) string  { return fmt.Sprintf("tagsha%05d", i) }
+
+// backfillCompareKey is the compare path key for sha against the i-th oldest tag.
+func backfillCompareKey(sha string, i int) string { return sha + "..." + backfillTagSHA(i) }
+
+// TestEarliestReleaseTagContaining pins GH-5658: finding the earliest
+// containing tag must be a newest-first probe plus binary search under a
+// per-row compare budget, not a linear walk from the oldest tag (903 compares
+// held the controller tick for 57 minutes on 2026-10-13).
+func TestEarliestReleaseTagContaining(t *testing.T) {
+	const sha = "targetsha"
+
+	newController := func(t *testing.T, n int, status map[string]string) (*Controller, *releaseBackfillCounts) {
+		t.Helper()
+		counts := &releaseBackfillCounts{}
+		server := releaseBackfillServer(t, nil, backfillTagFixture(n), status, counts)
+		t.Cleanup(server.Close)
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		return NewController(DefaultConfig(), ghClient, nil, "owner", "repo"), counts
+	}
+
+	// containedFrom marks tags first..n-1 as containing sha ("ahead") and the
+	// older ones "behind", as on a linear default branch.
+	containedFrom := func(n, first int) map[string]string {
+		status := make(map[string]string, n)
+		for i := 0; i < n; i++ {
+			if i >= first {
+				status[backfillCompareKey(sha, i)] = "ahead"
+			} else {
+				status[backfillCompareKey(sha, i)] = "behind"
+			}
+		}
+		return status
+	}
+
+	t.Run("ShaInNoTagCostsOneCompare", func(t *testing.T) {
+		const n = 900
+		c, counts := newController(t, n, containedFrom(n, n)) // no tag contains sha
+		got, err := c.earliestReleaseTagContaining(context.Background(), "owner", "repo", sha)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "" {
+			t.Errorf("tag = %q, want none", got)
+		}
+		if n := counts.compares.Load(); n != 1 {
+			t.Errorf("compares = %d, want exactly 1", n)
+		}
+	})
+
+	t.Run("ShaInMiddleTagResolvesWithinBudget", func(t *testing.T) {
+		const n, first = 900, 450
+		c, counts := newController(t, n, containedFrom(n, first))
+		got, err := c.earliestReleaseTagContaining(context.Background(), "owner", "repo", sha)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := backfillTagName(first); got != want {
+			t.Errorf("tag = %q, want %q", got, want)
+		}
+		if n := counts.compares.Load(); n > maxReleaseBackfillCompares {
+			t.Errorf("compares = %d, want <= %d", n, maxReleaseBackfillCompares)
+		}
+	})
+
+	t.Run("ShaInNewestTagOnly", func(t *testing.T) {
+		const n = 5
+		status := containedFrom(n, n-1)
+		status[backfillCompareKey(sha, n-1)] = "identical"
+		c, counts := newController(t, n, status)
+		got, err := c.earliestReleaseTagContaining(context.Background(), "owner", "repo", sha)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := backfillTagName(n - 1); got != want {
+			t.Errorf("tag = %q, want %q", got, want)
+		}
+		if n := counts.compares.Load(); n > maxReleaseBackfillCompares {
+			t.Errorf("compares = %d, want <= %d", n, maxReleaseBackfillCompares)
+		}
+	})
+
+	t.Run("DivergedNewestFallsBackToCappedScan", func(t *testing.T) {
+		const n = 10
+		t.Run("hit within the newest tags", func(t *testing.T) {
+			// Newest tag has no entry -> the server answers "diverged".
+			status := map[string]string{
+				backfillCompareKey(sha, 5): "behind",
+				backfillCompareKey(sha, 6): "behind",
+				backfillCompareKey(sha, 7): "ahead",
+				backfillCompareKey(sha, 8): "ahead",
+			}
+			c, counts := newController(t, n, status)
+			got, err := c.earliestReleaseTagContaining(context.Background(), "owner", "repo", sha)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if want := backfillTagName(7); got != want {
+				t.Errorf("tag = %q, want %q (earliest containing among the scanned tags)", got, want)
+			}
+			if c := counts.compares.Load(); c > releaseBackfillDivergedScan {
+				t.Errorf("compares = %d, want <= %d", c, releaseBackfillDivergedScan)
+			}
+		})
+		t.Run("hit beyond the cap is not scanned", func(t *testing.T) {
+			status := map[string]string{backfillCompareKey(sha, 2): "ahead"}
+			c, counts := newController(t, n, status)
+			got, err := c.earliestReleaseTagContaining(context.Background(), "owner", "repo", sha)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != "" {
+				t.Errorf("tag = %q, want none (tag 2 is outside the %d-tag scan)", got, releaseBackfillDivergedScan)
+			}
+			if c := counts.compares.Load(); c != releaseBackfillDivergedScan {
+				t.Errorf("compares = %d, want exactly %d", c, releaseBackfillDivergedScan)
+			}
+		})
+	})
+
+	t.Run("BudgetExceededReturnsError", func(t *testing.T) {
+		// 5000 tags with the sha in all of them: the search must walk down to
+		// tag 0, which needs 1 probe + 13 halvings > maxReleaseBackfillCompares.
+		const n = 5000
+		c, counts := newController(t, n, containedFrom(n, 0))
+		got, err := c.earliestReleaseTagContaining(context.Background(), "owner", "repo", sha)
+		if err == nil {
+			t.Fatalf("expected a budget error, got tag %q", got)
+		}
+		if !strings.Contains(err.Error(), "compare budget") {
+			t.Errorf("error = %v, want it to mention the compare budget", err)
+		}
+		if n := counts.compares.Load(); n != maxReleaseBackfillCompares {
+			t.Errorf("compares = %d, want exactly the budget (%d)", n, maxReleaseBackfillCompares)
+		}
+	})
+}
+
+// TestReconcileReleaseBackfill_TagListFetchedOncePerPass pins GH-5658: every
+// candidate row in one sweep shares a single tag listing instead of
+// refetching it per row.
+func TestReconcileReleaseBackfill_TagListFetchedOncePerPass(t *testing.T) {
+	prs := map[int]*github.PullRequest{}
+	const rows = 4
+	status := map[string]string{}
+	for i := 0; i < rows; i++ {
+		num := 300 + i
+		sha := fmt.Sprintf("sha%d", num)
+		prs[num] = &github.PullRequest{Number: num, Merged: true, MergeCommitSHA: sha}
+		// Merged but in no tag: newest-tag probe says "behind".
+		status[backfillCompareKey(sha, 2)] = "behind"
+	}
+	counts := &releaseBackfillCounts{}
+	server := releaseBackfillServer(t, prs, backfillTagFixture(3), status, counts)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+	store, err := NewStateStoreFromPath(":memory:")
+	if err != nil {
+		t.Fatalf("NewStateStoreFromPath: %v", err)
+	}
+	c.SetStateStore(store)
+	for num := range prs {
+		if err := store.SavePRState("owner/repo", &PRState{PRNumber: num, Stage: StageReleasing}); err != nil {
+			t.Fatalf("SavePRState: %v", err)
+		}
+	}
+
+	c.reconcileReleaseBackfill(context.Background())
+
+	// 3 tags fit in one page, so one ListTags call == one /tags request.
+	if n := counts.tagRequests.Load(); n != 1 {
+		t.Errorf("tag list requests = %d, want 1 for the whole pass (%d rows)", n, rows)
+	}
+	if n := counts.compares.Load(); n != rows {
+		t.Errorf("compares = %d, want %d (one newest-tag probe per row)", n, rows)
 	}
 }
