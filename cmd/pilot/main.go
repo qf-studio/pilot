@@ -2885,7 +2885,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// Create monitor and TUI program for dashboard mode
 	var monitor *executor.Monitor
 	var program *tea.Program
-	var upgradeRequestCh chan struct{} // Channel for hot upgrade requests (GH-369)
+	upgradeRequestCh := make(chan struct{}, 1) // Channel for hot upgrade requests (GH-369); GH-5651: created in every mode
 	if dashboardMode {
 		runner.SuppressProgressLogs(true)
 
@@ -2904,7 +2904,6 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				logging.WithComponent("start").Warn("failed to hydrate monitor from store", slog.Any("error", hydrateErr))
 			}
 		}
-		upgradeRequestCh = make(chan struct{}, 1)
 		model := dashboard.NewModelWithOptions(version, store, autopilotController, upgradeRequestCh)
 		model.SetProjectPath(projectPath)
 		scope := ""
@@ -3926,152 +3925,170 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		}
 	}
 
+	// GH-5651: pick the drain adapter by what exists. Dashboard mode has the
+	// Monitor (running-only view, GH-4683); headless mode has none, so poll the
+	// Dispatcher's live workers directly.
+	var upgradeTaskChecker upgrade.TaskChecker
+	switch {
+	case monitor != nil:
+		upgradeTaskChecker = &runningOnlyTaskChecker{monitor: monitor}
+	case dispatcher != nil:
+		upgradeTaskChecker = &liveWorkerTaskChecker{workers: dispatcher}
+	default:
+		upgradeTaskChecker = &upgrade.NoOpTaskChecker{}
+	}
+
+	// Start background version checker for hot reload (GH-369). GH-5651: moved
+	// above the dashboard gate — it only needs program for TUI notifications,
+	// which upgradeNotify skips when program is nil.
+	upgradeCfg := cfg.Upgrade
+	if upgradeCfg == nil {
+		upgradeCfg = &config.UpgradeConfig{AutoHotUpgrade: true, StaleReleaseThreshold: 3}
+	}
+	versionChecker := upgrade.NewVersionChecker(version, upgrade.DefaultCheckInterval)
+	versionChecker.OnUpdate(func(info *upgrade.VersionInfo) {
+		upgradeNotify(program, dashboard.NotifyUpdateAvailable(info.Current, info.Latest, info.ReleaseNotes)(), "")
+		upgradeNotifyLog(program, fmt.Sprintf("↑ update available: %s → %s", info.Current, info.Latest))
+
+		// GH-3790 root cause: this callback used to only log/notify —
+		// PerformHotUpgrade never ran unless a human pressed 'u' in the
+		// TUI, so the daemon silently sat on stale releases whenever
+		// nobody was watching. Auto-enqueue the same request the
+		// keypress sends, unless disabled via config.
+		if upgradeCfg.AutoHotUpgrade {
+			select {
+			case upgradeRequestCh <- struct{}{}:
+			default:
+				// an upgrade is already queued/running
+			}
+		}
+	})
+	if upgradeCfg.StaleReleaseThreshold > 0 {
+		versionChecker.SetStaleThreshold(upgradeCfg.StaleReleaseThreshold)
+		versionChecker.OnStale(func(info *upgrade.VersionInfo) {
+			upgradeNotifyLog(program, fmt.Sprintf(
+				"! %d releases behind (running %s, latest %s) — check ~/.pilot/logs/daemon.log",
+				info.ReleasesBehind, info.Current, info.Latest))
+			if alertsEngine != nil {
+				alertsEngine.ProcessEvent(alerts.Event{
+					Type:      alerts.EventTypeConfigError,
+					TaskID:    "self-upgrade",
+					TaskTitle: "Self-upgrade staleness check",
+					Error: fmt.Sprintf("daemon is %d releases behind (running %s, latest %s)",
+						info.ReleasesBehind, info.Current, info.Latest),
+					Metadata: map[string]string{
+						"check":           "self_upgrade_stale",
+						"current_version": info.Current,
+						"latest_version":  info.Latest,
+						"releases_behind": fmt.Sprintf("%d", info.ReleasesBehind),
+					},
+					Timestamp: time.Now(),
+				})
+			}
+		})
+	}
+	versionChecker.Start(ctx)
+	defer versionChecker.Stop()
+
+	// Set up hot upgrade goroutine - listens for upgrade requests from the
+	// version checker's auto-enqueue and (dashboard mode) the 'u' key press.
+	// GH-5651: runs in every mode, not just --dashboard, so headless hosted
+	// tenants track the release train; the channel is created unconditionally
+	// above and passed to the dashboard model when one exists.
+	//
+	// GH-4609: drainAlertGate tracks consecutive drain-timeout failures
+	// across retries of this loop (versionChecker re-fires OnUpdate every
+	// DefaultCheckInterval while an update stays available) so the alert
+	// below only pages an operator starting on the second consecutive
+	// drain timeout instead of every 5-minute retry.
+	drainAlertGate := &drainTimeoutAlertGate{}
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-upgradeRequestCh:
+				info := versionChecker.GetLatestInfo()
+				if info == nil || !info.UpdateAvail || info.LatestRelease == nil {
+					upgradeNotify(program, dashboard.NotifyUpgradeComplete(false, "No update available")(), "self-upgrade: no update available")
+					continue
+				}
+
+				// GH-4683: pause admission before draining — the dispatcher
+				// stops starting any NEW execution (queued rows stay
+				// queued; pollers may keep enqueueing), so the drain below
+				// only has to wait out tasks already running. Resumed on
+				// every path out of this attempt except a successful Unix
+				// exec-restart, where the whole process is replaced and
+				// nothing after PerformHotUpgrade runs anyway.
+				if dispatcher != nil {
+					dispatcher.PauseAdmissionFor(selfUpgradeAdmissionPauseOwner)
+				}
+				upgradeNotifyLog(program, "◌ pausing task admission — queued work waits, running tasks finish normally")
+
+				// Perform hot upgrade with a running-only TaskChecker
+				// (GH-4683): the drain waits solely for tasks the Monitor
+				// currently shows as RUNNING, never queued ones — see
+				// runningOnlyTaskChecker / liveWorkerTaskChecker.
+				hotUpgrader, err := upgrade.NewHotUpgrader(version, upgradeTaskChecker)
+				if err != nil {
+					if dispatcher != nil {
+						dispatcher.ResumeAdmissionFor(selfUpgradeAdmissionPauseOwner)
+					}
+					upgradeNotify(program, dashboard.NotifyUpgradeComplete(false, err.Error())(), "")
+					upgradeNotifyLog(program, fmt.Sprintf("✗ upgrade failed: %v", err))
+					continue
+				}
+
+				upgradeCfg := &upgrade.HotUpgradeConfig{
+					WaitForTasks: true,
+					TaskTimeout:  30 * time.Minute,
+					OnProgress: func(pct int, msg string) {
+						upgradeNotify(program, dashboard.NotifyUpgradeProgress(pct, msg)(), fmt.Sprintf("upgrade progress %d%%: %s", pct, msg))
+					},
+					FlushSession: func() error {
+						// Future: flush session state to SQLite here
+						return nil
+					},
+				}
+
+				if err := hotUpgrader.PerformHotUpgrade(ctx, info.LatestRelease, upgradeCfg); err != nil {
+					if dispatcher != nil {
+						dispatcher.ResumeAdmissionFor(selfUpgradeAdmissionPauseOwner)
+					}
+					upgradeNotify(program, dashboard.NotifyUpgradeComplete(false, err.Error())(), "")
+					upgradeNotifyLog(program, fmt.Sprintf("✗ upgrade failed: %v", err))
+					if drainAlertGate.observe(err) {
+						reportUpgradeFailure(alertsEngine, version, info.Latest, err)
+					} else {
+						slog.Warn("self-upgrade drain timeout — retrying next check, not alerting yet (1st consecutive occurrence)",
+							slog.String("current_version", version),
+							slog.String("target_version", info.Latest),
+							slog.Any("error", err),
+						)
+					}
+				} else {
+					// On Unix, process is replaced via exec and this line is
+					// never reached, so ResumeAdmission below is moot — a
+					// brand new process starts unpaused. On Windows, hot
+					// restart is not supported: the OLD process keeps
+					// running (the new binary is only installed on disk),
+					// so admission must resume here or the daemon would stay
+					// paused indefinitely until a manual restart. GH-4683.
+					if dispatcher != nil {
+						dispatcher.ResumeAdmissionFor(selfUpgradeAdmissionPauseOwner)
+					}
+					drainAlertGate.observe(nil)
+					upgradeNotify(program, dashboard.NotifyUpgradeComplete(true, "")(), "")
+					upgradeNotifyLog(program, "✓ upgrade installed — restart pilot to apply")
+				}
+			}
+		}
+	}()
+
 	// Dashboard mode: run TUI and handle shutdown via TUI quit
 	if dashboardMode && program != nil {
 		fmt.Println("\n● starting tui dashboard...")
-
-		// Start background version checker for hot reload (GH-369)
-		upgradeCfg := cfg.Upgrade
-		if upgradeCfg == nil {
-			upgradeCfg = &config.UpgradeConfig{AutoHotUpgrade: true, StaleReleaseThreshold: 3}
-		}
-		versionChecker := upgrade.NewVersionChecker(version, upgrade.DefaultCheckInterval)
-		versionChecker.OnUpdate(func(info *upgrade.VersionInfo) {
-			program.Send(dashboard.NotifyUpdateAvailable(info.Current, info.Latest, info.ReleaseNotes)())
-			program.Send(dashboard.AddLog(fmt.Sprintf("↑ update available: %s → %s", info.Current, info.Latest))())
-
-			// GH-3790 root cause: this callback used to only log/notify —
-			// PerformHotUpgrade never ran unless a human pressed 'u' in the
-			// TUI, so the daemon silently sat on stale releases whenever
-			// nobody was watching. Auto-enqueue the same request the
-			// keypress sends, unless disabled via config.
-			if upgradeCfg.AutoHotUpgrade {
-				select {
-				case upgradeRequestCh <- struct{}{}:
-				default:
-					// an upgrade is already queued/running
-				}
-			}
-		})
-		if upgradeCfg.StaleReleaseThreshold > 0 {
-			versionChecker.SetStaleThreshold(upgradeCfg.StaleReleaseThreshold)
-			versionChecker.OnStale(func(info *upgrade.VersionInfo) {
-				program.Send(dashboard.AddLog(fmt.Sprintf(
-					"! %d releases behind (running %s, latest %s) — check ~/.pilot/logs/daemon.log",
-					info.ReleasesBehind, info.Current, info.Latest))())
-				if alertsEngine != nil {
-					alertsEngine.ProcessEvent(alerts.Event{
-						Type:      alerts.EventTypeConfigError,
-						TaskID:    "self-upgrade",
-						TaskTitle: "Self-upgrade staleness check",
-						Error: fmt.Sprintf("daemon is %d releases behind (running %s, latest %s)",
-							info.ReleasesBehind, info.Current, info.Latest),
-						Metadata: map[string]string{
-							"check":           "self_upgrade_stale",
-							"current_version": info.Current,
-							"latest_version":  info.Latest,
-							"releases_behind": fmt.Sprintf("%d", info.ReleasesBehind),
-						},
-						Timestamp: time.Now(),
-					})
-				}
-			})
-		}
-		versionChecker.Start(ctx)
-		defer versionChecker.Stop()
-
-		// Set up hot upgrade goroutine - listens for upgrade requests from 'u' key press
-		// The channel is created above and passed to the dashboard model
-		//
-		// GH-4609: drainAlertGate tracks consecutive drain-timeout failures
-		// across retries of this loop (versionChecker re-fires OnUpdate every
-		// DefaultCheckInterval while an update stays available) so the alert
-		// below only pages an operator starting on the second consecutive
-		// drain timeout instead of every 5-minute retry.
-		drainAlertGate := &drainTimeoutAlertGate{}
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-upgradeRequestCh:
-					info := versionChecker.GetLatestInfo()
-					if info == nil || !info.UpdateAvail || info.LatestRelease == nil {
-						program.Send(dashboard.NotifyUpgradeComplete(false, "No update available")())
-						continue
-					}
-
-					// GH-4683: pause admission before draining — the dispatcher
-					// stops starting any NEW execution (queued rows stay
-					// queued; pollers may keep enqueueing), so the drain below
-					// only has to wait out tasks already running. Resumed on
-					// every path out of this attempt except a successful Unix
-					// exec-restart, where the whole process is replaced and
-					// nothing after PerformHotUpgrade runs anyway.
-					if dispatcher != nil {
-						dispatcher.PauseAdmissionFor(selfUpgradeAdmissionPauseOwner)
-					}
-					program.Send(dashboard.AddLog("◌ pausing task admission — queued work waits, running tasks finish normally")())
-
-					// Perform hot upgrade with a running-only TaskChecker
-					// (GH-4683): the drain waits solely for tasks the Monitor
-					// currently shows as RUNNING, never queued ones — see
-					// runningOnlyTaskChecker.
-					hotUpgrader, err := upgrade.NewHotUpgrader(version, &runningOnlyTaskChecker{monitor: monitor})
-					if err != nil {
-						if dispatcher != nil {
-							dispatcher.ResumeAdmissionFor(selfUpgradeAdmissionPauseOwner)
-						}
-						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
-						program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
-						continue
-					}
-
-					upgradeCfg := &upgrade.HotUpgradeConfig{
-						WaitForTasks: true,
-						TaskTimeout:  30 * time.Minute,
-						OnProgress: func(pct int, msg string) {
-							program.Send(dashboard.NotifyUpgradeProgress(pct, msg)())
-						},
-						FlushSession: func() error {
-							// Future: flush session state to SQLite here
-							return nil
-						},
-					}
-
-					if err := hotUpgrader.PerformHotUpgrade(ctx, info.LatestRelease, upgradeCfg); err != nil {
-						if dispatcher != nil {
-							dispatcher.ResumeAdmissionFor(selfUpgradeAdmissionPauseOwner)
-						}
-						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
-						program.Send(dashboard.AddLog(fmt.Sprintf("✗ upgrade failed: %v", err))())
-						if drainAlertGate.observe(err) {
-							reportUpgradeFailure(alertsEngine, version, info.Latest, err)
-						} else {
-							slog.Warn("self-upgrade drain timeout — retrying next check, not alerting yet (1st consecutive occurrence)",
-								slog.String("current_version", version),
-								slog.String("target_version", info.Latest),
-								slog.Any("error", err),
-							)
-						}
-					} else {
-						// On Unix, process is replaced via exec and this line is
-						// never reached, so ResumeAdmission below is moot — a
-						// brand new process starts unpaused. On Windows, hot
-						// restart is not supported: the OLD process keeps
-						// running (the new binary is only installed on disk),
-						// so admission must resume here or the daemon would stay
-						// paused indefinitely until a manual restart. GH-4683.
-						if dispatcher != nil {
-							dispatcher.ResumeAdmissionFor(selfUpgradeAdmissionPauseOwner)
-						}
-						drainAlertGate.observe(nil)
-						program.Send(dashboard.NotifyUpgradeComplete(true, "")())
-						program.Send(dashboard.AddLog("✓ upgrade installed — restart pilot to apply")())
-					}
-				}
-			}
-		}()
 
 		// Periodic refresh to catch any missed updates
 		go func() {

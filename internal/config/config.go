@@ -1082,17 +1082,14 @@ func IsHosted() bool {
 }
 
 // AssertHostedInvariants enforces the hard invariants of the hosted profile
-// (PILOT_HOSTED=1, SaaS S0.7). Hosted instances are redeployed and exposed
-// by the control plane, so a config that enables self-upgrade or a local
-// tunnel is a misconfiguration, not a valid deployment — both fail loud at
-// boot rather than letting the instance run against a config the hosted
-// profile forbids. No-op when hosted mode is off.
+// (PILOT_HOSTED=1, SaaS S0.7). Hosted ingress is terminated by the platform,
+// so a config that enables a local tunnel is a misconfiguration and fails
+// loud at boot. upgrade.auto_hot_upgrade is deliberately NOT an invariant
+// (GH-5651): no control-plane rollout exists, so the daemon self-upgrades to
+// track the release train. No-op when hosted mode is off.
 func (c *Config) AssertHostedInvariants() error {
 	if !IsHosted() {
 		return nil
-	}
-	if c.Upgrade != nil && c.Upgrade.AutoHotUpgrade {
-		return fmt.Errorf("config: PILOT_HOSTED=1 requires upgrade.auto_hot_upgrade=false (hosted instances are redeployed by the control plane, not self-upgraded)")
 	}
 	if c.Tunnel != nil && c.Tunnel.Enabled {
 		return fmt.Errorf("config: PILOT_HOSTED=1 requires tunnel.enabled=false (hosted ingress is terminated by the platform, not a tunnel running inside the instance)")

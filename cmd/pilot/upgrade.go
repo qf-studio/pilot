@@ -14,10 +14,12 @@ import (
 	"syscall"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"github.com/qf-studio/pilot/internal/alerts"
+	"github.com/qf-studio/pilot/internal/dashboard"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/upgrade"
 )
@@ -76,6 +78,62 @@ func (c *runningOnlyTaskChecker) GetRunningTaskIDs() []string {
 
 func (c *runningOnlyTaskChecker) WaitForTasks(ctx context.Context, timeout time.Duration) error {
 	return c.monitor.WaitForRunningTasks(ctx, timeout)
+}
+
+// liveWorkerTaskChecker adapts an executor.LiveWorkerChecker (in production
+// *executor.Dispatcher) to upgrade.TaskChecker for headless daemons, which
+// have no dashboard Monitor (GH-5651). It counts only tasks a live worker is
+// processing right now, matching runningOnlyTaskChecker's running-only
+// semantics; pair it with Dispatcher.PauseAdmissionFor so nothing new starts
+// during the drain.
+type liveWorkerTaskChecker struct {
+	workers executor.LiveWorkerChecker
+}
+
+func (c *liveWorkerTaskChecker) GetRunningTaskIDs() []string {
+	return c.workers.GetRunningTaskIDs()
+}
+
+// WaitForTasks polls every 2 seconds until no live worker holds a task. On
+// deadline it returns an error wrapping executor.ErrDrainTimeout so
+// drainTimeoutAlertGate (GH-4609) classifies it the same as the Monitor path.
+func (c *liveWorkerTaskChecker) WaitForTasks(ctx context.Context, timeout time.Duration) error {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		ids := c.workers.GetRunningTaskIDs()
+		if len(ids) == 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("%w: %d running task(s) still in flight: %v", executor.ErrDrainTimeout, len(ids), ids)
+		case <-ticker.C:
+		}
+	}
+}
+
+// upgradeNotify delivers a self-upgrade event to the TUI (only when a
+// dashboard program exists) and always logs line through slog, so headless
+// daemons keep a trail (GH-5651). An empty line skips the log; a nil msg
+// skips the TUI send.
+func upgradeNotify(program *tea.Program, msg tea.Msg, line string) {
+	if program != nil && msg != nil {
+		program.Send(msg)
+	}
+	if line != "" {
+		slog.Info(line, slog.String("component", "self-upgrade"))
+	}
+}
+
+// upgradeNotifyLog is upgradeNotify for a plain dashboard log line.
+func upgradeNotifyLog(program *tea.Program, line string) {
+	upgradeNotify(program, dashboard.AddLog(line)(), line)
 }
 
 // drainTimeoutAlertGate gates self-upgrade alerting so a drain-timeout

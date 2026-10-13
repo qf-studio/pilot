@@ -135,8 +135,8 @@ func TestSave_UnhostedModeUnchanged(t *testing.T) {
 }
 
 // TestAssertHostedInvariants covers the hard invariants of the hosted
-// profile (GH-4274): auto_hot_upgrade must be false and tunnel must be
-// disabled when PILOT_HOSTED=1.
+// profile (GH-4274): tunnel must be disabled when PILOT_HOSTED=1.
+// auto_hot_upgrade is allowed (GH-5651: tenants self-upgrade).
 func TestAssertHostedInvariants(t *testing.T) {
 	t.Run("NotHosted_ViolationsAllowed", func(t *testing.T) {
 		cfg := DefaultConfig()
@@ -147,18 +147,14 @@ func TestAssertHostedInvariants(t *testing.T) {
 		}
 	})
 
-	t.Run("Hosted_AutoHotUpgradeTrue_Fails", func(t *testing.T) {
+	t.Run("Hosted_AutoHotUpgradeTrue_Allowed", func(t *testing.T) {
 		t.Setenv(hostedEnvVar, "1")
 		cfg := DefaultConfig()
 		cfg.Upgrade.AutoHotUpgrade = true
 		cfg.Tunnel.Enabled = false
 
-		err := cfg.AssertHostedInvariants()
-		if err == nil {
-			t.Fatal("expected an error when hosted + upgrade.auto_hot_upgrade=true, got nil")
-		}
-		if !strings.Contains(err.Error(), "auto_hot_upgrade") {
-			t.Errorf("error = %q, want it to mention auto_hot_upgrade", err.Error())
+		if err := cfg.AssertHostedInvariants(); err != nil {
+			t.Errorf("hosted + upgrade.auto_hot_upgrade=true must be allowed (GH-5651), got: %v", err)
 		}
 	})
 
@@ -192,9 +188,10 @@ func TestAssertHostedInvariants(t *testing.T) {
 // TestLoad_HostedModeAssertions proves the assertions fire at Load() —
 // the daemon boot chokepoint — both for an explicit violating config file
 // and for the zero-config default path (GH-4274 acceptance criterion:
-// "hosted + auto_hot_upgrade=true fails boot with a clear error").
+// "hosted + auto_hot_upgrade=true fails boot with a clear error"), since
+// relaxed by GH-5651: auto_hot_upgrade=true now boots; the tunnel invariant stays.
 func TestLoad_HostedModeAssertions(t *testing.T) {
-	t.Run("ViolatingConfigFile_FailsBoot", func(t *testing.T) {
+	t.Run("AutoHotUpgradeConfigFile_Boots", func(t *testing.T) {
 		t.Setenv(hostedEnvVar, "1")
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "config.yaml")
@@ -210,12 +207,8 @@ upgrade:
 			t.Fatalf("failed to write test config: %v", err)
 		}
 
-		_, err := Load(configPath)
-		if err == nil {
-			t.Fatal("expected Load() to fail boot for hosted config with auto_hot_upgrade=true")
-		}
-		if !strings.Contains(err.Error(), "auto_hot_upgrade") {
-			t.Errorf("error = %q, want it to clearly mention auto_hot_upgrade", err.Error())
+		if _, err := Load(configPath); err != nil {
+			t.Errorf("hosted config with auto_hot_upgrade=true must boot (GH-5651), got: %v", err)
 		}
 	})
 
@@ -265,17 +258,15 @@ upgrade:
 		}
 	})
 
-	t.Run("NoConfigFile_DefaultsViolateInvariant_FailsBoot", func(t *testing.T) {
-		// DefaultConfig() sets upgrade.auto_hot_upgrade=true (GH-3790), so a
-		// hosted instance booting with no config file at all must still fail
-		// loud rather than silently running against a non-compliant default.
+	t.Run("NoConfigFile_DefaultsBoot", func(t *testing.T) {
+		// DefaultConfig() sets upgrade.auto_hot_upgrade=true (GH-3790), which
+		// hosted mode now allows (GH-5651), so zero-config hosted boot works.
 		t.Setenv(hostedEnvVar, "1")
 		tmpDir := t.TempDir()
 		configPath := filepath.Join(tmpDir, "does-not-exist.yaml")
 
-		_, err := Load(configPath)
-		if err == nil {
-			t.Fatal("expected Load() to fail boot when hosted + no config file (defaults violate hosted invariants)")
+		if _, err := Load(configPath); err != nil {
+			t.Errorf("expected hosted zero-config boot to succeed, got: %v", err)
 		}
 	})
 
