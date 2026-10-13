@@ -60,6 +60,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeDeadlock: {"autopilot_deadlock", true},
 		// Autopilot PR-loop tick liveness (GH-5541)
 		AlertTypeTickStale: {"autopilot_tick_stale", true},
+		// Epic-parent pass liveness (GH-5664)
+		AlertTypeEpicPassStale: {"autopilot_epic_pass_stale", true},
 		// Eval regression (GH-2065)
 		AlertTypeEvalRegression: {"eval_regression", true},
 		// Escalation (GH-848)

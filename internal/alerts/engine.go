@@ -1782,6 +1782,20 @@ func (e *Engine) handleAutopilotMetrics(ctx context.Context, event Event) {
 				e.fireAlert(ctx, rule, alert)
 			}
 
+		// GH-5664: the epic-parent reconciler pass runs in its own goroutine, so
+		// a reconciler that ignores its context holds the inflight guard
+		// forever and later ticks skip silently. Same severity path as tick
+		// staleness; MetricsAlerter decides staleness.
+		case AlertTypeEpicPassStale:
+			if event.Metadata["epic_pass_stale"] == "true" && e.shouldFire(rule) {
+				age := event.Metadata["epic_pass_age_sec"]
+				limit := event.Metadata["epic_pass_limit_sec"]
+				alert := e.createAlert(rule, event,
+					fmt.Sprintf("Autopilot epic-parent reconciler pass has not completed for %ss (alert threshold %ss, 3x poll interval + stage timeout). A reconciler is likely hung.",
+						age, limit))
+				e.fireAlert(ctx, rule, alert)
+			}
+
 		// GH-849: Deadlock detection
 		case AlertTypeDeadlock:
 			timeout := rule.Condition.DeadlockTimeout

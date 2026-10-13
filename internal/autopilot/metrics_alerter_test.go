@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/alerts"
+	"github.com/qf-studio/pilot/internal/testutil"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 func TestTripTracker_RecordTrip(t *testing.T) {
@@ -271,5 +273,82 @@ func TestMetricsAlerter_Evaluate_IdleIsNotDeadlock(t *testing.T) {
 	}
 	if !controller.IsDeadlockAlertSent() {
 		t.Error("deadlock alert not marked sent after a real stall")
+	}
+}
+
+func TestEpicPassStaleness(t *testing.T) {
+	now := time.Now()
+	const interval, stage = 30 * time.Second, 5 * time.Minute
+	// limit = 3*30s + 5m = 390s
+	tests := []struct {
+		name      string
+		lastPass  time.Time
+		started   time.Time
+		wantStale bool
+	}{
+		{"fresh pass is not stale", now.Add(-10 * time.Second), now.Add(-2 * time.Hour), false},
+		{"pass inside the limit is not stale", now.Add(-6 * time.Minute), now.Add(-2 * time.Hour), false},
+		{"pass older than the limit is stale", now.Add(-7 * time.Minute), now.Add(-2 * time.Hour), true},
+		{"zero time inside the start window is not stale", time.Time{}, now.Add(-time.Minute), false},
+		{"zero time past the start window is stale", time.Time{}, now.Add(-10 * time.Minute), true},
+		{"zero time and zero start is not stale", time.Time{}, time.Time{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, limit, stale := epicPassStaleness(tt.lastPass, tt.started, interval, stage, now)
+			if limit != 390 {
+				t.Errorf("limit = %v, want 390", limit)
+			}
+			if stale != tt.wantStale {
+				t.Errorf("stale = %v, want %v", stale, tt.wantStale)
+			}
+		})
+	}
+}
+
+// TestMetricsAlerter_EpicPassStaleRaisesAlert drives the real alert engine: a
+// controller whose epic-parent pass last finished an hour ago raises the
+// warning and flags epic_pass_stale; a fresh pass does not.
+func TestMetricsAlerter_EpicPassStaleRaisesAlert(t *testing.T) {
+	config := &alerts.AlertConfig{
+		Enabled:  true,
+		Channels: []alerts.ChannelConfig{{Name: "capture", Type: "webhook", Enabled: true}},
+		Rules: []alerts.AlertRule{
+			{Name: "autopilot_epic_pass_stale", Type: alerts.AlertTypeEpicPassStale, Enabled: true, Severity: alerts.SeverityWarning},
+		},
+	}
+	capture := alertCapture{alerts: make(chan *alerts.Alert, 4)}
+	dispatcher := alerts.NewDispatcher(config)
+	dispatcher.RegisterChannel(capture)
+	engine := alerts.NewEngine(config, alerts.WithDispatcher(dispatcher))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := engine.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	c := NewController(DefaultConfig(), github.NewClient(testutil.FakeGitHubToken), nil, "owner", "repo")
+	ma := NewMetricsAlerter(c, engine)
+
+	c.Metrics().RecordEpicParentPass(time.Now())
+	ma.evaluate()
+	select {
+	case a := <-capture.alerts:
+		t.Fatalf("fresh pass raised %q", a.Message)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	c.Metrics().RecordEpicParentPass(time.Now().Add(-time.Hour))
+	ma.evaluate()
+	select {
+	case a := <-capture.alerts:
+		if a.Severity != alerts.SeverityWarning {
+			t.Errorf("severity = %v, want warning", a.Severity)
+		}
+		if !strings.Contains(a.Message, "epic-parent reconciler pass") {
+			t.Errorf("unexpected message %q", a.Message)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("stale epic-parent pass raised no alert")
 	}
 }

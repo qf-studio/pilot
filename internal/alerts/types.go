@@ -44,6 +44,10 @@ const (
 	// from deadlock (ticks run but no PR changes stage).
 	AlertTypeTickStale AlertType = "autopilot_tick_stale"
 
+	// Epic-parent reconciler pass liveness (GH-5664): the pass runs off the PR
+	// loop, so a hung reconciler does not trip autopilot_tick_stale.
+	AlertTypeEpicPassStale AlertType = "autopilot_epic_pass_stale"
+
 	// Escalation alerts (GH-848)
 	AlertTypeEscalation AlertType = "escalation"
 
@@ -487,6 +491,19 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    30 * time.Minute,
 			Description: "Alert when the autopilot PR-processing loop has not ticked for 3x the poll interval",
+		},
+		// Epic-parent pass liveness (GH-5664): same shape as the tick rule for
+		// the reconciler pass that runs in its own goroutine (GH-5657). The
+		// limit is computed by MetricsAlerter and arrives in event metadata.
+		{
+			Name:        "autopilot_epic_pass_stale",
+			Type:        AlertTypeEpicPassStale,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when the autopilot epic-parent reconciler pass has not completed for 3x the poll interval plus the stage timeout",
 		},
 		// Eval regression detection (GH-2065)
 		{

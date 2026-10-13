@@ -94,6 +94,9 @@ type MetricsAlerter struct {
 	log           *slog.Logger
 	tripTracker   *tripTracker
 	metricsSource SnapshotSource
+	// startedAt anchors the epic-pass start window: a controller that has not
+	// finished its first pass is only stale once the limit has elapsed since here.
+	startedAt time.Time
 }
 
 // NewMetricsAlerter creates a new MetricsAlerter. Deadlock/stuck-PR detection
@@ -110,6 +113,7 @@ func NewMetricsAlerter(controller *Controller, engine *alerts.Engine) *MetricsAl
 		log:           slog.Default().With("component", "metrics-alerter"),
 		tripTracker:   newTripTracker(),
 		metricsSource: controller.Metrics(),
+		startedAt:     time.Now(),
 	}
 }
 
@@ -201,6 +205,14 @@ func (ma *MetricsAlerter) evaluate() {
 	}
 	tickAgeSec, tickLimitSec, tickStale := tickStaleness(lastTick, pollInterval, ma.controller.config.EffectiveStageTimeout(), time.Now())
 
+	// GH-5664: epic-parent pass liveness. The pass runs off the PR loop, so a
+	// hung reconciler never moves LastTickAt and tickStaleness cannot see it.
+	var lastEpicPass time.Time
+	if m := ma.controller.Metrics(); m != nil {
+		lastEpicPass = m.Snapshot().LastEpicParentPassAt
+	}
+	epicAgeSec, epicLimitSec, epicStale := epicPassStaleness(lastEpicPass, ma.startedAt, pollInterval, ma.controller.config.EffectiveStageTimeout(), time.Now())
+
 	event := alerts.Event{
 		Type:      alerts.EventTypeAutopilotMetrics,
 		TaskID:    "autopilot",
@@ -224,6 +236,10 @@ func (ma *MetricsAlerter) evaluate() {
 			"tick_age_seconds":             fmt.Sprintf("%.0f", tickAgeSec),
 			"tick_stale_threshold_seconds": fmt.Sprintf("%.0f", tickLimitSec),
 			"tick_stale":                   fmt.Sprintf("%t", tickStale),
+			// GH-5664: epic-parent pass liveness
+			"epic_pass_age_sec":   fmt.Sprintf("%.0f", epicAgeSec),
+			"epic_pass_limit_sec": fmt.Sprintf("%.0f", epicLimitSec),
+			"epic_pass_stale":     fmt.Sprintf("%t", epicStale),
 		},
 		Timestamp: time.Now(),
 	}
@@ -241,6 +257,10 @@ func (ma *MetricsAlerter) evaluate() {
 // tickStaleFactor is how many poll intervals the PR loop may go without
 // progress before the tick-liveness alert fires (GH-5541).
 const tickStaleFactor = 3
+
+// epicPassStaleFactor is how many epic-parent intervals the reconciler pass may
+// go without completing before the epic-pass-stale alert fires (GH-5664).
+const epicPassStaleFactor = 3
 
 // idlePollIntervalFloor is the slowest interval Controller.Run's ticker uses
 // (idle backoff), so it is the floor for the staleness threshold — otherwise an
@@ -270,6 +290,32 @@ func tickStaleness(lastTick time.Time, pollInterval, stageTimeout time.Duration,
 		return 0, limit.Seconds(), false
 	}
 	age := now.Sub(lastTick)
+	return age.Seconds(), limit.Seconds(), age > limit
+}
+
+// epicPassStaleness reports the age of the last epic-parent reconciler pass, the
+// staleness limit, and whether the pass is stale (GH-5664).
+//
+// The limit is epicPassStaleFactor x the epic-parent interval (CIPollInterval,
+// the ticker runEpicParentPass is started from) plus the stage timeout: one pass
+// may legitimately run for a full stageTimeout before its deadline fires, and
+// the ticks that skip behind the inflight guard add nothing.
+//
+// A controller that has never finished a pass (zero lastPass) is measured from
+// started instead, so it is not stale during the first limit window after start
+// but is once that window passes with no pass ever completing. A zero started is
+// never stale. lastPass is stamped only by a pass that finished inside its
+// deadline, so a timed-out pass keeps the age growing.
+func epicPassStaleness(lastPass, started time.Time, interval, stageTimeout time.Duration, now time.Time) (ageSec, limitSec float64, stale bool) {
+	limit := epicPassStaleFactor*interval + stageTimeout
+	ref := lastPass
+	if ref.IsZero() {
+		ref = started
+	}
+	if ref.IsZero() {
+		return 0, limit.Seconds(), false
+	}
+	age := now.Sub(ref)
 	return age.Seconds(), limit.Seconds(), age > limit
 }
 
