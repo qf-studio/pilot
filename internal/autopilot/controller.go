@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/alerts"
@@ -853,6 +854,26 @@ type Controller struct {
 	// when set — nil in production, used by tests to simulate backoff and
 	// the abandon threshold's wall-clock window without real sleeps.
 	releaseBackfillClock func() time.Time
+	// releaseBackfillCursor is where the next reconcileReleaseBackfill pass
+	// resumes in its due-row list, so the per-pass row cap rotates through all
+	// rows instead of re-touching the first few forever (GH-5657). Guarded by
+	// releaseBackfillMu.
+	releaseBackfillCursor int
+
+	// epicParentMu guards the epic-parent pass state below (GH-5657).
+	epicParentMu sync.Mutex
+	// epicParentInflight is true while a runEpicParentPass is executing; a new
+	// tick skips its pass instead of piling a second one up behind it.
+	epicParentInflight bool
+	// epicParentStepsFn overrides the reconciler list. Test seam only (GH-5657):
+	// nil in production.
+	epicParentStepsFn func() []epicParentStep
+}
+
+// epicParentStep is one named reconciler of the epic-parent pass (GH-5657).
+type epicParentStep struct {
+	name string
+	run  func(ctx context.Context)
 }
 
 // AdmissionPauser is the narrow seam Controller uses to pause/resume new-work
@@ -9757,30 +9778,9 @@ func (c *Controller) Run(ctx context.Context) error {
 				c.log.Warn("periodic merged PR scan failed", "error", err)
 			}
 		case <-epicParentTicker.C:
-			// GH-3939: poll-cycle epic-parent auto-close sweep.
-			c.reconcileEpicParents(ctx)
-			// GH-3990: sweep closed epics that completed without an enqueued
-			// scope release (daemon down at close time, or crashed between
-			// close and enqueue).
-			c.reconcileClosedEpicScopes(ctx)
-			// GH-3991: poll-cycle label-scope completion sweep — the second
-			// scope kind (sibling issues sharing a "scope:<name>" label, no
-			// epic parent).
-			c.reconcileLabelScopes(ctx)
-			// GH-3990: claim any scope releases now unblocked, and re-drive
-			// stale 'releasing' rows with no live carrier.
-			c.startPendingScopeReleases(ctx)
-			// GH-4370: heal autopilot_pr_state residue (failed/releasing rows
-			// orphaned by a manual tag push that bypassed the release train)
-			// whose PR is, in fact, already merged and tagged.
-			c.reconcileReleaseBackfill(ctx)
-			// GH-4454: poll-cycle lane-starvation sweep — this project's lane
-			// has open pilot-labeled issues but nothing queued/running.
-			c.reconcileLaneStarvation(ctx)
-			// GH-4488: poll-cycle board-sourcing audit — this project's board
-			// sourcing is enabled but has open labeled issues it isn't
-			// covering (absent from the board, or wrong status).
-			c.reconcileUnsourcedBoardIssues(ctx)
+			// GH-5657: the reconcilers run off the loop. Run inline, one slow
+			// GitHub call here starved processAllPRs for 57 minutes.
+			go c.runEpicParentPass(ctx)
 		case <-ticker.C:
 			c.processAllPRs(ctx)
 
@@ -9806,6 +9806,116 @@ func (c *Controller) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// epicParentSteps returns the reconcilers of one epic-parent pass, in order.
+func (c *Controller) epicParentSteps() []epicParentStep {
+	if c.epicParentStepsFn != nil {
+		return c.epicParentStepsFn()
+	}
+	return []epicParentStep{
+		// GH-3939: poll-cycle epic-parent auto-close sweep.
+		{"reconcileEpicParents", c.reconcileEpicParents},
+		// GH-3990: sweep closed epics that completed without an enqueued scope
+		// release (daemon down at close time, or crashed between close and enqueue).
+		{"reconcileClosedEpicScopes", c.reconcileClosedEpicScopes},
+		// GH-3991: label-scope completion sweep — the second scope kind (sibling
+		// issues sharing a "scope:<name>" label, no epic parent).
+		{"reconcileLabelScopes", c.reconcileLabelScopes},
+		// GH-3990: claim any scope releases now unblocked, and re-drive stale
+		// 'releasing' rows with no live carrier.
+		{"startPendingScopeReleases", c.startPendingScopeReleases},
+		// GH-4370: heal autopilot_pr_state residue (failed/releasing rows orphaned
+		// by a manual tag push that bypassed the release train) whose PR is, in
+		// fact, already merged and tagged.
+		{"reconcileReleaseBackfill", c.reconcileReleaseBackfill},
+		// GH-4454: lane-starvation sweep — this project's lane has open
+		// pilot-labeled issues but nothing queued/running.
+		{"reconcileLaneStarvation", c.reconcileLaneStarvation},
+		// GH-4488: board-sourcing audit — board sourcing is enabled but has open
+		// labeled issues it isn't covering (absent from the board, or wrong status).
+		{"reconcileUnsourcedBoardIssues", c.reconcileUnsourcedBoardIssues},
+	}
+}
+
+// runEpicParentPass runs one epic-parent reconciler pass (GH-5657). Run starts
+// it in its own goroutine so a slow reconciler can no longer starve
+// processAllPRs: on 2026-10-13 reconcileReleaseBackfill sat in a GitHub compare
+// for 57 minutes inside the Run goroutine and the controller did nothing else.
+//
+// Only one pass runs at a time — a tick that finds the previous pass still
+// running skips (debug log). Each pass gets Config.EffectiveStageTimeout() as a
+// deadline; when it fires, one WARN names the reconciler that was running and
+// autopilot_epic_parent_pass_timeouts_total is incremented. Reconcilers honor
+// the cancelled ctx at their next API call; one that ignores it keeps the
+// inflight guard held until it returns, so passes never pile up.
+//
+// Decision: this does not call Metrics.RecordTick. That gauge measures
+// processAllPRs; stamping it from here would hide a stuck PR loop from
+// tickStaleness. The pass has its own LastEpicParentPassAt stamp.
+func (c *Controller) runEpicParentPass(ctx context.Context) {
+	c.epicParentMu.Lock()
+	if c.epicParentInflight {
+		c.epicParentMu.Unlock()
+		c.log.Debug("epic-parent pass: previous pass still running, skipping")
+		return
+	}
+	c.epicParentInflight = true
+	c.epicParentMu.Unlock()
+
+	timeout := c.config.EffectiveStageTimeout()
+	passCtx, cancel := context.WithTimeout(ctx, timeout)
+	started := time.Now()
+
+	// currentStep is pass-local (not a Controller field) and never cleared, so
+	// the watcher below still names the slow reconciler when it runs a moment
+	// after the pass has already unwound.
+	var currentStep atomic.Value
+	currentStep.Store("")
+
+	// Deadline watcher: logs at expiry even when a reconciler ignores ctx and
+	// never returns. A normal finish cancels passCtx with context.Canceled,
+	// which this ignores.
+	stopWatch := context.AfterFunc(passCtx, func() {
+		if passCtx.Err() != context.DeadlineExceeded || ctx.Err() != nil {
+			return
+		}
+		c.log.Warn("epic-parent pass exceeded deadline, cancelling",
+			"reconciler", currentStep.Load(),
+			"elapsed", time.Since(started).Round(time.Millisecond),
+			"pass_timeout", timeout,
+		)
+		c.metrics.RecordEpicParentPassTimeout()
+	})
+
+	// Deferred in this order so they run: recover, clear guard, stop watcher,
+	// cancel. The guard is cleared BEFORE the context is cancelled (GH-5554's
+	// ordering in processPRWithDeadline): a cancel-first order lets the watcher
+	// race a finished pass into a false timeout.
+	defer cancel()
+	defer stopWatch()
+	defer func() {
+		c.epicParentMu.Lock()
+		c.epicParentInflight = false
+		c.epicParentMu.Unlock()
+	}()
+	defer func() {
+		if r := recover(); r != nil {
+			c.log.Error("epic-parent pass panicked",
+				"panic", fmt.Sprint(r),
+				"stack", string(debug.Stack()),
+			)
+		}
+	}()
+
+	for _, step := range c.epicParentSteps() {
+		if passCtx.Err() != nil {
+			return
+		}
+		currentStep.Store(step.name)
+		step.run(passCtx)
+	}
+	c.metrics.RecordEpicParentPass(time.Now())
 }
 
 // rateLimitCooldownActive reports whether a prior GitHub primary-rate-limit

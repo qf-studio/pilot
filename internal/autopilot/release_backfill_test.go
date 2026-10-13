@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -626,5 +627,114 @@ func TestReconcileReleaseBackfill_BreakerOpenSkipsSweep(t *testing.T) {
 	c.reconcileReleaseBackfill(context.Background())
 	if pullFetches != 1 {
 		t.Errorf("pull fetches after breaker closed = %d, want 1", pullFetches)
+	}
+}
+
+// releaseBackfillCappedFixture seeds n StageReleasing rows (PR numbers 1..n) in
+// a state store and serves every PR as open-and-unmerged through a server that
+// records which PR numbers were fetched.
+func releaseBackfillCappedFixture(t *testing.T, n int) (c *Controller, fetched func() map[int]int) {
+	t.Helper()
+
+	var mu sync.Mutex
+	hits := map[int]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/pulls/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var num int
+		if _, err := fmt.Sscanf(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:], "%d", &num); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		hits[num]++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(&github.PullRequest{Number: num, Merged: false})
+	}))
+	t.Cleanup(server.Close)
+
+	c = NewController(DefaultConfig(), github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL), nil, "owner", "repo")
+	store, err := NewStateStoreFromPath(":memory:")
+	if err != nil {
+		t.Fatalf("NewStateStoreFromPath: %v", err)
+	}
+	c.SetStateStore(store)
+	for i := 1; i <= n; i++ {
+		if err := store.SavePRState("owner/repo", &PRState{
+			PRNumber:    i,
+			PRURL:       fmt.Sprintf("https://github.com/owner/repo/pull/%d", i),
+			IssueNumber: i,
+			Stage:       StageReleasing,
+		}); err != nil {
+			t.Fatalf("SavePRState: %v", err)
+		}
+	}
+
+	return c, func() map[int]int {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make(map[int]int, len(hits))
+		for k, v := range hits {
+			out[k] = v
+		}
+		return out
+	}
+}
+
+// TestReconcileReleaseBackfill_RowCapPerPass pins GH-5657's per-pass row cap: a
+// pass over 20 eligible rows touches at most maxReleaseBackfillRowsPerPass, and
+// the window rotates so every row is eventually visited (a clean fetch of an
+// unmerged PR clears its backoff, so rows stay due and would otherwise hold the
+// first slots forever).
+func TestReconcileReleaseBackfill_RowCapPerPass(t *testing.T) {
+	const rows = 20
+	c, fetched := releaseBackfillCappedFixture(t, rows)
+
+	c.reconcileReleaseBackfill(context.Background())
+
+	first := fetched()
+	total := 0
+	for _, n := range first {
+		total += n
+	}
+	if total > maxReleaseBackfillRowsPerPass {
+		t.Fatalf("one pass fetched %d rows (%v), want at most %d", total, first, maxReleaseBackfillRowsPerPass)
+	}
+	if total != maxReleaseBackfillRowsPerPass {
+		t.Fatalf("one pass fetched %d rows, want exactly %d with %d eligible", total, maxReleaseBackfillRowsPerPass, rows)
+	}
+
+	for i := 1; i < rows/maxReleaseBackfillRowsPerPass; i++ {
+		c.reconcileReleaseBackfill(context.Background())
+	}
+	seen := fetched()
+	if len(seen) != rows {
+		t.Fatalf("after %d passes %d distinct rows were visited, want all %d (window must rotate): %v",
+			rows/maxReleaseBackfillRowsPerPass, len(seen), rows, seen)
+	}
+}
+
+// TestReconcileReleaseBackfill_StopsOnCancelledContext pins the ctx.Err() check
+// at the top of each row iteration: with the context already done the sweep must
+// not start any row. A row attempted on a dead ctx fails its fetch and would
+// leave backoff bookkeeping behind.
+func TestReconcileReleaseBackfill_StopsOnCancelledContext(t *testing.T) {
+	c, fetched := releaseBackfillCappedFixture(t, 20)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.reconcileReleaseBackfill(ctx)
+
+	if got := fetched(); len(got) != 0 {
+		t.Fatalf("cancelled ctx: %d rows reached the server (%v), want 0", len(got), got)
+	}
+	c.releaseBackfillMu.Lock()
+	tracked := len(c.releaseBackfillRows)
+	c.releaseBackfillMu.Unlock()
+	if tracked != 0 {
+		t.Fatalf("cancelled ctx: %d rows were attempted (failure bookkeeping recorded), want 0", tracked)
 	}
 }

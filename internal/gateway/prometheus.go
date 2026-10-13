@@ -258,6 +258,20 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 		writeGauge(w, "autopilot_last_tick_timestamp_seconds", float64(snap.LastTickAt.UnixNano())/1e9)
 	}
 
+	// autopilot_epic_parent_pass_timeouts_total (GH-5657): epic-parent reconciler
+	// passes that exceeded the per-pass deadline (they run off the PR loop).
+	writeHelp(w, "autopilot_epic_parent_pass_timeouts_total", "Total epic-parent reconciler passes that exceeded the per-pass deadline (orchestrator.autopilot.stage_timeout)")
+	writeType(w, "autopilot_epic_parent_pass_timeouts_total", "counter")
+	writeCounter(w, "autopilot_epic_parent_pass_timeouts_total", snap.EpicParentPassTimeouts)
+
+	// autopilot_last_epic_parent_pass_timestamp_seconds (GH-5657): unix time the
+	// epic-parent reconciler pass last finished. Omitted until the first pass.
+	writeHelp(w, "autopilot_last_epic_parent_pass_timestamp_seconds", "Unix timestamp of the autopilot epic-parent reconciler pass's last completion; stalest controller when several run")
+	writeType(w, "autopilot_last_epic_parent_pass_timestamp_seconds", "gauge")
+	if !snap.LastEpicParentPassAt.IsZero() {
+		writeGauge(w, "autopilot_last_epic_parent_pass_timestamp_seconds", float64(snap.LastEpicParentPassAt.UnixNano())/1e9)
+	}
+
 	// pilot_api_errors_total
 	writeHelp(w, "pilot_api_errors_total", "Total API errors by endpoint")
 	writeType(w, "pilot_api_errors_total", "counter")

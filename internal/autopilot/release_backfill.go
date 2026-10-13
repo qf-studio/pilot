@@ -16,6 +16,13 @@ import (
 // supported page) comfortably covers the window without unbounded pagination.
 const maxReleaseBackfillTags = 100
 
+// maxReleaseBackfillRowsPerPass bounds how many rows one reconcileReleaseBackfill
+// pass attempts (GH-5657). Each row costs a PR fetch plus, for a merged PR, a
+// tags listing and up to maxReleaseBackfillTags compares; an uncapped walk over
+// every StageFailed/StageReleasing row held the epic-parent pass for the whole
+// 2026-10-13 stall. Remaining rows are picked up on following passes.
+const maxReleaseBackfillRowsPerPass = 5
+
 // releaseBackfillRowState is reconcileReleaseBackfill's (GH-4919) per-row
 // backoff and consecutive-failure bookkeeping. Held in
 // Controller.releaseBackfillRows, keyed by "owner/repo#pr".
@@ -185,6 +192,11 @@ func (c *Controller) reconcileReleaseBackfill(ctx context.Context) {
 		c.log.Debug("reconcileReleaseBackfill: skipping sweep — platform-outage breaker open")
 		return
 	}
+	// GH-5657: a background GitHub consumer like the merged-PR scan — yield to
+	// the shared rate-budget floor.
+	if !c.backgroundScanAllowed("release_backfill") {
+		return
+	}
 	states, err := c.stateStore.LoadAllPRStates(c.repoKey())
 	if err != nil {
 		c.log.Warn("reconcileReleaseBackfill: failed to load PR states", "error", err)
@@ -194,6 +206,12 @@ func (c *Controller) reconcileReleaseBackfill(ctx context.Context) {
 	if c.releaseBackfillClock != nil {
 		now = c.releaseBackfillClock()
 	}
+
+	type dueRow struct {
+		prState *PRState
+		key     string
+	}
+	var due []dueRow
 	for _, prState := range states {
 		if prState.Stage != StageFailed && prState.Stage != StageReleasing {
 			continue
@@ -206,8 +224,33 @@ func (c *Controller) reconcileReleaseBackfill(ctx context.Context) {
 		if !c.releaseBackfillDue(key, now) {
 			continue
 		}
-		c.healReleaseBackfillRow(ctx, prState, key, now)
+		due = append(due, dueRow{prState: prState, key: key})
 	}
+	if len(due) == 0 {
+		return
+	}
+
+	// GH-5657: at most maxReleaseBackfillRowsPerPass rows per pass (each costs a
+	// PR fetch plus up to maxReleaseBackfillTags compares). The cursor rotates
+	// the window across passes: rows that stay due after a clean fetch (merged
+	// but not yet tagged) would otherwise hold the first slots forever.
+	c.releaseBackfillMu.Lock()
+	start := c.releaseBackfillCursor % len(due)
+	c.releaseBackfillMu.Unlock()
+
+	touched := 0
+	for i := 0; i < len(due) && touched < maxReleaseBackfillRowsPerPass; i++ {
+		if ctx.Err() != nil {
+			break
+		}
+		row := due[(start+i)%len(due)]
+		c.healReleaseBackfillRow(ctx, row.prState, row.key, now)
+		touched++
+	}
+
+	c.releaseBackfillMu.Lock()
+	c.releaseBackfillCursor = start + touched
+	c.releaseBackfillMu.Unlock()
 }
 
 // healReleaseBackfillRow resolves prState's live merge status and tag

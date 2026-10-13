@@ -97,6 +97,14 @@ type Metrics struct {
 	// autopilot_last_tick_timestamp_seconds and compared against the poll
 	// interval by MetricsAlerter to detect a wedged loop — GH-5541.
 	LastTickAt time.Time
+	// EpicParentPassTimeouts counts epic-parent reconciler passes that hit the
+	// per-pass deadline (Config.StageTimeout) — GH-5657. Exported as
+	// autopilot_epic_parent_pass_timeouts_total.
+	EpicParentPassTimeouts int64
+	// LastEpicParentPassAt is when the epic-parent reconciler pass last finished.
+	// Deliberately separate from LastTickAt: the pass runs off the PR-processing
+	// loop, so it must never mask a stuck processAllPRs — GH-5657.
+	LastEpicParentPassAt time.Time
 	// ApprovalSubmitFailures counts Manager.SubmitApprovalRequest errors — an
 	// unregistered/misrouted approval channel, distinct from a normal timeout
 	// or rejection decision (GH-4380).
@@ -422,6 +430,21 @@ func (m *Metrics) RecordTick(at time.Time) {
 	m.LastTickAt = at
 }
 
+// RecordEpicParentPassTimeout increments the epic-parent pass deadline counter — GH-5657.
+func (m *Metrics) RecordEpicParentPassTimeout() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.EpicParentPassTimeouts++
+}
+
+// RecordEpicParentPass stamps the epic-parent pass completion gauge — GH-5657.
+// Not RecordTick: see LastEpicParentPassAt.
+func (m *Metrics) RecordEpicParentPass(at time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.LastEpicParentPassAt = at
+}
+
 // RecordApprovalSubmitFailure increments the counter for SubmitApprovalRequest
 // errors (GH-4380).
 func (m *Metrics) RecordApprovalSubmitFailure() {
@@ -681,6 +704,8 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		StageTimeouts:                 copyStringIntMap(m.StageTimeouts),
 		StagePanics:                   copyStringIntMap(m.StagePanics),
 		LastTickAt:                    m.LastTickAt,
+		EpicParentPassTimeouts:        m.EpicParentPassTimeouts,
+		LastEpicParentPassAt:          m.LastEpicParentPassAt,
 		ApprovalSubmitFailures:        m.ApprovalSubmitFailures,
 		TokensConsumed:                copyTokenKeyMap(m.TokensConsumed),
 		ExecutionCostUSD:              copyStringFloatMap(m.ExecutionCostUSD),
@@ -774,6 +799,8 @@ type MetricsSnapshot struct {
 	StageTimeouts             map[string]int64 // GH-5541: stage → per-stage deadline expiries
 	StagePanics               map[string]int64 // GH-5547: stage → panics recovered from stage handlers
 	LastTickAt                time.Time        // GH-5541: last PR-loop progress; zero before the first tick
+	EpicParentPassTimeouts    int64            // GH-5657: epic-parent reconciler passes that hit the pass deadline
+	LastEpicParentPassAt      time.Time        // GH-5657: last epic-parent pass completion; zero before the first pass
 	TokensConsumed            map[tokenKey]int64
 	ExecutionCostUSD          map[string]float64
 	ExecutionsByResult        map[execKey]int64
