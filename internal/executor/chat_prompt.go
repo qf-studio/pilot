@@ -23,6 +23,7 @@ const chatIssueContract = `Issue-authoring contract (use only when the user asks
 - body is a markdown string with the H2 sections Context, Scope, Acceptance Criteria, Out of scope and Refs.
 - Inside body, never use triple-backtick fences; use four-space indented code or tilde fences (~~~) instead.
 - Files that do not exist yet are written in plain text, never in backticks. Only files that exist on the default branch may be backticked.
+- Never backtick anything under .agent/ (Pilot scaffold, untracked on most repos); cite only paths tracked on the default branch.
 - Every acceptance bullet names a test.
 - Work above about 500 changed lines is split into several issues, each later one carrying a "Blocked by: #N" line.
 - Never state that the issue was filed. The daemon files it after the user confirms.`

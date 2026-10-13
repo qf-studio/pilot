@@ -2,6 +2,7 @@ package comms
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"sync"
@@ -432,3 +433,59 @@ func (s stubProjects) GetProjectByPath(path string) *ProjectInfo { return s.find
 
 func (s stubProjects) GetDefaultProject() *ProjectInfo { return s.list[0] }
 func (s stubProjects) ListProjects() []*ProjectInfo    { return s.list }
+
+const untrackedRefsBlock = "```pilot-issue\ntitle: \"fix(comms): cite paths\"\nlabels: [pilot]\nbody: |\n  ## Context\n  See `internal/comms/handler.go:10` and `.agent/DEVELOPMENT-README.md` for background.\n```"
+
+func TestWebChat_IssueCardUntrackedRefsRewrittenToPlainText(t *testing.T) {
+	h, msgr := newWebChat(&webChatBackend{outputs: []string{untrackedRefsBlock}}, &mockIssueCreator{})
+	var gotDir string
+	var gotPaths []string
+	h.missingPathsOnBase = func(_ context.Context, dir string, paths []string) ([]string, error) {
+		gotDir, gotPaths = dir, paths
+		return []string{".agent/DEVELOPMENT-README.md"}, nil
+	}
+	send(h, "web", "file an issue")
+
+	if gotDir != "/work/proj" || !reflect.DeepEqual(gotPaths, []string{"internal/comms/handler.go", ".agent/DEVELOPMENT-README.md"}) {
+		t.Errorf("seam called with dir=%q paths=%q", gotDir, gotPaths)
+	}
+	if len(msgr.confirmIDs) != 1 {
+		t.Fatalf("confirmations = %d, want the card still presented", len(msgr.confirmIDs))
+	}
+	h.mu.Lock()
+	body := h.pendingIssueCards["web:conv-1"].Draft.Body
+	h.mu.Unlock()
+	if !strings.Contains(body, "`internal/comms/handler.go:10`") {
+		t.Errorf("tracked ref lost its backticks: %q", body)
+	}
+	if strings.Contains(body, "`.agent/DEVELOPMENT-README.md`") || !strings.Contains(body, " .agent/DEVELOPMENT-README.md ") {
+		t.Errorf("untracked ref not rewritten to plain text: %q", body)
+	}
+	want := "1 reference(s) not on the default branch were rewritten as plain text: .agent/DEVELOPMENT-README.md"
+	if !strings.Contains(strings.Join(msgr.messages, "\n"), want) {
+		t.Errorf("messages = %q, want one containing %q", msgr.messages, want)
+	}
+}
+
+func TestWebChat_IssueCardProbeErrorFailsOpen(t *testing.T) {
+	h, msgr := newWebChat(&webChatBackend{outputs: []string{untrackedRefsBlock}}, &mockIssueCreator{})
+	h.missingPathsOnBase = func(context.Context, string, []string) ([]string, error) {
+		return nil, errors.New("fetch failed")
+	}
+	send(h, "web", "file an issue")
+
+	if len(msgr.confirmIDs) != 1 {
+		t.Fatalf("confirmations = %d, want the card still presented", len(msgr.confirmIDs))
+	}
+	h.mu.Lock()
+	body := h.pendingIssueCards["web:conv-1"].Draft.Body
+	h.mu.Unlock()
+	if !strings.Contains(body, "`.agent/DEVELOPMENT-README.md`") || !strings.Contains(body, "`internal/comms/handler.go:10`") {
+		t.Errorf("body changed on probe error: %q", body)
+	}
+	for _, m := range msgr.messages {
+		if strings.Contains(m, "rewritten as plain text") {
+			t.Errorf("unexpected rewrite notice on probe error: %q", m)
+		}
+	}
+}

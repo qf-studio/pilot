@@ -304,3 +304,10 @@ func TestChatPrompt_ForbidsFencesInBody(t *testing.T) {
 		t.Error("prompt must forbid triple-backtick fences inside the issue body")
 	}
 }
+
+func TestChatPrompt_ForbidsAgentDirRefs(t *testing.T) {
+	p := BuildChatPrompt("/repo", "file an issue")
+	if !strings.Contains(p, "Never backtick anything under .agent/") {
+		t.Error("prompt must forbid backticking paths under .agent/ in the issue body")
+	}
+}

@@ -71,6 +71,11 @@ type Handler struct {
 	chatSessions      map[string]string            // contextID -> Claude chat session id
 	pendingIssueCards map[string]*pendingIssueCard // contextID -> issue card awaiting a decision
 	chatTurnBusy      map[string]bool              // contextID -> an ExecuteChatTurn is in flight (guarded by mu)
+
+	// missingPathsOnBase reports which paths are absent from the default branch
+	// of the checkout at dir. Defaulted to executor.PathsMissingOnDefaultBranch;
+	// tests override it.
+	missingPathsOnBase func(ctx context.Context, dir string, paths []string) ([]string, error)
 }
 
 // NewHandler creates a shared Handler from the given config.
@@ -115,6 +120,8 @@ func NewHandler(cfg *HandlerConfig) *Handler {
 		chatSessions:      make(map[string]string),
 		pendingIssueCards: make(map[string]*pendingIssueCard),
 		chatTurnBusy:      make(map[string]bool),
+
+		missingPathsOnBase: executor.PathsMissingOnDefaultBranch,
 	}
 
 	// Wire command handler — must be built after h exists so callbacks can close over h.

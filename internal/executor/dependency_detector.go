@@ -216,6 +216,29 @@ func ExtractReferencedPaths(body string) []string {
 	return paths
 }
 
+// UnquoteReferencedPaths strips the backticks from every single-line span in
+// body whose line-ref-stripped content is one of paths, leaving the text
+// (including any ":<line>" suffix) in place. It is the rewrite counterpart of
+// ExtractReferencedPaths: spans not in paths, and everything outside spans, are
+// returned unchanged. Used to turn a citation of a path that is not on the
+// default branch into plain text so the dispatch base-presence gate ignores it.
+func UnquoteReferencedPaths(body string, paths []string) string {
+	if body == "" || len(paths) == 0 {
+		return body
+	}
+	set := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		set[p] = true
+	}
+	return backtickSpanRe.ReplaceAllStringFunc(body, func(span string) string {
+		inner := span[1 : len(span)-1]
+		if set[pathLineRefSuffixRe.ReplaceAllString(strings.TrimSpace(inner), "")] {
+			return inner
+		}
+		return span
+	})
+}
+
 // hasFileExtension reports whether s ends in a "." followed by at least one
 // character within its final path segment (i.e. the dot is not itself part
 // of a directory component).

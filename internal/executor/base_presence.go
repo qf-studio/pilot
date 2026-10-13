@@ -503,6 +503,36 @@ func parseRemoteHost(url string) string {
 	return ""
 }
 
+// pathsMissingTimeout bounds one PathsMissingOnDefaultBranch call (fetch plus
+// the per-path lookups).
+const pathsMissingTimeout = 20 * time.Second
+
+// PathsMissingOnDefaultBranch returns the subset of paths that are absent from
+// the default branch of the checkout at dir, in input order. It uses the same
+// local-checkout probe as the dispatcher's base-presence gate, so its verdict
+// matches what the gate would decide. Any lookup error (fetch failure, no
+// resolvable default branch, timeout) returns (nil, err) so callers fail open
+// instead of treating an unanswered question as "missing".
+func PathsMissingOnDefaultBranch(ctx context.Context, dir string, paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, pathsMissingTimeout)
+	defer cancel()
+	probe := &localCheckoutBasePresenceProbe{dir: dir}
+	var missing []string
+	for _, p := range paths {
+		exists, err := probe.FileExistsOnDefaultBranch(ctx, "", "", p)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			missing = append(missing, p)
+		}
+	}
+	return missing, nil
+}
+
 // baseRefCacheTTL bounds how long a fetched default-branch ref is reused per
 // project (GH-5608). The probe is constructed per checkBasePresence call, so
 // without a runner-level cache every queued task in a project fetched origin

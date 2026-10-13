@@ -284,3 +284,45 @@ func TestCheckBasePresence_UnregisteredNonGitHubNeverCallsGhProbe(t *testing.T) 
 		t.Errorf("github-adapter reason must not carry the note, got %+v", hold)
 	}
 }
+
+// GH-5650: chat-filed issue drafts are checked against the default branch.
+func TestPathsMissingOnDefaultBranch(t *testing.T) {
+	proj := newForgeProject(t, "https://gitlab.com/acme/widgets.git")
+	// An untracked .agent scaffold on the clone must not count as present.
+	if err := os.MkdirAll(filepath.Join(proj, ".agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, ".agent", "DEVELOPMENT-README.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	missing, err := PathsMissingOnDefaultBranch(context.Background(), proj,
+		[]string{"docker/entrypoint.sh", ".agent/DEVELOPMENT-README.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 1 || missing[0] != ".agent/DEVELOPMENT-README.md" {
+		t.Errorf("missing = %q, want only the .agent path", missing)
+	}
+}
+
+func TestPathsMissingOnDefaultBranch_FetchFailureIsError(t *testing.T) {
+	proj := newForgeProject(t, "https://gitlab.com/acme/gone.git")
+	gitRun(t, proj, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "does-not-exist.git"))
+	missing, err := PathsMissingOnDefaultBranch(context.Background(), proj, []string{"docker/entrypoint.sh"})
+	if err == nil || missing != nil {
+		t.Errorf("fetch failure must be an error with no path list, got missing=%q err=%v", missing, err)
+	}
+}
+
+func TestUnquoteReferencedPaths(t *testing.T) {
+	body := "See `a/b.go:12` and `c/d.go`, run `make test` and `e/f.go`."
+	got := UnquoteReferencedPaths(body, []string{"a/b.go", "e/f.go"})
+	want := "See a/b.go:12 and `c/d.go`, run `make test` and e/f.go."
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if UnquoteReferencedPaths(body, nil) != body {
+		t.Error("empty path set must leave the body unchanged")
+	}
+}

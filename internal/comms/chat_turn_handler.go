@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -80,8 +81,34 @@ func (h *Handler) handleChatTurn(ctx context.Context, contextID, threadID, text 
 	case blockErr != nil:
 		send("The issue draft was not valid: " + blockErr.Error())
 	default:
+		draft = h.rewriteUntrackedRefs(ctx, contextID, threadID, draft, projectPath)
 		h.presentIssueCard(ctx, contextID, threadID, draft, projectPath)
 	}
+}
+
+// rewriteUntrackedRefs turns backticked paths in the draft body that are not on
+// the project's default branch into plain text. The dispatcher's base-presence
+// gate holds any issue that backticks such a path (e.g. the untracked .agent
+// scaffold on tenant clones), so rewriting here is cheaper than a rejected
+// draft that costs another model turn and may repeat the mistake. A probe error
+// fails open: the draft is returned unchanged.
+func (h *Handler) rewriteUntrackedRefs(ctx context.Context, contextID, threadID string, draft IssueDraft, projectPath string) IssueDraft {
+	refs := executor.ExtractReferencedPaths(draft.Body)
+	if len(refs) == 0 || h.missingPathsOnBase == nil {
+		return draft
+	}
+	missing, err := h.missingPathsOnBase(ctx, projectPath, refs)
+	if err != nil {
+		h.log.Warn("issue draft reference check failed; presenting draft unchanged", "project", projectPath, "error", err)
+		return draft
+	}
+	if len(missing) == 0 {
+		return draft
+	}
+	draft.Body = executor.UnquoteReferencedPaths(draft.Body, missing)
+	_ = h.messenger.SendText(ctx, contextID, threadID,
+		fmt.Sprintf("%d reference(s) not on the default branch were rewritten as plain text: %s", len(missing), strings.Join(missing, ", ")))
+	return draft
 }
 
 // presentIssueCard stores the draft and asks the user to confirm filing it.
