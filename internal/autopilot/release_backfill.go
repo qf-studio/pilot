@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -254,7 +255,7 @@ func (c *Controller) reconcileReleaseBackfill(ctx context.Context) {
 
 	// GH-5658: all rows of this pass share one tag listing per repo, fetched on
 	// first use and reused by every later row (no per-row ListTags).
-	ctx = withReleaseBackfillTagCache(ctx)
+	ctx = withReleaseBackfillTagCache(ctx, now)
 
 	touched := 0
 	for i := 0; i < len(due) && touched < maxReleaseBackfillRowsPerPass; i++ {
@@ -302,11 +303,16 @@ func (c *Controller) healReleaseBackfillRow(ctx context.Context, prState *PRStat
 		c.releaseBackfillFail(key, now, prState, err)
 		return
 	}
-	c.releaseBackfillObserveSuccess(key)
 	if tag == "" {
-		// Merged, but not yet covered by any tag — genuinely unreleased.
+		// Merged, but not yet covered by any tag — genuinely unreleased. Treated
+		// as a soft failure (GH-5665): clearing the state here made the row due
+		// again on the next 30s pass, costing a compare per pass for as long as
+		// the row exists. Backing off uses the existing doubling schedule and
+		// abandon rule; only a tag hit (below) clears the state.
+		c.releaseBackfillFail(key, now, prState, errReleaseBackfillNoTag)
 		return
 	}
+	c.releaseBackfillObserveSuccess(key)
 
 	previousStage := prState.Stage
 	c.recordReleaseBackfillEvent(prState, ghPR.MergeCommitSHA, tag)
@@ -374,25 +380,50 @@ type releaseBackfillTagList struct {
 	err  error
 }
 
+// releaseBackfillTagTTL is how long a successful tag listing is reused across
+// passes (GH-5665). Without it every 30s pass paginated the whole tag list
+// (10 calls over 903 tags on the pilot repo) while any merged-but-untagged row
+// existed. A new release tag is picked up within one TTL, which only delays a
+// bookkeeping heal.
+const releaseBackfillTagTTL = 10 * time.Minute
+
+// errReleaseBackfillNoTag is the soft-failure cause for a merged PR whose merge
+// commit no release tag contains yet.
+var errReleaseBackfillNoTag = errors.New("merge commit not contained in any release tag")
+
+// releaseBackfillCachedTags is a Controller-held tag listing and when it was
+// fetched.
+type releaseBackfillCachedTags struct {
+	tags      []releaseBackfillTag
+	fetchedAt time.Time
+}
+
 // releaseBackfillTagCache memoises tag listings for the duration of one
 // reconcileReleaseBackfill pass, keyed "owner/repo". It is carried in the
 // context so earliestReleaseTagContaining keeps its signature. Errors are
 // cached too: a failing listing is not re-hammered once per row.
 type releaseBackfillTagCache struct {
 	mu    sync.Mutex
+	now   time.Time
 	lists map[string]*releaseBackfillTagList
 }
 
 type releaseBackfillTagCacheKey struct{}
 
-func withReleaseBackfillTagCache(ctx context.Context) context.Context {
+// withReleaseBackfillTagCache attaches the per-pass cache; now is the pass's
+// clock reading, used for the cross-pass TTL check.
+func withReleaseBackfillTagCache(ctx context.Context, now time.Time) context.Context {
 	return context.WithValue(ctx, releaseBackfillTagCacheKey{}, &releaseBackfillTagCache{
+		now:   now,
 		lists: make(map[string]*releaseBackfillTagList),
 	})
 }
 
-// releaseBackfillTags returns owner/repo's semver tags sorted ascending,
-// fetching at most once per pass when ctx carries a cache.
+// releaseBackfillTags returns owner/repo's semver tags sorted ascending. With a
+// per-pass cache in ctx the listing is fetched at most once per pass, and a
+// successful listing is kept on the Controller for releaseBackfillTagTTL so
+// following passes reuse it (GH-5665). Failed listings are cached for the pass
+// only: they must be retried on the next pass, not pinned for the TTL.
 func (c *Controller) releaseBackfillTags(ctx context.Context, owner, repo string) ([]releaseBackfillTag, error) {
 	cache, _ := ctx.Value(releaseBackfillTagCacheKey{}).(*releaseBackfillTagCache)
 	if cache == nil {
@@ -404,8 +435,25 @@ func (c *Controller) releaseBackfillTags(ctx context.Context, owner, repo string
 	if l, ok := cache.lists[key]; ok {
 		return l.tags, l.err
 	}
+
+	c.releaseBackfillMu.Lock()
+	cached, ok := c.releaseBackfillTagLists[key]
+	c.releaseBackfillMu.Unlock()
+	if ok && cache.now.Sub(cached.fetchedAt) < releaseBackfillTagTTL {
+		cache.lists[key] = &releaseBackfillTagList{tags: cached.tags}
+		return cached.tags, nil
+	}
+
 	tags, err := c.fetchReleaseBackfillTags(ctx, owner, repo)
 	cache.lists[key] = &releaseBackfillTagList{tags: tags, err: err}
+	if err == nil {
+		c.releaseBackfillMu.Lock()
+		if c.releaseBackfillTagLists == nil {
+			c.releaseBackfillTagLists = make(map[string]releaseBackfillCachedTags)
+		}
+		c.releaseBackfillTagLists[key] = releaseBackfillCachedTags{tags: tags, fetchedAt: cache.now}
+		c.releaseBackfillMu.Unlock()
+	}
 	return tags, err
 }
 

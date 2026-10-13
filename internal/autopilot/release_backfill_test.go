@@ -959,3 +959,94 @@ func TestReconcileReleaseBackfill_TagListFetchedOncePerPass(t *testing.T) {
 		t.Errorf("compares = %d, want %d (one newest-tag probe per row)", n, rows)
 	}
 }
+
+// untaggedBackfillController builds a controller with one merged row (PR 300)
+// whose merge commit is in no tag, on an injectable clock.
+func untaggedBackfillController(t *testing.T, clock *time.Time) (*Controller, *releaseBackfillCounts) {
+	t.Helper()
+	const sha = "sha300"
+	prs := map[int]*github.PullRequest{300: {Number: 300, Merged: true, MergeCommitSHA: sha}}
+	status := map[string]string{backfillCompareKey(sha, 2): "behind"}
+	counts := &releaseBackfillCounts{}
+	server := releaseBackfillServer(t, prs, backfillTagFixture(3), status, counts)
+	t.Cleanup(server.Close)
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+	store, err := NewStateStoreFromPath(":memory:")
+	if err != nil {
+		t.Fatalf("NewStateStoreFromPath: %v", err)
+	}
+	c.SetStateStore(store)
+	if err := store.SavePRState("owner/repo", &PRState{PRNumber: 300, Stage: StageReleasing}); err != nil {
+		t.Fatalf("SavePRState: %v", err)
+	}
+	c.releaseBackfillClock = func() time.Time { return *clock }
+	return c, counts
+}
+
+// TestReconcileReleaseBackfill_TagListReusedAcrossPassesWithinTTL pins GH-5665:
+// the tag listing survives across passes for releaseBackfillTagTTL.
+func TestReconcileReleaseBackfill_TagListReusedAcrossPassesWithinTTL(t *testing.T) {
+	clock := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	c, counts := untaggedBackfillController(t, &clock)
+
+	c.reconcileReleaseBackfill(context.Background())
+	if n := counts.tagRequests.Load(); n != 1 {
+		t.Fatalf("after pass 1: tag requests = %d, want 1", n)
+	}
+
+	// Past the row's first back-off (30s) but well inside the TTL.
+	clock = clock.Add(time.Minute)
+	c.reconcileReleaseBackfill(context.Background())
+	if n := counts.compares.Load(); n != 2 {
+		t.Fatalf("after pass 2: compares = %d, want 2 (row must have been attempted again)", n)
+	}
+	if n := counts.tagRequests.Load(); n != 1 {
+		t.Errorf("after pass 2 (inside TTL): tag requests = %d, want 1", n)
+	}
+
+	// Past the TTL (row back-off has doubled to 1m, long elapsed).
+	clock = clock.Add(releaseBackfillTagTTL)
+	c.reconcileReleaseBackfill(context.Background())
+	if n := counts.compares.Load(); n != 3 {
+		t.Fatalf("after pass 3: compares = %d, want 3", n)
+	}
+	if n := counts.tagRequests.Load(); n != 2 {
+		t.Errorf("after pass 3 (past TTL): tag requests = %d, want 2", n)
+	}
+}
+
+// TestReconcileReleaseBackfill_NoTagRowBacksOff pins GH-5665: a merged row in
+// no tag is backed off, not re-attempted on the very next pass.
+func TestReconcileReleaseBackfill_NoTagRowBacksOff(t *testing.T) {
+	clock := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	c, counts := untaggedBackfillController(t, &clock)
+	base := c.config.CIPollInterval
+
+	c.reconcileReleaseBackfill(context.Background())
+	if n := counts.compares.Load(); n != 1 {
+		t.Fatalf("after pass 1: compares = %d, want 1", n)
+	}
+
+	// Next pass 1s short of the back-off: not due, zero API calls.
+	clock = clock.Add(base - time.Second)
+	c.reconcileReleaseBackfill(context.Background())
+	if n := counts.compares.Load(); n != 1 {
+		t.Fatalf("after pass 2 (in back-off): compares = %d, want 1", n)
+	}
+
+	// Back-off elapsed: due again.
+	clock = clock.Add(time.Second)
+	c.reconcileReleaseBackfill(context.Background())
+	if n := counts.compares.Load(); n != 2 {
+		t.Fatalf("after pass 3 (back-off elapsed): compares = %d, want 2", n)
+	}
+
+	// Streak doubles: 2*base before the next attempt.
+	clock = clock.Add(2*base - time.Second)
+	c.reconcileReleaseBackfill(context.Background())
+	if n := counts.compares.Load(); n != 2 {
+		t.Fatalf("after pass 4 (doubled back-off): compares = %d, want 2", n)
+	}
+}

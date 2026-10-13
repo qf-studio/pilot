@@ -859,6 +859,10 @@ type Controller struct {
 	// rows instead of re-touching the first few forever (GH-5657). Guarded by
 	// releaseBackfillMu.
 	releaseBackfillCursor int
+	// releaseBackfillTagLists keeps each repo's last successful tag listing
+	// ("owner/repo") across passes for releaseBackfillTagTTL (GH-5665). Guarded
+	// by releaseBackfillMu.
+	releaseBackfillTagLists map[string]releaseBackfillCachedTags
 
 	// epicParentMu guards the epic-parent pass state below (GH-5657).
 	epicParentMu sync.Mutex
