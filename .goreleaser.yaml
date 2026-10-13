@@ -95,6 +95,11 @@ brews:
       name: homebrew-pilot
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
+    # Decision: goreleaser only renders the formula (dist/homebrew/Formula/pilot.rb);
+    # the push to the tap happens in the non-fatal homebrew-tap job of
+    # .github/workflows/release.yml so a tap-token failure (#5615) never
+    # marks a shipped release red.
+    skip_upload: true
     homepage: "https://pilot.quantflow.studio"
     description: "AI that ships your tickets — autonomous development pipeline"
     license: "MIT"

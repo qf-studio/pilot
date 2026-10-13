@@ -42,3 +42,51 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/verify-release-assets.sh "${GITHUB_REF_NAME}"
+
+      # Hand the rendered formula to the homebrew-tap job. goreleaser's brews
+      # entry has skip_upload: true, so it renders but never pushes.
+      - name: Upload Homebrew formula
+        uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-formula
+          path: dist/homebrew/Formula/pilot.rb
+          if-no-files-found: error
+
+  # Non-fatal: a tap-token failure (#5615) must not mark a shipped release red.
+  homebrew-tap:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Download Homebrew formula
+        uses: actions/download-artifact@v4
+        with:
+          name: homebrew-formula
+
+      - name: Push formula to qf-studio/homebrew-pilot
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -uo pipefail
+          fail() {
+            echo "::error::Homebrew tap publish failed: $1 — check the HOMEBREW_TAP_GITHUB_TOKEN secret (see #5615); the GitHub Release itself is unaffected."
+            exit 1
+          }
+          [ -n "${GH_TOKEN}" ] || fail "HOMEBREW_TAP_GITHUB_TOKEN is empty"
+          [ -s pilot.rb ] || fail "pilot.rb artifact missing or empty"
+          api="repos/qf-studio/homebrew-pilot/contents/Formula/pilot.rb"
+          # Current sha is required for the PUT to update instead of conflict;
+          # absent file (404) means create.
+          sha=""
+          if out=$(gh api "${api}" --jq .sha 2>&1); then
+            sha="${out}"
+          elif ! echo "${out}" | grep -q "HTTP 404"; then
+            fail "reading current formula sha: ${out}"
+          fi
+          args=(-X PUT "${api}" -f "message=pilot ${TAG}" -f "content=$(base64 -w0 pilot.rb)")
+          if [ -n "${sha}" ]; then args+=(-f "sha=${sha}"); fi
+          out=$(gh api "${args[@]}" 2>&1) || fail "PUT ${api}: ${out}"
+          echo "Published pilot ${TAG} formula to qf-studio/homebrew-pilot"
