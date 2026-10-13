@@ -151,9 +151,9 @@ func ExtractAcceptanceCriteria(body string) []string {
 func BuildTaskPrompt(task *TaskInfo) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("# Task: %s\n\n", task.Title))
-	sb.WriteString(fmt.Sprintf("**Issue**: %s\n", task.IssueURL))
-	sb.WriteString(fmt.Sprintf("**Priority**: %s\n\n", PriorityName(task.Priority)))
+	fmt.Fprintf(&sb, "# Task: %s\n\n", task.Title)
+	fmt.Fprintf(&sb, "**Issue**: %s\n", task.IssueURL)
+	fmt.Fprintf(&sb, "**Priority**: %s\n\n", PriorityName(task.Priority))
 
 	if task.Description != "" {
 		sb.WriteString("## Description\n\n")
@@ -166,7 +166,7 @@ func BuildTaskPrompt(task *TaskInfo) string {
 	if len(criteria) > 0 {
 		sb.WriteString("## Acceptance Criteria\n\n")
 		for _, c := range criteria {
-			sb.WriteString(fmt.Sprintf("- [ ] %s\n", c))
+			fmt.Fprintf(&sb, "- [ ] %s\n", c)
 		}
 		sb.WriteString("\n")
 	}

@@ -50,13 +50,13 @@ func ArchiveTaskDoc(agentPath, taskID string) error {
 // formatTaskDoc generates markdown content for task doc
 func formatTaskDoc(task *Task) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# %s\n\n", task.ID))
-	sb.WriteString(fmt.Sprintf("**Created:** %s\n\n", time.Now().Format("2006-01-02")))
+	fmt.Fprintf(&sb, "# %s\n\n", task.ID)
+	fmt.Fprintf(&sb, "**Created:** %s\n\n", time.Now().Format("2006-01-02"))
 	sb.WriteString("## Problem\n\n")
 	sb.WriteString(task.Description)
 	sb.WriteString("\n\n## Acceptance Criteria\n\n")
 	for _, ac := range task.AcceptanceCriteria {
-		sb.WriteString(fmt.Sprintf("- [ ] %s\n", ac))
+		fmt.Fprintf(&sb, "- [ ] %s\n", ac)
 	}
 	return sb.String()
 }

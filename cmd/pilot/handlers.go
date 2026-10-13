@@ -498,46 +498,45 @@ func buildExecutionComment(result *executor.ExecutionResult, branchName string) 
 	sb.WriteString("|--------|-------|\n")
 
 	// Duration (always present)
-	sb.WriteString(fmt.Sprintf("| Duration | %s |\n", result.Duration.Round(time.Second)))
+	fmt.Fprintf(&sb, "| Duration | %s |\n", result.Duration.Round(time.Second))
 
 	// Model
 	if result.ModelName != "" {
-		sb.WriteString(fmt.Sprintf("| Model | `%s` |\n", result.ModelName))
+		fmt.Fprintf(&sb, "| Model | `%s` |\n", result.ModelName)
 	}
 
 	// Tokens
 	if result.TokensTotal > 0 {
-		sb.WriteString(fmt.Sprintf("| Tokens | %s (↑%s ↓%s) |\n",
+		fmt.Fprintf(&sb, "| Tokens | %s (↑%s ↓%s) |\n",
 			formatTokenCountComment(result.TokensTotal),
 			formatTokenCountComment(result.TokensInput),
-			formatTokenCountComment(result.TokensOutput),
-		))
+			formatTokenCountComment(result.TokensOutput))
 	}
 
 	// Cost
 	if result.EstimatedCostUSD > 0 {
-		sb.WriteString(fmt.Sprintf("| Cost | ~$%.2f |\n", result.EstimatedCostUSD))
+		fmt.Fprintf(&sb, "| Cost | ~$%.2f |\n", result.EstimatedCostUSD)
 	}
 
 	// Files changed
 	if result.FilesChanged > 0 || result.LinesAdded > 0 || result.LinesRemoved > 0 {
-		sb.WriteString(fmt.Sprintf("| Files | %d changed (+%d -%d) |\n",
-			result.FilesChanged, result.LinesAdded, result.LinesRemoved))
+		fmt.Fprintf(&sb, "| Files | %d changed (+%d -%d) |\n",
+			result.FilesChanged, result.LinesAdded, result.LinesRemoved)
 	}
 
 	// Branch
 	if branchName != "" {
-		sb.WriteString(fmt.Sprintf("| Branch | `%s` |\n", branchName))
+		fmt.Fprintf(&sb, "| Branch | `%s` |\n", branchName)
 	}
 
 	// PR
 	if result.PRUrl != "" {
-		sb.WriteString(fmt.Sprintf("| PR | %s |\n", result.PRUrl))
+		fmt.Fprintf(&sb, "| PR | %s |\n", result.PRUrl)
 	}
 
 	// Intent warning (from intent judge, GH-624)
 	if result.IntentWarning != "" {
-		sb.WriteString(fmt.Sprintf("\n⚠️ **Intent Warning:** %s\n", result.IntentWarning))
+		fmt.Fprintf(&sb, "\n⚠️ **Intent Warning:** %s\n", result.IntentWarning)
 	}
 
 	return sb.String()

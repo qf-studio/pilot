@@ -102,11 +102,11 @@ func buildMergeCompletionComment(prState *PRState) string {
 	sb.WriteString("✅ PR merged successfully!\n\n")
 	sb.WriteString("| Metric | Value |\n")
 	sb.WriteString("|--------|-------|\n")
-	sb.WriteString(fmt.Sprintf("| PR | #%d |\n", prState.PRNumber))
-	sb.WriteString(fmt.Sprintf("| Branch | `%s` |\n", prState.BranchName))
+	fmt.Fprintf(&sb, "| PR | #%d |\n", prState.PRNumber)
+	fmt.Fprintf(&sb, "| Branch | `%s` |\n", prState.BranchName)
 	if !prState.CreatedAt.IsZero() {
 		duration := time.Since(prState.CreatedAt).Round(time.Second)
-		sb.WriteString(fmt.Sprintf("| Time to merge | %s |\n", duration))
+		fmt.Fprintf(&sb, "| Time to merge | %s |\n", duration)
 	}
 	return sb.String()
 }

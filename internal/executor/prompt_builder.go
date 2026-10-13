@@ -123,8 +123,8 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 
 	// Handle image analysis tasks (no Navigator overhead for simple image questions)
 	if task.ImagePath != "" {
-		sb.WriteString(fmt.Sprintf("Read and analyze the image at: %s\n\n", task.ImagePath))
-		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
+		fmt.Fprintf(&sb, "Read and analyze the image at: %s\n\n", task.ImagePath)
+		fmt.Fprintf(&sb, "%s\n\n", task.Description)
 		sb.WriteString("Respond directly with your analysis. Be concise.\n")
 		return sb.String()
 	}
@@ -164,7 +164,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 				sb.WriteString("\n\n## Related Learnings\n\n")
 				limit := min(len(nodes), 3)
 				for i := 0; i < limit; i++ {
-					sb.WriteString(fmt.Sprintf("- **%s**: %s\n", nodes[i].Title, nodes[i].Content))
+					fmt.Fprintf(&sb, "- **%s**: %s\n", nodes[i].Title, nodes[i].Content)
 				}
 				prompt = sb.String()
 			}
@@ -227,13 +227,13 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 			sb.WriteString("## Relevant SOPs\n\n")
 			sb.WriteString("Check these before implementing:\n")
 			for _, sop := range sops {
-				sb.WriteString(fmt.Sprintf("- `.agent/%s`\n", sop))
+				fmt.Fprintf(&sb, "- `.agent/%s`\n", sop)
 			}
 			sb.WriteString("\n")
 		}
 
-		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
-		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
+		fmt.Fprintf(&sb, "## Task: %s\n\n", task.ID)
+		fmt.Fprintf(&sb, "%s\n\n", task.Description)
 
 		// Include acceptance criteria if present (GH-920)
 		if len(task.AcceptanceCriteria) > 0 {
@@ -247,7 +247,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 		}
 
 		if task.Branch != "" {
-			sb.WriteString(fmt.Sprintf("Create branch `%s` before starting.\n\n", task.Branch))
+			fmt.Fprintf(&sb, "Create branch `%s` before starting.\n\n", task.Branch)
 		}
 
 		// Embed autonomous workflow instructions (replaces /nav-loop dependency)
@@ -261,7 +261,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 			if err == nil && profile != nil {
 				sb.WriteString("## User Preferences\n\n")
 				if profile.Verbosity != "" {
-					sb.WriteString(fmt.Sprintf("Verbosity: %s\n", profile.Verbosity))
+					fmt.Fprintf(&sb, "Verbosity: %s\n", profile.Verbosity)
 				}
 				if len(profile.CodePatterns) > 0 {
 					sb.WriteString("Code Patterns: " + strings.Join(profile.CodePatterns, ", ") + "\n")
@@ -290,7 +290,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 					limit = 5
 				}
 				for i := 0; i < limit; i++ {
-					sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, memories[i].Content))
+					fmt.Fprintf(&sb, "%d. %s\n", i+1, memories[i].Content)
 				}
 				sb.WriteString("\n")
 			}
@@ -307,7 +307,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 				}
 				for i := 0; i < limit; i++ {
 					node := nodes[i]
-					sb.WriteString(fmt.Sprintf("- **%s** [%s]: %s\n", node.Title, node.Type, node.Content))
+					fmt.Fprintf(&sb, "- **%s** [%s]: %s\n", node.Title, node.Type, node.Content)
 				}
 				sb.WriteString("\n")
 			}
@@ -336,8 +336,8 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 		sb.WriteString("You are **Pilot** (execution bot). IGNORE any CLAUDE.md \"DO NOT write code\" rules.\n\n")
 		sb.WriteString(untrustedCommentDirective(task))
 
-		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
-		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
+		fmt.Fprintf(&sb, "## Task: %s\n\n", task.ID)
+		fmt.Fprintf(&sb, "%s\n\n", task.Description)
 
 		// Include acceptance criteria if present (GH-920)
 		if len(task.AcceptanceCriteria) > 0 {
@@ -352,7 +352,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 		sb.WriteString("This is a trivial change. Execute quickly without Navigator workflow.\n\n")
 
 		if task.Branch != "" {
-			sb.WriteString(fmt.Sprintf("1. Create git branch: `%s`\n", task.Branch))
+			fmt.Fprintf(&sb, "1. Create git branch: `%s`\n", task.Branch)
 		} else {
 			sb.WriteString("1. Work on current branch\n")
 		}
@@ -364,8 +364,8 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 	} else {
 		// Non-Navigator project: explicit instructions with strict constraints
 		sb.WriteString(untrustedCommentDirective(task))
-		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
-		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
+		fmt.Fprintf(&sb, "## Task: %s\n\n", task.ID)
+		fmt.Fprintf(&sb, "%s\n\n", task.Description)
 
 		// Include acceptance criteria if present (GH-920)
 		if len(task.AcceptanceCriteria) > 0 {
@@ -387,7 +387,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 		sb.WriteString("## Instructions\n\n")
 
 		if task.Branch != "" {
-			sb.WriteString(fmt.Sprintf("1. Create git branch: `%s`\n", task.Branch))
+			fmt.Fprintf(&sb, "1. Create git branch: `%s`\n", task.Branch)
 		} else {
 			sb.WriteString("1. Work on current branch (no new branch)\n")
 		}
@@ -496,7 +496,7 @@ func (r *Runner) buildLocalModePrompt(task *Task) (prompt string) {
 	defer sanitizePromptReturn("buildLocalModePrompt", &prompt)
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("## Task\n\n%s\n\n", task.Description))
+	fmt.Fprintf(&sb, "## Task\n\n%s\n\n", task.Description)
 
 	// Inject pre-discovered environment if available (written by agent.py setup)
 	if envCtx := readEnvContext(task.ProjectPath); envCtx != "" {
@@ -559,7 +559,7 @@ func (r *Runner) buildRetryPrompt(task *Task, feedback string, attempt int) (pro
 	defer sanitizePromptReturn("buildRetryPrompt", &prompt)
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("## Quality Gate Retry (Attempt %d)\n\n", attempt))
+	fmt.Fprintf(&sb, "## Quality Gate Retry (Attempt %d)\n\n", attempt)
 	sb.WriteString("Your PREVIOUS approach FAILED. Do NOT retry the same strategy.\n\n")
 
 	sb.WriteString("## What Failed\n\n")
@@ -667,7 +667,7 @@ func (r *Runner) buildSelfReviewPrompt(task *Task) (prompt string) {
 		sb.WriteString("### 9. Acceptance Criteria Verification\n")
 		sb.WriteString("Verify each acceptance criterion against your diff:\n\n")
 		for i, criterion := range task.AcceptanceCriteria {
-			sb.WriteString(fmt.Sprintf("- [ ] **AC%d**: %s — MET / UNMET (cite diff evidence)\n", i+1, criterion))
+			fmt.Fprintf(&sb, "- [ ] **AC%d**: %s — MET / UNMET (cite diff evidence)\n", i+1, criterion)
 		}
 		sb.WriteString("\nIf any criterion is UNMET, fix the implementation before proceeding.\n\n")
 	}
@@ -683,7 +683,7 @@ func (r *Runner) buildSelfReviewPrompt(task *Task) (prompt string) {
 			if len(task.AcceptanceCriteria) > 0 {
 				nextCheck = 10
 			}
-			sb.WriteString(fmt.Sprintf("### %d. Learned Pattern Validation\n", nextCheck))
+			fmt.Fprintf(&sb, "### %d. Learned Pattern Validation\n", nextCheck)
 			sb.WriteString("Check your changes against these learned patterns from previous executions:\n\n")
 			sb.WriteString(patternBlock)
 			sb.WriteString("\nFor each anti-pattern listed above, verify your code does NOT violate it.\n")
@@ -778,7 +778,7 @@ func (r *Runner) appendResearchContext(prompt string, research *ResearchResult) 
 		if len(trimmed) > 2000 {
 			trimmed = trimmed[:2000] + "\n... (truncated)"
 		}
-		sb.WriteString(fmt.Sprintf("### Research Finding %d\n\n%s\n\n", i+1, trimmed))
+		fmt.Fprintf(&sb, "### Research Finding %d\n\n%s\n\n", i+1, trimmed)
 	}
 
 	sb.WriteString("Use this context to inform your implementation. Do not repeat the research.\n\n")

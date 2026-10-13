@@ -1511,8 +1511,8 @@ func (m Model) renderSplash() string {
 		} else {
 			dot = dimStyle.Render("○")
 		}
-		sb.WriteString(fmt.Sprintf("   %s %s    %s\n",
-			dot, dimStyle.Render(padTo(l.label, 16)), l.value))
+		fmt.Fprintf(&sb, "   %s %s    %s\n",
+			dot, dimStyle.Render(padTo(l.label, 16)), l.value)
 	}
 	sb.WriteString("   " + rule + "\n")
 
@@ -2862,14 +2862,14 @@ func (m Model) renderUpdateNotification() string {
 	case UpgradeStateInProgress:
 		title = "upgrading"
 		bar := m.renderProgressBar(m.upgradeProgress, 30)
-		content.WriteString(fmt.Sprintf("  Installing %s... %s %d%%", m.updateInfo.LatestVersion, bar, m.upgradeProgress))
+		fmt.Fprintf(&content, "  Installing %s... %s %d%%", m.updateInfo.LatestVersion, bar, m.upgradeProgress)
 		if m.upgradeMessage != "" {
 			content.WriteString("\n  " + m.upgradeMessage)
 		}
 
 	case UpgradeStateComplete:
 		title = "upgraded"
-		content.WriteString(fmt.Sprintf("  Upgrade to %s installed — restart Pilot manually to apply.", m.updateInfo.LatestVersion))
+		fmt.Fprintf(&content, "  Upgrade to %s installed — restart Pilot manually to apply.", m.updateInfo.LatestVersion)
 
 	case UpgradeStateFailed:
 		title = "upgrade failed"
@@ -2880,7 +2880,7 @@ func (m Model) renderUpdateNotification() string {
 		}
 		// GH-3600: a failed upgrade means the old binary is still running —
 		// say so explicitly and point at the durable log.
-		content.WriteString(fmt.Sprintf("\n  Daemon still running %s — see ~/.pilot/logs/daemon.log", m.version))
+		fmt.Fprintf(&content, "\n  Daemon still running %s — see ~/.pilot/logs/daemon.log", m.version)
 
 	default:
 		return ""

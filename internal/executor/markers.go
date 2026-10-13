@@ -118,11 +118,11 @@ func CleanupOldMarkers(agentPath string, retentionDays int) error {
 
 func formatMarker(m *ContextMarker) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# Context Marker: %s\n\n", m.Description))
-	sb.WriteString(fmt.Sprintf("**Created:** %s\n\n", m.CreatedAt.Format("2006-01-02 15:04")))
+	fmt.Fprintf(&sb, "# Context Marker: %s\n\n", m.Description)
+	fmt.Fprintf(&sb, "**Created:** %s\n\n", m.CreatedAt.Format("2006-01-02 15:04"))
 
 	if m.TaskID != "" {
-		sb.WriteString(fmt.Sprintf("**Task:** %s\n\n", m.TaskID))
+		fmt.Fprintf(&sb, "**Task:** %s\n\n", m.TaskID)
 	}
 
 	sb.WriteString("## Current Focus\n\n")
@@ -132,7 +132,7 @@ func formatMarker(m *ContextMarker) string {
 	if len(m.FilesModified) > 0 {
 		sb.WriteString("## Files Modified\n\n")
 		for _, f := range m.FilesModified {
-			sb.WriteString(fmt.Sprintf("- %s\n", f))
+			fmt.Fprintf(&sb, "- %s\n", f)
 		}
 		sb.WriteString("\n")
 	}
@@ -140,7 +140,7 @@ func formatMarker(m *ContextMarker) string {
 	if len(m.Commits) > 0 {
 		sb.WriteString("## Commits\n\n")
 		for _, c := range m.Commits {
-			sb.WriteString(fmt.Sprintf("- %s\n", c))
+			fmt.Fprintf(&sb, "- %s\n", c)
 		}
 	}
 

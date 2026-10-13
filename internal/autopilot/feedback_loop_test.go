@@ -1354,7 +1354,7 @@ func TestExtractFailureExcerpt_FailureAtEnd(t *testing.T) {
 			logs: func() string {
 				var sb strings.Builder
 				for i := 1; i <= 300; i++ {
-					sb.WriteString(fmt.Sprintf("build output line %d\n", i))
+					fmt.Fprintf(&sb, "build output line %d\n", i)
 				}
 				return sb.String()
 			}(),

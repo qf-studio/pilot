@@ -174,7 +174,7 @@ func TestIntentJudge_PerFileTruncationPreservesManifest(t *testing.T) {
 	for i := 0; i < 25; i++ {
 		path := fmt.Sprintf("internal/pkg/file%d.go", i)
 		paths = append(paths, path)
-		sb.WriteString(fmt.Sprintf("diff --git a/%s b/%s\n", path, path))
+		fmt.Fprintf(&sb, "diff --git a/%s b/%s\n", path, path)
 		sb.WriteString("--- a/" + path + "\n+++ b/" + path + "\n")
 		sb.WriteString(strings.Repeat(fmt.Sprintf("+func Impl%d() {}\n", i), 200))
 	}

@@ -413,39 +413,39 @@ func (r *Recorder) generateSummary() error {
 	var sb strings.Builder
 
 	sb.WriteString("# Execution Recording Summary\n\n")
-	sb.WriteString(fmt.Sprintf("**Recording ID**: %s\n", r.recording.ID))
-	sb.WriteString(fmt.Sprintf("**Task ID**: %s\n", r.recording.TaskID))
-	sb.WriteString(fmt.Sprintf("**Status**: %s\n", r.recording.Status))
-	sb.WriteString(fmt.Sprintf("**Duration**: %s\n", r.recording.Duration.Round(time.Second)))
-	sb.WriteString(fmt.Sprintf("**Events**: %d\n", r.recording.EventCount))
+	fmt.Fprintf(&sb, "**Recording ID**: %s\n", r.recording.ID)
+	fmt.Fprintf(&sb, "**Task ID**: %s\n", r.recording.TaskID)
+	fmt.Fprintf(&sb, "**Status**: %s\n", r.recording.Status)
+	fmt.Fprintf(&sb, "**Duration**: %s\n", r.recording.Duration.Round(time.Second))
+	fmt.Fprintf(&sb, "**Events**: %d\n", r.recording.EventCount)
 	sb.WriteString("\n")
 
 	// Metadata
 	if r.recording.Metadata != nil {
 		sb.WriteString("## Metadata\n\n")
 		if r.recording.Metadata.Branch != "" {
-			sb.WriteString(fmt.Sprintf("- **Branch**: %s\n", r.recording.Metadata.Branch))
+			fmt.Fprintf(&sb, "- **Branch**: %s\n", r.recording.Metadata.Branch)
 		}
 		if r.recording.Metadata.CommitSHA != "" {
-			sb.WriteString(fmt.Sprintf("- **Commit**: %s\n", r.recording.Metadata.CommitSHA))
+			fmt.Fprintf(&sb, "- **Commit**: %s\n", r.recording.Metadata.CommitSHA)
 		}
 		if r.recording.Metadata.PRUrl != "" {
-			sb.WriteString(fmt.Sprintf("- **PR**: %s\n", r.recording.Metadata.PRUrl))
+			fmt.Fprintf(&sb, "- **PR**: %s\n", r.recording.Metadata.PRUrl)
 		}
 		if r.recording.Metadata.ModelName != "" {
-			sb.WriteString(fmt.Sprintf("- **Model**: %s\n", r.recording.Metadata.ModelName))
+			fmt.Fprintf(&sb, "- **Model**: %s\n", r.recording.Metadata.ModelName)
 		}
-		sb.WriteString(fmt.Sprintf("- **Navigator**: %v\n", r.recording.Metadata.HasNavigator))
+		fmt.Fprintf(&sb, "- **Navigator**: %v\n", r.recording.Metadata.HasNavigator)
 		sb.WriteString("\n")
 	}
 
 	// Token usage
 	if r.recording.TokenUsage != nil {
 		sb.WriteString("## Token Usage\n\n")
-		sb.WriteString(fmt.Sprintf("- **Input**: %d tokens\n", r.recording.TokenUsage.InputTokens))
-		sb.WriteString(fmt.Sprintf("- **Output**: %d tokens\n", r.recording.TokenUsage.OutputTokens))
-		sb.WriteString(fmt.Sprintf("- **Total**: %d tokens\n", r.recording.TokenUsage.TotalTokens))
-		sb.WriteString(fmt.Sprintf("- **Estimated Cost**: $%.4f\n", r.recording.TokenUsage.EstimatedCostUSD))
+		fmt.Fprintf(&sb, "- **Input**: %d tokens\n", r.recording.TokenUsage.InputTokens)
+		fmt.Fprintf(&sb, "- **Output**: %d tokens\n", r.recording.TokenUsage.OutputTokens)
+		fmt.Fprintf(&sb, "- **Total**: %d tokens\n", r.recording.TokenUsage.TotalTokens)
+		fmt.Fprintf(&sb, "- **Estimated Cost**: $%.4f\n", r.recording.TokenUsage.EstimatedCostUSD)
 		sb.WriteString("\n")
 	}
 
@@ -454,7 +454,7 @@ func (r *Recorder) generateSummary() error {
 		sb.WriteString("## Phase Timings\n\n")
 		for _, pt := range r.recording.PhaseTimings {
 			pct := float64(pt.Duration) / float64(r.recording.Duration) * 100
-			sb.WriteString(fmt.Sprintf("- **%s**: %s (%.1f%%)\n", pt.Phase, pt.Duration.Round(time.Second), pct))
+			fmt.Fprintf(&sb, "- **%s**: %s (%.1f%%)\n", pt.Phase, pt.Duration.Round(time.Second), pct)
 		}
 		sb.WriteString("\n")
 	}
@@ -463,7 +463,7 @@ func (r *Recorder) generateSummary() error {
 	if len(r.diffFiles) > 0 {
 		sb.WriteString("## Files Changed\n\n")
 		for fp, diff := range r.diffFiles {
-			sb.WriteString(fmt.Sprintf("- `%s` (%s)\n", fp, diff.Operation))
+			fmt.Fprintf(&sb, "- `%s` (%s)\n", fp, diff.Operation)
 		}
 		sb.WriteString("\n")
 	}

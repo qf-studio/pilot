@@ -1002,7 +1002,7 @@ func (h *Handler) fastListTasks() string {
 	if len(inProgress) > 0 {
 		sb.WriteString("In Progress\n")
 		for _, t := range inProgress {
-			sb.WriteString(fmt.Sprintf("%s: %s\n", t.num, t.title))
+			fmt.Fprintf(&sb, "%s: %s\n", t.num, t.title)
 		}
 		sb.WriteString("\n")
 	}
@@ -1012,10 +1012,10 @@ func (h *Handler) fastListTasks() string {
 		sb.WriteString("Backlog\n")
 		showCount := min(5, len(pending))
 		for i := 0; i < showCount; i++ {
-			sb.WriteString(fmt.Sprintf("%s: %s\n", pending[i].num, pending[i].title))
+			fmt.Fprintf(&sb, "%s: %s\n", pending[i].num, pending[i].title)
 		}
 		if len(pending) > 5 {
-			sb.WriteString(fmt.Sprintf("_+%d more planned_\n", len(pending)-5))
+			fmt.Fprintf(&sb, "_+%d more planned_\n", len(pending)-5)
 		}
 		sb.WriteString("\n")
 	}
@@ -1026,7 +1026,7 @@ func (h *Handler) fastListTasks() string {
 		showCount := min(2, len(completed))
 		start := len(completed) - showCount
 		for i := start; i < len(completed); i++ {
-			sb.WriteString(fmt.Sprintf("%s: %s\n", completed[i].num, completed[i].title))
+			fmt.Fprintf(&sb, "%s: %s\n", completed[i].num, completed[i].title)
 		}
 		sb.WriteString("\n")
 	}
@@ -1038,7 +1038,7 @@ func (h *Handler) fastListTasks() string {
 	if total > 0 {
 		percent = (doneCount * 100) / total
 	}
-	sb.WriteString(fmt.Sprintf("Progress: %s %d%%", makeProgressBar(percent), percent))
+	fmt.Fprintf(&sb, "Progress: %s %d%%", makeProgressBar(percent), percent)
 
 	return sb.String()
 }
@@ -1162,7 +1162,7 @@ func (h *Handler) fastReadStatus() string {
 					cell1 := strings.TrimSpace(cells[1])
 					cell2 := strings.TrimSpace(cells[2])
 					if cell1 != "" && !strings.Contains(cell1, "---") {
-						sb.WriteString(fmt.Sprintf("• %s: %s\n", cell1, cell2))
+						fmt.Fprintf(&sb, "• %s: %s\n", cell1, cell2)
 						lineCount++
 					}
 				}

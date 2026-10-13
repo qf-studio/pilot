@@ -484,16 +484,16 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 
 	// Context section
 	sb.WriteString("## Context\n\n")
-	sb.WriteString(fmt.Sprintf("- **Original PR**: #%d\n", prState.PRNumber))
+	fmt.Fprintf(&sb, "- **Original PR**: #%d\n", prState.PRNumber)
 	if prState.IssueNumber > 0 {
-		sb.WriteString(fmt.Sprintf("- **Original Issue**: #%d\n", prState.IssueNumber))
+		fmt.Fprintf(&sb, "- **Original Issue**: #%d\n", prState.IssueNumber)
 	}
-	sb.WriteString(fmt.Sprintf("- **Failure Type**: %s\n", failureType))
+	fmt.Fprintf(&sb, "- **Failure Type**: %s\n", failureType)
 	if len(prState.HeadSHA) >= 7 {
-		sb.WriteString(fmt.Sprintf("- **SHA**: %s\n", prState.HeadSHA[:7]))
+		fmt.Fprintf(&sb, "- **SHA**: %s\n", prState.HeadSHA[:7])
 	}
 	if prState.BranchName != "" {
-		sb.WriteString(fmt.Sprintf("- **Branch**: %s\n", prState.BranchName))
+		fmt.Fprintf(&sb, "- **Branch**: %s\n", prState.BranchName)
 	}
 	sb.WriteString("\n")
 
@@ -501,7 +501,7 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 	if len(failedChecks) > 0 {
 		sb.WriteString("## Failed Checks\n\n")
 		for _, check := range failedChecks {
-			sb.WriteString(fmt.Sprintf("- [ ] %s\n", check))
+			fmt.Fprintf(&sb, "- [ ] %s\n", check)
 		}
 		sb.WriteString("\n")
 	}
@@ -542,7 +542,7 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 		sb.WriteString("## Known Patterns\n\n")
 		sb.WriteString("These patterns have been learned from previous failures in this project:\n\n")
 		for _, p := range knownPatterns {
-			sb.WriteString(fmt.Sprintf("- **%s** (confidence: %.0f%%): %s\n", p.Title, p.Confidence*100, p.Description))
+			fmt.Fprintf(&sb, "- **%s** (confidence: %.0f%%): %s\n", p.Title, p.Confidence*100, p.Description)
 		}
 		sb.WriteString("\n")
 	}
@@ -738,13 +738,13 @@ func (f *FeedbackLoop) CreateReviewIssue(ctx context.Context, prState *PRState, 
 
 	// Context section
 	sb.WriteString("## Context\n\n")
-	sb.WriteString(fmt.Sprintf("- **Original PR**: #%d\n", prState.PRNumber))
+	fmt.Fprintf(&sb, "- **Original PR**: #%d\n", prState.PRNumber)
 	if prState.IssueNumber > 0 {
-		sb.WriteString(fmt.Sprintf("- **Original Issue**: #%d\n", prState.IssueNumber))
+		fmt.Fprintf(&sb, "- **Original Issue**: #%d\n", prState.IssueNumber)
 	}
-	sb.WriteString(fmt.Sprintf("- **Failure Type**: %s\n", FailureReviewRequested))
+	fmt.Fprintf(&sb, "- **Failure Type**: %s\n", FailureReviewRequested)
 	if prState.BranchName != "" {
-		sb.WriteString(fmt.Sprintf("- **Branch**: %s\n", prState.BranchName))
+		fmt.Fprintf(&sb, "- **Branch**: %s\n", prState.BranchName)
 	}
 	sb.WriteString("\n")
 
@@ -824,7 +824,7 @@ func formatReviewFeedback(reviews []*github.PullRequestReview, comments []*githu
 		if r.Body == "" {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("<details><summary>Review by %s (%s)</summary>\n\n", r.User.Login, r.State))
+		fmt.Fprintf(&sb, "<details><summary>Review by %s (%s)</summary>\n\n", r.User.Login, r.State)
 		sb.WriteString(r.Body)
 		sb.WriteString("\n\n</details>\n\n")
 	}
@@ -840,12 +840,12 @@ func formatReviewFeedback(reviews []*github.PullRequestReview, comments []*githu
 	}
 
 	for _, path := range fileOrder {
-		sb.WriteString(fmt.Sprintf("<details><summary>%s</summary>\n\n", path))
+		fmt.Fprintf(&sb, "<details><summary>%s</summary>\n\n", path)
 		for _, c := range fileComments[path] {
 			if c.Line > 0 {
-				sb.WriteString(fmt.Sprintf("**Line %d** (%s):\n", c.Line, c.User.Login))
+				fmt.Fprintf(&sb, "**Line %d** (%s):\n", c.Line, c.User.Login)
 			} else {
-				sb.WriteString(fmt.Sprintf("**Comment** (%s):\n", c.User.Login))
+				fmt.Fprintf(&sb, "**Comment** (%s):\n", c.User.Login)
 			}
 			sb.WriteString(c.Body)
 			sb.WriteString("\n\n")

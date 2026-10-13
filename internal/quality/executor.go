@@ -177,9 +177,9 @@ func FormatReportForNotification(report *GateReport) string {
 		sb.WriteString("❌ Quality Gates Failed\n\n")
 	}
 
-	sb.WriteString(fmt.Sprintf("Task: %s\n", report.TaskID))
-	sb.WriteString(fmt.Sprintf("Summary: %s\n", report.Summary))
-	sb.WriteString(fmt.Sprintf("Duration: %s\n\n", report.TotalTime.Round(time.Second)))
+	fmt.Fprintf(&sb, "Task: %s\n", report.TaskID)
+	fmt.Fprintf(&sb, "Summary: %s\n", report.Summary)
+	fmt.Fprintf(&sb, "Duration: %s\n\n", report.TotalTime.Round(time.Second))
 
 	sb.WriteString("Gates:\n")
 	for _, gate := range report.Gates {
@@ -195,12 +195,12 @@ func FormatReportForNotification(report *GateReport) string {
 			icon = "⏳"
 		}
 
-		sb.WriteString(fmt.Sprintf("  %s %s (%s)", icon, gate.Name, gate.Duration.Round(time.Millisecond)))
+		fmt.Fprintf(&sb, "  %s %s (%s)", icon, gate.Name, gate.Duration.Round(time.Millisecond))
 		if gate.Error != "" {
-			sb.WriteString(fmt.Sprintf(" - %s", gate.Error))
+			fmt.Fprintf(&sb, " - %s", gate.Error)
 		}
 		if gate.Coverage > 0 {
-			sb.WriteString(fmt.Sprintf(" [%.1f%%]", gate.Coverage))
+			fmt.Fprintf(&sb, " [%.1f%%]", gate.Coverage)
 		}
 		sb.WriteString("\n")
 	}

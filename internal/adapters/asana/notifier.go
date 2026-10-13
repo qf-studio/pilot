@@ -77,7 +77,7 @@ func (n *Notifier) NotifyTaskCompleted(ctx context.Context, taskGID, prURL, summ
 	comment.WriteString("✅ **Pilot completed this task!**\n\n")
 
 	if prURL != "" {
-		comment.WriteString(fmt.Sprintf("**Pull Request**: %s\n\n", prURL))
+		fmt.Fprintf(&comment, "**Pull Request**: %s\n\n", prURL)
 	}
 
 	if summary != "" {

@@ -351,9 +351,9 @@ func buildPlanningPrompt(task *Task) string {
 	sb.WriteString("Only split when subtasks genuinely touch DIFFERENT packages or directories.\n\n")
 
 	sb.WriteString("## Task to Plan\n\n")
-	sb.WriteString(fmt.Sprintf("**Title:** %s\n\n", task.Title))
+	fmt.Fprintf(&sb, "**Title:** %s\n\n", task.Title)
 	if task.Description != "" {
-		sb.WriteString(fmt.Sprintf("**Description:**\n%s\n\n", task.Description))
+		fmt.Fprintf(&sb, "**Description:**\n%s\n\n", task.Description)
 	}
 
 	sb.WriteString("## Output Format\n\n")
@@ -386,7 +386,7 @@ func consolidateEpicPlan(originalDesc string, subtasks []PlannedSubtask) string 
 	sb.WriteString(originalDesc)
 	sb.WriteString("\n\n## Planned Steps (execute all in sequence)\n\n")
 	for _, st := range subtasks {
-		sb.WriteString(fmt.Sprintf("- Step %d: **%s**", st.Order, st.Title))
+		fmt.Fprintf(&sb, "- Step %d: **%s**", st.Order, st.Title)
 		if st.Description != "" {
 			sb.WriteString(" — ")
 			sb.WriteString(st.Description)

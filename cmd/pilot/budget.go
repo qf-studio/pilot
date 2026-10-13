@@ -165,15 +165,15 @@ func renderBudgetStatus(cfg *budget.Config, status *budget.Status) string {
 	// Limits line
 	tokensStr := formatTokensCompact(cfg.PerTask.MaxTokens)
 	durationStr := formatDurationCompact(cfg.PerTask.MaxDuration)
-	b.WriteString(fmt.Sprintf("  %-14s%s tokens    %s duration\n", "Limits", tokensStr, durationStr))
+	fmt.Fprintf(&b, "  %-14s%s tokens    %s duration\n", "Limits", tokensStr, durationStr)
 
 	// Enforcement line
-	b.WriteString(fmt.Sprintf("  %-14sdaily:%-7s monthly:%-7s task:%s\n",
+	fmt.Fprintf(&b, "  %-14sdaily:%-7s monthly:%-7s task:%s\n",
 		"Enforcement",
 		cfg.OnExceed.Daily,
 		cfg.OnExceed.Monthly,
 		cfg.OnExceed.PerTask,
-	))
+	)
 
 	b.WriteString(budgetDivider())
 	b.WriteString("\n")
@@ -207,18 +207,17 @@ func formatBudgetLine(label string, spent, limit, percent float64) string {
 	}
 
 	// First line: label, values, percent
-	b.WriteString(fmt.Sprintf("  %-*s%s%s%s\n",
+	fmt.Fprintf(&b, "  %-*s%s%s%s\n",
 		budgetLabelCol, label,
 		values,
 		strings.Repeat(" ", padding),
 		percentStr,
-	))
+	)
 
 	// Second line: progress bar (indented to align with values)
-	b.WriteString(fmt.Sprintf("  %s%s\n",
+	fmt.Fprintf(&b, "  %s%s\n",
 		strings.Repeat(" ", budgetLabelCol),
-		renderColoredBar(percent, budgetBarWidth),
-	))
+		renderColoredBar(percent, budgetBarWidth))
 
 	return b.String()
 }

@@ -1198,7 +1198,7 @@ func (m *CIMonitor) GetCheckLogs(ctx context.Context, sha string, maxLen int) st
 		if combined.Len() > 0 {
 			combined.WriteString("\n\n")
 		}
-		combined.WriteString(fmt.Sprintf("=== %s ===\n", run.Name))
+		fmt.Fprintf(&combined, "=== %s ===\n", run.Name)
 		combined.WriteString(logs)
 
 		if combined.Len() >= maxLen {

@@ -393,7 +393,7 @@ func FormatErrorFeedback(results *CheckResults) string {
 			continue
 		}
 
-		sb.WriteString(fmt.Sprintf("### %s Gate (FAILED)\n\n", result.GateName))
+		fmt.Fprintf(&sb, "### %s Gate (FAILED)\n\n", result.GateName)
 		sb.WriteString("**Error Output:**\n```\n")
 		sb.WriteString(extractFailureOutput(result.Output, 2000))
 		sb.WriteString("\n```\n\n")

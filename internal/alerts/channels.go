@@ -172,20 +172,20 @@ func (c *TelegramChannel) formatMessage(alert *Alert) string {
 	} else {
 		fmt.Fprintf(&sb, "%s *%s ALERT*\n\n", emoji, severityLabel)
 	}
-	sb.WriteString(fmt.Sprintf("*%s*\n", escapeMarkdown(alert.Title)))
-	sb.WriteString(fmt.Sprintf("%s\n\n", escapeMarkdown(alert.Message)))
+	fmt.Fprintf(&sb, "*%s*\n", escapeMarkdown(alert.Title))
+	fmt.Fprintf(&sb, "%s\n\n", escapeMarkdown(alert.Message))
 
-	sb.WriteString(fmt.Sprintf("📋 *Type:* `%s`\n", alert.Type))
+	fmt.Fprintf(&sb, "📋 *Type:* `%s`\n", alert.Type)
 
 	if alert.Source != "" {
-		sb.WriteString(fmt.Sprintf("🔗 *Source:* `%s`\n", alert.Source))
+		fmt.Fprintf(&sb, "🔗 *Source:* `%s`\n", alert.Source)
 	}
 
 	if alert.ProjectPath != "" {
-		sb.WriteString(fmt.Sprintf("📁 *Project:* `%s`\n", alert.ProjectPath))
+		fmt.Fprintf(&sb, "📁 *Project:* `%s`\n", alert.ProjectPath)
 	}
 
-	sb.WriteString(fmt.Sprintf("\n🕐 %s", alert.CreatedAt.Format(time.RFC822)))
+	fmt.Fprintf(&sb, "\n🕐 %s", alert.CreatedAt.Format(time.RFC822))
 
 	return sb.String()
 }
@@ -393,27 +393,27 @@ code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-family: m
 		cssClass = "warning"
 	}
 
-	sb.WriteString(fmt.Sprintf(`<div class="alert-box %s">`, cssClass))
-	sb.WriteString(fmt.Sprintf(`<h2 class="title">%s</h2>`, alert.Title))
-	sb.WriteString(fmt.Sprintf(`<p class="message">%s</p>`, alert.Message))
+	fmt.Fprintf(&sb, `<div class="alert-box %s">`, cssClass)
+	fmt.Fprintf(&sb, `<h2 class="title">%s</h2>`, alert.Title)
+	fmt.Fprintf(&sb, `<p class="message">%s</p>`, alert.Message)
 
 	sb.WriteString(`<dl class="metadata">`)
-	sb.WriteString(fmt.Sprintf(`<dt>Type:</dt><dd><code>%s</code></dd>`, alert.Type))
+	fmt.Fprintf(&sb, `<dt>Type:</dt><dd><code>%s</code></dd>`, alert.Type)
 
 	if alert.Source != "" {
-		sb.WriteString(fmt.Sprintf(`<dt>Source:</dt><dd><code>%s</code></dd>`, alert.Source))
+		fmt.Fprintf(&sb, `<dt>Source:</dt><dd><code>%s</code></dd>`, alert.Source)
 	}
 
 	if alert.ProjectPath != "" {
-		sb.WriteString(fmt.Sprintf(`<dt>Project:</dt><dd><code>%s</code></dd>`, alert.ProjectPath))
+		fmt.Fprintf(&sb, `<dt>Project:</dt><dd><code>%s</code></dd>`, alert.ProjectPath)
 	}
 
-	sb.WriteString(fmt.Sprintf(`<dt>Severity:</dt><dd>%s</dd>`, strings.ToUpper(string(alert.Severity))))
+	fmt.Fprintf(&sb, `<dt>Severity:</dt><dd>%s</dd>`, strings.ToUpper(string(alert.Severity)))
 	sb.WriteString(`</dl>`)
 	sb.WriteString(`</div>`)
 
-	sb.WriteString(fmt.Sprintf(`<div class="footer">Alert ID: %s<br>Generated at %s</div>`,
-		alert.ID, alert.CreatedAt.Format(time.RFC1123)))
+	fmt.Fprintf(&sb, `<div class="footer">Alert ID: %s<br>Generated at %s</div>`,
+		alert.ID, alert.CreatedAt.Format(time.RFC1123))
 
 	sb.WriteString(`</div></body></html>`)
 

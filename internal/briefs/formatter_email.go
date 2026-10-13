@@ -48,21 +48,21 @@ h2 { color: #4a4a68; margin-top: 24px; }
 
 	// Header
 	sb.WriteString("<h1>📊 Pilot Daily Brief</h1>\n")
-	sb.WriteString(fmt.Sprintf("<p style=\"color: #64748b;\">%s</p>\n", brief.GeneratedAt.Format("Monday, January 2, 2006")))
+	fmt.Fprintf(&sb, "<p style=\"color: #64748b;\">%s</p>\n", brief.GeneratedAt.Format("Monday, January 2, 2006"))
 
 	// Completed
 	sb.WriteString("<div class=\"section\">\n")
-	sb.WriteString(fmt.Sprintf("<h2>✅ Completed (%d)</h2>\n", len(brief.Completed)))
+	fmt.Fprintf(&sb, "<h2>✅ Completed (%d)</h2>\n", len(brief.Completed))
 	if len(brief.Completed) == 0 {
 		sb.WriteString("<p class=\"empty\">No tasks completed</p>\n")
 	} else {
 		for _, task := range brief.Completed {
 			sb.WriteString("<div class=\"task\">\n")
-			sb.WriteString(fmt.Sprintf("<span class=\"task-id\">%s</span>", html.EscapeString(task.ID)))
+			fmt.Fprintf(&sb, "<span class=\"task-id\">%s</span>", html.EscapeString(task.ID))
 			if task.PRUrl != "" {
-				sb.WriteString(fmt.Sprintf(" — <a class=\"pr-link\" href=\"%s\">PR ready for review</a>", html.EscapeString(task.PRUrl)))
+				fmt.Fprintf(&sb, " — <a class=\"pr-link\" href=\"%s\">PR ready for review</a>", html.EscapeString(task.PRUrl))
 			}
-			sb.WriteString(fmt.Sprintf(" <span style=\"color: #64748b;\">(%s)</span>", formatDuration(task.DurationMs)))
+			fmt.Fprintf(&sb, " <span style=\"color: #64748b;\">(%s)</span>", formatDuration(task.DurationMs))
 			sb.WriteString("</div>\n")
 		}
 	}
@@ -70,15 +70,15 @@ h2 { color: #4a4a68; margin-top: 24px; }
 
 	// In Progress
 	sb.WriteString("<div class=\"section\">\n")
-	sb.WriteString(fmt.Sprintf("<h2>🔄 In Progress (%d)</h2>\n", len(brief.InProgress)))
+	fmt.Fprintf(&sb, "<h2>🔄 In Progress (%d)</h2>\n", len(brief.InProgress))
 	if len(brief.InProgress) == 0 {
 		sb.WriteString("<p class=\"empty\">No tasks in progress</p>\n")
 	} else {
 		for _, task := range brief.InProgress {
 			sb.WriteString("<div class=\"task\">\n")
-			sb.WriteString(fmt.Sprintf("<span class=\"task-id\">%s</span> ", html.EscapeString(task.ID)))
-			sb.WriteString(fmt.Sprintf("<div class=\"progress-bar\"><div class=\"progress-fill\" style=\"width: %d%%;\"></div></div>", task.Progress))
-			sb.WriteString(fmt.Sprintf(" %d%%", task.Progress))
+			fmt.Fprintf(&sb, "<span class=\"task-id\">%s</span> ", html.EscapeString(task.ID))
+			fmt.Fprintf(&sb, "<div class=\"progress-bar\"><div class=\"progress-fill\" style=\"width: %d%%;\"></div></div>", task.Progress)
+			fmt.Fprintf(&sb, " %d%%", task.Progress)
 			sb.WriteString("</div>\n")
 		}
 	}
@@ -87,16 +87,16 @@ h2 { color: #4a4a68; margin-top: 24px; }
 	// Blocked
 	if len(brief.Blocked) > 0 {
 		sb.WriteString("<div class=\"section\">\n")
-		sb.WriteString(fmt.Sprintf("<h2>🚫 Blocked (%d)</h2>\n", len(brief.Blocked)))
+		fmt.Fprintf(&sb, "<h2>🚫 Blocked (%d)</h2>\n", len(brief.Blocked))
 		for _, task := range brief.Blocked {
 			sb.WriteString("<div class=\"blocked\">\n")
-			sb.WriteString(fmt.Sprintf("<strong class=\"task-id\">%s</strong>", html.EscapeString(task.ID)))
+			fmt.Fprintf(&sb, "<strong class=\"task-id\">%s</strong>", html.EscapeString(task.ID))
 			if task.Error != "" {
 				errLine := strings.Split(task.Error, "\n")[0]
 				if len(errLine) > 100 {
 					errLine = errLine[:100] + "..."
 				}
-				sb.WriteString(fmt.Sprintf("<br><span class=\"error\">%s</span>", html.EscapeString(errLine)))
+				fmt.Fprintf(&sb, "<br><span class=\"error\">%s</span>", html.EscapeString(errLine))
 			}
 			sb.WriteString("</div>\n")
 		}
@@ -105,13 +105,13 @@ h2 { color: #4a4a68; margin-top: 24px; }
 
 	// Upcoming
 	sb.WriteString("<div class=\"section\">\n")
-	sb.WriteString(fmt.Sprintf("<h2>📋 Upcoming (%d)</h2>\n", len(brief.Upcoming)))
+	fmt.Fprintf(&sb, "<h2>📋 Upcoming (%d)</h2>\n", len(brief.Upcoming))
 	if len(brief.Upcoming) == 0 {
 		sb.WriteString("<p class=\"empty\">No tasks queued</p>\n")
 	} else {
 		for _, task := range brief.Upcoming {
 			sb.WriteString("<div class=\"task\">\n")
-			sb.WriteString(fmt.Sprintf("<span class=\"task-id\">%s</span>", html.EscapeString(task.ID)))
+			fmt.Fprintf(&sb, "<span class=\"task-id\">%s</span>", html.EscapeString(task.ID))
 			sb.WriteString("</div>\n")
 		}
 	}
@@ -121,15 +121,15 @@ h2 { color: #4a4a68; margin-top: 24px; }
 	sb.WriteString("<div class=\"metrics\">\n")
 	sb.WriteString("<h2 style=\"margin-top: 0;\">📈 Metrics</h2>\n")
 	sb.WriteString("<div class=\"metric\">\n")
-	sb.WriteString(fmt.Sprintf("<div class=\"metric-value\">%.0f%%</div>\n", brief.Metrics.SuccessRate*100))
-	sb.WriteString(fmt.Sprintf("<div class=\"metric-label\">Success rate (%d/%d)</div>\n", brief.Metrics.CompletedCount, brief.Metrics.TotalTasks))
+	fmt.Fprintf(&sb, "<div class=\"metric-value\">%.0f%%</div>\n", brief.Metrics.SuccessRate*100)
+	fmt.Fprintf(&sb, "<div class=\"metric-label\">Success rate (%d/%d)</div>\n", brief.Metrics.CompletedCount, brief.Metrics.TotalTasks)
 	sb.WriteString("</div>\n")
 	sb.WriteString("<div class=\"metric\">\n")
-	sb.WriteString(fmt.Sprintf("<div class=\"metric-value\">%s</div>\n", formatDuration(brief.Metrics.AvgDurationMs)))
+	fmt.Fprintf(&sb, "<div class=\"metric-value\">%s</div>\n", formatDuration(brief.Metrics.AvgDurationMs))
 	sb.WriteString("<div class=\"metric-label\">Avg completion</div>\n")
 	sb.WriteString("</div>\n")
 	sb.WriteString("<div class=\"metric\">\n")
-	sb.WriteString(fmt.Sprintf("<div class=\"metric-value\">%d</div>\n", brief.Metrics.PRsCreated))
+	fmt.Fprintf(&sb, "<div class=\"metric-value\">%d</div>\n", brief.Metrics.PRsCreated)
 	sb.WriteString("<div class=\"metric-label\">PRs created</div>\n")
 	sb.WriteString("</div>\n")
 	sb.WriteString("</div>\n")

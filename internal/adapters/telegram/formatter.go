@@ -70,14 +70,14 @@ func FormatProgressUpdate(taskID, phase string, progress int, message string) st
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s %s (%d%%)\n", phaseEmoji, phase, progress))
-	sb.WriteString(fmt.Sprintf("%s\n\n", bar))
+	fmt.Fprintf(&sb, "%s %s (%d%%)\n", phaseEmoji, phase, progress)
+	fmt.Fprintf(&sb, "%s\n\n", bar)
 	sb.WriteString(taskID)
 
 	// Add activity message if present
 	if message != "" {
 		cleanMsg := truncateDescription(message, 60)
-		sb.WriteString(fmt.Sprintf("\n\n📝 %s", cleanMsg))
+		fmt.Fprintf(&sb, "\n\n📝 %s", cleanMsg)
 	}
 
 	return sb.String()
@@ -95,12 +95,12 @@ func FormatTaskResult(result *executor.ExecutionResult) string {
 func formatSuccessResult(result *executor.ExecutionResult) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("✅ Task completed\n%s\n\n", result.TaskID))
-	sb.WriteString(fmt.Sprintf("⏱ Duration: %s\n", result.Duration.Round(time.Second)))
+	fmt.Fprintf(&sb, "✅ Task completed\n%s\n\n", result.TaskID)
+	fmt.Fprintf(&sb, "⏱ Duration: %s\n", result.Duration.Round(time.Second))
 
 	// Add commit SHA if present
 	if result.CommitSHA != "" {
-		sb.WriteString(fmt.Sprintf("📝 Commit: %s\n", result.CommitSHA[:min(8, len(result.CommitSHA))]))
+		fmt.Fprintf(&sb, "📝 Commit: %s\n", result.CommitSHA[:min(8, len(result.CommitSHA))])
 	}
 
 	// Add quality gates summary (GH-209)
@@ -110,7 +110,7 @@ func formatSuccessResult(result *executor.ExecutionResult) string {
 
 	// Add PR URL if present
 	if result.PRUrl != "" {
-		sb.WriteString(fmt.Sprintf("\n🔗 PR: %s\n", result.PRUrl))
+		fmt.Fprintf(&sb, "\n🔗 PR: %s\n", result.PRUrl)
 	}
 
 	// Clean and add output summary
@@ -119,7 +119,7 @@ func formatSuccessResult(result *executor.ExecutionResult) string {
 		// Extract key information from output
 		summary := extractSummary(cleanOutput)
 		if summary != "" {
-			sb.WriteString(fmt.Sprintf("\n📄 Summary:\n%s", summary))
+			fmt.Fprintf(&sb, "\n📄 Summary:\n%s", summary)
 		}
 	}
 
@@ -142,7 +142,7 @@ func formatQualityGatesSummary(qg *executor.QualityGatesResult) string {
 			passed++
 		}
 	}
-	sb.WriteString(fmt.Sprintf("%d/%d passed\n", passed, len(qg.Gates)))
+	fmt.Fprintf(&sb, "%d/%d passed\n", passed, len(qg.Gates))
 
 	// List individual gates
 	for _, gate := range qg.Gates {
@@ -154,11 +154,11 @@ func formatQualityGatesSummary(qg *executor.QualityGatesResult) string {
 		}
 
 		durationStr := gate.Duration.Round(time.Second).String()
-		sb.WriteString(fmt.Sprintf("- %s %s (%s", gate.Name, icon, durationStr))
+		fmt.Fprintf(&sb, "- %s %s (%s", gate.Name, icon, durationStr)
 
 		// Add retry count if any
 		if gate.RetryCount > 0 {
-			sb.WriteString(fmt.Sprintf(", %d retry", gate.RetryCount))
+			fmt.Fprintf(&sb, ", %d retry", gate.RetryCount)
 		}
 		sb.WriteString(")\n")
 	}
@@ -170,8 +170,8 @@ func formatQualityGatesSummary(qg *executor.QualityGatesResult) string {
 func formatFailureResult(result *executor.ExecutionResult) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("❌ Task failed\n%s\n\n", result.TaskID))
-	sb.WriteString(fmt.Sprintf("⏱ Duration: %s\n", result.Duration.Round(time.Second)))
+	fmt.Fprintf(&sb, "❌ Task failed\n%s\n\n", result.TaskID)
+	fmt.Fprintf(&sb, "⏱ Duration: %s\n", result.Duration.Round(time.Second))
 
 	// Add quality gates summary if available (GH-209)
 	if result.QualityGates != nil && result.QualityGates.Enabled {
@@ -188,7 +188,7 @@ func formatFailureResult(result *executor.ExecutionResult) string {
 		cleanError = cleanError[:400] + "..."
 	}
 
-	sb.WriteString(fmt.Sprintf("\n%s", cleanError))
+	fmt.Fprintf(&sb, "\n%s", cleanError)
 	return sb.String()
 }
 

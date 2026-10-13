@@ -206,10 +206,10 @@ func formatQueueSummary(running, queued []*memory.Execution) string {
 	var sb strings.Builder
 
 	if len(running) > 0 {
-		sb.WriteString(fmt.Sprintf("🔄 Running: %d\n", len(running)))
+		fmt.Fprintf(&sb, "🔄 Running: %d\n", len(running))
 		for _, exec := range running {
 			age := time.Since(exec.CreatedAt).Round(time.Second)
-			sb.WriteString(fmt.Sprintf("• %s (%s)\n", exec.TaskID, age))
+			fmt.Fprintf(&sb, "• %s (%s)\n", exec.TaskID, age)
 		}
 	}
 
@@ -217,7 +217,7 @@ func formatQueueSummary(running, queued []*memory.Execution) string {
 		if len(running) > 0 {
 			sb.WriteString("\n")
 		}
-		sb.WriteString(fmt.Sprintf("📋 Queued: %d\n", len(queued)))
+		fmt.Fprintf(&sb, "📋 Queued: %d\n", len(queued))
 
 		// GH-3732: surface per-project serialization — a queued task is blocked
 		// by whichever task is running for its project, or (if none is running
@@ -240,10 +240,10 @@ func formatQueueSummary(running, queued []*memory.Execution) string {
 			}
 
 			if blockedBy != "" {
-				sb.WriteString(fmt.Sprintf("%d. %s — %s (%s ago) ⏳ behind %s (position %d)\n",
-					i+1, exec.TaskID, filepath.Base(exec.ProjectPath), age, blockedBy, position))
+				fmt.Fprintf(&sb, "%d. %s — %s (%s ago) ⏳ behind %s (position %d)\n",
+					i+1, exec.TaskID, filepath.Base(exec.ProjectPath), age, blockedBy, position)
 			} else {
-				sb.WriteString(fmt.Sprintf("%d. %s — %s (%s ago)\n", i+1, exec.TaskID, filepath.Base(exec.ProjectPath), age))
+				fmt.Fprintf(&sb, "%d. %s — %s (%s ago)\n", i+1, exec.TaskID, filepath.Base(exec.ProjectPath), age)
 			}
 
 			blockedByProject[exec.ProjectPath] = exec.TaskID
@@ -266,7 +266,7 @@ func (c *CommandHandler) handleStatus(ctx context.Context, contextID, threadID s
 			projName = name
 		}
 	}
-	sb.WriteString(fmt.Sprintf("📁 Project: %s\n", projName))
+	fmt.Fprintf(&sb, "📁 Project: %s\n", projName)
 
 	// Get task status
 	if c.statusQueryFunc != nil {
@@ -276,10 +276,10 @@ func (c *CommandHandler) handleStatus(ctx context.Context, contextID, threadID s
 		if running != nil {
 			// Type assertion to get task info (duck typing for compatibility)
 			if taskIDer, ok := running.(interface{ GetTaskID() string }); ok {
-				sb.WriteString(fmt.Sprintf("\n🔄 Running: %s\n", taskIDer.GetTaskID()))
+				fmt.Fprintf(&sb, "\n🔄 Running: %s\n", taskIDer.GetTaskID())
 				if startedAter, ok := running.(interface{ GetStartedAt() time.Time }); ok {
 					elapsed := time.Since(startedAter.GetStartedAt()).Round(time.Second)
-					sb.WriteString(fmt.Sprintf("   ⏱ %s\n", elapsed))
+					fmt.Fprintf(&sb, "   ⏱ %s\n", elapsed)
 				}
 			}
 		}
@@ -287,10 +287,10 @@ func (c *CommandHandler) handleStatus(ctx context.Context, contextID, threadID s
 		// Pending task
 		if pending != nil {
 			if taskIDer, ok := pending.(interface{ GetTaskID() string }); ok {
-				sb.WriteString(fmt.Sprintf("\n⏳ Pending: %s\n", taskIDer.GetTaskID()))
+				fmt.Fprintf(&sb, "\n⏳ Pending: %s\n", taskIDer.GetTaskID())
 				if createdAter, ok := pending.(interface{ GetCreatedAt() time.Time }); ok {
 					age := time.Since(createdAter.GetCreatedAt()).Round(time.Second)
-					sb.WriteString(fmt.Sprintf("   Awaiting confirmation (%s)\n", age))
+					fmt.Fprintf(&sb, "   Awaiting confirmation (%s)\n", age)
 				}
 			}
 		}
@@ -380,11 +380,11 @@ func (c *CommandHandler) handleProjects(ctx context.Context, contextID, threadID
 		}
 
 		if namer, ok := p.(interface{ GetName() string }); ok {
-			sb.WriteString(fmt.Sprintf("• %s%s%s\n", namer.GetName(), marker, nav))
+			fmt.Fprintf(&sb, "• %s%s%s\n", namer.GetName(), marker, nav)
 		}
 
 		if pather, ok := p.(interface{ GetPath() string }); ok {
-			sb.WriteString(fmt.Sprintf("  %s\n\n", pather.GetPath()))
+			fmt.Fprintf(&sb, "  %s\n\n", pather.GetPath())
 		}
 	}
 
@@ -474,12 +474,12 @@ func (c *CommandHandler) handleHistory(ctx context.Context, contextID, threadID 
 		// Format time
 		age := FormatTimeAgo(exec.CreatedAt)
 
-		sb.WriteString(fmt.Sprintf("%s %s\n", emoji, exec.TaskID))
-		sb.WriteString(fmt.Sprintf("   %s%s\n", age, duration))
+		fmt.Fprintf(&sb, "%s %s\n", emoji, exec.TaskID)
+		fmt.Fprintf(&sb, "   %s%s\n", age, duration)
 
 		// Add PR link if present
 		if exec.PRUrl != "" {
-			sb.WriteString(fmt.Sprintf("   PR: %s\n", exec.PRUrl))
+			fmt.Fprintf(&sb, "   PR: %s\n", exec.PRUrl)
 		}
 		sb.WriteString("\n")
 	}
@@ -511,36 +511,36 @@ func (c *CommandHandler) handleBudget(ctx context.Context, contextID, threadID s
 	sb.WriteString("💰 Usage This Month\n\n")
 
 	// Task count
-	sb.WriteString(fmt.Sprintf("🎯 Tasks: %d\n", summary.TaskCount))
+	fmt.Fprintf(&sb, "🎯 Tasks: %d\n", summary.TaskCount)
 
 	// Token usage
 	if summary.TokensTotal > 0 {
 		tokensK := float64(summary.TokensTotal) / 1000
-		sb.WriteString(fmt.Sprintf("🔤 Tokens: %.1fK\n", tokensK))
+		fmt.Fprintf(&sb, "🔤 Tokens: %.1fK\n", tokensK)
 	}
 
 	// Compute time
 	if summary.ComputeMinutes > 0 {
-		sb.WriteString(fmt.Sprintf("⏱ Compute: %d min\n", summary.ComputeMinutes))
+		fmt.Fprintf(&sb, "⏱ Compute: %d min\n", summary.ComputeMinutes)
 	}
 
 	// Costs breakdown
 	sb.WriteString("\nCosts\n")
 	if summary.TaskCost > 0 {
-		sb.WriteString(fmt.Sprintf("• Tasks: $%.2f\n", summary.TaskCost))
+		fmt.Fprintf(&sb, "• Tasks: $%.2f\n", summary.TaskCost)
 	}
 	if summary.TokenCost > 0 {
-		sb.WriteString(fmt.Sprintf("• Tokens: $%.2f\n", summary.TokenCost))
+		fmt.Fprintf(&sb, "• Tokens: $%.2f\n", summary.TokenCost)
 	}
 	if summary.ComputeCost > 0 {
-		sb.WriteString(fmt.Sprintf("• Compute: $%.2f\n", summary.ComputeCost))
+		fmt.Fprintf(&sb, "• Compute: $%.2f\n", summary.ComputeCost)
 	}
 
 	// Total
-	sb.WriteString(fmt.Sprintf("\nTotal: $%.2f\n", summary.TotalCost))
+	fmt.Fprintf(&sb, "\nTotal: $%.2f\n", summary.TotalCost)
 
 	// Period info
-	sb.WriteString(fmt.Sprintf("Period: %s - %s", monthStart.Format("Jan 2"), now.Format("Jan 2")))
+	fmt.Fprintf(&sb, "Period: %s - %s", monthStart.Format("Jan 2"), now.Format("Jan 2"))
 
 	_ = c.messenger.SendText(ctx, contextID, threadID, sb.String())
 }

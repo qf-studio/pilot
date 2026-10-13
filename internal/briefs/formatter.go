@@ -23,11 +23,11 @@ func NewPlainTextFormatter() *PlainTextFormatter {
 func (f *PlainTextFormatter) Format(brief *Brief) (string, error) {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("PILOT DAILY BRIEF — %s\n", brief.GeneratedAt.Format("Jan 2, 2006")))
+	fmt.Fprintf(&sb, "PILOT DAILY BRIEF — %s\n", brief.GeneratedAt.Format("Jan 2, 2006"))
 	sb.WriteString(strings.Repeat("=", 50) + "\n\n")
 
 	// Completed
-	sb.WriteString(fmt.Sprintf("COMPLETED (%d)\n", len(brief.Completed)))
+	fmt.Fprintf(&sb, "COMPLETED (%d)\n", len(brief.Completed))
 	sb.WriteString(strings.Repeat("-", 30) + "\n")
 	if len(brief.Completed) == 0 {
 		sb.WriteString("  No tasks completed\n")
@@ -44,54 +44,54 @@ func (f *PlainTextFormatter) Format(brief *Brief) (string, error) {
 	sb.WriteString("\n")
 
 	// In Progress
-	sb.WriteString(fmt.Sprintf("IN PROGRESS (%d)\n", len(brief.InProgress)))
+	fmt.Fprintf(&sb, "IN PROGRESS (%d)\n", len(brief.InProgress))
 	sb.WriteString(strings.Repeat("-", 30) + "\n")
 	if len(brief.InProgress) == 0 {
 		sb.WriteString("  No tasks in progress\n")
 	}
 	for _, task := range brief.InProgress {
-		sb.WriteString(fmt.Sprintf("  • %s — %d%% (%s)\n", task.ID, task.Progress, task.Status))
+		fmt.Fprintf(&sb, "  • %s — %d%% (%s)\n", task.ID, task.Progress, task.Status)
 	}
 	sb.WriteString("\n")
 
 	// Blocked
 	if len(brief.Blocked) > 0 {
-		sb.WriteString(fmt.Sprintf("FAILED (%d)\n", len(brief.Blocked)))
+		fmt.Fprintf(&sb, "FAILED (%d)\n", len(brief.Blocked))
 		sb.WriteString(strings.Repeat("-", 30) + "\n")
 		for _, task := range brief.Blocked {
-			sb.WriteString(fmt.Sprintf("  • %s\n", task.ID))
+			fmt.Fprintf(&sb, "  • %s\n", task.ID)
 			if task.Error != "" {
 				// Truncate error to first line
 				errLine := strings.Split(task.Error, "\n")[0]
 				if len(errLine) > 60 {
 					errLine = errLine[:60] + "..."
 				}
-				sb.WriteString(fmt.Sprintf("    Error: %s\n", errLine))
+				fmt.Fprintf(&sb, "    Error: %s\n", errLine)
 			}
 		}
 		sb.WriteString("\n")
 	}
 
 	// Upcoming
-	sb.WriteString(fmt.Sprintf("UPCOMING (%d)\n", len(brief.Upcoming)))
+	fmt.Fprintf(&sb, "UPCOMING (%d)\n", len(brief.Upcoming))
 	sb.WriteString(strings.Repeat("-", 30) + "\n")
 	if len(brief.Upcoming) == 0 {
 		sb.WriteString("  No tasks queued\n")
 	}
 	for _, task := range brief.Upcoming {
-		sb.WriteString(fmt.Sprintf("  • %s\n", task.ID))
+		fmt.Fprintf(&sb, "  • %s\n", task.ID)
 	}
 	sb.WriteString("\n")
 
 	// Metrics
 	sb.WriteString("METRICS\n")
 	sb.WriteString(strings.Repeat("-", 30) + "\n")
-	sb.WriteString(fmt.Sprintf("  Success rate: %.0f%% (%d/%d)\n",
+	fmt.Fprintf(&sb, "  Success rate: %.0f%% (%d/%d)\n",
 		brief.Metrics.SuccessRate*100,
 		brief.Metrics.CompletedCount,
-		brief.Metrics.TotalTasks))
-	sb.WriteString(fmt.Sprintf("  Avg completion: %s\n", formatDuration(brief.Metrics.AvgDurationMs)))
-	sb.WriteString(fmt.Sprintf("  PRs created: %d\n", brief.Metrics.PRsCreated))
+		brief.Metrics.TotalTasks)
+	fmt.Fprintf(&sb, "  Avg completion: %s\n", formatDuration(brief.Metrics.AvgDurationMs))
+	fmt.Fprintf(&sb, "  PRs created: %d\n", brief.Metrics.PRsCreated)
 
 	return sb.String(), nil
 }

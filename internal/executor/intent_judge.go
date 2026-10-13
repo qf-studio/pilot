@@ -447,9 +447,9 @@ func buildJudgeDiffPayload(diff string, maxChars int) string {
 	}
 
 	var manifest strings.Builder
-	manifest.WriteString(fmt.Sprintf("## Changed Files (%d total, full list — not truncated)\n", len(sections)))
+	fmt.Fprintf(&manifest, "## Changed Files (%d total, full list — not truncated)\n", len(sections))
 	for _, s := range sections {
-		manifest.WriteString(fmt.Sprintf("- %s (+%d/-%d)\n", s.path, s.added, s.removed))
+		fmt.Fprintf(&manifest, "- %s (+%d/-%d)\n", s.path, s.added, s.removed)
 	}
 	manifest.WriteString("\n## Diff Content (per-file, may be truncated for length — see manifest above for the full file list)\n")
 
@@ -471,7 +471,7 @@ func buildJudgeDiffPayload(diff string, maxChars int) string {
 		}
 		omitted := len(s.body) - perFile
 		body.WriteString(s.body[:perFile])
-		body.WriteString(fmt.Sprintf("\n...[truncated: %d more bytes of %s omitted for length, see manifest above for full file list]\n", omitted, s.path))
+		fmt.Fprintf(&body, "\n...[truncated: %d more bytes of %s omitted for length, see manifest above for full file list]\n", omitted, s.path)
 	}
 
 	return manifest.String() + body.String()

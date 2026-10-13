@@ -59,9 +59,9 @@ func (s *SMTPSender) Send(ctx context.Context, to []string, subject, htmlBody st
 
 	// Build MIME message
 	var msg strings.Builder
-	msg.WriteString(fmt.Sprintf("From: %s\r\n", s.from))
-	msg.WriteString(fmt.Sprintf("To: %s\r\n", strings.Join(to, ",")))
-	msg.WriteString(fmt.Sprintf("Subject: %s\r\n", subject))
+	fmt.Fprintf(&msg, "From: %s\r\n", s.from)
+	fmt.Fprintf(&msg, "To: %s\r\n", strings.Join(to, ","))
+	fmt.Fprintf(&msg, "Subject: %s\r\n", subject)
 	msg.WriteString("MIME-Version: 1.0\r\n")
 	msg.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
 	msg.WriteString("\r\n")

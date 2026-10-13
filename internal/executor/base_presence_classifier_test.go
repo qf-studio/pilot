@@ -92,7 +92,7 @@ func TestBasePresenceClassifier_OnlySpanAndOneSentenceLeave(t *testing.T) {
 	c.Classify(context.Background(), basePresenceBody, []string{"internal/foo/secret.go"})
 
 	var sent strings.Builder
-	sent.WriteString(fmt.Sprintf("%v", asker.gotState))
+	fmt.Fprintf(&sent, "%v", asker.gotState)
 	for _, q := range asker.gotQuests {
 		sent.WriteString(q.Instructions.(string))
 	}

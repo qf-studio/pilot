@@ -79,7 +79,7 @@ func (n *Notifier) NotifyTaskCompleted(ctx context.Context, issueIID int, mrURL 
 	comment.WriteString("✅ **Pilot completed this task!**\n\n")
 
 	if mrURL != "" {
-		comment.WriteString(fmt.Sprintf("**Merge Request**: %s\n\n", mrURL))
+		fmt.Fprintf(&comment, "**Merge Request**: %s\n\n", mrURL)
 	}
 
 	if summary != "" {

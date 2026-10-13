@@ -18,10 +18,10 @@ func (f *SlackFormatter) Format(brief *Brief) (string, error) {
 	var sb strings.Builder
 
 	// Header
-	sb.WriteString(fmt.Sprintf(":bar_chart: *Pilot Daily Brief* — %s\n\n", brief.GeneratedAt.Format("Jan 2, 2006")))
+	fmt.Fprintf(&sb, ":bar_chart: *Pilot Daily Brief* — %s\n\n", brief.GeneratedAt.Format("Jan 2, 2006"))
 
 	// Completed
-	sb.WriteString(fmt.Sprintf("*:white_check_mark: Completed (%d)*\n", len(brief.Completed)))
+	fmt.Fprintf(&sb, "*:white_check_mark: Completed (%d)*\n", len(brief.Completed))
 	if len(brief.Completed) == 0 {
 		sb.WriteString("_No tasks completed_\n")
 	}
@@ -37,50 +37,50 @@ func (f *SlackFormatter) Format(brief *Brief) (string, error) {
 	sb.WriteString("\n")
 
 	// In Progress
-	sb.WriteString(fmt.Sprintf("*:arrows_counterclockwise: In Progress (%d)*\n", len(brief.InProgress)))
+	fmt.Fprintf(&sb, "*:arrows_counterclockwise: In Progress (%d)*\n", len(brief.InProgress))
 	if len(brief.InProgress) == 0 {
 		sb.WriteString("_No tasks in progress_\n")
 	}
 	for _, task := range brief.InProgress {
 		progressBar := generateSlackProgressBar(task.Progress)
-		sb.WriteString(fmt.Sprintf("• `%s` — %s %d%%\n", task.ID, progressBar, task.Progress))
+		fmt.Fprintf(&sb, "• `%s` — %s %d%%\n", task.ID, progressBar, task.Progress)
 	}
 	sb.WriteString("\n")
 
 	// Blocked
 	if len(brief.Blocked) > 0 {
-		sb.WriteString(fmt.Sprintf("*:no_entry: Blocked (%d)*\n", len(brief.Blocked)))
+		fmt.Fprintf(&sb, "*:no_entry: Blocked (%d)*\n", len(brief.Blocked))
 		for _, task := range brief.Blocked {
-			sb.WriteString(fmt.Sprintf("• `%s`\n", task.ID))
+			fmt.Fprintf(&sb, "• `%s`\n", task.ID)
 			if task.Error != "" {
 				errLine := strings.Split(task.Error, "\n")[0]
 				if len(errLine) > 80 {
 					errLine = errLine[:80] + "..."
 				}
-				sb.WriteString(fmt.Sprintf("  └ `%s`\n", errLine))
+				fmt.Fprintf(&sb, "  └ `%s`\n", errLine)
 			}
 		}
 		sb.WriteString("\n")
 	}
 
 	// Upcoming
-	sb.WriteString(fmt.Sprintf("*:clipboard: Upcoming (%d)*\n", len(brief.Upcoming)))
+	fmt.Fprintf(&sb, "*:clipboard: Upcoming (%d)*\n", len(brief.Upcoming))
 	if len(brief.Upcoming) == 0 {
 		sb.WriteString("_No tasks queued_\n")
 	}
 	for _, task := range brief.Upcoming {
-		sb.WriteString(fmt.Sprintf("• `%s`\n", task.ID))
+		fmt.Fprintf(&sb, "• `%s`\n", task.ID)
 	}
 	sb.WriteString("\n")
 
 	// Metrics
 	sb.WriteString("*:chart_with_upwards_trend: Metrics*\n")
-	sb.WriteString(fmt.Sprintf("• Success rate: *%.0f%%* (%d/%d)\n",
+	fmt.Fprintf(&sb, "• Success rate: *%.0f%%* (%d/%d)\n",
 		brief.Metrics.SuccessRate*100,
 		brief.Metrics.CompletedCount,
-		brief.Metrics.TotalTasks))
-	sb.WriteString(fmt.Sprintf("• Avg completion: *%s*\n", formatDuration(brief.Metrics.AvgDurationMs)))
-	sb.WriteString(fmt.Sprintf("• PRs created: *%d*\n", brief.Metrics.PRsCreated))
+		brief.Metrics.TotalTasks)
+	fmt.Fprintf(&sb, "• Avg completion: *%s*\n", formatDuration(brief.Metrics.AvgDurationMs))
+	fmt.Fprintf(&sb, "• PRs created: *%d*\n", brief.Metrics.PRsCreated)
 
 	return sb.String(), nil
 }

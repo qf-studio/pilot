@@ -218,14 +218,14 @@ func FormatGateResult(result *GateResult) string {
 	} else {
 		sb.WriteString("✗ Gate FAILED")
 	}
-	sb.WriteString(fmt.Sprintf(" (%s)\n", result.Duration.Round(time.Millisecond)))
+	fmt.Fprintf(&sb, " (%s)\n", result.Duration.Round(time.Millisecond))
 
 	for _, check := range result.Checks {
 		icon := "✓"
 		if !check.Passed {
 			icon = "✗"
 		}
-		sb.WriteString(fmt.Sprintf("  %s %s\n", icon, check.Name))
+		fmt.Fprintf(&sb, "  %s %s\n", icon, check.Name)
 	}
 
 	return sb.String()

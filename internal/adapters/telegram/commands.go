@@ -187,32 +187,32 @@ func (c *CommandHandler) handleStatus(ctx context.Context, chatID, threadID stri
 
 	if plainText {
 		sb.WriteString("📊 Status\n\n")
-		sb.WriteString(fmt.Sprintf("📁 Project: %s\n", projName))
+		fmt.Fprintf(&sb, "📁 Project: %s\n", projName)
 	} else {
 		sb.WriteString("📊 *Status*\n\n")
-		sb.WriteString(fmt.Sprintf("📁 Project: %s\n", escapeMarkdown(projName)))
+		fmt.Fprintf(&sb, "📁 Project: %s\n", escapeMarkdown(projName))
 	}
 
 	// Running task
 	if running != nil {
 		elapsed := time.Since(running.StartedAt).Round(time.Second)
 		if plainText {
-			sb.WriteString(fmt.Sprintf("\n🔄 Running: %s\n", running.TaskID))
+			fmt.Fprintf(&sb, "\n🔄 Running: %s\n", running.TaskID)
 		} else {
-			sb.WriteString(fmt.Sprintf("\n🔄 *Running*: `%s`\n", running.TaskID))
+			fmt.Fprintf(&sb, "\n🔄 *Running*: `%s`\n", running.TaskID)
 		}
-		sb.WriteString(fmt.Sprintf("   ⏱ %s\n", elapsed))
+		fmt.Fprintf(&sb, "   ⏱ %s\n", elapsed)
 	}
 
 	// Pending task
 	if pending != nil {
 		age := time.Since(pending.CreatedAt).Round(time.Second)
 		if plainText {
-			sb.WriteString(fmt.Sprintf("\n⏳ Pending: %s\n", pending.TaskID))
+			fmt.Fprintf(&sb, "\n⏳ Pending: %s\n", pending.TaskID)
 		} else {
-			sb.WriteString(fmt.Sprintf("\n⏳ *Pending*: `%s`\n", pending.TaskID))
+			fmt.Fprintf(&sb, "\n⏳ *Pending*: `%s`\n", pending.TaskID)
 		}
-		sb.WriteString(fmt.Sprintf("   Awaiting confirmation (%s)\n", age))
+		fmt.Fprintf(&sb, "   Awaiting confirmation (%s)\n", age)
 	}
 
 	// Queue info from memory store
@@ -220,9 +220,9 @@ func (c *CommandHandler) handleStatus(ctx context.Context, chatID, threadID stri
 		queued, err := c.store.GetQueuedTasks(10)
 		if err == nil && len(queued) > 0 {
 			if plainText {
-				sb.WriteString(fmt.Sprintf("\n📋 Queue: %d task(s)\n", len(queued)))
+				fmt.Fprintf(&sb, "\n📋 Queue: %d task(s)\n", len(queued))
 			} else {
-				sb.WriteString(fmt.Sprintf("\n📋 *Queue*: %d task(s)\n", len(queued)))
+				fmt.Fprintf(&sb, "\n📋 *Queue*: %d task(s)\n", len(queued))
 			}
 		}
 	}
@@ -281,11 +281,11 @@ func (c *CommandHandler) handleQueue(ctx context.Context, chatID, threadID strin
 	for i, task := range queued {
 		age := time.Since(task.CreatedAt).Round(time.Minute)
 		if plainText {
-			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, task.TaskID))
+			fmt.Fprintf(&sb, "%d. %s\n", i+1, task.TaskID)
 		} else {
-			sb.WriteString(fmt.Sprintf("%d. `%s`\n", i+1, task.TaskID))
+			fmt.Fprintf(&sb, "%d. `%s`\n", i+1, task.TaskID)
 		}
-		sb.WriteString(fmt.Sprintf("   📁 %s • ⏱ %s ago\n\n", filepath.Base(task.ProjectPath), age))
+		fmt.Fprintf(&sb, "   📁 %s • ⏱ %s ago\n\n", filepath.Base(task.ProjectPath), age)
 	}
 
 	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode(), parseThreadID(threadID))
@@ -327,11 +327,11 @@ func (c *CommandHandler) handleProjects(ctx context.Context, chatID, threadID st
 			nav = " 🧭"
 		}
 		if plainText {
-			sb.WriteString(fmt.Sprintf("• %s%s%s\n", p.Name, marker, nav))
-			sb.WriteString(fmt.Sprintf("  %s\n\n", p.Path))
+			fmt.Fprintf(&sb, "• %s%s%s\n", p.Name, marker, nav)
+			fmt.Fprintf(&sb, "  %s\n\n", p.Path)
 		} else {
-			sb.WriteString(fmt.Sprintf("• *%s*%s%s\n", escapeMarkdown(p.Name), marker, nav))
-			sb.WriteString(fmt.Sprintf("  `%s`\n\n", p.Path))
+			fmt.Fprintf(&sb, "• *%s*%s%s\n", escapeMarkdown(p.Name), marker, nav)
+			fmt.Fprintf(&sb, "  `%s`\n\n", p.Path)
 		}
 
 		// Add keyboard button if not active
@@ -457,18 +457,18 @@ func (c *CommandHandler) handleHistory(ctx context.Context, chatID, threadID str
 		age := formatTimeAgo(exec.CreatedAt)
 
 		if plainText {
-			sb.WriteString(fmt.Sprintf("%s %s\n", emoji, exec.TaskID))
+			fmt.Fprintf(&sb, "%s %s\n", emoji, exec.TaskID)
 		} else {
-			sb.WriteString(fmt.Sprintf("%s `%s`\n", emoji, exec.TaskID))
+			fmt.Fprintf(&sb, "%s `%s`\n", emoji, exec.TaskID)
 		}
-		sb.WriteString(fmt.Sprintf("   %s%s\n", age, duration))
+		fmt.Fprintf(&sb, "   %s%s\n", age, duration)
 
 		// Add PR link if present
 		if exec.PRUrl != "" {
 			if plainText {
-				sb.WriteString(fmt.Sprintf("   PR: %s\n", exec.PRUrl))
+				fmt.Fprintf(&sb, "   PR: %s\n", exec.PRUrl)
 			} else {
-				sb.WriteString(fmt.Sprintf("   [PR](%s)\n", exec.PRUrl))
+				fmt.Fprintf(&sb, "   [PR](%s)\n", exec.PRUrl)
 			}
 		}
 		sb.WriteString("\n")
@@ -507,17 +507,17 @@ func (c *CommandHandler) handleBudget(ctx context.Context, chatID, threadID stri
 	}
 
 	// Task count
-	sb.WriteString(fmt.Sprintf("🎯 Tasks: %d\n", summary.TaskCount))
+	fmt.Fprintf(&sb, "🎯 Tasks: %d\n", summary.TaskCount)
 
 	// Token usage
 	if summary.TokensTotal > 0 {
 		tokensK := float64(summary.TokensTotal) / 1000
-		sb.WriteString(fmt.Sprintf("🔤 Tokens: %.1fK\n", tokensK))
+		fmt.Fprintf(&sb, "🔤 Tokens: %.1fK\n", tokensK)
 	}
 
 	// Compute time
 	if summary.ComputeMinutes > 0 {
-		sb.WriteString(fmt.Sprintf("⏱ Compute: %d min\n", summary.ComputeMinutes))
+		fmt.Fprintf(&sb, "⏱ Compute: %d min\n", summary.ComputeMinutes)
 	}
 
 	// Costs breakdown
@@ -527,27 +527,27 @@ func (c *CommandHandler) handleBudget(ctx context.Context, chatID, threadID stri
 		sb.WriteString("\n*Costs*\n")
 	}
 	if summary.TaskCost > 0 {
-		sb.WriteString(fmt.Sprintf("• Tasks: $%.2f\n", summary.TaskCost))
+		fmt.Fprintf(&sb, "• Tasks: $%.2f\n", summary.TaskCost)
 	}
 	if summary.TokenCost > 0 {
-		sb.WriteString(fmt.Sprintf("• Tokens: $%.2f\n", summary.TokenCost))
+		fmt.Fprintf(&sb, "• Tokens: $%.2f\n", summary.TokenCost)
 	}
 	if summary.ComputeCost > 0 {
-		sb.WriteString(fmt.Sprintf("• Compute: $%.2f\n", summary.ComputeCost))
+		fmt.Fprintf(&sb, "• Compute: $%.2f\n", summary.ComputeCost)
 	}
 
 	// Total
 	if plainText {
-		sb.WriteString(fmt.Sprintf("\nTotal: $%.2f\n", summary.TotalCost))
+		fmt.Fprintf(&sb, "\nTotal: $%.2f\n", summary.TotalCost)
 	} else {
-		sb.WriteString(fmt.Sprintf("\n*Total*: $%.2f\n", summary.TotalCost))
+		fmt.Fprintf(&sb, "\n*Total*: $%.2f\n", summary.TotalCost)
 	}
 
 	// Period info
 	if plainText {
-		sb.WriteString(fmt.Sprintf("\nPeriod: %s - %s", monthStart.Format("Jan 2"), now.Format("Jan 2")))
+		fmt.Fprintf(&sb, "\nPeriod: %s - %s", monthStart.Format("Jan 2"), now.Format("Jan 2"))
 	} else {
-		sb.WriteString(fmt.Sprintf("\n_Period: %s - %s_", monthStart.Format("Jan 2"), now.Format("Jan 2")))
+		fmt.Fprintf(&sb, "\n_Period: %s - %s_", monthStart.Format("Jan 2"), now.Format("Jan 2"))
 	}
 
 	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode(), parseThreadID(threadID))

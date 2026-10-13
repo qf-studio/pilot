@@ -110,10 +110,10 @@ func FormatEvent(event *StreamEvent, verbose bool) string {
 
 	// Timestamp and sequence
 	ts := event.Timestamp.Format("15:04:05.000")
-	sb.WriteString(fmt.Sprintf("[%s] #%d ", ts, event.Sequence))
+	fmt.Fprintf(&sb, "[%s] #%d ", ts, event.Sequence)
 
 	if event.Parsed == nil {
-		sb.WriteString(fmt.Sprintf("(%s)", event.Type))
+		fmt.Fprintf(&sb, "(%s)", event.Type)
 		return sb.String()
 	}
 
@@ -124,7 +124,7 @@ func FormatEvent(event *StreamEvent, verbose bool) string {
 		if parsed.Subtype == "init" {
 			sb.WriteString("▸ System initialized")
 		} else {
-			sb.WriteString(fmt.Sprintf("▸ System: %s", parsed.Subtype))
+			fmt.Fprintf(&sb, "▸ System: %s", parsed.Subtype)
 		}
 
 	case "assistant":
@@ -136,7 +136,7 @@ func FormatEvent(event *StreamEvent, verbose bool) string {
 			if len(text) > 100 && !verbose {
 				text = text[:97] + "..."
 			}
-			sb.WriteString(fmt.Sprintf("▸ %s", strings.TrimSpace(text)))
+			fmt.Fprintf(&sb, "▸ %s", strings.TrimSpace(text))
 		}
 
 	case "user":
@@ -144,16 +144,16 @@ func FormatEvent(event *StreamEvent, verbose bool) string {
 
 	case "result":
 		if parsed.IsError {
-			sb.WriteString(fmt.Sprintf("✗ Error: %s", truncate(parsed.Result, 80)))
+			fmt.Fprintf(&sb, "✗ Error: %s", truncate(parsed.Result, 80))
 		} else {
 			sb.WriteString("✓ Completed")
 			if parsed.InputTokens > 0 || parsed.OutputTokens > 0 {
-				sb.WriteString(fmt.Sprintf(" (tokens: %d in, %d out)", parsed.InputTokens, parsed.OutputTokens))
+				fmt.Fprintf(&sb, " (tokens: %d in, %d out)", parsed.InputTokens, parsed.OutputTokens)
 			}
 		}
 
 	default:
-		sb.WriteString(fmt.Sprintf("(%s)", parsed.Type))
+		fmt.Fprintf(&sb, "(%s)", parsed.Type)
 	}
 
 	return sb.String()
@@ -453,21 +453,21 @@ func FormatReport(report *AnalysisReport) string {
 	sb.WriteString("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
 	// Overview
-	sb.WriteString(fmt.Sprintf("Recording:  %s\n", rec.ID))
-	sb.WriteString(fmt.Sprintf("Task:       %s\n", rec.TaskID))
-	sb.WriteString(fmt.Sprintf("Status:     %s\n", rec.Status))
-	sb.WriteString(fmt.Sprintf("Duration:   %s\n", rec.Duration.Round(time.Second)))
-	sb.WriteString(fmt.Sprintf("Events:     %d\n", rec.EventCount))
+	fmt.Fprintf(&sb, "Recording:  %s\n", rec.ID)
+	fmt.Fprintf(&sb, "Task:       %s\n", rec.TaskID)
+	fmt.Fprintf(&sb, "Status:     %s\n", rec.Status)
+	fmt.Fprintf(&sb, "Duration:   %s\n", rec.Duration.Round(time.Second))
+	fmt.Fprintf(&sb, "Events:     %d\n", rec.EventCount)
 	sb.WriteString("\n")
 
 	// Token Usage
 	if rec.TokenUsage != nil {
 		sb.WriteString("TOKEN USAGE\n")
 		sb.WriteString("───────────────────────────────────────\n")
-		sb.WriteString(fmt.Sprintf("  Input:    %d tokens\n", rec.TokenUsage.InputTokens))
-		sb.WriteString(fmt.Sprintf("  Output:   %d tokens\n", rec.TokenUsage.OutputTokens))
-		sb.WriteString(fmt.Sprintf("  Total:    %d tokens\n", rec.TokenUsage.TotalTokens))
-		sb.WriteString(fmt.Sprintf("  Cost:     $%.4f\n", rec.TokenUsage.EstimatedCostUSD))
+		fmt.Fprintf(&sb, "  Input:    %d tokens\n", rec.TokenUsage.InputTokens)
+		fmt.Fprintf(&sb, "  Output:   %d tokens\n", rec.TokenUsage.OutputTokens)
+		fmt.Fprintf(&sb, "  Total:    %d tokens\n", rec.TokenUsage.TotalTokens)
+		fmt.Fprintf(&sb, "  Cost:     $%.4f\n", rec.TokenUsage.EstimatedCostUSD)
 		sb.WriteString("\n")
 	}
 
@@ -476,12 +476,11 @@ func FormatReport(report *AnalysisReport) string {
 		sb.WriteString("PHASE ANALYSIS\n")
 		sb.WriteString("───────────────────────────────────────\n")
 		for _, phase := range report.PhaseAnalysis {
-			sb.WriteString(fmt.Sprintf("  %-12s %8s (%5.1f%%) %d events\n",
+			fmt.Fprintf(&sb, "  %-12s %8s (%5.1f%%) %d events\n",
 				phase.Phase+":",
 				phase.Duration.Round(time.Second),
 				phase.Percentage,
-				phase.EventCount,
-			))
+				phase.EventCount)
 		}
 		sb.WriteString("\n")
 	}
@@ -495,7 +494,7 @@ func FormatReport(report *AnalysisReport) string {
 			if tool.ErrorCount > 0 {
 				errStr = fmt.Sprintf(" (%d errors)", tool.ErrorCount)
 			}
-			sb.WriteString(fmt.Sprintf("  %-12s %4d calls%s\n", tool.Tool+":", tool.Count, errStr))
+			fmt.Fprintf(&sb, "  %-12s %4d calls%s\n", tool.Tool+":", tool.Count, errStr)
 		}
 		sb.WriteString("\n")
 	}
@@ -505,12 +504,11 @@ func FormatReport(report *AnalysisReport) string {
 		sb.WriteString("ERRORS\n")
 		sb.WriteString("───────────────────────────────────────\n")
 		for _, err := range report.Errors {
-			sb.WriteString(fmt.Sprintf("  #%d [%s] %s: %s\n",
+			fmt.Fprintf(&sb, "  #%d [%s] %s: %s\n",
 				err.Sequence,
 				err.Timestamp.Format("15:04:05"),
 				err.Tool,
-				err.Message,
-			))
+				err.Message)
 		}
 		sb.WriteString("\n")
 	}
@@ -526,7 +524,7 @@ func ExportToHTML(recording *Recording, events []*StreamEvent) (string, error) {
 
 	sb.WriteString("<!DOCTYPE html>\n<html>\n<head>\n")
 	sb.WriteString("<meta charset=\"UTF-8\">\n")
-	sb.WriteString(fmt.Sprintf("<title>Execution Recording: %s</title>\n", recording.ID))
+	fmt.Fprintf(&sb, "<title>Execution Recording: %s</title>\n", recording.ID)
 	sb.WriteString("<style>\n")
 	sb.WriteString(`
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 40px; background: #1a1a2e; color: #eee; }
@@ -554,15 +552,15 @@ pre { background: #0a0a1a; padding: 12px; border-radius: 4px; overflow-x: auto; 
 
 	// Header
 	sb.WriteString("<div class=\"header\">\n")
-	sb.WriteString(fmt.Sprintf("<h1>📹 Recording: %s</h1>\n", recording.ID))
+	fmt.Fprintf(&sb, "<h1>📹 Recording: %s</h1>\n", recording.ID)
 	sb.WriteString("<div class=\"meta\">\n")
-	sb.WriteString(fmt.Sprintf("<div class=\"meta-item\"><div class=\"meta-label\">Task</div><div class=\"meta-value\">%s</div></div>\n", recording.TaskID))
-	sb.WriteString(fmt.Sprintf("<div class=\"meta-item\"><div class=\"meta-label\">Status</div><div class=\"meta-value\">%s</div></div>\n", recording.Status))
-	sb.WriteString(fmt.Sprintf("<div class=\"meta-item\"><div class=\"meta-label\">Duration</div><div class=\"meta-value\">%s</div></div>\n", recording.Duration.Round(time.Second)))
-	sb.WriteString(fmt.Sprintf("<div class=\"meta-item\"><div class=\"meta-label\">Events</div><div class=\"meta-value\">%d</div></div>\n", recording.EventCount))
+	fmt.Fprintf(&sb, "<div class=\"meta-item\"><div class=\"meta-label\">Task</div><div class=\"meta-value\">%s</div></div>\n", recording.TaskID)
+	fmt.Fprintf(&sb, "<div class=\"meta-item\"><div class=\"meta-label\">Status</div><div class=\"meta-value\">%s</div></div>\n", recording.Status)
+	fmt.Fprintf(&sb, "<div class=\"meta-item\"><div class=\"meta-label\">Duration</div><div class=\"meta-value\">%s</div></div>\n", recording.Duration.Round(time.Second))
+	fmt.Fprintf(&sb, "<div class=\"meta-item\"><div class=\"meta-label\">Events</div><div class=\"meta-value\">%d</div></div>\n", recording.EventCount)
 	if recording.TokenUsage != nil {
-		sb.WriteString(fmt.Sprintf("<div class=\"meta-item\"><div class=\"meta-label\">Tokens</div><div class=\"meta-value\">%d</div></div>\n", recording.TokenUsage.TotalTokens))
-		sb.WriteString(fmt.Sprintf("<div class=\"meta-item\"><div class=\"meta-label\">Cost</div><div class=\"meta-value\">$%.4f</div></div>\n", recording.TokenUsage.EstimatedCostUSD))
+		fmt.Fprintf(&sb, "<div class=\"meta-item\"><div class=\"meta-label\">Tokens</div><div class=\"meta-value\">%d</div></div>\n", recording.TokenUsage.TotalTokens)
+		fmt.Fprintf(&sb, "<div class=\"meta-item\"><div class=\"meta-label\">Cost</div><div class=\"meta-value\">$%.4f</div></div>\n", recording.TokenUsage.EstimatedCostUSD)
 	}
 	sb.WriteString("</div>\n</div>\n")
 
@@ -582,26 +580,26 @@ pre { background: #0a0a1a; padding: 12px; border-radius: 4px; overflow-x: auto; 
 			}
 		}
 
-		sb.WriteString(fmt.Sprintf("<div class=\"%s\">\n", class))
-		sb.WriteString(fmt.Sprintf("<span class=\"timestamp\">%s</span>", event.Timestamp.Format("15:04:05.000")))
-		sb.WriteString(fmt.Sprintf("<span class=\"sequence\">#%d</span>\n", event.Sequence))
+		fmt.Fprintf(&sb, "<div class=\"%s\">\n", class)
+		fmt.Fprintf(&sb, "<span class=\"timestamp\">%s</span>", event.Timestamp.Format("15:04:05.000"))
+		fmt.Fprintf(&sb, "<span class=\"sequence\">#%d</span>\n", event.Sequence)
 
 		if event.Parsed != nil {
 			parsed := event.Parsed
 			if parsed.ToolName != "" {
-				sb.WriteString(fmt.Sprintf("<span class=\"tool-name\">%s</span>", parsed.ToolName))
+				fmt.Fprintf(&sb, "<span class=\"tool-name\">%s</span>", parsed.ToolName)
 				if detail := formatToolDetail(parsed); detail != "" {
-					sb.WriteString(fmt.Sprintf("<span class=\"tool-detail\">%s</span>", escapeHTML(detail)))
+					fmt.Fprintf(&sb, "<span class=\"tool-detail\">%s</span>", escapeHTML(detail))
 				}
 			} else if parsed.Text != "" {
 				text := parsed.Text
 				if len(text) > 200 {
 					text = text[:200] + "..."
 				}
-				sb.WriteString(fmt.Sprintf("<div>%s</div>", escapeHTML(text)))
+				fmt.Fprintf(&sb, "<div>%s</div>", escapeHTML(text))
 			} else if parsed.Type == "result" {
 				if parsed.IsError {
-					sb.WriteString(fmt.Sprintf("<div>❌ %s</div>", escapeHTML(truncate(parsed.Result, 200))))
+					fmt.Fprintf(&sb, "<div>❌ %s</div>", escapeHTML(truncate(parsed.Result, 200)))
 				} else {
 					sb.WriteString("<div>✅ Completed</div>")
 				}

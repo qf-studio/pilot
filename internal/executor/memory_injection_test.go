@@ -215,8 +215,8 @@ func TestBuildPromptMemoryInjection(t *testing.T) {
 			}
 			summaries[i] = fmt.Sprintf("UNIQTAG%d ", i) + strings.Repeat("this pitfall summary is deliberately verbose ", 8) // ~380 chars
 			confidence := 0.9 - float64(i)*0.1
-			sb.WriteString(fmt.Sprintf(`"mem-%c":{"type":"pitfall","summary":%q,"concepts":["epic-decomposition"],"confidence":%.2f}`,
-				'a'+i, summaries[i], confidence))
+			fmt.Fprintf(&sb, `"mem-%c":{"type":"pitfall","summary":%q,"concepts":["epic-decomposition"],"confidence":%.2f}`,
+				'a'+i, summaries[i], confidence)
 		}
 		sb.WriteString(`}},"edges":[]}`)
 		if err := os.WriteFile(filepath.Join(graphDir, "graph.json"), []byte(sb.String()), 0644); err != nil {

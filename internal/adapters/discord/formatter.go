@@ -15,10 +15,10 @@ func FormatTaskConfirmation(taskID, description, projectPath string) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("**📋 Task: %s**\n\n", taskID))
+	fmt.Fprintf(&sb, "**📋 Task: %s**\n\n", taskID)
 	sb.WriteString(desc)
 	sb.WriteString("\n\n")
-	sb.WriteString(fmt.Sprintf("*Project: %s*", projectPath))
+	fmt.Fprintf(&sb, "*Project: %s*", projectPath)
 	return sb.String()
 }
 
@@ -52,7 +52,7 @@ func FormatTaskResult(output string, success bool, prURL string) string {
 	}
 
 	if prURL != "" {
-		sb.WriteString(fmt.Sprintf("🔗 **PR:** [View Pull Request](%s)", prURL))
+		fmt.Fprintf(&sb, "🔗 **PR:** [View Pull Request](%s)", prURL)
 	}
 
 	return sb.String()
