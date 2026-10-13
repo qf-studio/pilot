@@ -237,10 +237,10 @@ func (s *PatternQueryService) formatPatternBlock(patterns, antiPatterns []*Cross
 	if len(patterns) > 0 {
 		sb.WriteString("### Recommended Patterns\n\n")
 		for _, p := range patterns {
-			sb.WriteString(fmt.Sprintf("- **%s** (confidence: %.0f%%)\n", p.Title, p.Confidence*100))
-			sb.WriteString(fmt.Sprintf("  %s\n", p.Description))
+			fmt.Fprintf(&sb, "- **%s** (confidence: %.0f%%)\n", p.Title, p.Confidence*100)
+			fmt.Fprintf(&sb, "  %s\n", p.Description)
 			if p.Context != "" {
-				sb.WriteString(fmt.Sprintf("  _Context: %s_\n", p.Context))
+				fmt.Fprintf(&sb, "  _Context: %s_\n", p.Context)
 			}
 			sb.WriteString("\n")
 		}
@@ -250,11 +250,11 @@ func (s *PatternQueryService) formatPatternBlock(patterns, antiPatterns []*Cross
 		sb.WriteString("### Anti-Patterns to Avoid\n\n")
 		for _, p := range antiPatterns {
 			title := strings.TrimPrefix(p.Title, "[ANTI] ")
-			sb.WriteString(fmt.Sprintf("- **%s** (confidence: %.0f%%)\n", title, p.Confidence*100))
+			fmt.Fprintf(&sb, "- **%s** (confidence: %.0f%%)\n", title, p.Confidence*100)
 			desc := strings.TrimPrefix(p.Description, "AVOID: ")
-			sb.WriteString(fmt.Sprintf("  %s\n", desc))
+			fmt.Fprintf(&sb, "  %s\n", desc)
 			if p.Context != "" {
-				sb.WriteString(fmt.Sprintf("  _Context: %s_\n", p.Context))
+				fmt.Fprintf(&sb, "  _Context: %s_\n", p.Context)
 			}
 			sb.WriteString("\n")
 		}

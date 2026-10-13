@@ -109,7 +109,7 @@ exit 1
 	} else {
 		// Check if we should simulate git operations
 		if m.SimulateGit {
-			scriptBuilder.WriteString(fmt.Sprintf(`
+			fmt.Fprintf(&scriptBuilder, `
 # Simulate git operations
 if [[ -n "$PROJECT_PATH" && -d "$PROJECT_PATH/.git" ]]; then
     cd "$PROJECT_PATH"
@@ -124,12 +124,12 @@ if [[ -n "$PROJECT_PATH" && -d "$PROJECT_PATH/.git" ]]; then
     git add .
     git commit -m "feat(e2e): test commit from mock Claude Code" --allow-empty 2>/dev/null || true
 fi
-`, m.BranchName, m.BranchName))
+`, m.BranchName, m.BranchName)
 		}
 
 		// Output success events in JSON stream format
 		resultJSON, _ := json.Marshal(m.Response)
-		scriptBuilder.WriteString(fmt.Sprintf(`
+		fmt.Fprintf(&scriptBuilder, `
 cat << 'EVENTS'
 {"type":"assistant","subtype":"text","message":{"content":[{"type":"text","text":"Starting task execution..."}]}}
 {"type":"assistant","subtype":"tool_use","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"."}}]}}
@@ -138,7 +138,7 @@ cat << 'EVENTS'
 {"type":"result","subtype":"success","result":%s,"is_error":false,"duration_ms":1000,"num_turns":3,"usage":{"input_tokens":500,"output_tokens":200},"model":"claude-opus-4-6"}
 EVENTS
 exit 0
-`, string(resultJSON)))
+`, string(resultJSON))
 	}
 
 	if err := os.WriteFile(m.binPath, []byte(scriptBuilder.String()), 0755); err != nil {
