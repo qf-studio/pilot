@@ -8,9 +8,12 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,6 +31,13 @@ const (
 
 	// BackupSuffix for previous version
 	BackupSuffix = ".backup"
+
+	// checksumsAssetName is the release asset published by goreleaser
+	// (see .goreleaser.yaml checksum.name_template).
+	checksumsAssetName = "checksums.txt"
+
+	// maxChecksumsSize bounds the checksums.txt body we are willing to read.
+	maxChecksumsSize = 1 << 20
 )
 
 // Release represents a GitHub release
@@ -244,6 +254,15 @@ func (u *Upgrader) Upgrade(ctx context.Context, release *Release, onProgress fun
 	defer func() { _ = os.Remove(tempFile) }()
 
 	if onProgress != nil {
+		onProgress(65, "Verifying checksum...")
+	}
+
+	// Verify integrity before touching the installed binary.
+	if err := u.verifyAssetChecksum(ctx, release, asset, tempFile); err != nil {
+		return fmt.Errorf("checksum verification failed: %w", err)
+	}
+
+	if onProgress != nil {
 		onProgress(70, "Creating backup...")
 	}
 
@@ -392,6 +411,83 @@ func (u *Upgrader) findAsset(release *Release) *Asset {
 		}
 	}
 
+	return nil
+}
+
+// findChecksumsAsset returns the checksums.txt asset of a release, or nil.
+func findChecksumsAsset(release *Release) *Asset {
+	for i := range release.Assets {
+		if release.Assets[i].Name == checksumsAssetName {
+			return &release.Assets[i]
+		}
+	}
+	return nil
+}
+
+// verifyAssetChecksum checks the sha256 of the file at downloadPath against the
+// entry for asset.Name in the release's checksums.txt. A release without a
+// checksums.txt asset is skipped with a warning; the asset list comes from the
+// GitHub API, so absence cannot be forged by intercepting the download path.
+// Any fetch, parse or mismatch condition is an error.
+func (u *Upgrader) verifyAssetChecksum(ctx context.Context, release *Release, asset *Asset, downloadPath string) error {
+	checksums := findChecksumsAsset(release)
+	if checksums == nil {
+		slog.Warn("release has no checksums.txt asset; skipping checksum verification",
+			slog.String("release", release.TagName),
+			slog.String("asset", asset.Name))
+		return nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", checksums.BrowserDownloadURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to build checksums request: %w", err)
+	}
+	resp, err := u.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to fetch %s: %w", checksumsAssetName, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("fetching %s failed with status %d", checksumsAssetName, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxChecksumsSize))
+	if err != nil {
+		return fmt.Errorf("failed to read %s: %w", checksumsAssetName, err)
+	}
+
+	expected := ""
+	for i, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Format: "<hex sha256>  <filename>"
+		sum, name, ok := strings.Cut(line, "  ")
+		name = strings.TrimSpace(name)
+		if raw, decErr := hex.DecodeString(sum); !ok || name == "" || decErr != nil || len(raw) != sha256.Size {
+			return fmt.Errorf("malformed line %d in %s", i+1, checksumsAssetName)
+		}
+		if name == asset.Name {
+			expected = sum
+		}
+	}
+	if expected == "" {
+		return fmt.Errorf("no checksum entry for %s in %s", asset.Name, checksumsAssetName)
+	}
+
+	f, err := os.Open(downloadPath)
+	if err != nil {
+		return fmt.Errorf("failed to open downloaded asset: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("failed to hash downloaded asset: %w", err)
+	}
+	actual := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(actual, expected) {
+		return fmt.Errorf("sha256 mismatch for %s: expected %s, got %s", asset.Name, expected, actual)
+	}
 	return nil
 }
 
