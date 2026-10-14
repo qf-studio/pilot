@@ -71,6 +71,7 @@ type PrometheusExporter struct {
 	alertsSource  AlertMetricsSource
 	evalSource    EvalMetricsSource // GH-4922: optional, set via SetEvalMetricsSource
 	pollerSource  PollerUpSource    // GH-5588: optional, set via SetPollerSource
+	chatSource    ChatMetricsSource // GH-5677: optional, set via SetChatSource
 	panicCtr      *goPanicCounter
 	version       string // GH-4864: running process's compiled-in version, set via SetBuildInfo
 	commit        string // GH-4864: VCS commit parsed from version, set via SetBuildInfo
@@ -94,6 +95,12 @@ type EvalMetricsSource interface {
 	GetEvalTaskCounts() (memory.EvalTaskCounts, error)
 }
 
+// ChatMetricsSource provides lifetime web chat turn totals per key source
+// (GH-5677). *memory.Store satisfies it via GetChatTotalsByKeySource.
+type ChatMetricsSource interface {
+	GetChatTotalsByKeySource() ([]memory.ChatKeySourceTotals, error)
+}
+
 // NewPrometheusExporter creates a new Prometheus exporter and wires the panic counter.
 func NewPrometheusExporter(source MetricsSource) *PrometheusExporter {
 	ctr := newGoPanicCounter()
@@ -109,6 +116,11 @@ func (e *PrometheusExporter) SetAlertsSource(s AlertMetricsSource) {
 // SetEvalSource wires an eval metrics source into the exporter (GH-4922).
 func (e *PrometheusExporter) SetEvalSource(s EvalMetricsSource) {
 	e.evalSource = s
+}
+
+// SetChatSource wires the chat turn totals into the exporter (GH-5677).
+func (e *PrometheusExporter) SetChatSource(s ChatMetricsSource) {
+	e.chatSource = s
 }
 
 // SetPollerSource wires per-adapter poller up/down state into the exporter (GH-5588).
@@ -550,6 +562,36 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	writeHelp(w, "pilot_executor_result_exit_grace_kills_total", "Total Claude Code process-group kills issued because the process outlived executor.claude_code.result_exit_grace after a successful result event. Resets to 0 on restart")
 	writeType(w, "pilot_executor_result_exit_grace_kills_total", "counter")
 	writeCounter(w, "pilot_executor_result_exit_grace_kills_total", executor.ResultExitGraceKillsTotal())
+
+	// pilot_chat_turns_total / pilot_chat_cost_usd_total (GH-5677): web chat
+	// turns and their list-price estimated cost by Anthropic key source. Read
+	// from the chat_turns table, so they survive a daemon restart.
+	if e.chatSource != nil {
+		totals, err := e.chatSource.GetChatTotalsByKeySource()
+		if err != nil {
+			logging.WithComponent("gateway").Warn("failed to read chat totals for /metrics", slog.Any("error", err))
+		} else {
+			byKey := map[string]memory.ChatKeySourceTotals{"platform": {}, "own": {}, "unknown": {}}
+			for _, t := range totals {
+				byKey[t.KeySource] = t
+			}
+			keys := make([]string, 0, len(byKey))
+			for k := range byKey {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			writeHelp(w, "pilot_chat_turns_total", "Total web chat turns by Anthropic key source (platform, own, unknown)")
+			writeType(w, "pilot_chat_turns_total", "counter")
+			for _, k := range keys {
+				writeCounter(w, "pilot_chat_turns_total", byKey[k].Turns, "key_source", k)
+			}
+			writeHelp(w, "pilot_chat_cost_usd_total", "Total estimated web chat cost in USD by Anthropic key source (platform, own, unknown)")
+			writeType(w, "pilot_chat_cost_usd_total", "counter")
+			for _, k := range keys {
+				writeFloatCounter(w, "pilot_chat_cost_usd_total", byKey[k].CostUSD, "key_source", k)
+			}
+		}
+	}
 
 	// --- Eval metrics (optional; only emitted when an EvalMetricsSource is wired) ---
 	// pilot_eval_tasks_total / pilot_eval_pass_ratio (GH-4922): replaces the

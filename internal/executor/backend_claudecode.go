@@ -1039,6 +1039,13 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 					result.TokensOutput += event.TokensOutput
 					result.CacheCreationInputTokens += event.CacheCreationInputTokens
 					result.CacheReadInputTokens += event.CacheReadInputTokens
+					if event.ReportedCostUSD != nil {
+						sum := *event.ReportedCostUSD
+						if result.ReportedCostUSD != nil {
+							sum += *result.ReportedCostUSD
+						}
+						result.ReportedCostUSD = &sum
+					}
 					if event.Model != "" {
 						result.Model = event.Model
 					}
@@ -1459,6 +1466,7 @@ func (b *ClaudeCodeBackend) parseStreamEvent(line string) BackendEvent {
 		event.Type = EventTypeResult
 		event.Message = streamEvent.Result
 		event.IsError = streamEvent.IsError
+		event.ReportedCostUSD = streamEvent.TotalCostUSD // GH-5676
 	}
 
 	// Capture usage info

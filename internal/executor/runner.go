@@ -529,6 +529,10 @@ type StreamEvent struct {
 	// Token usage (TASK-13)
 	Usage *UsageInfo `json:"usage,omitempty"`
 	Model string     `json:"model,omitempty"`
+	// TotalCostUSD is the cost the CLI reports on its result event
+	// (total_cost_usd). A pointer so an absent field stays distinguishable
+	// from a reported $0. GH-5676.
+	TotalCostUSD *float64 `json:"total_cost_usd,omitempty"`
 	// Session ID for resume support (GH-1265)
 	SessionID string `json:"session_id,omitempty"`
 	// TaskID identifies a background task on task_started/task_notification

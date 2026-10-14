@@ -46,6 +46,19 @@ type DashboardStore interface {
 	ListExecutionEvents(executionID string) ([]*memory.Event, error)
 }
 
+// ChatUsageStore is the optional chat-turn read surface (GH-5677). It is a
+// separate interface, asserted on the dashboard store, so stores without chat
+// metering keep satisfying DashboardStore. *memory.Store implements it.
+type ChatUsageStore interface {
+	GetChatTotalsSince(since time.Time, projectPath string) (memory.ChatTotals, error)
+	GetChatDailySince(since time.Time, projectPath string) ([]memory.ChatDay, error)
+	ListChatTurnsSince(since time.Time, projectPath string, limit int) ([]*memory.ChatTurn, error)
+	ListUsageExecutionsSince(since time.Time, projectPath string, limit int) ([]memory.UsageExecutionRow, error)
+}
+
+// chatDailyDays is the length of the chatDaily series.
+const chatDailyDays = 30
+
 // defaultDashboardStatsWindowDays mirrors config.DashboardConfig's default
 // (GH-4735), used when Server.dashboardStatsWindowDays is unset (0).
 const defaultDashboardStatsWindowDays = 30
@@ -91,6 +104,20 @@ type dashboardMetricsResponse struct {
 	// Window carries the GH-4735 rolling-window headline numbers. Lifetime
 	// fields above are kept unchanged for desktop app back-compat.
 	Window dashboardWindowResponse `json:"window"`
+	// Chat usage over the same rolling window as Window (GH-5677): web chat
+	// turns, their list-price estimated cost and input+output tokens.
+	ChatTurns   int     `json:"chatTurns"`
+	ChatCostUSD float64 `json:"chatCostUSD"`
+	ChatTokens  int64   `json:"chatTokens"`
+	// ChatDaily is the last 30 UTC days of chat usage, oldest first, zero-filled.
+	ChatDaily []chatDayResponse `json:"chatDaily"`
+}
+
+type chatDayResponse struct {
+	Date    string  `json:"date"`
+	Turns   int     `json:"turns"`
+	CostUSD float64 `json:"costUSD"`
+	Tokens  int64   `json:"tokens"`
 }
 
 // dashboardWindowResponse is the GH-4735 rolling-window cost/success block
@@ -200,6 +227,8 @@ func (s *Server) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	chatTotals, chatDaily := chatMetrics(store, projectPath, since, now)
+
 	resp := dashboardMetricsResponse{
 		TotalTokens:    lt.TotalTokens,
 		InputTokens:    lt.InputTokens,
@@ -220,9 +249,44 @@ func (s *Server) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) 
 			DeliveryRate:        ws.DeliveryRate,
 			AttemptSuccessRate:  ws.AttemptSuccessRate,
 		},
+		ChatTurns:   chatTotals.Turns,
+		ChatCostUSD: chatTotals.CostUSD,
+		ChatTokens:  chatTotals.Tokens,
+		ChatDaily:   chatDaily,
 	}
 
 	writeJSON(w, resp)
+}
+
+// chatMetrics reads the window totals and the zero-filled 30-day series. A
+// store without chat metering, or a read error, yields zeros: chat numbers
+// never fail the metrics endpoint.
+func chatMetrics(store DashboardStore, projectPath string, since, now time.Time) (memory.ChatTotals, []chatDayResponse) {
+	series := make([]chatDayResponse, chatDailyDays)
+	byDate := make(map[string]int, chatDailyDays)
+	for i := range series {
+		d := now.AddDate(0, 0, -(chatDailyDays - 1 - i)).Format("2006-01-02")
+		series[i].Date = d
+		byDate[d] = i
+	}
+	cs, ok := store.(ChatUsageStore)
+	if !ok {
+		return memory.ChatTotals{}, series
+	}
+	totals, err := cs.GetChatTotalsSince(since, projectPath)
+	if err != nil {
+		totals = memory.ChatTotals{}
+	}
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -(chatDailyDays - 1))
+	days, err := cs.GetChatDailySince(dayStart, projectPath)
+	if err == nil {
+		for _, d := range days {
+			if i, found := byDate[d.Date]; found {
+				series[i].Turns, series[i].CostUSD, series[i].Tokens = d.Turns, d.CostUSD, d.Tokens
+			}
+		}
+	}
+	return totals, series
 }
 
 func (s *Server) handleDashboardQueue(w http.ResponseWriter, r *http.Request) {

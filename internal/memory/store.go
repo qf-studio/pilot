@@ -524,6 +524,29 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_pr_reviews_execution ON pr_reviews(execution_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr ON pr_reviews(project_path, pr_number)`,
+		// GH-5677: one row per web chat turn (tokens, cost, which Anthropic key
+		// paid), so chat spend is metered as its own unit next to executions.
+		`CREATE TABLE IF NOT EXISTS chat_turns (
+			id TEXT PRIMARY KEY,
+			conversation_id TEXT NOT NULL DEFAULT '',
+			project_path TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			tokens_input INTEGER NOT NULL DEFAULT 0,
+			tokens_output INTEGER NOT NULL DEFAULT 0,
+			tokens_cache_read INTEGER NOT NULL DEFAULT 0,
+			tokens_cache_write INTEGER NOT NULL DEFAULT 0,
+			estimated_cost_usd REAL NOT NULL DEFAULT 0,
+			reported_cost_usd REAL,
+			key_source TEXT NOT NULL DEFAULT 'unknown',
+			status TEXT NOT NULL DEFAULT 'completed',
+			error TEXT NOT NULL DEFAULT '',
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			tool_calls INTEGER NOT NULL DEFAULT 0,
+			partial BOOLEAN NOT NULL DEFAULT FALSE,
+			started_at DATETIME NOT NULL,
+			completed_at DATETIME NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_turns_completed ON chat_turns(completed_at)`,
 	}
 
 	for _, migration := range migrations {

@@ -5,12 +5,27 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/memory"
 )
+
+// chatKeySourceEnv says whose Anthropic key pays for the daemon's model calls:
+// "platform" (included allowance) or "own" (the customer's key).
+const chatKeySourceEnv = "PILOT_ANTHROPIC_KEY_SOURCE"
+
+// chatKeySource returns platform or own from chatKeySourceEnv, else unknown.
+func chatKeySource() string {
+	switch v := strings.ToLower(strings.TrimSpace(os.Getenv(chatKeySourceEnv))); v {
+	case "platform", "own":
+		return v
+	}
+	return "unknown"
+}
 
 const issueCardTTL = 30 * time.Minute
 
@@ -52,11 +67,14 @@ func (h *Handler) handleChatTurn(ctx context.Context, contextID, threadID, text 
 	h.mu.Unlock()
 
 	taskID := "chat-" + strings.TrimPrefix(contextID, "web:")
+	startedAt := time.Now()
 	result, err := h.runner.ExecuteChatTurn(ctx, executor.ChatTurn{
 		ConversationID: contextID, ProjectPath: projectPath, Text: text, ResumeSessionID: resume,
 	}, func(line string) {
 		_, _ = h.messenger.SendProgress(ctx, contextID, "", taskID, "research", 0, line)
 	})
+
+	h.recordChatTurn(contextID, projectPath, startedAt, result, err)
 
 	// A changed SessionID is the only reset signal on the Claude Code backend.
 	if result.SessionID != "" {
@@ -83,6 +101,48 @@ func (h *Handler) handleChatTurn(ctx context.Context, contextID, threadID, text 
 	default:
 		draft = h.rewriteUntrackedRefs(ctx, contextID, threadID, draft, projectPath)
 		h.presentIssueCard(ctx, contextID, threadID, draft, projectPath)
+	}
+}
+
+// recordChatTurn saves one chat_turns row for a finished turn, failed turns
+// included, so chat spend is metered as its own unit (GH-5677). A save error
+// is logged and never blocks the reply.
+func (h *Handler) recordChatTurn(contextID, projectPath string, startedAt time.Time, result executor.ChatTurnResult, turnErr error) {
+	if h.store == nil {
+		return
+	}
+	completedAt := time.Now()
+	duration := result.Duration
+	if duration <= 0 {
+		duration = completedAt.Sub(startedAt)
+	}
+	var idBytes [8]byte
+	_, _ = rand.Read(idBytes[:])
+	row := &memory.ChatTurn{
+		ID:               "chat-" + hex.EncodeToString(idBytes[:]),
+		ConversationID:   contextID,
+		ProjectPath:      projectPath,
+		Model:            result.Model,
+		TokensInput:      result.TokensInput,
+		TokensOutput:     result.TokensOutput,
+		TokensCacheRead:  result.TokensCacheRead,
+		TokensCacheWrite: result.TokensCacheWrite,
+		EstimatedCostUSD: result.EstimatedCostUSD,
+		ReportedCostUSD:  result.ReportedCostUSD,
+		KeySource:        chatKeySource(),
+		Status:           memory.ChatTurnCompleted,
+		DurationMs:       duration.Milliseconds(),
+		ToolCalls:        result.ToolCalls,
+		Partial:          result.Partial,
+		StartedAt:        startedAt,
+		CompletedAt:      completedAt,
+	}
+	if turnErr != nil {
+		row.Status = memory.ChatTurnFailed
+		row.Error = turnErr.Error()
+	}
+	if err := h.store.SaveChatTurn(row); err != nil {
+		h.log.Warn("failed to record chat turn", "conversation", contextID, "error", err)
 	}
 }
 

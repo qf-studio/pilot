@@ -165,6 +165,10 @@ type BackendEvent struct {
 	// Model is the model name used (if available)
 	Model string
 
+	// ReportedCostUSD is the CLI-reported total_cost_usd carried by a result
+	// event; nil on every other event or when absent (GH-5676).
+	ReportedCostUSD *float64
+
 	// SessionID is the Claude Code session ID for resume support (GH-1265)
 	SessionID string
 
@@ -281,6 +285,10 @@ type BackendResult struct {
 
 	// Model is the model used for execution
 	Model string
+
+	// ReportedCostUSD is the cost the CLI reported (total_cost_usd) summed over
+	// the result events seen; nil when none carried one (GH-5676).
+	ReportedCostUSD *float64
 
 	// SessionID is the Claude Code session ID for resume support (GH-1265)
 	SessionID string
