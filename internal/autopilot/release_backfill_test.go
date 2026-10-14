@@ -40,6 +40,13 @@ type releaseBackfillCounts struct {
 // CompareStatus builds its request path.
 func releaseBackfillServer(t *testing.T, prs map[int]*github.PullRequest, tags []releaseBackfillFakeTag, compareStatus map[string]string, counts *releaseBackfillCounts) *httptest.Server {
 	t.Helper()
+	return releaseBackfillServerDyn(t, prs, func() []releaseBackfillFakeTag { return tags }, compareStatus, counts)
+}
+
+// releaseBackfillServerDyn is releaseBackfillServer with the tag list read per
+// request, so a test can publish a new tag between sweep passes.
+func releaseBackfillServerDyn(t *testing.T, prs map[int]*github.PullRequest, tagsFn func() []releaseBackfillFakeTag, compareStatus map[string]string, counts *releaseBackfillCounts) *httptest.Server {
+	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/"):
@@ -59,6 +66,7 @@ func releaseBackfillServer(t *testing.T, prs map[int]*github.PullRequest, tags [
 			if counts != nil {
 				counts.tagRequests.Add(1)
 			}
+			tags := tagsFn()
 			// Honour per_page/page like GitHub: the SDK's ListTags keeps
 			// paging until it sees a short page.
 			perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
@@ -1048,5 +1056,98 @@ func TestReconcileReleaseBackfill_NoTagRowBacksOff(t *testing.T) {
 	c.reconcileReleaseBackfill(context.Background())
 	if n := counts.compares.Load(); n != 2 {
 		t.Fatalf("after pass 4 (doubled back-off): compares = %d, want 2", n)
+	}
+}
+
+// TestReconcileReleaseBackfill_NoTagRowNeverAbandoned pins GH-5671: a merged
+// row in no tag backs off but never counts toward abandonment (no API call
+// failed), so it is still healed once a containing tag is published, however
+// long that takes.
+func TestReconcileReleaseBackfill_NoTagRowNeverAbandoned(t *testing.T) {
+	const (
+		sha    = "sha300"
+		passes = 14
+	)
+	var tagsMu sync.Mutex
+	tags := backfillTagFixture(3)
+	tagsFn := func() []releaseBackfillFakeTag {
+		tagsMu.Lock()
+		defer tagsMu.Unlock()
+		return append([]releaseBackfillFakeTag(nil), tags...)
+	}
+	prs := map[int]*github.PullRequest{300: {Number: 300, Merged: true, MergeCommitSHA: sha}}
+	status := map[string]string{
+		backfillCompareKey(sha, 0): "behind",
+		backfillCompareKey(sha, 1): "behind",
+		backfillCompareKey(sha, 2): "behind",
+		backfillCompareKey(sha, 3): "ahead",
+	}
+	counts := &releaseBackfillCounts{}
+	server := releaseBackfillServerDyn(t, prs, tagsFn, status, counts)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+	store, err := NewStateStoreFromPath(":memory:")
+	if err != nil {
+		t.Fatalf("NewStateStoreFromPath: %v", err)
+	}
+	c.SetStateStore(store)
+	mock := &mockApprovalPersister{execByTask: map[string]string{"GH-300": "exec-300"}}
+	c.memoryStore = mock
+	if err := store.SavePRState("owner/repo", &PRState{PRNumber: 300, IssueNumber: 300, Stage: StageReleasing}); err != nil {
+		t.Fatalf("SavePRState: %v", err)
+	}
+
+	start := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	clock := start
+	c.releaseBackfillClock = func() time.Time { return clock }
+
+	for i := 1; i <= passes; i++ {
+		before := counts.compares.Load()
+		c.reconcileReleaseBackfill(context.Background())
+		if counts.compares.Load() == before {
+			t.Fatalf("pass %d at +%s: row was not attempted (abandoned or still backed off)", i, clock.Sub(start))
+		}
+		row, err := store.GetPRState("owner/repo", 300)
+		if err != nil || row == nil {
+			t.Fatalf("pass %d: GetPRState = %v, %v; want the row to remain", i, row, err)
+		}
+		if row.ReleaseBackfillAbandoned || row.Error != "" {
+			t.Fatalf("pass %d at +%s: abandoned=%v error=%q, want a live row with no error",
+				i, clock.Sub(start), row.ReleaseBackfillAbandoned, row.Error)
+		}
+		// The longest back-off is releaseBackfillMaxBackoff, so this step always
+		// lands on a due pass.
+		clock = clock.Add(releaseBackfillMaxBackoff)
+	}
+	if span := clock.Sub(start) - releaseBackfillMaxBackoff; span <= 7*time.Hour {
+		t.Fatalf("passes spanned %s, want > 7h", span)
+	}
+
+	// A tag containing the merge commit is published; the next due pass heals.
+	tagsMu.Lock()
+	tags = append([]releaseBackfillFakeTag{{name: backfillTagName(3), sha: backfillTagSHA(3)}}, tags...)
+	tagsMu.Unlock()
+	c.reconcileReleaseBackfill(context.Background())
+
+	row, err := store.GetPRState("owner/repo", 300)
+	if err != nil {
+		t.Fatalf("GetPRState: %v", err)
+	}
+	if row != nil {
+		t.Errorf("row not drained after the tag was published: %+v", row)
+	}
+	released := 0
+	for _, ev := range mock.executionEvents {
+		if ev.executionID == "exec-300" && ev.stage == memory.StageReleased {
+			released++
+			if !strings.Contains(ev.detail, backfillTagName(3)) {
+				t.Errorf("released event detail = %q, want it to mention %s", ev.detail, backfillTagName(3))
+			}
+		}
+	}
+	if released != 1 {
+		t.Errorf("released events = %d, want 1", released)
 	}
 }

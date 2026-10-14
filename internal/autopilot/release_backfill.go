@@ -2,7 +2,6 @@ package autopilot
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -52,6 +51,11 @@ type releaseBackfillRowState struct {
 	firstFailAt time.Time
 	// consecutiveFails counts API errors since the last success.
 	consecutiveFails int
+	// softFails counts merged-but-untagged observations (GH-5671). It only
+	// drives the back-off exponent of releaseBackfillObserveSoftFailure and
+	// never feeds the abandon rule: no API call failed, the row is simply
+	// waiting for a tag.
+	softFails int
 }
 
 const (
@@ -62,7 +66,11 @@ const (
 	// releaseBackfillAbandonThreshold is the consecutive-failure count (see
 	// releaseBackfillRowState.consecutiveFails) required, together with
 	// releaseBackfillAbandonMinWindow, before a row is classified permanently
-	// failed.
+	// failed. Abandonment counts API failures only, never the no-tag outcome
+	// (a merged PR still waiting for a release tag, see
+	// releaseBackfillObserveSoftFailure): such a row backs off but is retried
+	// indefinitely, since the sweep exists to heal rows that get tagged later
+	// (GH-5671).
 	releaseBackfillAbandonThreshold = 10
 	// releaseBackfillAbandonMinWindow is the minimum wall-clock span a
 	// failure streak must cover before a row is classified permanently
@@ -105,6 +113,20 @@ func (c *Controller) releaseBackfillObserveSuccess(key string) {
 	delete(c.releaseBackfillRows, key)
 }
 
+// releaseBackfillBackoff is the doubling retry delay for the n-th observation
+// (n >= 1) in a streak: base, 2*base, 4*base, ... capped at
+// releaseBackfillMaxBackoff.
+func releaseBackfillBackoff(base time.Duration, n int) time.Duration {
+	backoff := base
+	for i := 1; i < n && backoff < releaseBackfillMaxBackoff; i++ {
+		backoff *= 2
+	}
+	if backoff > releaseBackfillMaxBackoff {
+		backoff = releaseBackfillMaxBackoff
+	}
+	return backoff
+}
+
 // releaseBackfillObserveFailure records one API-error observation for key:
 // advances its consecutive-failure streak and sets its next eligible retry
 // time via exponential backoff from the poll interval, capped at
@@ -129,14 +151,7 @@ func (c *Controller) releaseBackfillObserveFailure(key string, now time.Time) (a
 	if base <= 0 {
 		base = 30 * time.Second
 	}
-	backoff := base
-	for i := 1; i < st.consecutiveFails && backoff < releaseBackfillMaxBackoff; i++ {
-		backoff *= 2
-	}
-	if backoff > releaseBackfillMaxBackoff {
-		backoff = releaseBackfillMaxBackoff
-	}
-	st.nextRetryAt = now.Add(backoff)
+	st.nextRetryAt = now.Add(releaseBackfillBackoff(base, st.consecutiveFails))
 
 	abandon = st.consecutiveFails >= releaseBackfillAbandonThreshold &&
 		now.Sub(st.firstFailAt) >= releaseBackfillAbandonMinWindow
@@ -147,6 +162,32 @@ func (c *Controller) releaseBackfillObserveFailure(key string, now time.Time) (a
 		delete(c.releaseBackfillRows, key)
 	}
 	return abandon, st.consecutiveFails
+}
+
+// releaseBackfillObserveSoftFailure records a merged-but-untagged observation
+// for key (GH-5671): the next retry is scheduled with the same doubling
+// schedule and releaseBackfillMaxBackoff cap as a hard failure, but the abandon
+// streak (consecutiveFails/firstFailAt) is left untouched, so a row waiting for
+// its release tag is never abandoned. A later hard failure keeps today's
+// behaviour; releaseBackfillObserveSuccess clears the whole state.
+func (c *Controller) releaseBackfillObserveSoftFailure(key string, now time.Time) {
+	c.releaseBackfillMu.Lock()
+	defer c.releaseBackfillMu.Unlock()
+	if c.releaseBackfillRows == nil {
+		c.releaseBackfillRows = make(map[string]*releaseBackfillRowState)
+	}
+	st := c.releaseBackfillRows[key]
+	if st == nil {
+		st = &releaseBackfillRowState{}
+		c.releaseBackfillRows[key] = st
+	}
+	st.softFails++
+
+	base := c.config.CIPollInterval
+	if base <= 0 {
+		base = 30 * time.Second
+	}
+	st.nextRetryAt = now.Add(releaseBackfillBackoff(base, st.softFails))
 }
 
 // releaseBackfillFail is healReleaseBackfillRow's single call site for any
@@ -304,12 +345,13 @@ func (c *Controller) healReleaseBackfillRow(ctx context.Context, prState *PRStat
 		return
 	}
 	if tag == "" {
-		// Merged, but not yet covered by any tag — genuinely unreleased. Treated
-		// as a soft failure (GH-5665): clearing the state here made the row due
-		// again on the next 30s pass, costing a compare per pass for as long as
-		// the row exists. Backing off uses the existing doubling schedule and
-		// abandon rule; only a tag hit (below) clears the state.
-		c.releaseBackfillFail(key, now, prState, errReleaseBackfillNoTag)
+		// Merged, but not yet covered by any tag — genuinely unreleased. Backed
+		// off (GH-5665): clearing the state here made the row due again on the
+		// next 30s pass, costing a compare per pass for as long as the row
+		// exists. A soft failure (GH-5671): it uses the doubling schedule but
+		// never advances the abandon streak, since no API call failed. Only a
+		// tag hit (below) clears the state.
+		c.releaseBackfillObserveSoftFailure(key, now)
 		return
 	}
 	c.releaseBackfillObserveSuccess(key)
@@ -386,10 +428,6 @@ type releaseBackfillTagList struct {
 // existed. A new release tag is picked up within one TTL, which only delays a
 // bookkeeping heal.
 const releaseBackfillTagTTL = 10 * time.Minute
-
-// errReleaseBackfillNoTag is the soft-failure cause for a merged PR whose merge
-// commit no release tag contains yet.
-var errReleaseBackfillNoTag = errors.New("merge commit not contained in any release tag")
 
 // releaseBackfillCachedTags is a Controller-held tag listing and when it was
 // fetched.
