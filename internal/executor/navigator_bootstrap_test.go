@@ -6,6 +6,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -99,14 +100,41 @@ func fixtureClone(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(dir, "src", "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	init, err := NewNavigatorInitializer(logging.WithComponent("test"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Decision: build the initializer with an empty templatesPath (embedded
+	// templates only). NewNavigatorInitializer prefers the Navigator plugin
+	// cache under $HOME when present, which made the suite depend on the
+	// developer machine: plugin 8.3.5 nests "### Key Components" under
+	// "## Project Structure", unlike the embedded README.
+	init := &NavigatorInitializer{templatesPath: "", log: logging.WithComponent("test")}
 	if err := init.Initialize(dir); err != nil {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// assertEmbeddedReadmeLayout fails when the fixture README was not built from
+// the embedded template. The embedded README keeps "### Key Components" under
+// "## Architecture"; the Navigator plugin nests it under "## Project
+// Structure", so a fixture that picked up $HOME's plugin cache differs here.
+func assertEmbeddedReadmeLayout(t *testing.T, dir string) {
+	t.Helper()
+	raw, err := os.ReadFile(readmePath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := ""
+	for _, line := range strings.Split(string(raw), "\n") {
+		switch {
+		case strings.HasPrefix(line, "## "):
+			parent = strings.TrimSpace(line)
+		case strings.TrimSpace(line) == "### Key Components":
+			if parent != "## Architecture" {
+				t.Fatalf("fixture README nests Key Components under %q, want \"## Architecture\": fixtureClone must use the embedded templates, not the plugin cache", parent)
+			}
+			return
+		}
+	}
+	t.Fatal("fixture README lacks ### Key Components")
 }
 
 func readmePath(dir string) string { return filepath.Join(dir, ".agent", "DEVELOPMENT-README.md") }
@@ -118,14 +146,26 @@ func filledReadme(t *testing.T, dir string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(raw)
+	return fillReadmeText(t, string(raw))
+}
+
+// fillReadmeText replaces only the direct body of each context section (text
+// up to the next heading of any level), so a nested subsection such as
+// "### Key Components" under "## Project Structure" keeps its header.
+func fillReadmeText(t *testing.T, text string) string {
+	t.Helper()
+	anyHeading := regexp.MustCompile(`(?m)^#{1,6} `)
 	for _, sec := range contextInjectionSections {
-		body, ok := readmeSectionBody(text, sec.header)
-		if !ok {
+		loc := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(sec.header) + `[ \t]*$`).FindStringIndex(text)
+		if loc == nil {
 			t.Fatalf("fixture README lacks %q", sec.header)
 		}
+		end := len(text)
+		if next := anyHeading.FindStringIndex(text[loc[1]:]); next != nil {
+			end = loc[1] + next[0]
+		}
 		real := "\nReal content for " + strings.TrimLeft(sec.header, "# ") + ": src/main.go is the entry point.\n\n"
-		text = strings.Replace(text, sec.header+body, sec.header+real, 1)
+		text = text[:loc[1]] + real + text[end:]
 	}
 	return text
 }
@@ -219,6 +259,7 @@ func TestNavigatorBootstrap_FillsContextSections(t *testing.T) {
 	if !navigatorReadmeHasPlaceholder(dir) {
 		t.Fatal("fixture README must start with placeholder sections")
 	}
+	assertEmbeddedReadmeLayout(t, dir)
 	b := &bootstrapFakeBackend{script: fillingScript(t, dir)}
 
 	res, err := newBootstrapRunner(b, "").ExecuteNavigatorBootstrap(context.Background(), dir)
@@ -440,5 +481,60 @@ func TestNavigatorReadmeHasPlaceholder(t *testing.T) {
 	}
 	if navigatorReadmeHasPlaceholder(t.TempDir()) {
 		t.Error("a project without a README must not be bootstrapped automatically")
+	}
+}
+
+// The Navigator plugin (8.3.5) nests "### Key Components" under
+// "## Project Structure". Detection and filling must work on that layout.
+func TestNavigatorReadmeHasPlaceholder_PluginNestedLayout(t *testing.T) {
+	var nested strings.Builder
+	nested.WriteString("# Project\n\n## Project Structure\n")
+	for _, sec := range contextInjectionSections {
+		if sec.header == "## Project Structure" {
+			nested.WriteString(sec.body)
+		}
+	}
+	nested.WriteString("\n### Key Components\n")
+	for _, sec := range contextInjectionSections {
+		if sec.header == "### Key Components" {
+			nested.WriteString(sec.body)
+		}
+	}
+	nested.WriteString("\n## Key Files\n")
+	for _, sec := range contextInjectionSections {
+		if sec.header == "## Key Files" {
+			nested.WriteString(sec.body)
+		}
+	}
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(readmePath(dir)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(readmePath(dir), []byte(nested.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !navigatorReadmeHasPlaceholder(dir) {
+		t.Fatal("nested plugin layout with skeleton text must report a placeholder")
+	}
+
+	filled := fillReadmeText(t, nested.String())
+	if !strings.Contains(filled, "\n### Key Components\n") {
+		t.Fatalf("filling swallowed the nested Key Components header:\n%s", filled)
+	}
+	if err := os.WriteFile(readmePath(dir), []byte(filled), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if navigatorReadmeHasPlaceholder(dir) {
+		t.Error("filled nested layout must not report a placeholder")
+	}
+
+	// Skeleton left only in the nested subsection is still detected.
+	partial := strings.Replace(filled, "Real content for Key Components: src/main.go is the entry point.", strings.TrimSpace(contextInjectionSections[0].body), 1)
+	if err := os.WriteFile(readmePath(dir), []byte(partial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !navigatorReadmeHasPlaceholder(dir) {
+		t.Error("placeholder left in the nested Key Components must be detected")
 	}
 }
