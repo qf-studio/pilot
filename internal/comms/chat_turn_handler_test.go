@@ -20,6 +20,10 @@ type webChatBackend struct {
 	events   []executor.BackendEvent
 	outputs  []string
 	sessions []string
+	// usage, when set, supplies tokens, model and reported cost on every result.
+	usage *executor.BackendResult
+	// err, when set, fails every call.
+	err error
 }
 
 func (b *webChatBackend) Name() string      { return "web-chat-fake" }
@@ -31,7 +35,15 @@ func (b *webChatBackend) Execute(_ context.Context, opts executor.ExecuteOptions
 	for _, ev := range b.events {
 		opts.EventHandler(ev)
 	}
+	if b.err != nil {
+		return nil, b.err
+	}
 	res := &executor.BackendResult{Success: true, Output: "ok", SessionID: "sess-1"}
+	if u := b.usage; u != nil {
+		res.TokensInput, res.TokensOutput = u.TokensInput, u.TokensOutput
+		res.CacheReadInputTokens, res.CacheCreationInputTokens = u.CacheReadInputTokens, u.CacheCreationInputTokens
+		res.ReportedCostUSD, res.Model = u.ReportedCostUSD, u.Model
+	}
 	if idx < len(b.outputs) {
 		res.Output = b.outputs[idx]
 	}

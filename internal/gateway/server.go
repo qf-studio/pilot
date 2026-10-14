@@ -105,6 +105,7 @@ type Server struct {
 	prometheusExporter       *PrometheusExporter
 	alertsSource             AlertMetricsSource
 	evalSource               EvalMetricsSource // GH-4922: wired into prometheusExporter for pilot_eval_* gauges
+	chatSource               ChatMetricsSource // GH-5677: wired into prometheusExporter for pilot_chat_* counters
 	autopilotProvider        AutopilotProvider
 	adapterHealthSource      AdapterHealthSource
 	dashboardStore           DashboardStore
@@ -359,6 +360,9 @@ func (s *Server) SetMetricsSource(source MetricsSource) {
 	if s.evalSource != nil {
 		s.prometheusExporter.SetEvalSource(s.evalSource)
 	}
+	if s.chatSource != nil {
+		s.prometheusExporter.SetChatSource(s.chatSource)
+	}
 }
 
 // SetVersion records the running process's compiled-in version (GH-4864) so
@@ -397,6 +401,18 @@ func (s *Server) SetEvalMetricsSource(source EvalMetricsSource) {
 	s.evalSource = source
 	if s.prometheusExporter != nil {
 		s.prometheusExporter.SetEvalSource(source)
+	}
+}
+
+// SetChatMetricsSource wires the chat turn totals (typically the same
+// *memory.Store passed to SetDashboardStore) into the Prometheus exporter
+// (GH-5677). Safe to call before or after SetMetricsSource.
+func (s *Server) SetChatMetricsSource(source ChatMetricsSource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.chatSource = source
+	if s.prometheusExporter != nil {
+		s.prometheusExporter.SetChatSource(source)
 	}
 }
 

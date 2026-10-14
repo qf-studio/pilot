@@ -1423,6 +1423,7 @@ Examples:
 				// GH-4922: eval pass@1 now lives on /metrics instead of the
 				// TUI eval panel — same store, same wiring site.
 				p.Gateway().SetEvalMetricsSource(gwStore)
+				p.Gateway().SetChatMetricsSource(gwStore) // GH-5677
 			}
 			// GH-4748: wire the same DecisionRecorder (approvalMgr) that
 			// Telegram/Slack use via WithDecisionRecorder above, so
@@ -2821,6 +2822,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// GH-4922: eval pass@1 now lives on /metrics instead of the TUI
 			// eval panel — same store, same wiring site.
 			gwServer.SetEvalMetricsSource(store)
+			gwServer.SetChatMetricsSource(store) // GH-5677
 		}
 		// GH-4748: wire the same DecisionRecorder (approvalMgr) that
 		// Telegram/Slack use via WithDecisionRecorder above, so

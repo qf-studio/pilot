@@ -63,6 +63,20 @@ type ChatTurnResult struct {
 	// turn ran without resume.
 	SessionReset bool
 	ToolCalls    int
+
+	// Usage of the backend run (GH-5677). Zero when the backend returned no
+	// result (timeout, spawn failure).
+	TokensInput      int64
+	TokensOutput     int64
+	TokensCacheRead  int64
+	TokensCacheWrite int64
+	// EstimatedCostUSD is the list-price estimate, the same estimator the
+	// runner uses for executions.
+	EstimatedCostUSD float64
+	// ReportedCostUSD is the cost the CLI reported; nil when it reported none.
+	ReportedCostUSD *float64
+	Model           string
+	Duration        time.Duration
 }
 
 // ExecuteChatTurn runs one read-only chat turn through the backend.
@@ -83,6 +97,7 @@ func (r *Runner) ExecuteChatTurn(ctx context.Context, turn ChatTurn, onProgress 
 		timeout = defaultChatTurnTimeout
 	}
 
+	started := time.Now()
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -170,7 +185,18 @@ func (r *Runner) ExecuteChatTurn(ctx context.Context, turn ChatTurn, onProgress 
 			out.SessionID = res.SessionID
 		}
 		out.Text = res.Output
+		out.TokensInput = res.TokensInput
+		out.TokensOutput = res.TokensOutput
+		out.TokensCacheRead = res.CacheReadInputTokens
+		out.TokensCacheWrite = res.CacheCreationInputTokens
+		out.ReportedCostUSD = res.ReportedCostUSD
+		out.Model = res.Model
 	}
+	if out.Model == "" {
+		out.Model = r.chatTurnModel()
+	}
+	out.EstimatedCostUSD = estimateCostWithCache(out.TokensInput, out.TokensOutput, out.TokensCacheWrite, out.TokensCacheRead, out.Model)
+	out.Duration = time.Since(started)
 	collected := strings.Join(texts, "\n\n")
 
 	timedOut := errors.Is(tctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil

@@ -44,9 +44,21 @@ type DashboardStore interface {
 	GetExecution(id string) (*memory.Execution, error)
 	ListExecutionsForTask(taskID, projectPath string) ([]*memory.Execution, error)
 	ListExecutionEvents(executionID string) ([]*memory.Event, error)
-	// GetExecutionUsageSince backs GET /api/v1/executions/usage (GH-5676).
-	GetExecutionUsageSince(since time.Time, projectPath string) ([]memory.ExecutionUsage, bool, error)
+	// GetUsageSince backs GET /api/v1/executions/usage: executions (GH-5676)
+	// and chat turns (GH-5690) merged into one page, oldest first.
+	GetUsageSince(since time.Time, projectPath string) ([]memory.UsageRow, bool, error)
 }
+
+// ChatUsageStore is the optional chat-turn read surface (GH-5677). It is a
+// separate interface, asserted on the dashboard store, so stores without chat
+// metering keep satisfying DashboardStore. *memory.Store implements it.
+type ChatUsageStore interface {
+	GetChatTotalsSince(since time.Time, projectPath string) (memory.ChatTotals, error)
+	GetChatDailySince(since time.Time, projectPath string) ([]memory.ChatDay, error)
+}
+
+// chatDailyDays is the length of the chatDaily series.
+const chatDailyDays = 30
 
 // defaultDashboardStatsWindowDays mirrors config.DashboardConfig's default
 // (GH-4735), used when Server.dashboardStatsWindowDays is unset (0).
@@ -93,6 +105,20 @@ type dashboardMetricsResponse struct {
 	// Window carries the GH-4735 rolling-window headline numbers. Lifetime
 	// fields above are kept unchanged for desktop app back-compat.
 	Window dashboardWindowResponse `json:"window"`
+	// Chat usage over the same rolling window as Window (GH-5677): web chat
+	// turns, their list-price estimated cost and input+output tokens.
+	ChatTurns   int     `json:"chatTurns"`
+	ChatCostUSD float64 `json:"chatCostUSD"`
+	ChatTokens  int64   `json:"chatTokens"`
+	// ChatDaily is the last 30 UTC days of chat usage, oldest first, zero-filled.
+	ChatDaily []chatDayResponse `json:"chatDaily"`
+}
+
+type chatDayResponse struct {
+	Date    string  `json:"date"`
+	Turns   int     `json:"turns"`
+	CostUSD float64 `json:"costUSD"`
+	Tokens  int64   `json:"tokens"`
 }
 
 // dashboardWindowResponse is the GH-4735 rolling-window cost/success block
@@ -202,6 +228,8 @@ func (s *Server) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	chatTotals, chatDaily := chatMetrics(store, projectPath, since, now)
+
 	resp := dashboardMetricsResponse{
 		TotalTokens:    lt.TotalTokens,
 		InputTokens:    lt.InputTokens,
@@ -222,9 +250,44 @@ func (s *Server) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) 
 			DeliveryRate:        ws.DeliveryRate,
 			AttemptSuccessRate:  ws.AttemptSuccessRate,
 		},
+		ChatTurns:   chatTotals.Turns,
+		ChatCostUSD: chatTotals.CostUSD,
+		ChatTokens:  chatTotals.Tokens,
+		ChatDaily:   chatDaily,
 	}
 
 	writeJSON(w, resp)
+}
+
+// chatMetrics reads the window totals and the zero-filled 30-day series. A
+// store without chat metering, or a read error, yields zeros: chat numbers
+// never fail the metrics endpoint.
+func chatMetrics(store DashboardStore, projectPath string, since, now time.Time) (memory.ChatTotals, []chatDayResponse) {
+	series := make([]chatDayResponse, chatDailyDays)
+	byDate := make(map[string]int, chatDailyDays)
+	for i := range series {
+		d := now.AddDate(0, 0, -(chatDailyDays - 1 - i)).Format("2006-01-02")
+		series[i].Date = d
+		byDate[d] = i
+	}
+	cs, ok := store.(ChatUsageStore)
+	if !ok {
+		return memory.ChatTotals{}, series
+	}
+	totals, err := cs.GetChatTotalsSince(since, projectPath)
+	if err != nil {
+		totals = memory.ChatTotals{}
+	}
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -(chatDailyDays - 1))
+	days, err := cs.GetChatDailySince(dayStart, projectPath)
+	if err == nil {
+		for _, d := range days {
+			if i, found := byDate[d.Date]; found {
+				series[i].Turns, series[i].CostUSD, series[i].Tokens = d.Turns, d.CostUSD, d.Tokens
+			}
+		}
+	}
+	return totals, series
 }
 
 func (s *Server) handleDashboardQueue(w http.ResponseWriter, r *http.Request) {
@@ -461,12 +524,15 @@ func normalizeDashboardStatus(status string) string {
 	}
 }
 
-// executionUsageRow is one per-execution usage row of
-// GET /api/v1/executions/usage (GH-5676). The hosted console meters tenants by
-// reading these rows; keySource says which Anthropic key paid for the run.
+// executionUsageRow is one usage row of GET /api/v1/executions/usage
+// (GH-5676): an execution, or since GH-5690 a web chat turn (kind says which).
+// The hosted console meters tenants by reading these rows; keySource says which
+// Anthropic key paid for the run.
 type executionUsageRow struct {
+	Kind             string   `json:"kind"` // execution | chat_turn
 	ExecutionID      string   `json:"executionId"`
 	TaskID           string   `json:"taskId"`
+	ConversationID   string   `json:"conversationId,omitempty"` // chat_turn rows only
 	ProjectPath      string   `json:"projectPath"`
 	Status           string   `json:"status"`
 	Model            string   `json:"model"`
@@ -488,15 +554,15 @@ type executionUsageResponse struct {
 	// page, or the request's since when the page is empty. It is inclusive on
 	// the server side, so the boundary row repeats; dedupe on executionId.
 	NextSince string `json:"nextSince"`
-	// HasMore is true when the page hit the row cap. The page then holds the
-	// OLDEST rows at or after since (still listed newest first), so polling
-	// again from NextSince walks forward without skipping any.
+	// HasMore is true when either source held more rows than the page. The page
+	// then holds the OLDEST rows at or after since, so polling again from
+	// NextSince walks forward without skipping any.
 	HasMore bool `json:"hasMore"`
 }
 
 // handleExecutionsUsage serves GET /api/v1/executions/usage?since=RFC3339:
-// one row per execution completed at or after since, newest first, capped at
-// memory.MaxExecutionUsageRows (GH-5676). Same auth as /api/v1/metrics (it is
+// one row per execution or chat turn completed at or after since, oldest
+// first, capped at memory.MaxExecutionUsageRows in total (GH-5676, GH-5690). Same auth as /api/v1/metrics (it is
 // registered on the protected apiMux) and the same dashboard project scoping.
 func (s *Server) handleExecutionsUsage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -525,7 +591,7 @@ func (s *Server) handleExecutionsUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, hasMore, err := store.GetExecutionUsageSince(since, projectPath)
+	rows, hasMore, err := store.GetUsageSince(since, projectPath)
 	if err != nil {
 		http.Error(w, "failed to fetch execution usage", http.StatusInternalServerError)
 		return
@@ -536,8 +602,10 @@ func (s *Server) handleExecutionsUsage(w http.ResponseWriter, r *http.Request) {
 		NextSince:  since.UTC().Format(time.RFC3339Nano),
 		HasMore:    hasMore,
 	}
-	for i, u := range rows {
+	for _, u := range rows {
 		row := executionUsageRow{
+			Kind:             u.Kind,
+			ConversationID:   u.ConversationID,
 			ExecutionID:      u.ExecutionID,
 			TaskID:           u.TaskID,
 			ProjectPath:      u.ProjectPath,
@@ -557,10 +625,10 @@ func (s *Server) handleExecutionsUsage(w http.ResponseWriter, r *http.Request) {
 			st := u.StartedAt.UTC().Format(time.RFC3339Nano)
 			row.StartedAt = &st
 		}
-		if i == 0 { // rows are newest first
-			resp.NextSince = row.CompletedAt
-		}
 		resp.Executions = append(resp.Executions, row)
+	}
+	if n := len(resp.Executions); n > 0 { // rows are oldest first
+		resp.NextSince = resp.Executions[n-1].CompletedAt
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -54,7 +54,7 @@ type mockDashboardStore struct {
 	listExecutionEventsErr  error
 }
 
-func (m *mockDashboardStore) GetExecutionUsageSince(_ time.Time, _ string) ([]memory.ExecutionUsage, bool, error) {
+func (m *mockDashboardStore) GetUsageSince(_ time.Time, _ string) ([]memory.UsageRow, bool, error) {
 	return nil, false, nil
 }
 

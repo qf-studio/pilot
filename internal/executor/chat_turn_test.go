@@ -21,6 +21,8 @@ type chatFakeBackend struct {
 	errs   []error
 	block  bool
 	output string
+	// usage, when set, is copied into the BackendResult (tokens, cost, model).
+	usage *BackendResult
 }
 
 func (b *chatFakeBackend) Name() string      { return "chat-fake" }
@@ -48,7 +50,13 @@ func (b *chatFakeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Ba
 			opts.EventHandler(ev)
 		}
 	}
-	return &BackendResult{Success: true, Output: b.output, SessionID: "sess-1"}, nil
+	res := &BackendResult{Success: true, Output: b.output, SessionID: "sess-1"}
+	if u := b.usage; u != nil {
+		res.TokensInput, res.TokensOutput = u.TokensInput, u.TokensOutput
+		res.CacheReadInputTokens, res.CacheCreationInputTokens = u.CacheReadInputTokens, u.CacheCreationInputTokens
+		res.ReportedCostUSD, res.Model = u.ReportedCostUSD, u.Model
+	}
+	return res, nil
 }
 
 func (b *chatFakeBackend) call(i int) ExecuteOptions {
@@ -350,5 +358,60 @@ func TestChatTurn_DeniesWriteToolsOnTheCLI(t *testing.T) {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("args %q lack %q", raw, want)
 		}
+	}
+}
+
+func TestChatTurn_ResultCarriesUsageAndCost(t *testing.T) {
+	reported := 0.42
+	b := &chatFakeBackend{output: "ok", usage: &BackendResult{
+		TokensInput: 1000, TokensOutput: 500, CacheReadInputTokens: 2000, CacheCreationInputTokens: 300,
+		ReportedCostUSD: &reported, Model: "claude-sonnet-4-6",
+	}}
+	res, err := newChatRunner(b).ExecuteChatTurn(context.Background(), ChatTurn{ProjectPath: t.TempDir(), Text: "hi"}, nil)
+	if err != nil {
+		t.Fatalf("ExecuteChatTurn: %v", err)
+	}
+	if res.TokensInput != 1000 || res.TokensOutput != 500 || res.TokensCacheRead != 2000 || res.TokensCacheWrite != 300 {
+		t.Errorf("tokens = in %d out %d cacheRead %d cacheWrite %d, want 1000/500/2000/300",
+			res.TokensInput, res.TokensOutput, res.TokensCacheRead, res.TokensCacheWrite)
+	}
+	if res.Model != "claude-sonnet-4-6" {
+		t.Errorf("Model = %q, want claude-sonnet-4-6", res.Model)
+	}
+	if res.ReportedCostUSD == nil || *res.ReportedCostUSD != reported {
+		t.Errorf("ReportedCostUSD = %v, want %v", res.ReportedCostUSD, reported)
+	}
+	want := estimateCostWithCache(1000, 500, 300, 2000, "claude-sonnet-4-6")
+	if want <= 0 || res.EstimatedCostUSD != want {
+		t.Errorf("EstimatedCostUSD = %v, want %v (> 0)", res.EstimatedCostUSD, want)
+	}
+	if res.Duration <= 0 {
+		t.Errorf("Duration = %v, want > 0", res.Duration)
+	}
+}
+
+func TestChatTurn_NoReportedCostStaysNil(t *testing.T) {
+	b := &chatFakeBackend{output: "ok", usage: &BackendResult{TokensInput: 10, TokensOutput: 5}}
+	res, err := newChatRunner(b).ExecuteChatTurn(context.Background(), ChatTurn{ProjectPath: t.TempDir(), Text: "hi"}, nil)
+	if err != nil {
+		t.Fatalf("ExecuteChatTurn: %v", err)
+	}
+	if res.ReportedCostUSD != nil {
+		t.Errorf("ReportedCostUSD = %v, want nil", *res.ReportedCostUSD)
+	}
+	if res.EstimatedCostUSD <= 0 {
+		t.Errorf("EstimatedCostUSD = %v, want > 0", res.EstimatedCostUSD)
+	}
+}
+
+func TestClaudeCodeParseResultEvent_CarriesReportedCost(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+	ev := backend.parseStreamEvent(`{"type":"result","subtype":"success","result":"done","total_cost_usd":0.0731,"usage":{"input_tokens":10,"output_tokens":5}}`)
+	if ev.Type != EventTypeResult || ev.ReportedCostUSD == nil || *ev.ReportedCostUSD != 0.0731 {
+		t.Fatalf("result event = type %v cost %v, want result with 0.0731", ev.Type, ev.ReportedCostUSD)
+	}
+	ev = backend.parseStreamEvent(`{"type":"result","subtype":"success","result":"done"}`)
+	if ev.ReportedCostUSD != nil {
+		t.Fatalf("absent total_cost_usd gave %v, want nil", *ev.ReportedCostUSD)
 	}
 }

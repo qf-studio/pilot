@@ -531,6 +531,29 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_pr_reviews_execution ON pr_reviews(execution_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr ON pr_reviews(project_path, pr_number)`,
+		// GH-5677: one row per web chat turn (tokens, cost, which Anthropic key
+		// paid), so chat spend is metered as its own unit next to executions.
+		`CREATE TABLE IF NOT EXISTS chat_turns (
+			id TEXT PRIMARY KEY,
+			conversation_id TEXT NOT NULL DEFAULT '',
+			project_path TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			tokens_input INTEGER NOT NULL DEFAULT 0,
+			tokens_output INTEGER NOT NULL DEFAULT 0,
+			tokens_cache_read INTEGER NOT NULL DEFAULT 0,
+			tokens_cache_write INTEGER NOT NULL DEFAULT 0,
+			estimated_cost_usd REAL NOT NULL DEFAULT 0,
+			reported_cost_usd REAL,
+			key_source TEXT NOT NULL DEFAULT 'unknown',
+			status TEXT NOT NULL DEFAULT 'completed',
+			error TEXT NOT NULL DEFAULT '',
+			duration_ms INTEGER NOT NULL DEFAULT 0,
+			tool_calls INTEGER NOT NULL DEFAULT 0,
+			partial BOOLEAN NOT NULL DEFAULT FALSE,
+			started_at DATETIME NOT NULL,
+			completed_at DATETIME NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_chat_turns_completed ON chat_turns(completed_at)`,
 	}
 
 	for _, migration := range migrations {
@@ -2413,8 +2436,9 @@ func NormalizeKeySource(v string) string {
 	}
 }
 
-// MaxExecutionUsageRows caps one GetExecutionUsageSince page (GH-5676).
-const MaxExecutionUsageRows = 1000
+// MaxExecutionUsageRows caps one GetExecutionUsageSince / GetUsageSince page
+// (GH-5676). A var only so tests can lower it; production never assigns it.
+var MaxExecutionUsageRows = 1000
 
 // ExecutionUsage is one attributable per-execution usage row (GH-5676).
 type ExecutionUsage struct {
@@ -2499,6 +2523,84 @@ func (s *Store) GetExecutionUsageSince(since time.Time, projectPath string) (row
 		hasMore = true
 	}
 	return rows, hasMore, nil
+}
+
+// Usage row kinds (GH-5690).
+const (
+	UsageKindExecution = "execution"
+	UsageKindChatTurn  = "chat_turn"
+)
+
+// UsageRow is one row of the merged executions + chat turns usage feed. A chat
+// row carries its chat_turns id in both ExecutionID and TaskID (consumers skip
+// rows with an empty TaskID) and its web conversation in ConversationID.
+type UsageRow struct {
+	ExecutionUsage
+	Kind           string
+	ConversationID string
+}
+
+// GetUsageSince merges GetExecutionUsageSince and the chat_turns rows into one
+// page: completed_at at or after since (optionally scoped to projectPath),
+// OLDEST first, at most MaxExecutionUsageRows rows in total. hasMore is true
+// when either source held more rows than the page returned.
+//
+// Decision: the merge orders on the parsed UTC completed_at (ties by id), and
+// both sources filter with the same UTC-bound `completed_at >= since`, so one
+// ordering key covers both tables. Each source is read at its own cap, which is
+// enough: any row a source truncated sorts after that source's cap-many
+// returned rows, so it cannot belong to the oldest cap rows of the union.
+func (s *Store) GetUsageSince(since time.Time, projectPath string) (rows []UsageRow, hasMore bool, err error) {
+	limit := MaxExecutionUsageRows
+	execs, execMore, err := s.GetExecutionUsageSince(since, projectPath)
+	if err != nil {
+		return nil, false, err
+	}
+	chats, err := s.ListChatTurnsSince(since, projectPath, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	chatMore := len(chats) > limit
+	if chatMore {
+		chats = chats[:limit]
+	}
+
+	all := make([]UsageRow, 0, len(execs)+len(chats))
+	// GetExecutionUsageSince returns newest first; walk it backwards.
+	for i := len(execs) - 1; i >= 0; i-- {
+		all = append(all, UsageRow{ExecutionUsage: execs[i], Kind: UsageKindExecution})
+	}
+	for _, c := range chats {
+		started := c.StartedAt.UTC()
+		model := c.Model
+		if model == "" {
+			model = "unknown" // same fallback as execution rows
+		}
+		all = append(all, UsageRow{
+			ExecutionUsage: ExecutionUsage{
+				ExecutionID: c.ID, TaskID: c.ID, ProjectPath: c.ProjectPath, Status: c.Status,
+				Model:       model,
+				TokensInput: c.TokensInput, TokensOutput: c.TokensOutput,
+				TokensCacheRead: c.TokensCacheRead, TokensCacheWrite: c.TokensCacheWrite,
+				EstimatedCostUSD: c.EstimatedCostUSD, ReportedCostUSD: c.ReportedCostUSD,
+				KeySource: NormalizeKeySource(c.KeySource),
+				StartedAt: &started, CompletedAt: c.CompletedAt.UTC(),
+			},
+			Kind:           UsageKindChatTurn,
+			ConversationID: c.ConversationID,
+		})
+	}
+	sort.SliceStable(all, func(i, j int) bool {
+		if !all[i].CompletedAt.Equal(all[j].CompletedAt) {
+			return all[i].CompletedAt.Before(all[j].CompletedAt)
+		}
+		return all[i].ExecutionID < all[j].ExecutionID
+	})
+	if len(all) > limit {
+		all = all[:limit]
+		hasMore = true
+	}
+	return all, hasMore || execMore || chatMore, nil
 }
 
 // GetActiveExecutions retrieves all executions with status "running".
