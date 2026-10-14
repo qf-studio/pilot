@@ -500,6 +500,7 @@ executor:
 |-------|------|---------|-------------|
 | `navigator.auto_init` | bool | `true` | Auto-create .agent/ on first task execution |
 | `navigator.templates_path` | string | `""` | Override plugin templates location |
+| `navigator.bootstrap` | string | `manual` | One-time session that fills the scaffold's Key Components, Key Files and Project Structure sections: `auto` (before the first task while a placeholder section remains), `manual` (only `pilot navigator bootstrap --project <path>`), `off`. Writes only under `.agent/`; recorded as execution `bootstrap-<date>` |
 
 ### Worktree Isolation
 

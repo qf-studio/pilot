@@ -195,21 +195,25 @@ func (r *Runner) syncNavigatorIndex(task *Task, status string, executionPath str
 
 // maybeInitNavigator initializes Navigator structure if not present.
 // This enables auto-init for projects that don't have .agent/ yet.
-func (r *Runner) maybeInitNavigator(projectPath string) error {
+// With navigator.bootstrap=auto it then runs the one-time bootstrap session
+// while the README still carries a placeholder section.
+func (r *Runner) maybeInitNavigator(ctx context.Context, projectPath string) error {
 	initializer, err := NewNavigatorInitializer(r.log)
 	if err != nil {
 		return fmt.Errorf("failed to create navigator initializer: %w", err)
 	}
 
-	if initializer.IsInitialized(projectPath) {
-		return nil
+	if !initializer.IsInitialized(projectPath) {
+		r.log.Info("Auto-initializing Navigator for project",
+			slog.String("path", projectPath),
+		)
+		if err := initializer.Initialize(projectPath); err != nil {
+			return err
+		}
 	}
 
-	r.log.Info("Auto-initializing Navigator for project",
-		slog.String("path", projectPath),
-	)
-
-	return initializer.Initialize(projectPath)
+	r.maybeBootstrapNavigator(ctx, projectPath)
+	return nil
 }
 
 // extractTaskNumber extracts the numeric part from task IDs like "GH-57" or "TASK-123"

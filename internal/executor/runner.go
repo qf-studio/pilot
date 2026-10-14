@@ -1036,15 +1036,18 @@ type Runner struct {
 	// that assigns ExecuteOptions.ProjectPath and guards against it
 	// silently collapsing to task.ProjectPath when worktree isolation was
 	// expected. A direct r.backend.Execute call bypasses that guard.
-	backend           Backend // AI execution backend
-	config            *BackendConfig
-	onProgress        ProgressCallback
-	progressCallbacks map[string]ProgressCallback // Named callbacks for multi-listener support
-	progressMu        sync.RWMutex                // Protects progressCallbacks
-	tokenCallbacks    map[string]TokenCallback    // Named callbacks for token usage updates
-	tokenMu           sync.RWMutex                // Protects tokenCallbacks
-	mu                sync.Mutex
-	running           map[string]*exec.Cmd
+	backend Backend // AI execution backend
+	// navBootstrapAttempted holds project paths whose automatic Navigator
+	// bootstrap already ran (or failed) in this process.
+	navBootstrapAttempted sync.Map
+	config                *BackendConfig
+	onProgress            ProgressCallback
+	progressCallbacks     map[string]ProgressCallback // Named callbacks for multi-listener support
+	progressMu            sync.RWMutex                // Protects progressCallbacks
+	tokenCallbacks        map[string]TokenCallback    // Named callbacks for token usage updates
+	tokenMu               sync.RWMutex                // Protects tokenCallbacks
+	mu                    sync.Mutex
+	running               map[string]*exec.Cmd
 	// execCancel holds a STACK of context.CancelFunc for each task.ID
 	// currently inside executeWithOptions, guarded by mu alongside running.
 	// GH-5400: `running` is populated only by direct exec.Cmd tracking, which
@@ -3775,7 +3778,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// Use executionPath to check/init in worktree if worktree isolation is active
 	// Skip for LocalMode — bench/sandbox tasks don't use Navigator (GH-2108)
 	if !task.LocalMode && r.config != nil && r.config.Navigator != nil && r.config.Navigator.AutoInit {
-		if err := r.maybeInitNavigator(executionPath); err != nil {
+		if err := r.maybeInitNavigator(ctx, executionPath); err != nil {
 			r.log.Warn("Navigator auto-init failed", slog.Any("error", err))
 			// Continue without Navigator - graceful degradation
 		}

@@ -426,6 +426,7 @@ func main() {
 		newBackendCmd(),
 		newEvalCmd(),
 		newGhGuardCmd(),
+		newNavigatorCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {

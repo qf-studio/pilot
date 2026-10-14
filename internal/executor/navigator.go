@@ -22,6 +22,11 @@ var embeddedTemplates embed.FS
 type NavigatorConfig struct {
 	AutoInit      bool   `yaml:"auto_init"`      // Enable auto-init (default: true)
 	TemplatesPath string `yaml:"templates_path"` // Override plugin templates location
+	// Bootstrap controls the one-time session that fills the scaffold's
+	// context sections: auto (run before the first task while a placeholder
+	// section remains), manual (only `pilot navigator bootstrap`) or off.
+	// Default: manual.
+	Bootstrap string `yaml:"bootstrap,omitempty"`
 }
 
 // DefaultNavigatorConfig returns default Navigator configuration.

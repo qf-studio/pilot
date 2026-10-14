@@ -35,6 +35,7 @@
 | Self-review alignment | ✅ | executor | - | - | Verify files in issue title were actually modified (v0.33.14) |
 | Nav-loop mode | ✅ | executor | - | - | Structured autonomous execution with NAVIGATOR_STATUS (v0.33.15) |
 | Navigator auto-init | ✅ | executor | - | `executor.navigator.auto_init` | Auto-creates .agent/ on first task execution (v0.33.16) |
+| Navigator bootstrap session | ✅ | executor | `pilot navigator bootstrap --project` | `executor.navigator.bootstrap` (auto/manual/off, default manual) | One 60-turn/10-min read-mostly session fills the scaffold's Key Components/Key Files/Project Structure, an architecture note, pattern memories and graph.json; Write/Edit allowlisted to `.agent/**` only; recorded as execution `bootstrap-<date>` with key_source (GH-5679) |
 | Preflight checks | ✅ | executor | - | - | Claude available, git clean, git repo validation (v0.48.0) |
 | Smart retry | ✅ | executor | - | - | Error-type-specific retry with exponential backoff (v0.51.0) |
 | OOM smart-retry | ✅ | executor | - | `executor.retry.oom_killed` | Retry OOM-killed subprocess once after 10s (GH-3028, v2.147.0) |
@@ -512,7 +513,7 @@
 
 | Category | ✅ Working | ⚠️ Implemented | 🚧 Partial | ❌ Missing |
 |----------|-----------|----------------|-----------|-----------|
-| Core Execution | 56 | 0 | 0 | 0 |
+| Core Execution | 57 | 0 | 0 | 0 |
 | Intelligence | 15 | 0 | 0 | 0 |
 | Input Adapters | 35 | 0 | 0 | 0 |
 | Output/Notifications | 18 | 0 | 0 | 0 |
