@@ -2868,5 +2868,8 @@ func TestLoadExampleConfigChatStanza(t *testing.T) {
 		if rl == nil || !rl.Enabled || rl.MessagesPerMinute != 20 || rl.TasksPerHour != 10 || rl.BurstSize != 5 {
 			t.Errorf("Chat.RateLimit = %+v, want enabled 20/min 10/h burst 5", rl)
 		}
+		if chat.DailyTurnCap != 200 {
+			t.Errorf("Chat.DailyTurnCap = %d, want 200", chat.DailyTurnCap)
+		}
 	}
 }

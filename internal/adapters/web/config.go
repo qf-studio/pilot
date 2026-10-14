@@ -19,13 +19,25 @@ type Config struct {
 	// not shared across conversations. Defaults to comms.DefaultRateLimitConfig
 	// when nil, matching the Telegram/Slack call sites.
 	RateLimit *comms.RateLimitConfig `yaml:"rate_limit,omitempty"`
+
+	// DailyTurnCap is the org-wide cap on agentic chat turns started per UTC day
+	// (Pricing v3, Navigator TASK-546 D6/D10). Unlike RateLimit it is shared by
+	// every conversation, so many conversations cannot drain the platform-key
+	// allowance in one afternoon. Zero means unlimited. The console renders this
+	// value into the tenant config. The count is in memory only: a daemon
+	// restart resets it.
+	DailyTurnCap int `yaml:"daily_turn_cap"`
 }
+
+// DefaultDailyTurnCap is the default org-wide daily chat-turn cap.
+const DefaultDailyTurnCap = 200
 
 // DefaultConfig returns the disabled-by-default web chat config, matching
 // every other adapter's DefaultConfig (see internal/adapters/slack,
 // internal/adapters/telegram).
 func DefaultConfig() *Config {
 	return &Config{
-		Enabled: false,
+		Enabled:      false,
+		DailyTurnCap: DefaultDailyTurnCap,
 	}
 }

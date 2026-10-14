@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/executor"
@@ -22,6 +24,43 @@ type pendingIssueCard struct {
 	CardID      string
 	ProjectPath string
 	CreatedAt   time.Time
+}
+
+// DailyChatLimitMessage is sent instead of running a turn once the org-wide
+// daily cap is reached.
+const DailyChatLimitMessage = "Daily chat limit reached. It resets at 00:00 UTC."
+
+var chatTurnsRejected atomic.Int64
+
+// ChatTurnsRejectedTotal returns the process-lifetime number of chat turns
+// refused by the org-wide daily cap (pilot_chat_turns_rejected_total).
+func ChatTurnsRejectedTotal() int64 { return chatTurnsRejected.Load() }
+
+// reserveDailyTurn counts one started turn against the org-wide daily cap and
+// reports whether the turn may run. The counter resets at the UTC day
+// boundary and is not persisted. A cap of zero disables the check.
+func (h *Handler) reserveDailyTurn() bool {
+	if h.dailyTurnCap <= 0 {
+		return true
+	}
+	day := h.now().UTC().Format("2006-01-02")
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.chatTurnDay != day {
+		h.chatTurnDay = day
+		h.chatTurnCount = 0
+	}
+	if h.chatTurnCount >= h.dailyTurnCap {
+		chatTurnsRejected.Add(1)
+		if h.chatCapWarnDay != day {
+			h.chatCapWarnDay = day
+			h.log.Warn("Daily chat turn cap reached; rejecting further turns until 00:00 UTC",
+				slog.Int("cap", h.dailyTurnCap), slog.String("day", day))
+		}
+		return false
+	}
+	h.chatTurnCount++
+	return true
 }
 
 // handleChatTurn runs one read-only agentic chat turn for a web conversation.
@@ -45,6 +84,11 @@ func (h *Handler) handleChatTurn(ctx context.Context, contextID, threadID, text 
 		delete(h.chatTurnBusy, contextID)
 		h.mu.Unlock()
 	}()
+
+	if !h.reserveDailyTurn() {
+		send(DailyChatLimitMessage)
+		return
+	}
 
 	projectPath := h.getActiveProjectPath(contextID)
 	h.mu.Lock()

@@ -143,6 +143,7 @@
 | Asana CompleteTask callback | ✅ | adapters/asana | - | - | Wire Asana CompleteTask on successful PR creation (v2.10.0, PR #1720) |
 | Telegram memory store | ✅ | adapters/telegram | - | - | Wire memory store to Telegram HandlerConfig (v2.25.0, PR #1754) |
 | Web chat API | ✅ | adapters/web, gateway | - | `adapters.chat` | Operator chat HTTP transport for console dashboard: `POST /api/v1/chat/messages` + `GET /api/v1/chat/conversations/{id}/events`, backed by comms.Handler via a per-conversation seq-numbered in-memory event buffer (500-event cap, 1h expiry); dispatches on the daemon context so tasks survive request cancellation; rejects approve/reject-shaped callbacks (approvals route through `/api/v1/approvals/{requestId}/decision` instead) (GH-4835) **10-12: web turns are read-only agentic Navigator turns (`ExecuteChatTurn`), progress events, confirmed `pilot-issue` filing per project, `projectId` + `GET /api/v1/chat/projects` — see `system/side-chat-navigator.md`.** |
+| Web chat daily turn cap | ✅ | adapters/web, comms, gateway | - | `adapters.chat.daily_turn_cap` | Org-wide cap on agentic web chat turns per UTC day (default 200, 0 = unlimited), in-memory, reset at 00:00 UTC; over-cap turns get "Daily chat limit reached. It resets at 00:00 UTC." without starting a session; one warning per day + `pilot_chat_turns_rejected_total` (GH-5678) |
 
 ## Output/Notifications
 

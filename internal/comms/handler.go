@@ -41,6 +41,11 @@ type HandlerConfig struct {
 	// TaskIDPrefix is the adapter-specific prefix for task IDs (e.g., "TG", "SLACK").
 	TaskIDPrefix string
 	Log          *slog.Logger
+	// DailyTurnCap caps agentic web chat turns started per UTC day across all
+	// conversations; 0 = unlimited.
+	DailyTurnCap int
+	// Now overrides the clock for the daily cap (tests); defaults to time.Now.
+	Now func() time.Time
 }
 
 // Handler implements platform-agnostic message handling with intent dispatch,
@@ -72,6 +77,14 @@ type Handler struct {
 	pendingIssueCards map[string]*pendingIssueCard // contextID -> issue card awaiting a decision
 	chatTurnBusy      map[string]bool              // contextID -> an ExecuteChatTurn is in flight (guarded by mu)
 
+	// Org-wide daily chat-turn cap (guarded by mu). In memory only: a restart
+	// resets the count, which is acceptable for a spend guard.
+	dailyTurnCap   int
+	now            func() time.Time
+	chatTurnDay    string // UTC day (2006-01-02) chatTurnCount belongs to
+	chatTurnCount  int
+	chatCapWarnDay string // UTC day the cap-reached warning was last logged
+
 	// missingPathsOnBase reports which paths are absent from the default branch
 	// of the checkout at dir. Defaulted to executor.PathsMissingOnDefaultBranch;
 	// tests override it.
@@ -97,7 +110,14 @@ func NewHandler(cfg *HandlerConfig) *Handler {
 		lg = logging.WithComponent("comms.handler")
 	}
 
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+
 	h := &Handler{
+		dailyTurnCap:   cfg.DailyTurnCap,
+		now:            now,
 		messenger:      cfg.Messenger,
 		runner:         cfg.Runner,
 		projects:       cfg.Projects,

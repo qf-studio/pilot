@@ -11,6 +11,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -550,6 +551,12 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	writeHelp(w, "pilot_executor_result_exit_grace_kills_total", "Total Claude Code process-group kills issued because the process outlived executor.claude_code.result_exit_grace after a successful result event. Resets to 0 on restart")
 	writeType(w, "pilot_executor_result_exit_grace_kills_total", "counter")
 	writeCounter(w, "pilot_executor_result_exit_grace_kills_total", executor.ResultExitGraceKillsTotal())
+
+	// pilot_chat_turns_rejected_total: web chat turns refused by the org-wide
+	// daily turn cap (adapters.chat.daily_turn_cap).
+	writeHelp(w, "pilot_chat_turns_rejected_total", "Total web chat turns rejected because the org-wide daily chat-turn cap was reached. Resets to 0 on restart")
+	writeType(w, "pilot_chat_turns_rejected_total", "counter")
+	writeCounter(w, "pilot_chat_turns_rejected_total", comms.ChatTurnsRejectedTotal())
 
 	// --- Eval metrics (optional; only emitted when an EvalMetricsSource is wired) ---
 	// pilot_eval_tasks_total / pilot_eval_pass_ratio (GH-4922): replaces the

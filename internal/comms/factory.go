@@ -110,6 +110,8 @@ type HandlerDeps struct {
 	Store          *memory.Store
 	IssueCreator   IssueCreator
 	TaskIDPrefix   string
+	// DailyTurnCap is the org-wide cap on web chat turns per UTC day; 0 = unlimited.
+	DailyTurnCap int
 	// ExecutorBackend is used by BuildClassifier to override the Anthropic model and URL.
 	// May be nil — the factory handles that gracefully.
 	ExecutorBackend *executor.BackendConfig
@@ -134,5 +136,6 @@ func BuildHandler(deps HandlerDeps) *Handler {
 		Store:          deps.Store,
 		IssueCreator:   deps.IssueCreator,
 		TaskIDPrefix:   deps.TaskIDPrefix,
+		DailyTurnCap:   deps.DailyTurnCap,
 	})
 }

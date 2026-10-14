@@ -259,6 +259,9 @@ adapters:
       messages_per_minute: 20
       tasks_per_hour: 10
       burst_size: 5
+    # Org-wide cap on agentic chat turns per UTC day, shared by every
+    # conversation. 0 = unlimited. In-memory: a daemon restart resets the count.
+    daily_turn_cap: 200
 
 # Conversational bot module
 # When enabled, chat / greeting / question intents are answered directly via the

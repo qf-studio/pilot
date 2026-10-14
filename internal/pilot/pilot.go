@@ -863,6 +863,7 @@ func (p *Pilot) chatHandlerDeps(messenger comms.Messenger, projectPath string) c
 		Projects:        config.NewProjectSource(p.config),
 		ProjectPath:     projectPath,
 		RateLimit:       p.config.Adapters.Chat.RateLimit,
+		DailyTurnCap:    p.config.Adapters.Chat.DailyTurnCap,
 		Store:           p.store,
 		TaskIDPrefix:    "WEB",
 		ExecutorBackend: p.config.Executor,

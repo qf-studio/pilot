@@ -489,3 +489,93 @@ func TestWebChat_IssueCardProbeErrorFailsOpen(t *testing.T) {
 		}
 	}
 }
+
+func sendTo(h *Handler, conv, text string) {
+	h.HandleMessage(context.Background(), &IncomingMessage{ContextID: "web:" + conv, Platform: "web", Text: text, SenderID: "u1"})
+}
+
+func newCappedChat(b *webChatBackend, cap int, clock *time.Time) (*Handler, *webChatMessenger) {
+	msgr := &webChatMessenger{}
+	h := NewHandler(&HandlerConfig{
+		Messenger: msgr, Runner: executor.NewRunnerWithBackend(b), ProjectPath: "/work/proj",
+		DailyTurnCap: cap, Now: func() time.Time { return *clock },
+	})
+	return h, msgr
+}
+
+func TestDailyTurnCap_RejectsThirdTurnAcrossConversations(t *testing.T) {
+	clock := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
+	b := &webChatBackend{}
+	h, msgr := newCappedChat(b, 2, &clock)
+	before := ChatTurnsRejectedTotal()
+
+	sendTo(h, "a", "first question")
+	sendTo(h, "b", "second question")
+	if len(b.calls) != 2 {
+		t.Fatalf("backend calls = %d, want 2 before the cap", len(b.calls))
+	}
+	sendTo(h, "a", "third question")
+
+	if len(b.calls) != 2 {
+		t.Errorf("backend calls = %d, want 2: the third turn must not reach the backend", len(b.calls))
+	}
+	if got := msgr.last(); got != DailyChatLimitMessage {
+		t.Errorf("last message = %q, want %q", got, DailyChatLimitMessage)
+	}
+	if got := ChatTurnsRejectedTotal() - before; got != 1 {
+		t.Errorf("rejected counter delta = %d, want 1", got)
+	}
+}
+
+func TestDailyTurnCap_ResetsAtUTCMidnight(t *testing.T) {
+	clock := time.Date(2026, 10, 14, 23, 59, 0, 0, time.UTC)
+	b := &webChatBackend{}
+	h, msgr := newCappedChat(b, 2, &clock)
+
+	sendTo(h, "a", "one")
+	sendTo(h, "b", "two")
+	sendTo(h, "a", "three") // rejected
+	if len(b.calls) != 2 {
+		t.Fatalf("backend calls = %d, want 2 before midnight", len(b.calls))
+	}
+
+	clock = time.Date(2026, 10, 15, 0, 0, 1, 0, time.UTC)
+	sendTo(h, "b", "four")
+	if len(b.calls) != 3 {
+		t.Fatalf("backend calls = %d, want 3: the fourth turn must run after 00:00 UTC", len(b.calls))
+	}
+	if got := msgr.last(); got == DailyChatLimitMessage {
+		t.Errorf("fourth turn answered with the limit text")
+	}
+}
+
+func TestDailyTurnCap_ZeroIsUnlimited(t *testing.T) {
+	clock := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
+	b := &webChatBackend{}
+	h, _ := newCappedChat(b, 0, &clock)
+	for i := 0; i < 5; i++ {
+		sendTo(h, "a", "question")
+	}
+	if len(b.calls) != 5 {
+		t.Errorf("backend calls = %d, want 5 with cap 0", len(b.calls))
+	}
+}
+
+func TestDailyTurnCap_NonSessionMessagesNotCounted(t *testing.T) {
+	clock := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
+	b := &webChatBackend{}
+	h, msgr := newCappedChat(b, 1, &clock)
+
+	// A slash command never starts a session, so it neither counts nor is blocked.
+	sendTo(h, "a", "/help")
+	sendTo(h, "a", "a real question")
+	if len(b.calls) != 1 {
+		t.Fatalf("backend calls = %d, want 1: /help must not consume the cap", len(b.calls))
+	}
+	sendTo(h, "a", "/help")
+	for _, m := range msgr.messages[len(msgr.messages)-1:] {
+		if m == DailyChatLimitMessage {
+			t.Errorf("/help was blocked by the cap")
+		}
+	}
+}
