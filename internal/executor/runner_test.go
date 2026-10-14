@@ -4721,8 +4721,9 @@ type fakeMetricsRecorder struct {
 		n                int64
 	}
 	costCalls []struct {
-		model   string
-		costUSD float64
+		model     string
+		keySource string
+		costUSD   float64
 	}
 	execCalls     []struct{ model, result string }
 	durationCalls []time.Duration
@@ -4737,13 +4738,14 @@ func (f *fakeMetricsRecorder) RecordTokens(model, direction string, n int64) {
 	}{model, direction, n})
 }
 
-func (f *fakeMetricsRecorder) RecordCost(model string, costUSD float64) {
+func (f *fakeMetricsRecorder) RecordCost(model, keySource string, costUSD float64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.costCalls = append(f.costCalls, struct {
-		model   string
-		costUSD float64
-	}{model, costUSD})
+		model     string
+		keySource string
+		costUSD   float64
+	}{model, keySource, costUSD})
 }
 
 func (f *fakeMetricsRecorder) RecordExecution(model, result string) {
@@ -4765,6 +4767,8 @@ func TestMetricsRecorder_CalledOncePerExecution(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
+
+	t.Setenv(KeySourceEnv, "own") // GH-5676: the key source must reach RecordCost
 
 	const branch = "pilot/GH-test-metrics"
 	dir := setupPRGuardRepo(t, branch, true) // adds a real commit so no-commit guard doesn't fire
@@ -4817,6 +4821,8 @@ func TestMetricsRecorder_CalledOncePerExecution(t *testing.T) {
 
 	if len(rec.costCalls) != 1 {
 		t.Errorf("RecordCost called %d times, want exactly 1", len(rec.costCalls))
+	} else if rec.costCalls[0].keySource != "own" {
+		t.Errorf("RecordCost keySource = %q, want %q", rec.costCalls[0].keySource, "own")
 	}
 
 	if len(rec.tokenCalls) == 0 {

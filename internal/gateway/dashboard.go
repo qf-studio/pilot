@@ -44,6 +44,8 @@ type DashboardStore interface {
 	GetExecution(id string) (*memory.Execution, error)
 	ListExecutionsForTask(taskID, projectPath string) ([]*memory.Execution, error)
 	ListExecutionEvents(executionID string) ([]*memory.Event, error)
+	// GetExecutionUsageSince backs GET /api/v1/executions/usage (GH-5676).
+	GetExecutionUsageSince(since time.Time, projectPath string) ([]memory.ExecutionUsage, bool, error)
 }
 
 // defaultDashboardStatsWindowDays mirrors config.DashboardConfig's default
@@ -457,4 +459,110 @@ func normalizeDashboardStatus(status string) string {
 	default:
 		return status
 	}
+}
+
+// executionUsageRow is one per-execution usage row of
+// GET /api/v1/executions/usage (GH-5676). The hosted console meters tenants by
+// reading these rows; keySource says which Anthropic key paid for the run.
+type executionUsageRow struct {
+	ExecutionID      string   `json:"executionId"`
+	TaskID           string   `json:"taskId"`
+	ProjectPath      string   `json:"projectPath"`
+	Status           string   `json:"status"`
+	Model            string   `json:"model"`
+	TokensInput      int64    `json:"tokensInput"`
+	TokensOutput     int64    `json:"tokensOutput"`
+	TokensCacheRead  int64    `json:"tokensCacheRead"`
+	TokensCacheWrite int64    `json:"tokensCacheWrite"`
+	EstimatedCostUSD float64  `json:"estimatedCostUSD"`
+	ReportedCostUSD  *float64 `json:"reportedCostUSD"` // null when the CLI reported no cost
+	KeySource        string   `json:"keySource"`       // platform | own | unknown
+	StartedAt        *string  `json:"startedAt"`       // RFC3339, null if never started
+	CompletedAt      string   `json:"completedAt"`     // RFC3339
+	PRUrl            string   `json:"prUrl"`
+}
+
+type executionUsageResponse struct {
+	Executions []executionUsageRow `json:"executions"`
+	// NextSince is the cursor for the next poll: the newest completedAt in this
+	// page, or the request's since when the page is empty. It is inclusive on
+	// the server side, so the boundary row repeats; dedupe on executionId.
+	NextSince string `json:"nextSince"`
+	// HasMore is true when the page hit the row cap. The page then holds the
+	// OLDEST rows at or after since (still listed newest first), so polling
+	// again from NextSince walks forward without skipping any.
+	HasMore bool `json:"hasMore"`
+}
+
+// handleExecutionsUsage serves GET /api/v1/executions/usage?since=RFC3339:
+// one row per execution completed at or after since, newest first, capped at
+// memory.MaxExecutionUsageRows (GH-5676). Same auth as /api/v1/metrics (it is
+// registered on the protected apiMux) and the same dashboard project scoping.
+func (s *Server) handleExecutionsUsage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.RLock()
+	store := s.dashboardStore
+	projectPath := s.dashboardProjectPath
+	s.mu.RUnlock()
+
+	if store == nil {
+		http.Error(w, "dashboard store not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	sinceRaw := r.URL.Query().Get("since")
+	if sinceRaw == "" {
+		http.Error(w, "since is required (RFC3339)", http.StatusBadRequest)
+		return
+	}
+	since, err := time.Parse(time.RFC3339Nano, sinceRaw)
+	if err != nil {
+		http.Error(w, "since must be an RFC3339 timestamp", http.StatusBadRequest)
+		return
+	}
+
+	rows, hasMore, err := store.GetExecutionUsageSince(since, projectPath)
+	if err != nil {
+		http.Error(w, "failed to fetch execution usage", http.StatusInternalServerError)
+		return
+	}
+
+	resp := executionUsageResponse{
+		Executions: make([]executionUsageRow, 0, len(rows)),
+		NextSince:  since.UTC().Format(time.RFC3339Nano),
+		HasMore:    hasMore,
+	}
+	for i, u := range rows {
+		row := executionUsageRow{
+			ExecutionID:      u.ExecutionID,
+			TaskID:           u.TaskID,
+			ProjectPath:      u.ProjectPath,
+			Status:           u.Status,
+			Model:            u.Model,
+			TokensInput:      u.TokensInput,
+			TokensOutput:     u.TokensOutput,
+			TokensCacheRead:  u.TokensCacheRead,
+			TokensCacheWrite: u.TokensCacheWrite,
+			EstimatedCostUSD: u.EstimatedCostUSD,
+			ReportedCostUSD:  u.ReportedCostUSD,
+			KeySource:        u.KeySource,
+			CompletedAt:      u.CompletedAt.UTC().Format(time.RFC3339Nano),
+			PRUrl:            u.PRUrl,
+		}
+		if u.StartedAt != nil {
+			st := u.StartedAt.UTC().Format(time.RFC3339Nano)
+			row.StartedAt = &st
+		}
+		if i == 0 { // rows are newest first
+			resp.NextSince = row.CompletedAt
+		}
+		resp.Executions = append(resp.Executions, row)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }

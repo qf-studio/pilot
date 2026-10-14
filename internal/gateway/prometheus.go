@@ -321,10 +321,10 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	}
 
 	// pilot_execution_cost_usd_total
-	writeHelp(w, "pilot_execution_cost_usd_total", "Total execution cost in USD by model")
+	writeHelp(w, "pilot_execution_cost_usd_total", "Total execution cost in USD by model and Anthropic key source (platform, own, unknown)")
 	writeType(w, "pilot_execution_cost_usd_total", "counter")
-	for model, cost := range snap.ExecutionCostUSD {
-		writeFloatCounter(w, "pilot_execution_cost_usd_total", cost, "model", model)
+	for k, cost := range snap.ExecutionCostByKeySource {
+		writeFloatCounter(w, "pilot_execution_cost_usd_total", cost, "model", k.Model, "key_source", k.KeySource)
 	}
 
 	// pilot_executions_total

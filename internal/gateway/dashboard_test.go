@@ -54,6 +54,10 @@ type mockDashboardStore struct {
 	listExecutionEventsErr  error
 }
 
+func (m *mockDashboardStore) GetExecutionUsageSince(_ time.Time, _ string) ([]memory.ExecutionUsage, bool, error) {
+	return nil, false, nil
+}
+
 func (m *mockDashboardStore) GetLifetimeTokens(projectPath string) (*memory.LifetimeTokens, error) {
 	m.gotTokensPath = projectPath
 	return m.lifetimeTokens, nil

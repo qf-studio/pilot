@@ -317,9 +317,9 @@ func TestRecordTokens(t *testing.T) {
 func TestRecordCost(t *testing.T) {
 	m := NewMetrics()
 
-	m.RecordCost("claude-sonnet-4-5", 0.01)
-	m.RecordCost("claude-sonnet-4-5", 0.02)
-	m.RecordCost("claude-opus-4-5", 0.05)
+	m.RecordCost("claude-sonnet-4-5", "unknown", 0.01)
+	m.RecordCost("claude-sonnet-4-5", "unknown", 0.02)
+	m.RecordCost("claude-opus-4-5", "unknown", 0.05)
 
 	snap := m.Snapshot()
 
@@ -359,14 +359,14 @@ func TestRecordExecution(t *testing.T) {
 func TestSnapshotIsolationNewMaps(t *testing.T) {
 	m := NewMetrics()
 	m.RecordTokens("model-a", "input", 100)
-	m.RecordCost("model-a", 0.01)
+	m.RecordCost("model-a", "unknown", 0.01)
 	m.RecordExecution("model-a", "success")
 
 	snap := m.Snapshot()
 
 	// Mutate after snapshot
 	m.RecordTokens("model-a", "input", 900)
-	m.RecordCost("model-a", 0.99)
+	m.RecordCost("model-a", "unknown", 0.99)
 	m.RecordExecution("model-a", "success")
 
 	tk := tokenKey{Model: "model-a", Direction: "input"}
@@ -416,7 +416,7 @@ func TestRecordCostRace(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func() {
 			for j := 0; j < 100; j++ {
-				m.RecordCost("model", 0.001)
+				m.RecordCost("model", "unknown", 0.001)
 				_ = m.Snapshot()
 			}
 			done <- struct{}{}
@@ -506,5 +506,30 @@ func TestHydrateCircuitBreakerTrips_MaxClamp(t *testing.T) {
 	m.RecordCircuitBreakerTrip()
 	if got := m.Snapshot().CircuitBreakerTrips; got != 191 {
 		t.Errorf("CircuitBreakerTrips after live record on top of hydrated floor = %d, want 191", got)
+	}
+}
+
+// TestRecordCost_SplitsByKeySource: the key_source split (GH-5676) accumulates
+// per {model,key_source}, normalises junk to "unknown", and the per-model total
+// is unchanged.
+func TestRecordCost_SplitsByKeySource(t *testing.T) {
+	m := NewMetrics()
+	m.RecordCost("m1", "platform", 1)
+	m.RecordCost("m1", "platform", 2)
+	m.RecordCost("m1", "own", 4)
+	m.RecordCost("m1", "sk-junk", 8)
+
+	snap := m.Snapshot()
+	for k, want := range map[costKey]float64{
+		{Model: "m1", KeySource: "platform"}: 3,
+		{Model: "m1", KeySource: "own"}:      4,
+		{Model: "m1", KeySource: "unknown"}:  8,
+	} {
+		if got := snap.ExecutionCostByKeySource[k]; got != want {
+			t.Errorf("ExecutionCostByKeySource[%+v] = %v, want %v", k, got, want)
+		}
+	}
+	if got := snap.ExecutionCostUSD["m1"]; got != 15 {
+		t.Errorf("ExecutionCostUSD[m1] = %v, want 15", got)
 	}
 }

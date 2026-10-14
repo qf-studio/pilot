@@ -62,6 +62,7 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		StagePanics:                make(map[string]int64),
 		TokensConsumed:             make(map[tokenKey]int64),
 		ExecutionCostUSD:           make(map[string]float64),
+		ExecutionCostByKeySource:   make(map[costKey]float64),
 		ExecutionsByResult:         make(map[execKey]int64),
 		PollerSkipped:              make(map[pollerSkipKey]int64),
 		PollerDispatched:           make(map[string]int64),
@@ -158,6 +159,9 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		}
 		for k, v := range s.ExecutionCostUSD {
 			agg.ExecutionCostUSD[k] += v
+		}
+		for k, v := range s.ExecutionCostByKeySource {
+			agg.ExecutionCostByKeySource[k] += v
 		}
 		for k, v := range s.ExecutionsByResult {
 			agg.ExecutionsByResult[k] += v

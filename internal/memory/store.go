@@ -194,6 +194,13 @@ func (s *Store) migrate() error {
 		// GH-2807: effort and complexity columns for cost-by-tier observability
 		`ALTER TABLE executions ADD COLUMN effort_level TEXT`,
 		`ALTER TABLE executions ADD COLUMN complexity_level TEXT`,
+		// GH-5676: per-execution usage attribution for hosted-tenant metering.
+		// key_source records which Anthropic key paid for the run ('platform',
+		// 'own', 'unknown'); reported_cost_usd is the CLI's own total_cost_usd
+		// (NULL when the backend reported none), kept next to the list-price
+		// estimated_cost_usd rather than replacing it.
+		`ALTER TABLE executions ADD COLUMN key_source TEXT`,
+		`ALTER TABLE executions ADD COLUMN reported_cost_usd REAL`,
 		`CREATE INDEX IF NOT EXISTS idx_executions_status ON executions(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_patterns_project ON patterns(project_path)`,
 		// Cross-project pattern indexes
@@ -680,10 +687,16 @@ type Execution struct {
 	TokensCacheRead  int64
 	TokensCacheWrite int64
 	EstimatedCostUSD float64
-	FilesChanged     int
-	LinesAdded       int
-	LinesRemoved     int
-	ModelName        string
+	// ReportedCostUSD is the cost the Claude Code CLI reported in its result
+	// event (total_cost_usd). Nil when the backend reported none. GH-5676.
+	ReportedCostUSD *float64
+	// KeySource is which Anthropic key paid for this execution: "platform",
+	// "own" or "unknown". Stamped when the execution row is created. GH-5676.
+	KeySource    string
+	FilesChanged int
+	LinesAdded   int
+	LinesRemoved int
+	ModelName    string
 	// GH-2807: effort and complexity for cost-by-tier observability
 	EffortLevel     string `json:"effort_level,omitempty"`
 	ComplexityLevel string `json:"complexity_level,omitempty"`
@@ -754,14 +767,16 @@ func (s *Store) SaveExecution(exec *Execution) error {
 				estimated_cost_usd, files_changed, lines_added, lines_removed, model_name,
 				task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose,
 				task_source_adapter, task_source_issue_id, task_labels,
-				approval_request_id, effort_level, complexity_level, is_canary)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				approval_request_id, effort_level, complexity_level, is_canary,
+				key_source, reported_cost_usd)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, createdAt, completedAt,
 			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.TokensCacheRead, exec.TokensCacheWrite,
 			exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
 			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose,
 			exec.TaskSourceAdapter, exec.TaskSourceIssueID, labelsJSON,
-			exec.ApprovalRequestID, exec.EffortLevel, exec.ComplexityLevel, exec.IsCanary)
+			exec.ApprovalRequestID, exec.EffortLevel, exec.ComplexityLevel, exec.IsCanary,
+			NormalizeKeySource(exec.KeySource), exec.ReportedCostUSD)
 		return err
 	})
 }
@@ -809,7 +824,8 @@ const executionDetailColumns = `
 	approval_decision_at,
 	COALESCE(approval_decision_by, ''),
 	COALESCE(effort_level, ''), COALESCE(complexity_level, ''),
-	COALESCE(is_canary, 0)`
+	COALESCE(is_canary, 0),
+	COALESCE(NULLIF(key_source, ''), 'unknown'), reported_cost_usd`
 
 // rowScanner abstracts *sql.Row and *sql.Rows so scanExecutionDetail serves both
 // a single QueryRow result and a Query loop (used by ListExecutionsForTask).
@@ -824,15 +840,21 @@ func scanExecutionDetail(row rowScanner) (*Execution, error) {
 	var completedAt sql.NullTime
 	var approvalDecisionAt sql.NullTime
 	var labelsJSON string
+	var reportedCost sql.NullFloat64
 	err := row.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &startedAt, &completedAt,
 		&exec.TokensInput, &exec.TokensOutput, &exec.TokensTotal, &exec.TokensCacheRead, &exec.TokensCacheWrite,
 		&exec.EstimatedCostUSD, &exec.FilesChanged, &exec.LinesAdded, &exec.LinesRemoved, &exec.ModelName,
 		&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose,
 		&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON,
 		&exec.ApprovalRequestID, &exec.ApprovalDecision, &approvalDecisionAt, &exec.ApprovalDecisionBy,
-		&exec.EffortLevel, &exec.ComplexityLevel, &exec.IsCanary)
+		&exec.EffortLevel, &exec.ComplexityLevel, &exec.IsCanary,
+		&exec.KeySource, &reportedCost)
 	if err != nil {
 		return nil, err
+	}
+	if reportedCost.Valid {
+		v := reportedCost.Float64
+		exec.ReportedCostUSD = &v
 	}
 	exec.TaskLabels = unmarshalLabels(labelsJSON)
 	if startedAt.Valid {
@@ -1885,7 +1907,7 @@ var ErrApprovalAlreadyDecided = errors.New("approval already decided")
 // SetApprovalDecision records an approval decision on the execution linked to requestID.
 // It sets approval_decision, approval_decision_at, and approval_decision_by on the row
 // whose approval_request_id matches. The UPDATE is guarded by
-// `AND approval_decision = ''` so two racing callers (e.g. a POST racing a
+// `AND approval_decision = ”` so two racing callers (e.g. a POST racing a
 // Telegram/Slack button tap, or two concurrent POSTs) can never both win: only
 // the first writer's UPDATE matches a row, the second affects zero rows and
 // gets ErrApprovalAlreadyDecided rather than silently overwriting the first
@@ -2371,6 +2393,112 @@ func (s *Store) GetExecutionsForReceipts(query BriefQuery) ([]*Execution, error)
 		executions = append(executions, exec)
 	}
 	return executions, rows.Err()
+}
+
+// Anthropic key sources recorded on executions.key_source (GH-5676).
+const (
+	KeySourcePlatform = "platform"
+	KeySourceOwn      = "own"
+	KeySourceUnknown  = "unknown"
+)
+
+// NormalizeKeySource maps any value to one of platform, own or unknown, so the
+// column (and the Prometheus label derived from it) can never carry free text.
+func NormalizeKeySource(v string) string {
+	switch v {
+	case KeySourcePlatform, KeySourceOwn:
+		return v
+	default:
+		return KeySourceUnknown
+	}
+}
+
+// MaxExecutionUsageRows caps one GetExecutionUsageSince page (GH-5676).
+const MaxExecutionUsageRows = 1000
+
+// ExecutionUsage is one attributable per-execution usage row (GH-5676).
+type ExecutionUsage struct {
+	ExecutionID      string
+	TaskID           string
+	ProjectPath      string
+	Status           string
+	Model            string
+	TokensInput      int64
+	TokensOutput     int64
+	TokensCacheRead  int64
+	TokensCacheWrite int64
+	EstimatedCostUSD float64
+	ReportedCostUSD  *float64
+	KeySource        string
+	StartedAt        *time.Time
+	CompletedAt      time.Time
+	PRUrl            string
+}
+
+// GetExecutionUsageSince returns executions (canary excluded) whose
+// completed_at is at or after since (optionally scoped to projectPath), newest first, capped at
+// MaxExecutionUsageRows. hasMore reports that more rows exist beyond the cap.
+//
+// Decision: when the cap bites, the page is the OLDEST MaxExecutionUsageRows
+// rows at or after since (returned newest-first), not the newest. A consumer
+// that resumes from the page's newest completed_at (the nextSince cursor) then
+// walks forward with no gap; keeping the newest rows instead would silently
+// drop the older ones between since and the page, and a metering consumer
+// cannot recover them. The boundary row is returned again on the next page
+// (inclusive since), so consumers dedupe on ExecutionID.
+func (s *Store) GetExecutionUsageSince(since time.Time, projectPath string) (rows []ExecutionUsage, hasMore bool, err error) {
+	// GH-5308: completed_at is UTC offset-less text; bind since in UTC so the
+	// text comparison lines up.
+	r, err := s.db.Query(`
+		SELECT id, task_id, project_path, status,
+			COALESCE(NULLIF(model_name, ''), 'unknown'),
+			COALESCE(tokens_input, 0), COALESCE(tokens_output, 0),
+			COALESCE(tokens_cache_read, 0), COALESCE(tokens_cache_write, 0),
+			COALESCE(estimated_cost_usd, 0), reported_cost_usd,
+			COALESCE(NULLIF(key_source, ''), 'unknown'),
+			started_at, completed_at, COALESCE(pr_url, '')
+		FROM (
+			SELECT * FROM executions
+			WHERE completed_at >= ? AND COALESCE(is_canary, 0) = 0 AND (? = '' OR project_path = ?)
+			ORDER BY completed_at ASC, id ASC
+			LIMIT ?
+		)
+		ORDER BY completed_at DESC, id DESC
+	`, since.UTC(), projectPath, projectPath, MaxExecutionUsageRows+1)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to query execution usage: %w", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	for r.Next() {
+		var u ExecutionUsage
+		var reported sql.NullFloat64
+		var started, completed sql.NullTime
+		if err := r.Scan(&u.ExecutionID, &u.TaskID, &u.ProjectPath, &u.Status, &u.Model,
+			&u.TokensInput, &u.TokensOutput, &u.TokensCacheRead, &u.TokensCacheWrite,
+			&u.EstimatedCostUSD, &reported, &u.KeySource, &started, &completed, &u.PRUrl); err != nil {
+			return nil, false, fmt.Errorf("failed to scan execution usage: %w", err)
+		}
+		if reported.Valid {
+			v := reported.Float64
+			u.ReportedCostUSD = &v
+		}
+		if started.Valid {
+			t := started.Time.UTC()
+			u.StartedAt = &t
+		}
+		u.CompletedAt = completed.Time.UTC()
+		rows = append(rows, u)
+	}
+	if err := r.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(rows) > MaxExecutionUsageRows {
+		// The extra row sorts first (newest-first); drop it, it belongs to the next page.
+		rows = rows[1:]
+		hasMore = true
+	}
+	return rows, hasMore, nil
 }
 
 // GetActiveExecutions retrieves all executions with status "running".
@@ -4745,7 +4873,14 @@ type ModelResultKey struct {
 type LifetimeCounterBaselines struct {
 	TokensByModelDirection  map[ModelDirectionKey]int64
 	CostByModel             map[string]float64
+	CostByModelKeySource    map[ModelKeySourceKey]float64 // GH-5676
 	ExecutionsByModelResult map[ModelResultKey]int64
+}
+
+// ModelKeySourceKey keys the per-model, per-Anthropic-key-source cost baseline (GH-5676).
+type ModelKeySourceKey struct {
+	Model     string
+	KeySource string
 }
 
 // GetLifetimeCounterBaselines aggregates lifetime token, cost, and execution
@@ -4776,6 +4911,7 @@ func (s *Store) GetLifetimeCounterBaselines() (*LifetimeCounterBaselines, error)
 	baselines := &LifetimeCounterBaselines{
 		TokensByModelDirection:  make(map[ModelDirectionKey]int64),
 		CostByModel:             make(map[string]float64),
+		CostByModelKeySource:    make(map[ModelKeySourceKey]float64),
 		ExecutionsByModelResult: make(map[ModelResultKey]int64),
 	}
 
@@ -4823,6 +4959,37 @@ func (s *Store) GetLifetimeCounterBaselines() (*LifetimeCounterBaselines, error)
 	}
 	if err := tokRows.Err(); err != nil {
 		return nil, fmt.Errorf("failed to iterate lifetime token/cost baselines: %w", err)
+	}
+
+	// GH-5676: the same cost population split by key_source, so the
+	// key_source label on pilot_execution_cost_usd_total survives a restart.
+	// Same WHERE as the query above; rows without a recorded key_source
+	// (pre-GH-5676) bucket as 'unknown'.
+	costRows, err := s.db.Query(`
+		SELECT
+			COALESCE(NULLIF(model_name, ''), 'unknown'),
+			COALESCE(NULLIF(key_source, ''), 'unknown'),
+			COALESCE(SUM(estimated_cost_usd), 0)
+		FROM executions
+		WHERE tokens_total > 0 AND COALESCE(is_canary, 0) = 0
+		GROUP BY 1, 2
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get lifetime cost-by-key-source baselines: %w", err)
+	}
+	defer func() { _ = costRows.Close() }()
+	for costRows.Next() {
+		var model, keySource string
+		var cost float64
+		if err := costRows.Scan(&model, &keySource, &cost); err != nil {
+			return nil, fmt.Errorf("failed to scan lifetime cost-by-key-source row: %w", err)
+		}
+		if cost != 0 {
+			baselines.CostByModelKeySource[ModelKeySourceKey{Model: model, KeySource: NormalizeKeySource(keySource)}] += cost
+		}
+	}
+	if err := costRows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate lifetime cost-by-key-source baselines: %w", err)
 	}
 
 	execRows, err := s.db.Query(`

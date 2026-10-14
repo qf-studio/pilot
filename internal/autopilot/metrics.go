@@ -3,6 +3,8 @@ package autopilot
 import (
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // tokenKey identifies a token bucket by model and direction (input/output/cache_read/etc).
@@ -15,6 +17,13 @@ type tokenKey struct {
 type execKey struct {
 	Model  string
 	Result string
+}
+
+// costKey identifies a cost bucket by model and Anthropic key source
+// (platform/own/unknown). GH-5676.
+type costKey struct {
+	Model     string
+	KeySource string
 }
 
 // pollerSkipKey identifies a poller skip event by repo and reason.
@@ -118,6 +127,9 @@ type Metrics struct {
 	TokensConsumed     map[tokenKey]int64 // {model,direction} → token count
 	ExecutionCostUSD   map[string]float64 // model → cumulative USD cost
 	ExecutionsByResult map[execKey]int64  // {model,result} → execution count
+	// ExecutionCostByKeySource is ExecutionCostUSD split by Anthropic key source;
+	// it is what pilot_execution_cost_usd_total{model,key_source} exports (GH-5676).
+	ExecutionCostByKeySource map[costKey]float64
 
 	// Poller dispatch/skip counters (GH-3064, TASK-293)
 	PollerSkipped              map[pollerSkipKey]int64 // {repo,reason} → skip count
@@ -216,6 +228,7 @@ func NewMetrics() *Metrics {
 		StagePanics:                make(map[string]int64),
 		TokensConsumed:             make(map[tokenKey]int64),
 		ExecutionCostUSD:           make(map[string]float64),
+		ExecutionCostByKeySource:   make(map[costKey]float64),
 		ExecutionsByResult:         make(map[execKey]int64),
 		PollerSkipped:              make(map[pollerSkipKey]int64),
 		PollerDispatched:           make(map[string]int64),
@@ -460,11 +473,14 @@ func (m *Metrics) RecordTokens(model, direction string, n int64) {
 	m.TokensConsumed[tokenKey{Model: model, Direction: direction}] += n
 }
 
-// RecordCost adds costUSD to the per-model cumulative cost.
-func (m *Metrics) RecordCost(model string, costUSD float64) {
+// RecordCost adds costUSD to the per-model cumulative cost, and to the
+// per-{model,key_source} split exported as the key_source label (GH-5676).
+// keySource is normalised to platform, own or unknown.
+func (m *Metrics) RecordCost(model, keySource string, costUSD float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ExecutionCostUSD[model] += costUSD
+	m.ExecutionCostByKeySource[costKey{Model: model, KeySource: memory.NormalizeKeySource(keySource)}] += costUSD
 }
 
 // RecordExecution increments the {model, result} execution counter.
@@ -709,6 +725,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		ApprovalSubmitFailures:        m.ApprovalSubmitFailures,
 		TokensConsumed:                copyTokenKeyMap(m.TokensConsumed),
 		ExecutionCostUSD:              copyStringFloatMap(m.ExecutionCostUSD),
+		ExecutionCostByKeySource:      copyCostKeyMap(m.ExecutionCostByKeySource),
 		ExecutionsByResult:            copyExecKeyMap(m.ExecutionsByResult),
 		PollerSkipped:                 copyPollerSkipKeyMap(m.PollerSkipped),
 		PollerDispatched:              copyStringIntMap(m.PollerDispatched),
@@ -803,6 +820,7 @@ type MetricsSnapshot struct {
 	LastEpicParentPassAt      time.Time        // GH-5657: last epic-parent pass completion; zero before the first pass
 	TokensConsumed            map[tokenKey]int64
 	ExecutionCostUSD          map[string]float64
+	ExecutionCostByKeySource  map[costKey]float64 // GH-5676
 	ExecutionsByResult        map[execKey]int64
 
 	// Poller dispatch/skip counters (TASK-293)
@@ -950,6 +968,14 @@ func copyTokenKeyMap(src map[tokenKey]int64) map[tokenKey]int64 {
 
 func copyStringFloatMap(src map[string]float64) map[string]float64 {
 	dst := make(map[string]float64, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func copyCostKeyMap(src map[costKey]float64) map[costKey]float64 {
+	dst := make(map[costKey]float64, len(src))
 	for k, v := range src {
 		dst[k] = v
 	}

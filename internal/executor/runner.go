@@ -529,6 +529,10 @@ type StreamEvent struct {
 	// Token usage (TASK-13)
 	Usage *UsageInfo `json:"usage,omitempty"`
 	Model string     `json:"model,omitempty"`
+	// TotalCostUSD is the cost the CLI reports on its result event
+	// (total_cost_usd). A pointer so an absent field stays distinguishable
+	// from a reported $0. GH-5676.
+	TotalCostUSD *float64 `json:"total_cost_usd,omitempty"`
 	// Session ID for resume support (GH-1265)
 	SessionID string `json:"session_id,omitempty"`
 	// TaskID identifies a background task on task_started/task_notification
@@ -633,11 +637,12 @@ type progressState struct {
 	exitSignalNoOp   bool
 	exitSignalReason string
 	// Metrics tracking (TASK-13)
-	tokensInput              int64  // Input tokens used
-	tokensOutput             int64  // Output tokens used
-	cacheCreationInputTokens int64  // Cache creation input tokens (GH-2164)
-	cacheReadInputTokens     int64  // Cache read input tokens (GH-2164)
-	modelName                string // Model used
+	tokensInput              int64    // Input tokens used
+	tokensOutput             int64    // Output tokens used
+	cacheCreationInputTokens int64    // Cache creation input tokens (GH-2164)
+	cacheReadInputTokens     int64    // Cache read input tokens (GH-2164)
+	modelName                string   // Model used
+	reportedCostUSD          *float64 // GH-5676: sum of CLI-reported total_cost_usd across invocations; nil if none reported
 	// Note: filesChanged/linesAdded/linesRemoved tracked via git diff at commit time
 	// Intent judge retry tracking (GH-624)
 	intentRetried bool // Set after first intent retry to prevent infinite loops
@@ -653,6 +658,20 @@ type progressState struct {
 	sessionID string // Claude Code session ID for resume in self-review
 	// Modified files tracking (GH-1388)
 	modifiedFiles []string // List of actually modified files from Write/Edit tool events
+}
+
+// addReportedCost folds one CLI-reported total_cost_usd into the running sum.
+// nil (nothing reported) is a no-op, so reportedCostUSD stays nil — NULL in
+// the store — unless at least one invocation actually reported a cost. GH-5676.
+func (s *progressState) addReportedCost(v *float64) {
+	if v == nil {
+		return
+	}
+	sum := *v
+	if s.reportedCostUSD != nil {
+		sum += *s.reportedCostUSD
+	}
+	s.reportedCostUSD = &sum
 }
 
 // Task represents a task to be executed by the Runner.
@@ -876,6 +895,10 @@ type ExecutionResult struct {
 	ResearchTokens int64
 	// EstimatedCostUSD is the estimated cost in USD based on token usage.
 	EstimatedCostUSD float64
+	// ReportedCostUSD is the cost the Claude Code CLI itself reported
+	// (total_cost_usd), summed across invocations. Nil when none was reported.
+	// Kept beside EstimatedCostUSD, which it does not replace. GH-5676.
+	ReportedCostUSD *float64
 	// FilesChanged is the number of files modified during execution.
 	FilesChanged int
 	// LinesAdded is the number of lines added across all changes.
@@ -4679,6 +4702,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			result.TokensTotal = state.tokensInput + state.tokensOutput
 			result.CacheCreationInputTokens = state.cacheCreationInputTokens
 			result.CacheReadInputTokens = state.cacheReadInputTokens
+			result.ReportedCostUSD = state.reportedCostUSD
 			result.ModelName = state.modelName
 			if result.ModelName == "" {
 				result.ModelName = r.fallbackModelName()
@@ -4727,6 +4751,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			result.TokensTotal = state.tokensInput + state.tokensOutput
 			result.CacheCreationInputTokens = state.cacheCreationInputTokens
 			result.CacheReadInputTokens = state.cacheReadInputTokens
+			result.ReportedCostUSD = state.reportedCostUSD
 			result.ModelName = state.modelName
 			if result.ModelName == "" {
 				result.ModelName = r.fallbackModelName()
@@ -5191,6 +5216,7 @@ retrySucceeded:
 	fillDiffMetrics(ctx, task, git, result, log)
 	result.CacheCreationInputTokens = state.cacheCreationInputTokens
 	result.CacheReadInputTokens = state.cacheReadInputTokens
+	result.ReportedCostUSD = state.reportedCostUSD // GH-5676
 	if result.ModelName == "" {
 		result.ModelName = state.modelName
 	}
@@ -5220,7 +5246,7 @@ retrySucceeded:
 		if result.CacheReadInputTokens > 0 {
 			r.metricsRecorder.RecordTokens(model, "cache_read", result.CacheReadInputTokens)
 		}
-		r.metricsRecorder.RecordCost(model, result.EstimatedCostUSD)
+		r.metricsRecorder.RecordCost(model, KeySourceFromEnv(), result.EstimatedCostUSD)
 		outcomeLabel := "success"
 		if !result.Success {
 			outcomeLabel = "failed"
@@ -5429,6 +5455,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						state.tokensOutput += event.TokensOutput
 						state.cacheCreationInputTokens += event.CacheCreationInputTokens
 						state.cacheReadInputTokens += event.CacheReadInputTokens
+						state.addReportedCost(event.ReportedCostUSD)
 						// Extract any commit SHAs from retry
 						if event.Type == EventTypeToolResult && event.ToolResult != "" {
 							extractCommitSHA(event.ToolResult, state)
@@ -6260,6 +6287,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 							state.tokensOutput += event.TokensOutput
 							state.cacheCreationInputTokens += event.CacheCreationInputTokens
 							state.cacheReadInputTokens += event.CacheReadInputTokens
+							state.addReportedCost(event.ReportedCostUSD)
 							if event.Type == EventTypeToolResult && event.ToolResult != "" {
 								extractCommitSHA(event.ToolResult, state)
 							}
@@ -7605,6 +7633,7 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath st
 			state.tokensOutput += event.TokensOutput
 			state.cacheCreationInputTokens += event.CacheCreationInputTokens
 			state.cacheReadInputTokens += event.CacheReadInputTokens
+			state.addReportedCost(event.ReportedCostUSD)
 			// Extract any new commit SHAs from self-review fixes
 			if event.Type == EventTypeToolResult && event.ToolResult != "" {
 				extractCommitSHA(event.ToolResult, state)
@@ -7726,6 +7755,7 @@ func (r *Runner) parseStreamEvent(taskID, line string, state *progressState) (st
 			state.cacheCreationInputTokens += event.Usage.CacheCreationInputTokens
 			state.cacheReadInputTokens += event.Usage.CacheReadInputTokens
 		}
+		state.addReportedCost(event.TotalCostUSD)
 		if event.Model != "" {
 			state.modelName = event.Model
 		}
@@ -7766,6 +7796,7 @@ func (r *Runner) processBackendEvent(taskID string, event BackendEvent, state *p
 	state.tokensOutput += event.TokensOutput
 	state.cacheCreationInputTokens += event.CacheCreationInputTokens
 	state.cacheReadInputTokens += event.CacheReadInputTokens
+	state.addReportedCost(event.ReportedCostUSD)
 	if event.Model != "" {
 		state.modelName = event.Model
 	}

@@ -207,6 +207,7 @@ func (l *ExecutionLifecycle) Begin(task *Task, initial Status, generation ...int
 		TaskSourceIssueID: task.SourceIssueID,
 		TaskLabels:        task.Labels,
 		IsCanary:          task.IsCanary,
+		KeySource:         KeySourceFromEnv(), // GH-5676
 	}
 	if err := l.store.SaveExecution(exec); err != nil {
 		return execID, fmt.Errorf("failed to save execution: %w", err)
@@ -338,6 +339,7 @@ func (l *ExecutionLifecycle) Persist(execID string, outcome FinishOutcome, resul
 			TokensCacheRead:  result.CacheReadInputTokens,
 			TokensCacheWrite: result.CacheCreationInputTokens,
 			EstimatedCostUSD: result.EstimatedCostUSD,
+			ReportedCostUSD:  result.ReportedCostUSD,
 			FilesChanged:     result.FilesChanged,
 			LinesAdded:       result.LinesAdded,
 			LinesRemoved:     result.LinesRemoved,

@@ -16,10 +16,13 @@ type ExecutionMetrics struct {
 	TokensCacheRead  int64
 	TokensCacheWrite int64
 	EstimatedCostUSD float64
-	FilesChanged     int
-	LinesAdded       int
-	LinesRemoved     int
-	ModelName        string
+	// ReportedCostUSD is the CLI-reported total_cost_usd; nil when the backend
+	// reported none (stored as NULL). GH-5676.
+	ReportedCostUSD *float64
+	FilesChanged    int
+	LinesAdded      int
+	LinesRemoved    int
+	ModelName       string
 	// GH-3028: RSS telemetry — zero on non-Linux/darwin or before Step 1 deploy.
 	PeakRSSMB  int
 	FinalRSSMB int
@@ -219,6 +222,7 @@ func (s *Store) SaveExecutionMetrics(metrics *ExecutionMetrics) error {
 				tokens_cache_read = ?,
 				tokens_cache_write = ?,
 				estimated_cost_usd = ?,
+				reported_cost_usd = ?,
 				files_changed = ?,
 				lines_added = ?,
 				lines_removed = ?,
@@ -228,7 +232,7 @@ func (s *Store) SaveExecutionMetrics(metrics *ExecutionMetrics) error {
 			WHERE id = ?
 		`, metrics.TokensInput, metrics.TokensOutput, metrics.TokensTotal,
 			metrics.TokensCacheRead, metrics.TokensCacheWrite,
-			metrics.EstimatedCostUSD, metrics.FilesChanged, metrics.LinesAdded,
+			metrics.EstimatedCostUSD, metrics.ReportedCostUSD, metrics.FilesChanged, metrics.LinesAdded,
 			metrics.LinesRemoved, metrics.ModelName,
 			metrics.PeakRSSMB, metrics.FinalRSSMB,
 			metrics.ExecutionID)
