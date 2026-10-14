@@ -27,10 +27,13 @@ const writeBoundaryGuardName = "write-guard.sh"
 //
 // Decision: --allowedTools is inert under --dangerously-skip-permissions and
 // Claude Code has no "deny Write except under X" rule, so the boundary is a
-// hook (hooks do run under skip-permissions). The path goes through
-// `realpath -m` so a symlink inside the boundary pointing out of it, and
-// "..", cannot escape; the boundary dir must itself resolve inside the project.
-// Everything unresolvable fails closed.
+// hook (hooks do run under skip-permissions). Paths go through resolve(): the
+// nearest existing ancestor is resolved with plain `realpath` (GNU and BSD;
+// `-m` is GNU-only and made every write fail on macOS) and the
+// not-yet-existing tail is appended, so a symlink inside the boundary pointing
+// out of it cannot escape; ".." in the missing tail is refused. The boundary
+// dir must itself resolve inside the project. Everything unresolvable fails
+// closed.
 const writeBoundaryGuardScript = `#!/bin/sh
 proj=$1
 boundary=$2
@@ -44,6 +47,27 @@ else
   deny "neither jq nor python3 is available to read the tool input"
 fi
 [ -n "$target" ] || deny "tool call carries no file path"
+resolve() {
+  p=$1
+  tail=
+  while [ "$p" != / ]; do
+    p=${p%/}
+    [ -n "$p" ] || break
+    if [ -e "$p" ] || [ -L "$p" ]; then break; fi
+    base=${p##*/}
+    case $base in
+      .|..) return 1 ;;
+    esac
+    tail=$base${tail:+/$tail}
+    p=${p%/*}
+    [ -n "$p" ] || p=/
+  done
+  r=$(realpath -- "$p") || return 1
+  case $r in
+    /) printf '%s' "/$tail" ;;
+    *) printf '%s' "$r${tail:+/$tail}" ;;
+  esac
+}
 real_proj=$(realpath -- "$proj") || deny "cannot resolve the project directory"
 case $target in
   /*) ;;
@@ -53,8 +77,8 @@ case $boundary in
   /*) root=$boundary ;;
   *) root=$real_proj/$boundary ;;
 esac
-resolved=$(realpath -m -- "$target") || deny "cannot resolve $target"
-real_root=$(realpath -m -- "$root") || deny "cannot resolve the boundary directory"
+resolved=$(resolve "$target") || deny "cannot resolve $target"
+real_root=$(resolve "$root") || deny "cannot resolve the boundary directory"
 case $real_root in
   "$real_proj"/*) ;;
   *) deny "$target is outside the writable area" ;;
