@@ -80,6 +80,10 @@ type NavigatorBootstrapResult struct {
 	// PlaceholdersRemain is true when a context section still carries
 	// placeholder text after the session.
 	PlaceholdersRemain bool
+	// StrayWrites are paths relative to the project that the session changed
+	// outside the Navigator directory and that were reverted or deleted
+	// after the session.
+	StrayWrites []string
 }
 
 // ExecuteNavigatorBootstrap runs one bootstrap session on projectPath through
@@ -136,10 +140,14 @@ func (r *Runner) ExecuteNavigatorBootstrap(ctx context.Context, projectPath stri
 		TaskID:       out.TaskID,
 		ProjectPath:  projectPath,
 		AllowedTools: NavigatorBootstrapTools(),
-		MaxTurns:     navigatorBootstrapMaxTurns,
-		Model:        r.chatTurnModel(),
-		EventHandler: handler,
+		// GH-5688: AllowedTools is inert under --dangerously-skip-permissions;
+		// the guard hook and the post-session sweep are the real boundary.
+		WriteBoundary: navigatorDirName,
+		MaxTurns:      navigatorBootstrapMaxTurns,
+		Model:         r.chatTurnModel(),
+		EventHandler:  handler,
 	}
+	baseline := snapshotStrayBaseline(tctx, projectPath)
 
 	type outcome struct {
 		res *BackendResult
@@ -162,6 +170,11 @@ func (r *Runner) ExecuteNavigatorBootstrap(ctx context.Context, projectPath stri
 		err = tctx.Err()
 	}
 	out.Duration = time.Since(now)
+
+	// Sweep on a fresh context: tctx may already be expired on a timeout.
+	sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	out.StrayWrites = baseline.sweepStrayWrites(sweepCtx, r.log)
+	sweepCancel()
 
 	timedOut := errors.Is(tctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
 	mu.Lock()

@@ -36,6 +36,11 @@ var ChatReadOnlyTools = []string{
 	"Bash(ls:*)",
 }
 
+// chatDeniedTools is the deny list of a chat turn. GH-5688: ChatReadOnlyTools
+// is an auto-approve list and does nothing under --dangerously-skip-permissions;
+// a deny list holds there.
+var chatDeniedTools = []string{"Write", "Edit", "MultiEdit", "NotebookEdit"}
+
 // ChatTurn describes one read-only chat turn.
 type ChatTurn struct {
 	ConversationID  string
@@ -122,6 +127,8 @@ func (r *Runner) ExecuteChatTurn(ctx context.Context, turn ChatTurn, onProgress 
 			ProjectPath:     turn.ProjectPath,
 			ResumeSessionID: resume,
 			AllowedTools:    ChatReadOnlyTools,
+			DisallowedTools: chatDeniedTools,
+			WriteBoundary:   WriteBoundaryDenyAll,
 			MaxTurns:        maxTurns,
 			Model:           r.chatTurnModel(),
 			EventHandler:    handler,

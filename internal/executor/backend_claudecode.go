@@ -608,8 +608,22 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	if len(opts.AllowedTools) > 0 {
 		args = append(args, "--allowedTools", strings.Join(opts.AllowedTools, ","))
 	}
+	if len(opts.DisallowedTools) > 0 {
+		args = append(args, "--disallowedTools", strings.Join(opts.DisallowedTools, ","))
+	}
 	if opts.MCPConfigPath != "" {
 		args = append(args, "--mcp-config", opts.MCPConfigPath)
+	}
+	// GH-5688: --allowedTools does nothing under --dangerously-skip-permissions,
+	// so a write boundary is a PreToolUse hook delivered via --settings. Fail
+	// closed: a session that asked for a boundary does not run without it.
+	if opts.WriteBoundary != "" {
+		settingsPath, boundaryCleanup, boundaryErr := setupWriteBoundary(opts.ProjectPath, opts.WriteBoundary)
+		if boundaryErr != nil {
+			return nil, boundaryErr
+		}
+		defer boundaryCleanup()
+		args = append(args, "--settings", settingsPath)
 	}
 
 	args = append(args, b.config.ExtraArgs...)

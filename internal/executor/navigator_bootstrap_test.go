@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -536,5 +537,98 @@ func TestNavigatorReadmeHasPlaceholder_PluginNestedLayout(t *testing.T) {
 	}
 	if !navigatorReadmeHasPlaceholder(dir) {
 		t.Error("placeholder left in the nested Key Components must be detected")
+	}
+}
+
+// gitFixtureClone is fixtureClone committed into a fresh git repository.
+func gitFixtureClone(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := fixtureClone(t)
+	gitRun(t, dir, "init", "-q")
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-q", "-m", "init")
+	return dir
+}
+
+// GH-5688: --allowedTools is inert under --dangerously-skip-permissions, so a
+// session can still change files outside .agent/ (the guard hook only covers
+// the file tools). The post-session sweep puts the tree back.
+func TestNavigatorBootstrap_StrayWriteReverted(t *testing.T) {
+	dir := gitFixtureClone(t)
+	var gotBoundary string
+	b := &bootstrapFakeBackend{script: func(s *bootstrapSession) {
+		gotBoundary = s.opts.WriteBoundary
+		must := func(err error) {
+			if err != nil {
+				t.Error(err)
+			}
+		}
+		must(os.MkdirAll(filepath.Join(dir, "newdir", "deep"), 0o755))
+		must(os.WriteFile(filepath.Join(dir, "newdir", "deep", "stray.txt"), []byte("x"), 0o644))
+		must(os.WriteFile(filepath.Join(dir, "src", "stray.txt"), []byte("stray"), 0o644))
+		must(os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module hacked\n"), 0o644))
+		must(os.Remove(filepath.Join(dir, "src", "main.go")))
+		s.write(".agent/system/architecture.md", "# Architecture\n")
+	}}
+
+	res, err := newBootstrapRunner(b, "").ExecuteNavigatorBootstrap(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("ExecuteNavigatorBootstrap: %v", err)
+	}
+
+	if gotBoundary != ".agent" {
+		t.Errorf("WriteBoundary = %q, want .agent", gotBoundary)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "src", "stray.txt")); !os.IsNotExist(err) {
+		t.Errorf("src/stray.txt still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "newdir")); !os.IsNotExist(err) {
+		t.Errorf("newdir/ (only holding a stray file) still exists: %v", err)
+	}
+	if mod, _ := os.ReadFile(filepath.Join(dir, "go.mod")); string(mod) != "module example.com/legacy\n\ngo 1.21\n" {
+		t.Errorf("go.mod not restored: %q", mod)
+	}
+	if main, _ := os.ReadFile(filepath.Join(dir, "src", "main.go")); string(main) != "package main\n" {
+		t.Errorf("deleted src/main.go not restored: %q", main)
+	}
+	want := []string{"go.mod", "newdir/deep/stray.txt", "src/main.go", "src/stray.txt"}
+	if !reflect.DeepEqual(res.StrayWrites, want) {
+		t.Errorf("StrayWrites = %v, want %v", res.StrayWrites, want)
+	}
+	if want := []string{".agent/system/architecture.md"}; !reflect.DeepEqual(res.FilesWritten, want) {
+		t.Errorf("FilesWritten = %v, want %v (Navigator writes must survive the sweep)", res.FilesWritten, want)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".agent", "system", "architecture.md")); err != nil {
+		t.Errorf("Navigator write was swept: %v", err)
+	}
+}
+
+// The sweep must not discard the developer's own uncommitted work, which
+// predates the session.
+func TestNavigatorBootstrap_SweepKeepsPreexistingChanges(t *testing.T) {
+	dir := gitFixtureClone(t)
+	const mine = "module example.com/legacy\n\ngo 1.22 // mine\n"
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &bootstrapFakeBackend{}
+	res, err := newBootstrapRunner(b, "").ExecuteNavigatorBootstrap(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("ExecuteNavigatorBootstrap: %v", err)
+	}
+	if len(res.StrayWrites) != 0 {
+		t.Errorf("StrayWrites = %v, want none", res.StrayWrites)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "go.mod")); string(got) != mine {
+		t.Errorf("pre-existing change to go.mod was reverted: %q", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "notes.txt")); string(got) != "mine" {
+		t.Errorf("pre-existing untracked file was removed: %q", got)
 	}
 }

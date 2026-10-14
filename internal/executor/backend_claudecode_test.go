@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -2324,5 +2326,116 @@ func TestFormatSurvivorCmdline(t *testing.T) {
 	long := formatSurvivorCmdline([]byte(strings.Repeat("a", 1000)))
 	if len(long) != maxSurvivorCmdlineCh+3 {
 		t.Errorf("long cmdline len = %d, want %d", len(long), maxSurvivorCmdlineCh+3)
+	}
+}
+
+// TestClaudeCodeBackend_WriteBoundaryRendersSettingsAndHook covers GH-5688:
+// --allowedTools is inert under --dangerously-skip-permissions, so a write
+// boundary must reach the CLI as a --settings file with a PreToolUse hook.
+// The settings and script are per-run and removed afterwards, so the fake CLI
+// captures them while it runs.
+func TestClaudeCodeBackend_WriteBoundaryRendersSettingsAndHook(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-CLI test relies on shell scripts; skipping on windows")
+	}
+	tmpDir := t.TempDir()
+	captured := filepath.Join(tmpDir, "captured")
+	if err := os.MkdirAll(captured, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(tmpDir, "fake-claude")
+	body := `#!/bin/sh
+printf '%s\n' "$*" > ` + captured + `/args
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--settings" ]; then
+    cp "$a" ` + captured + `/settings.json
+    echo "$a" > ` + captured + `/settings.path
+    d=$(dirname "$a")
+    if [ -x "$d/` + writeBoundaryGuardName + `" ]; then echo yes > ` + captured + `/script.executable; fi
+  fi
+  prev=$a
+done
+exit 0
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil { //nolint:gosec // fake CLI must be executable
+		t.Fatal(err)
+	}
+	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script})
+	project := t.TempDir()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := backend.Execute(ctx, ExecuteOptions{
+		Prompt:          "hello",
+		ProjectPath:     project,
+		WriteBoundary:   ".agent",
+		DisallowedTools: []string{"Bash"},
+		AllowedTools:    []string{"Read"},
+		EventHandler:    func(BackendEvent) {},
+	}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	args, err := os.ReadFile(filepath.Join(captured, "args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	settingsPathRaw, err := os.ReadFile(filepath.Join(captured, "settings.path"))
+	if err != nil {
+		t.Fatalf("CLI was not given --settings: args %q", args)
+	}
+	settingsPath := strings.TrimSpace(string(settingsPathRaw))
+	for _, want := range []string{"--settings " + settingsPath, "--disallowedTools Bash", "--allowedTools Read", "--dangerously-skip-permissions"} {
+		if !strings.Contains(string(args), want) {
+			t.Errorf("args %q lack %q", args, want)
+		}
+	}
+
+	raw, err := os.ReadFile(filepath.Join(captured, "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Hooks struct {
+			PreToolUse []struct {
+				Matcher string `json:"matcher"`
+				Hooks   []struct {
+					Type    string `json:"type"`
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PreToolUse"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("settings is not valid JSON: %v\n%s", err, raw)
+	}
+	if len(settings.Hooks.PreToolUse) != 1 {
+		t.Fatalf("PreToolUse entries = %d, want 1: %s", len(settings.Hooks.PreToolUse), raw)
+	}
+	entry := settings.Hooks.PreToolUse[0]
+	if entry.Matcher != "Write|Edit|MultiEdit|NotebookEdit" {
+		t.Errorf("matcher = %q", entry.Matcher)
+	}
+	if len(entry.Hooks) != 1 || entry.Hooks[0].Type != "command" ||
+		!strings.Contains(entry.Hooks[0].Command, writeBoundaryGuardName) ||
+		!strings.Contains(entry.Hooks[0].Command, project) ||
+		!strings.Contains(entry.Hooks[0].Command, ".agent") {
+		t.Errorf("hook = %+v", entry.Hooks)
+	}
+	if _, err := os.Stat(filepath.Join(captured, "script.executable")); err != nil {
+		t.Error("guard script was missing or not executable while the CLI ran")
+	}
+	if _, err := os.Stat(filepath.Dir(settingsPath)); !os.IsNotExist(err) {
+		t.Errorf("per-run settings dir still exists after the run: %v", err)
+	}
+
+	// No boundary, no --settings.
+	if _, err := backend.Execute(ctx, ExecuteOptions{Prompt: "hello", ProjectPath: project, EventHandler: func(BackendEvent) {}}); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	args, _ = os.ReadFile(filepath.Join(captured, "args"))
+	if strings.Contains(string(args), "--settings") {
+		t.Errorf("args %q carry --settings without a WriteBoundary", args)
 	}
 }

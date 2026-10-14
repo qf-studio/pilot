@@ -104,6 +104,19 @@ type ExecuteOptions struct {
 	// Maps to the Claude Code CLI --allowedTools flag. GH-2432.
 	AllowedTools []string
 
+	// DisallowedTools is passed as --disallowedTools. Unlike AllowedTools (an
+	// auto-approve list, inert under --dangerously-skip-permissions) a deny
+	// list holds under that flag.
+	DisallowedTools []string
+
+	// WriteBoundary, when non-empty, limits file-writing tools (Write, Edit,
+	// MultiEdit, NotebookEdit) to paths inside this directory, relative to
+	// ProjectPath (or absolute). Enforced by a PreToolUse hook in a per-run
+	// --settings file, because AllowedTools cannot restrict writes under
+	// --dangerously-skip-permissions. WriteBoundaryDenyAll blocks every
+	// write. Only the Claude Code backend honours it. Empty means no guard.
+	WriteBoundary string
+
 	// MCPConfigPath is passed to the subprocess via --mcp-config. When empty,
 	// no MCP servers are loaded (avoiding tool-definition token bloat). GH-2432.
 	MCPConfigPath string

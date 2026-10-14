@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -309,5 +310,45 @@ func TestChatPrompt_ForbidsAgentDirRefs(t *testing.T) {
 	p := BuildChatPrompt("/repo", "file an issue")
 	if !strings.Contains(p, "Never backtick anything under .agent/") {
 		t.Error("prompt must forbid backticking paths under .agent/ in the issue body")
+	}
+}
+
+// GH-5688: ChatReadOnlyTools is an auto-approve list and does nothing under
+// --dangerously-skip-permissions; the deny list and the write guard hold.
+func TestChatTurn_DeniesWriteTools(t *testing.T) {
+	b := &chatFakeBackend{output: "ok"}
+	if _, err := newChatRunner(b).ExecuteChatTurn(context.Background(), ChatTurn{ProjectPath: t.TempDir(), Text: "hi"}, nil); err != nil {
+		t.Fatalf("ExecuteChatTurn: %v", err)
+	}
+	got := b.call(0)
+	if want := []string{"Write", "Edit", "MultiEdit", "NotebookEdit"}; !reflect.DeepEqual(got.DisallowedTools, want) {
+		t.Errorf("DisallowedTools = %v, want %v", got.DisallowedTools, want)
+	}
+	if got.WriteBoundary != WriteBoundaryDenyAll {
+		t.Errorf("WriteBoundary = %q, want the deny-all boundary", got.WriteBoundary)
+	}
+}
+
+// The chat turn must reach the CLI as --disallowedTools with all four tools.
+func TestChatTurn_DeniesWriteToolsOnTheCLI(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-CLI test relies on shell scripts")
+	}
+	tmp := t.TempDir()
+	argsFile := filepath.Join(tmp, "args")
+	script := filepath.Join(tmp, "fake-claude")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" > "+argsFile+"\nexit 0\n"), 0o755); err != nil { //nolint:gosec // fake CLI must be executable
+		t.Fatal(err)
+	}
+	r := NewRunnerWithBackend(NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script}))
+	_, _ = r.ExecuteChatTurn(context.Background(), ChatTurn{ProjectPath: t.TempDir(), Text: "hi"}, nil)
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("CLI not invoked: %v", err)
+	}
+	for _, want := range []string{"--disallowedTools Write,Edit,MultiEdit,NotebookEdit", "--settings "} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("args %q lack %q", raw, want)
+		}
 	}
 }
