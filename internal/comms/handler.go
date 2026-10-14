@@ -812,6 +812,36 @@ func (h *Handler) executeTask(ctx context.Context, contextID, threadID, taskID, 
 	h.executeTaskCore(ctx, contextID, threadID, taskID, description, createPR, "")
 }
 
+// buildChatTask builds the executor task for a chat-filed request. Under
+// createPR the base branch comes from the active project's branch_from /
+// default_branch, like the GitHub polling path (GH-5695); empty lets the
+// worktree manager detect origin/HEAD instead of assuming "main".
+func (h *Handler) buildChatTask(contextID, taskID, description string, createPR bool, imagePath string) *executor.Task {
+	branch := ""
+	baseBranch := ""
+	projectPath := h.getActiveProjectPath(contextID)
+	if createPR {
+		branch = fmt.Sprintf("pilot/%s", taskID)
+		if h.projects != nil {
+			baseBranch = h.projects.GetProjectByPath(projectPath).ResolveBaseBranch()
+		}
+	}
+
+	return &executor.Task{
+		ID:          taskID,
+		Title:       TruncateText(description, 50),
+		Description: description,
+		ProjectPath: projectPath,
+		Verbose:     false,
+		Branch:      branch,
+		BaseBranch:  baseBranch,
+		CreatePR:    createPR,
+		MemberID:    h.resolveMemberID(contextID),
+		ImagePath:   imagePath,
+		IsCanary:    h.isCanaryProject(projectPath),
+	}
+}
+
 func (h *Handler) executeTaskCore(ctx context.Context, contextID, threadID, taskID, description string, createPR bool, imagePath string) {
 	// Send starting message
 	prNote := ""
@@ -844,30 +874,7 @@ func (h *Handler) executeTaskCore(ctx context.Context, contextID, threadID, task
 		taskCancel()
 	}()
 
-	// Build executor task
-	branch := ""
-	baseBranch := ""
-	if createPR {
-		branch = fmt.Sprintf("pilot/%s", taskID)
-		baseBranch = "main"
-	}
-
-	memberID := h.resolveMemberID(contextID)
-
-	execTaskProjectPath := h.getActiveProjectPath(contextID)
-	task := &executor.Task{
-		ID:          taskID,
-		Title:       TruncateText(description, 50),
-		Description: description,
-		ProjectPath: execTaskProjectPath,
-		Verbose:     false,
-		Branch:      branch,
-		BaseBranch:  baseBranch,
-		CreatePR:    createPR,
-		MemberID:    memberID,
-		ImagePath:   imagePath,
-		IsCanary:    h.isCanaryProject(execTaskProjectPath),
-	}
+	task := h.buildChatTask(contextID, taskID, description, createPR, imagePath)
 
 	// Progress callback with throttling (named callback for parallel-safe execution)
 	callbackName := fmt.Sprintf("comms-%s", taskID)

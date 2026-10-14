@@ -17,8 +17,40 @@ type LintResult struct {
 	FixedAll bool
 }
 
-// runLintCheck detects and runs the appropriate linter for the project
-func (g *GitOperations) runLintCheck(ctx context.Context) *LintResult {
+// defaultLintBaseRef is the ref lint compares against when no base branch
+// resolves from the task or the repository.
+const defaultLintBaseRef = "origin/main"
+
+// lintBaseRef returns the ref golangci-lint's --new-from-rev should compare
+// against: origin/<baseBranch>, or origin/main only when baseBranch is empty
+// (GH-5695: a repo whose default branch is not main has no origin/main).
+func lintBaseRef(baseBranch string) string {
+	if baseBranch == "" {
+		return defaultLintBaseRef
+	}
+	return "origin/" + baseBranch
+}
+
+// resolveLintBase returns baseBranch if set, else the repository's default
+// branch, else "" (which lintBaseRef maps to origin/main).
+func (g *GitOperations) resolveLintBase(ctx context.Context, baseBranch string) string {
+	if baseBranch != "" {
+		return baseBranch
+	}
+	if detected, err := g.GetDefaultBranch(ctx); err == nil {
+		return detected
+	}
+	return ""
+}
+
+// goLintArgs builds the golangci-lint arguments for changed-code-only linting.
+func goLintArgs(baseBranch string) []string {
+	return []string{"run", "--new-from-rev=" + lintBaseRef(baseBranch), "./..."}
+}
+
+// runLintCheck detects and runs the appropriate linter for the project.
+// baseBranch is the task's base branch ("" = detect from the repository).
+func (g *GitOperations) runLintCheck(ctx context.Context, baseBranch string) *LintResult {
 	result := &LintResult{
 		Clean:  true,
 		Issues: []string{},
@@ -28,7 +60,7 @@ func (g *GitOperations) runLintCheck(ctx context.Context) *LintResult {
 	if hasGoLintConfig(g.projectPath) {
 		result.Linter = "golangci-lint"
 		// Check for lint issues on changed files only
-		output, err := g.runGoLint(ctx)
+		output, err := g.runGoLint(ctx, baseBranch)
 		if err != nil {
 			result.Clean = false
 			result.Issues = []string{output}
@@ -40,8 +72,8 @@ func (g *GitOperations) runLintCheck(ctx context.Context) *LintResult {
 }
 
 // autoFixLint attempts to auto-fix linting issues
-func (g *GitOperations) autoFixLint(ctx context.Context) *LintResult {
-	result := g.runLintCheck(ctx)
+func (g *GitOperations) autoFixLint(ctx context.Context, baseBranch string) *LintResult {
+	result := g.runLintCheck(ctx, baseBranch)
 	if result.Clean {
 		return result
 	}
@@ -53,7 +85,7 @@ func (g *GitOperations) autoFixLint(ctx context.Context) *LintResult {
 		output, err := fixCmd.CombinedOutput()
 		if err == nil {
 			// Verify fixes worked
-			verifyResult := g.runLintCheck(ctx)
+			verifyResult := g.runLintCheck(ctx, baseBranch)
 			if verifyResult.Clean {
 				// Stage and amend the last commit
 				if amendErr := g.stageAndAmendCommit(ctx, "[lint fix] Auto-fixed linting issues"); amendErr != nil {
@@ -74,13 +106,9 @@ func (g *GitOperations) autoFixLint(ctx context.Context) *LintResult {
 	return result
 }
 
-// runGoLint runs golangci-lint on changed files
-func (g *GitOperations) runGoLint(ctx context.Context) (string, error) {
-	// Run golangci-lint on changed files from origin/main
-	cmd := exec.CommandContext(ctx, "golangci-lint", "run",
-		"--new-from-rev=origin/main",
-		"./...",
-	)
+// runGoLint runs golangci-lint on files changed relative to the base branch
+func (g *GitOperations) runGoLint(ctx context.Context, baseBranch string) (string, error) {
+	cmd := exec.CommandContext(ctx, "golangci-lint", goLintArgs(g.resolveLintBase(ctx, baseBranch))...)
 	cmd.Dir = g.projectPath
 	output, err := cmd.CombinedOutput()
 	outputStr := strings.TrimSpace(string(output))

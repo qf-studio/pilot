@@ -6349,7 +6349,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		// Pre-push lint gate (GH-1376)
 		if r.config != nil && r.config.PrePushLint != nil && *r.config.PrePushLint {
 			r.reportProgress(task.ID, "Linting", 95, "Running pre-push lint check...")
-			lintResult := git.autoFixLint(ctx)
+			lintResult := git.autoFixLint(ctx, task.BaseBranch)
 			if !lintResult.Clean && !lintResult.FixedAll {
 				// Include unfixable lint issues in execution result for self-review
 				if len(lintResult.Issues) > 0 {
@@ -6652,7 +6652,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// Pre-push lint gate (GH-1376)
 			if r.config != nil && r.config.PrePushLint != nil && *r.config.PrePushLint {
 				r.reportProgress(task.ID, "Linting", 95, "Running pre-push lint check...")
-				lintResult := git.autoFixLint(ctx)
+				lintResult := git.autoFixLint(ctx, task.BaseBranch)
 				if !lintResult.Clean && !lintResult.FixedAll {
 					// Include unfixable lint issues in execution result for self-review
 					if len(lintResult.Issues) > 0 {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/executor"
@@ -33,6 +34,11 @@ type AutoMerger struct {
 	repo        string
 	config      *Config
 	log         *slog.Logger
+
+	// projectBaseBranch is the project's branch_from / default_branch (GH-5695),
+	// set by NewController; branchOnce gates the resolution log.
+	projectBaseBranch string
+	branchOnce        sync.Once
 }
 
 // NewAutoMerger creates an auto-merger with the given configuration.
@@ -198,18 +204,9 @@ func (m *AutoMerger) CanMerge(ctx context.Context, prNumber int) (bool, string, 
 }
 
 // resolveMainBranchName mirrors Controller.resolveMainBranchName (GH-4872).
-// Duplicated rather than shared across a cross-type dependency: AutoMerger
-// and Controller each already own their own *Config value, and the logic is
-// a handful of lines.
+// Both delegate to resolveMainBranch (env → project → "main", GH-5695).
 func (m *AutoMerger) resolveMainBranchName() string {
-	if env := m.config.ResolvedEnvOrDefault(); env != nil && env.Branch != "" {
-		return env.Branch
-	}
-	m.log.Warn("resolveMainBranchName: no environment branch configured, falling back to literal \"main\" — set environments.<env>.branch to silence this warning",
-		"owner", m.owner,
-		"repo", m.repo,
-	)
-	return "main"
+	return resolveMainBranch(m.config, m.projectBaseBranch, m.log, &m.branchOnce, m.owner, m.repo)
 }
 
 // ShouldWaitForCI returns true if the environment requires CI to pass before merge.

@@ -659,7 +659,7 @@ func (r *Runner) buildSelfReviewPrompt(task *Task) (prompt string) {
 	sb.WriteString("If parity missing: output `PARITY_GAP: <feature> in <file_a> but not <file_b>` and FIX it.\n\n")
 
 	sb.WriteString("### 8. Lint Check\n")
-	sb.WriteString("Run `golangci-lint run --new-from-rev=origin/main ./...` and fix any violations.\n")
+	fmt.Fprintf(&sb, "Run `golangci-lint run --new-from-rev=%s ./...` and fix any violations.\n", lintBaseRef(task.BaseBranch))
 	sb.WriteString("Common issue: unchecked return values in test mock handlers (w.Write, json.Encode, SendText).\n\n")
 
 	// GH-1966: Acceptance criteria verification in self-review

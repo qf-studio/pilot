@@ -979,6 +979,8 @@ Examples:
 							// TASK-352: scope self-heal to the project's fs path (matches
 							// executions.project_path) so merged work flips failed→completed.
 							gwBoardOpts = append(gwBoardOpts, autopilot.WithProjectPath(projectPath))
+							// GH-5695: project branch_from / default_branch for post-merge CI and base guards.
+							gwBoardOpts = append(gwBoardOpts, autopilot.WithProjectBaseBranch(resolveProjectBaseBranch(cfg, projectPath)))
 							// GH-3931: apply the per-project release overlay (GH-3930) when configured.
 							// GH-4774: apply the per-project approval overlay when configured.
 							if proj := cfg.FindProjectByRepo(cfg.Adapters.GitHub.Repo); proj != nil {
@@ -2419,6 +2421,8 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					// TASK-352: scope self-heal to the project's fs path. Fresh slice so
 					// the per-project loop below does not alias this controller's option.
 					ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotSharedOpts...), autopilot.WithProjectPath(projectPath))
+					// GH-5695: project branch_from / default_branch for post-merge CI and base guards.
+					ctrlOpts = append(ctrlOpts, autopilot.WithProjectBaseBranch(resolveProjectBaseBranch(cfg, projectPath)))
 					// GH-4472: default repo resolves project override → global fallback.
 					ctrlOpts = append(ctrlOpts, projectBoardControllerOpts(apGHClient, cfg, cfg.Adapters.GitHub.Repo, parts[0], true)...)
 					// GH-3931: apply the per-project release overlay (GH-3930) when configured.
@@ -2473,7 +2477,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				}
 				// TASK-352: scope self-heal to this project's fs path (matches
 				// executions.project_path). Fresh slice to avoid aliasing the shared opts.
-				ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotSharedOpts...), autopilot.WithProjectPath(proj.Path))
+				ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotSharedOpts...), autopilot.WithProjectPath(proj.Path), autopilot.WithProjectBaseBranch(proj.ResolveBaseBranch()))
 				// GH-4472: this project's own github.project_board (if set) wins;
 				// no fallback here — only the default adapter repo inherits the
 				// global block.

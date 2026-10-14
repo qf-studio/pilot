@@ -6,6 +6,9 @@ type ProjectInfo struct {
 	Path          string
 	Navigator     bool
 	DefaultBranch string
+	// BranchFrom mirrors config.ProjectConfig.BranchFrom; it wins over
+	// DefaultBranch (see ResolveBaseBranch).
+	BranchFrom string
 	// Canary mirrors config.ProjectConfig.Canary (GH-4240/GH-4648) so
 	// chat-triggered tasks (comms.Handler) can stamp Task.IsCanary at
 	// construction time the same way the poller handlers do via
@@ -14,6 +17,19 @@ type ProjectInfo struct {
 	// Repo is the GitHub "owner/name" when the project has a github block,
 	// else empty.
 	Repo string
+}
+
+// ResolveBaseBranch mirrors config.ProjectConfig.ResolveBaseBranch: BranchFrom
+// takes precedence over DefaultBranch; both may be empty (the worktree manager
+// then detects origin/HEAD). A nil receiver resolves to "".
+func (p *ProjectInfo) ResolveBaseBranch() string {
+	if p == nil {
+		return ""
+	}
+	if p.BranchFrom != "" {
+		return p.BranchFrom
+	}
+	return p.DefaultBranch
 }
 
 // GetName satisfies duck-typed interface used by CommandHandler.handleProjects.

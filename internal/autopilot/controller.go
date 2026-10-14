@@ -363,6 +363,16 @@ func WithProjectPath(path string) ControllerOption {
 	}
 }
 
+// WithProjectBaseBranch sets the project's configured base branch
+// (ProjectConfig.ResolveBaseBranch: branch_from, else default_branch). Post-merge
+// CI and base-branch guards consult it after environments.<env>.branch and before
+// the literal "main" fallback (GH-5695). Empty is a no-op.
+func WithProjectBaseBranch(branch string) ControllerOption {
+	return func(c *Controller) {
+		c.projectBaseBranch = branch
+	}
+}
+
 // WithStepLogClient wires the in-tree GitHub client (internal/adapters/github)
 // CIMonitor uses to resolve a failed check run down to its actual failing
 // step via the jobs API + check-run annotations (GH-4460). The studio-sdk
@@ -567,6 +577,11 @@ type Controller struct {
 	// executions.project_path. Used to scope self-heal to this project's rows.
 	// Empty = match by task_id only (single-repo / tests). TASK-352.
 	projectPath string
+
+	// projectBaseBranch is the project's branch_from / default_branch (GH-5695);
+	// branchOnce makes resolveMainBranchName log which source won only once.
+	projectBaseBranch string
+	branchOnce        sync.Once
 
 	// projectRelease is the per-project release config overlay (GH-3930),
 	// wired via WithReleaseOverride. Nil = no project-level override. Applied
@@ -1018,6 +1033,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		c.ciMonitor.SetStepLogClient(c.stepLogClient)
 	}
 	c.autoMerger = NewAutoMerger(ghClient, approvalMgr, c.ciMonitor, owner, repo, cfg)
+	c.autoMerger.projectBaseBranch = c.projectBaseBranch
 	c.feedbackLoop = NewFeedbackLoop(ghClient, owner, repo, cfg)
 
 	// Resolve the effective release config: env-scoped wins over global, then
@@ -6724,21 +6740,46 @@ func (c *Controller) getMainBranchSHA(ctx context.Context) (string, error) {
 
 // resolveMainBranchName returns the branch name post-merge CI should track.
 // Preference order:
-//  1. c.config.ResolvedEnvOrDefault().Branch — the per-environment branch (prod=main, stage=develop, etc.)
-//  2. Literal "main" with a WARN log — last-resort fallback so we never block a release on an empty branch name.
+//  1. c.config.ResolvedEnvOrDefault().Branch — an explicitly configured per-environment branch (prod=main, stage=develop, etc.)
+//  2. The project's branch_from / default_branch (WithProjectBaseBranch, GH-5695)
+//  3. The environment's built-in default ("main"), then
+//  4. Literal "main" with a WARN log — last-resort fallback so we never block a release on an empty branch name.
 //
-// A broader fallback through ProjectConfig (BranchFrom/DefaultBranch) would
-// require wiring the pilot global Config into autopilot.Controller — deferred
-// to a follow-up; not needed for the workshop-scope incident this fix targets.
+// The winning source is logged once at Info (GH-5695).
 func (c *Controller) resolveMainBranchName() string {
-	if env := c.config.ResolvedEnvOrDefault(); env != nil && env.Branch != "" {
-		return env.Branch
+	return resolveMainBranch(c.config, c.projectBaseBranch, c.log, &c.branchOnce, c.owner, c.repo)
+}
+
+// resolveMainBranch implements the shared env → project → "main" cascade for
+// Controller and AutoMerger. once gates the Info log so the hot-path callers
+// don't spam it.
+func resolveMainBranch(cfg *Config, projectBranch string, log *slog.Logger, once *sync.Once, owner, repo string) string {
+	branch, source := "main", "fallback"
+	env := cfg.ResolvedEnvOrDefault()
+	switch {
+	case env != nil && env.Branch != "" && !env.branchIsDefault:
+		branch, source = env.Branch, "environment"
+	case projectBranch != "":
+		branch, source = projectBranch, "project"
+	case env != nil && env.Branch != "":
+		branch, source = env.Branch, "environment-default"
 	}
-	c.log.Warn("resolveMainBranchName: no environment branch configured, falling back to literal \"main\" — set environments.<env>.branch to silence this warning",
-		"owner", c.owner,
-		"repo", c.repo,
-	)
-	return "main"
+	once.Do(func() {
+		if source == "fallback" {
+			log.Warn("resolveMainBranchName: no environment or project branch configured, falling back to literal \"main\" — set environments.<env>.branch or the project's default_branch/branch_from to silence this warning",
+				"owner", owner,
+				"repo", repo,
+			)
+			return
+		}
+		log.Info("resolveMainBranchName: resolved branch",
+			"branch", branch,
+			"source", source,
+			"owner", owner,
+			"repo", repo,
+		)
+	})
+	return branch
 }
 
 // resolveRelease is a package-level helper used during construction (before Controller

@@ -69,6 +69,7 @@ func (a *ProjectSourceAdapter) toProjectInfo(proj *ProjectConfig) *comms.Project
 		Path:          proj.Path,
 		Navigator:     proj.Navigator,
 		DefaultBranch: proj.DefaultBranch,
+		BranchFrom:    proj.BranchFrom,
 		Canary:        proj.Canary,
 		Repo:          repo,
 	}

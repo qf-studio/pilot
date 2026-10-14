@@ -47,6 +47,13 @@ type GitHubReviewConfig struct {
 type EnvironmentConfig struct {
 	// Branch is the target branch for PRs (e.g., "main", "develop").
 	Branch string `yaml:"branch"`
+
+	// branchIsDefault marks Branch as the built-in "main" from
+	// defaultEnvironments() rather than a user-set value. Unexported, so a YAML
+	// entry for the environment never carries it. resolveMainBranch lets the
+	// project's branch_from / default_branch outrank a built-in default but
+	// not an explicit environments.<env>.branch (GH-5695).
+	branchIsDefault bool
 	// RequireApproval gates merge on human approval.
 	RequireApproval bool `yaml:"require_approval"`
 	// ApprovalSource specifies which channel for approvals (telegram, slack, github-review).
@@ -452,6 +459,7 @@ func defaultEnvironments() map[string]*EnvironmentConfig {
 	return map[string]*EnvironmentConfig{
 		"dev": {
 			Branch:          "main",
+			branchIsDefault: true,
 			RequireApproval: false,
 			CITimeout:       5 * time.Minute,
 			SkipPostMergeCI: true,
@@ -459,6 +467,7 @@ func defaultEnvironments() map[string]*EnvironmentConfig {
 		},
 		"stage": {
 			Branch:          "main",
+			branchIsDefault: true,
 			RequireApproval: false,
 			CITimeout:       30 * time.Minute,
 			SkipPostMergeCI: false,
@@ -466,6 +475,7 @@ func defaultEnvironments() map[string]*EnvironmentConfig {
 		},
 		"prod": {
 			Branch:          "main",
+			branchIsDefault: true,
 			RequireApproval: true,
 			ApprovalSource:  ApprovalSourceTelegram,
 			ApprovalTimeout: 1 * time.Hour,
