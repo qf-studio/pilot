@@ -3736,6 +3736,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	var beforeRemoveHookFn func()
 	if cleanupWorktree != nil {
 		defer func() {
+			// Runs after the commit and before the worktree goes away, for
+			// every outcome: the task's Navigator learnings live only here.
+			r.copyNavigatorBack(task.ID, executionPath, task.ProjectPath)
 			if preserveWorktreeOnPushFailure {
 				r.log.Warn("GH-5399: preserving worktree and local branch after a push failure during timeout salvage — branch is the durable copy, worktree is a head start for triage only until the next Pilot restart (GH-5408)",
 					slog.String("task_id", task.ID),

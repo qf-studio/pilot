@@ -27,6 +27,16 @@ type NavigatorConfig struct {
 	// section remains), manual (only `pilot navigator bootstrap`) or off.
 	// Default: manual.
 	Bootstrap string `yaml:"bootstrap,omitempty"`
+	// CopyBack merges the Navigator learnings a task wrote in its worktree
+	// (memories, SOPs, system notes, graph) back to the project clone when
+	// the task finishes. Unset means true.
+	CopyBack *bool `yaml:"copy_back,omitempty"`
+}
+
+// CopyBackEnabled reports whether worktree learnings are copied back to the
+// project clone (navigator.copy_back, default true).
+func (c *NavigatorConfig) CopyBackEnabled() bool {
+	return c == nil || c.CopyBack == nil || *c.CopyBack
 }
 
 // DefaultNavigatorConfig returns default Navigator configuration.
@@ -672,4 +682,26 @@ func (n *NavigatorInitializer) detectFromCargoToml(projectPath string) *ProjectI
 		TechStack:    strings.Join(stackParts, ", "),
 		DetectedFrom: "Cargo.toml",
 	}
+}
+
+// copyNavigatorBack is the task-finalisation hook that carries the Navigator
+// learnings of an isolated worktree back to the project clone. Failures are
+// logged, never returned: learnings are best effort and must not fail a task.
+func (r *Runner) copyNavigatorBack(taskID, worktreePath, projectPath string) {
+	if r.config != nil && !r.config.Navigator.CopyBackEnabled() {
+		return
+	}
+	merged, err := CopyNavigatorBackFromWorktree(worktreePath, projectPath)
+	if err != nil {
+		r.log.Warn("Navigator copy-back incomplete",
+			slog.String("task_id", taskID),
+			slog.Int("files_merged", merged),
+			slog.Any("error", err),
+		)
+		return
+	}
+	r.log.Info("Navigator copy-back",
+		slog.String("task_id", taskID),
+		slog.Int("files_merged", merged),
+	)
 }

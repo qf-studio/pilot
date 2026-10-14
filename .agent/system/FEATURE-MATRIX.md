@@ -36,6 +36,7 @@
 | Nav-loop mode | ✅ | executor | - | - | Structured autonomous execution with NAVIGATOR_STATUS (v0.33.15) |
 | Navigator auto-init | ✅ | executor | - | `executor.navigator.auto_init` | Auto-creates .agent/ on first task execution (v0.33.16) |
 | Navigator bootstrap session | ✅ | executor | `pilot navigator bootstrap --project` | `executor.navigator.bootstrap` (auto/manual/off, default manual) | One 60-turn/10-min read-mostly session fills the scaffold's Key Components/Key Files/Project Structure, an architecture note, pattern memories and graph.json; Write/Edit allowlisted to `.agent/**` only; recorded as execution `bootstrap-<date>` with key_source (GH-5679) |
+| Navigator copy-back | ✅ | executor | - | `executor.navigator.copy_back` (default true) | On task finalisation (any outcome, before worktree removal) `CopyNavigatorBackFromWorktree` merges worktree `.agent/knowledge/memories`, `sops`, `system` and `graph.json` into the project clone: new files appended, newer mtime wins, git-tracked paths never written, nothing deleted, graph nodes/edges merged by id (GH-5680 / TASK-549 phase 3) |
 | Preflight checks | ✅ | executor | - | - | Claude available, git clean, git repo validation (v0.48.0) |
 | Smart retry | ✅ | executor | - | - | Error-type-specific retry with exponential backoff (v0.51.0) |
 | OOM smart-retry | ✅ | executor | - | `executor.retry.oom_killed` | Retry OOM-killed subprocess once after 10s (GH-3028, v2.147.0) |

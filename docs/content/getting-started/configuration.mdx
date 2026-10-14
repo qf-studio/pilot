@@ -501,6 +501,7 @@ executor:
 | `navigator.auto_init` | bool | `true` | Auto-create .agent/ on first task execution |
 | `navigator.templates_path` | string | `""` | Override plugin templates location |
 | `navigator.bootstrap` | string | `manual` | One-time session that fills the scaffold's Key Components, Key Files and Project Structure sections: `auto` (before the first task while a placeholder section remains), `manual` (only `pilot navigator bootstrap --project <path>`), `off`. Writes only under `.agent/`; recorded as execution `bootstrap-<date>` |
+| `navigator.copy_back` | bool | `true` | When a worktree task finishes (any outcome), merge the memories, SOPs, system notes and graph it wrote under `.agent/` back to the project clone: new files are added, the newer file wins, git-tracked paths are never written, nothing is deleted, graph nodes and edges are merged by id |
 
 ### Worktree Isolation
 

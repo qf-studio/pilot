@@ -981,6 +981,14 @@ func copyFile(src, dst string) error {
 		return fmt.Errorf("failed to write %s: %w", dst, err)
 	}
 
+	// Decision: keep the source modification time. CopyNavigatorBackFromWorktree
+	// decides "newer wins" by mtime, so a file copied into a worktree and never
+	// touched must not look newer than the clone's copy, which another task may
+	// have updated in the meantime.
+	if err := os.Chtimes(dst, srcInfo.ModTime(), srcInfo.ModTime()); err != nil {
+		return fmt.Errorf("failed to set times on %s: %w", dst, err)
+	}
+
 	return nil
 }
 
@@ -1008,6 +1016,211 @@ func EnsureNavigatorInWorktree(sourceRepo, worktreePath string) error {
 
 	// No .agent/ exists - will be initialized by runner.maybeInitNavigator()
 	// Return nil here to let the normal init flow handle it
+	return nil
+}
+
+// navigatorCopyBackDirs are the Navigator subtrees whose learnings flow back
+// from a task worktree to the project clone.
+var navigatorCopyBackDirs = []string{
+	".agent/knowledge/memories",
+	".agent/sops",
+	".agent/system",
+}
+
+// navigatorCopyBackGraph is the knowledge graph, merged by id rather than copied.
+const navigatorCopyBackGraph = ".agent/knowledge/graph.json"
+
+// navigatorCopyBackMu serialises copy-backs so two tasks finishing together
+// cannot interleave their graph read-merge-write on the same clone.
+var navigatorCopyBackMu sync.Mutex
+
+// CopyNavigatorBackFromWorktree merges the Navigator learnings a task wrote in
+// its worktree (knowledge memories, SOPs, system notes, the graph JSON) back to
+// the project clone, so the next task starts from them instead of the skeleton.
+// It returns the number of files created or updated on the clone.
+//
+// Rules: new files are appended; for an existing file the newer modification
+// time wins (identical content is left alone); a path tracked by git in
+// sourceRepo is never written; nothing is ever deleted. The graph JSON is
+// merged node-by-node and edge-by-edge so parallel tasks keep each other's
+// nodes. A path tracked and unmodified in the worktree is skipped too: it came
+// from the branch base and travels with the PR, and writing it to a clone that
+// has not pulled yet would leave an untracked file in the way of the pull.
+func CopyNavigatorBackFromWorktree(worktreePath, sourceRepo string) (int, error) {
+	if worktreePath == "" || sourceRepo == "" {
+		return 0, nil
+	}
+	if info, err := os.Stat(filepath.Join(worktreePath, ".agent")); err != nil || !info.IsDir() {
+		return 0, nil
+	}
+
+	navigatorCopyBackMu.Lock()
+	defer navigatorCopyBackMu.Unlock()
+
+	// Failing to learn what git tracks aborts the whole copy-back: the
+	// never-overwrite-tracked rule cannot be honoured without it.
+	srcTracked, err := gitListPaths(sourceRepo, ".agent")
+	if err != nil {
+		return 0, fmt.Errorf("list tracked navigator files in %s: %w", sourceRepo, err)
+	}
+	// Best effort: without worktree knowledge the copy just carries more.
+	wtTracked, _ := gitListPaths(worktreePath, ".agent")
+	wtModified, _ := gitListPaths(worktreePath, ".agent", "-m")
+
+	skip := func(rel string) bool {
+		if srcTracked[rel] {
+			return true
+		}
+		return wtTracked[rel] && !wtModified[rel]
+	}
+
+	merged := 0
+	var firstErr error
+	note := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	for _, dir := range navigatorCopyBackDirs {
+		root := filepath.Join(worktreePath, filepath.FromSlash(dir))
+		if info, err := os.Lstat(root); err != nil || !info.IsDir() {
+			continue
+		}
+		walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				note(err)
+				return nil
+			}
+			if !d.Type().IsRegular() { // directories descend; symlinks and specials are ignored
+				return nil
+			}
+			rel, relErr := filepath.Rel(worktreePath, path)
+			if relErr != nil {
+				note(relErr)
+				return nil
+			}
+			rel = filepath.ToSlash(rel)
+			if skip(rel) {
+				return nil
+			}
+			wrote, mergeErr := mergeNavigatorFileBack(path, filepath.Join(sourceRepo, filepath.FromSlash(rel)))
+			note(mergeErr)
+			if wrote {
+				merged++
+			}
+			return nil
+		})
+		note(walkErr)
+	}
+
+	if !skip(navigatorCopyBackGraph) {
+		wrote, graphErr := mergeNavigatorGraphBack(
+			filepath.Join(worktreePath, filepath.FromSlash(navigatorCopyBackGraph)),
+			filepath.Join(sourceRepo, filepath.FromSlash(navigatorCopyBackGraph)),
+		)
+		note(graphErr)
+		if wrote {
+			merged++
+		}
+	}
+
+	return merged, firstErr
+}
+
+// gitListPaths returns the set of slash-separated paths `git ls-files` reports
+// under pathspec in repo, relative to repo. extra holds additional ls-files flags.
+func gitListPaths(repo, pathspec string, extra ...string) (map[string]bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	args := append([]string{"-C", repo, "ls-files", "-z"}, extra...)
+	args = append(args, "--", pathspec)
+	out, err := exec.CommandContext(ctx, "git", args...).Output()
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool)
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p != "" {
+			set[p] = true
+		}
+	}
+	return set, nil
+}
+
+// mergeNavigatorFileBack copies src to dst unless dst is at least as new or
+// identical. It reports whether dst was written.
+func mergeNavigatorFileBack(src, dst string) (bool, error) {
+	srcInfo, err := os.Lstat(src)
+	if err != nil || !srcInfo.Mode().IsRegular() {
+		return false, err
+	}
+	content, err := os.ReadFile(src)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", src, err)
+	}
+
+	dstInfo, err := os.Lstat(dst)
+	switch {
+	case err == nil:
+		if !dstInfo.Mode().IsRegular() {
+			return false, nil // never write through a symlink or over a special file
+		}
+		if !srcInfo.ModTime().After(dstInfo.ModTime()) {
+			return false, nil // the clone's copy is as new or newer: keep it
+		}
+		if existing, readErr := os.ReadFile(dst); readErr == nil && string(existing) == string(content) {
+			return false, nil
+		}
+	case os.IsNotExist(err):
+		// new file: append
+	default:
+		return false, fmt.Errorf("stat %s: %w", dst, err)
+	}
+
+	if err := writeFileAtomic(dst, content, srcInfo.Mode().Perm(), srcInfo.ModTime()); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// writeFileAtomic writes content to path through a temp file and a rename, so
+// a concurrent reader never sees a half-written Navigator file. A zero modTime
+// leaves the time at "now".
+func writeFileAtomic(path string, content []byte, perm os.FileMode, modTime time.Time) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create directory for %s: %w", path, err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".copyback-*")
+	if err != nil {
+		return fmt.Errorf("create temp for %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("write %s: %w", tmpName, err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("close %s: %w", tmpName, err)
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		cleanup()
+		return fmt.Errorf("chmod %s: %w", tmpName, err)
+	}
+	if !modTime.IsZero() {
+		if err := os.Chtimes(tmpName, modTime, modTime); err != nil {
+			cleanup()
+			return fmt.Errorf("set times on %s: %w", tmpName, err)
+		}
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		cleanup()
+		return fmt.Errorf("rename to %s: %w", path, err)
+	}
 	return nil
 }
 
