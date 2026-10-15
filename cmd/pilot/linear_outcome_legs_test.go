@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -43,11 +46,16 @@ func TestLinearOutcomeDrivesCommentAndState(t *testing.T) {
 	)
 
 	tests := []struct {
-		name        string
-		status      string // persisted execution status ("" = gated decline)
-		execError   string
-		prURL       string
-		transitions linear.Transitions
+		name      string
+		status    string // persisted execution status ("" = gated decline)
+		execError string
+		prURL     string
+		commitSHA string // recorded commit ("" = none)
+		pushed    *bool  // persisted branch_pushed (nil = NULL)
+		// issueStateAtEnd is the state type Linear reports when the run ends
+		// ("" = backlog, i.e. whatever the start move left).
+		issueStateAtEnd string
+		transitions     linear.Transitions
 		// wantComment is a substring of the single comment posted after the
 		// start comment; "" means no comment at all.
 		wantComment string
@@ -67,27 +75,33 @@ func TestLinearOutcomeDrivesCommentAndState(t *testing.T) {
 			wantComment: "No changes were needed", wantStates: []string{started, backlog},
 		},
 		{
-			name: "needs_human without in_review: held comment names the branch, stays started", status: "needs_human",
-			wantComment: "Branch `pilot/LIN-QF-5705` is pushed and held for human review", wantStates: []string{started},
-		},
-		{
-			name: "needs_human, push failed: names the reason and says the branch is not on the remote", status: "needs_human",
-			execError:   "timeout salvage (branch push also failed: remote rejected: protected branch)",
-			wantComment: "Branch `pilot/LIN-QF-5705` is NOT on the remote",
-			wantAlso:    []string{"**Reason**: timeout salvage (branch push also failed: remote rejected: protected branch)"},
-			wantNot:     []string{"is pushed and held"},
+			name: "needs_human, pushed: names the branch and carries the row error as the reason", status: "needs_human",
+			pushed:      boolPtr(true),
+			execError:   "timeout salvage: ran out of budget",
+			wantComment: "Branch `pilot/LIN-QF-5705` is pushed and held for human review",
+			wantAlso:    []string{"**Reason**: timeout salvage: ran out of budget"},
+			wantNot:     []string{"NOT on the remote", "No branch was pushed"},
 			wantStates:  []string{started},
 		},
 		{
-			name: "needs_human, pushed: carries the row error as the reason", status: "needs_human",
+			name: "needs_human, push failed: the [remote rejected] line is the reason, not the To header", status: "needs_human",
+			pushed:      boolPtr(false),
+			execError:   "timeout salvage (branch push also failed: " + executor.PushFailureReason(fmt.Errorf("failed to push: exit status 1: %s", multiLinePushStderr)) + ")",
+			wantComment: "Branch `pilot/LIN-QF-5705` is NOT on the remote",
+			wantAlso:    []string{"! [remote rejected] pilot/LIN-QF-5705 -> pilot/LIN-QF-5705 (protected branch hook declined)"},
+			wantNot:     []string{"is pushed and held", "To <path>", "github.com/o/r.git"},
+			wantStates:  []string{started},
+		},
+		{
+			name: "needs_human, nothing pushed: says no branch was pushed", status: "needs_human",
 			execError:   "timeout salvage: ran out of budget",
-			wantComment: "is pushed and held for human review",
-			wantAlso:    []string{"**Reason**: timeout salvage: ran out of budget"},
-			wantNot:     []string{"NOT on the remote"},
+			wantComment: "No branch was pushed",
+			wantNot:     []string{"is pushed and held", "NOT on the remote", "`pilot/LIN-QF-5705`"},
 			wantStates:  []string{started},
 		},
 		{
 			name: "needs_human with in_review configured: moves to in_review", status: "needs_human",
+			pushed:      boolPtr(true),
 			transitions: linear.Transitions{InReview: inReview},
 			wantComment: "held for human review", wantStates: []string{started, inReview},
 		},
@@ -96,13 +110,30 @@ func TestLinearOutcomeDrivesCommentAndState(t *testing.T) {
 			wantComment: "it was canceled", wantStates: []string{started, backlog},
 		},
 		{
-			name: "superseded: one comment, no state move, no reopen advice", status: "superseded",
-			wantComment: "it was superseded", wantNot: []string{"Reopen", "re-label"}, wantStates: []string{started},
+			name: "superseded, issue already Done by a human: comment only, zero moves", status: "superseded",
+			issueStateAtEnd: "completed",
+			wantComment:     "it was superseded", wantNot: []string{"Reopen", "re-label"}, wantStates: []string{started},
 		},
 		{
-			name: "completed without a PR: says no PR was produced and names the branch", status: "completed",
+			name: "superseded, issue already canceled by a human: comment only, zero moves", status: "superseded",
+			issueStateAtEnd: "canceled",
+			wantComment:     "it was superseded", wantStates: []string{started},
+		},
+		{
+			name: "superseded mechanically, issue still In Progress: restores the prior state", status: "superseded",
+			issueStateAtEnd: "started",
+			wantComment:     "it was superseded", wantNot: []string{"Reopen", "re-label"}, wantStates: []string{started, backlog},
+		},
+		{
+			name: "completed without a PR and no commit: says no PR was produced and names no branch", status: "completed",
+			wantComment: "The run completed; no branch was pushed, but produced no pull request",
+			wantNot:     []string{"`pilot/LIN-QF-5705`", "issue was closed during the run", "was canceled"},
+			wantStates:  []string{started, backlog},
+		},
+		{
+			name: "completed without a PR but with a commit: names the branch", status: "completed",
+			commitSHA:   "abc123",
 			wantComment: "The run completed on branch `pilot/LIN-QF-5705` but produced no pull request",
-			wantNot:     []string{"issue was closed during the run", "was canceled"},
 			wantStates:  []string{started, backlog},
 		},
 		{
@@ -176,10 +207,22 @@ func TestLinearOutcomeDrivesCommentAndState(t *testing.T) {
 						t.Errorf("queued row missing after claim: %v", gerr)
 						return
 					}
-					if tt.prURL != "" {
-						if uerr := store.UpdateExecutionResult(row.ID, tt.prURL, "abc123", 1000); uerr != nil {
+					commit := tt.commitSHA
+					if tt.prURL != "" && commit == "" {
+						commit = "abc123"
+					}
+					if tt.prURL != "" || commit != "" {
+						if uerr := store.UpdateExecutionResult(row.ID, tt.prURL, commit, 1000); uerr != nil {
 							t.Errorf("UpdateExecutionResult: %v", uerr)
 						}
+					}
+					if tt.pushed != nil {
+						if uerr := store.SetExecutionBranchPushed(row.ID, *tt.pushed); uerr != nil {
+							t.Errorf("SetExecutionBranchPushed: %v", uerr)
+						}
+					}
+					if tt.issueStateAtEnd != "" {
+						f.setStateType(tt.issueStateAtEnd)
 					}
 					if uerr := store.UpdateExecutionStatus(row.ID, tt.status, tt.execError); uerr != nil {
 						t.Errorf("UpdateExecutionStatus: %v", uerr)
@@ -231,6 +274,72 @@ func TestLinearOutcomeDrivesCommentAndState(t *testing.T) {
 			}
 			if got := notifier.failed.Load(); got != tt.wantFailed {
 				t.Errorf("NotifyTaskFailed calls = %d, want %d", got, tt.wantFailed)
+			}
+			// GH-5715: every leg ends the prior-state bookkeeping for the issue.
+			mover.mu.Lock()
+			defer mover.mu.Unlock()
+			if len(mover.priorState) != 0 {
+				t.Errorf("priorState = %v, want empty after the run", mover.priorState)
+			}
+		})
+	}
+}
+
+// multiLinePushStderr is what `git push` prints on a protected-branch
+// rejection: the URL header first, the reason on the "!" line.
+const multiLinePushStderr = `To https://github.com/o/r.git
+ ! [remote rejected] pilot/LIN-QF-5705 -> pilot/LIN-QF-5705 (protected branch hook declined)
+error: failed to push some refs to 'https://github.com/o/r.git'`
+
+// TestLinearPushMarkerGone (GH-5715) pins that the adapter no longer infers the
+// push state from the row-error substring holdPushedBranch used to write: the
+// state is the persisted branch_pushed column.
+func TestLinearPushMarkerGone(t *testing.T) {
+	const marker = "branch push also failed"
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		// This file names the marker in order to assert its absence.
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || e.Name() == "linear_outcome_legs_test.go" {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Clean(e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), marker) {
+			t.Errorf("%s still contains %q", e.Name(), marker)
+		}
+	}
+}
+
+// TestLinearSupersededForgetsPrior (GH-5715) drives MoveSuperseded directly:
+// both branches (human-closed, restored) forget the recorded prior state.
+func TestLinearSupersededForgetsPrior(t *testing.T) {
+	for _, tt := range []struct {
+		name, stateType string
+		wantUpdates     int
+	}{
+		{"closed by a human", "completed", 0},
+		{"still started", "started", 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newLinearStateFake()
+			defer f.server.Close()
+			m := f.mover(linear.Transitions{})
+			ctx := context.Background()
+			if err := m.Move(ctx, testLinearIssueUUID, "LIN-QF-295", legStart); err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			f.setStateType(tt.stateType)
+			_ = m.MoveSuperseded(ctx, testLinearIssueUUID, "LIN-QF-295")
+			if len(m.priorState) != 0 {
+				t.Errorf("priorState = %v, want empty", m.priorState)
+			}
+			if got := f.count("issueUpdate") - 1; got != tt.wantUpdates {
+				t.Errorf("moves after start = %d, want %d", got, tt.wantUpdates)
 			}
 		})
 	}

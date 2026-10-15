@@ -330,6 +330,13 @@ func (l *ExecutionLifecycle) Persist(execID string, outcome FinishOutcome, resul
 		_, statusErr = l.store.UpdateExecutionStatusIfNotTerminal(execID, string(outcome.Status), outcome.Error)
 	}
 
+	// GH-5715: holdPushedBranch's push result rides on the same terminal write.
+	if result != nil && result.BranchPushed != nil {
+		if bpErr := l.store.SetExecutionBranchPushed(execID, *result.BranchPushed); bpErr != nil && statusErr == nil {
+			statusErr = bpErr
+		}
+	}
+
 	if result != nil {
 		metricsErr := l.store.SaveExecutionMetrics(&memory.ExecutionMetrics{
 			ExecutionID:      execID,

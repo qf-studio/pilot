@@ -201,6 +201,10 @@ func (s *Store) migrate() error {
 		// estimated_cost_usd rather than replacing it.
 		`ALTER TABLE executions ADD COLUMN key_source TEXT`,
 		`ALTER TABLE executions ADD COLUMN reported_cost_usd REAL`,
+		// GH-5715: result of the needs_human branch push (1 pushed, 0 push
+		// failed, NULL no push attempted), so adapters read a structured signal
+		// instead of parsing the row error.
+		`ALTER TABLE executions ADD COLUMN branch_pushed INTEGER`,
 		`CREATE INDEX IF NOT EXISTS idx_executions_status ON executions(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_patterns_project ON patterns(project_path)`,
 		// Cross-project pattern indexes
@@ -715,7 +719,10 @@ type Execution struct {
 	ReportedCostUSD *float64
 	// KeySource is which Anthropic key paid for this execution: "platform",
 	// "own" or "unknown". Stamped when the execution row is created. GH-5676.
-	KeySource    string
+	KeySource string
+	// BranchPushed is holdPushedBranch's push result: true pushed, false the
+	// push failed, nil no push was attempted. GH-5715.
+	BranchPushed *bool
 	FilesChanged int
 	LinesAdded   int
 	LinesRemoved int
@@ -848,7 +855,7 @@ const executionDetailColumns = `
 	COALESCE(approval_decision_by, ''),
 	COALESCE(effort_level, ''), COALESCE(complexity_level, ''),
 	COALESCE(is_canary, 0),
-	COALESCE(NULLIF(key_source, ''), 'unknown'), reported_cost_usd`
+	COALESCE(NULLIF(key_source, ''), 'unknown'), reported_cost_usd, branch_pushed`
 
 // rowScanner abstracts *sql.Row and *sql.Rows so scanExecutionDetail serves both
 // a single QueryRow result and a Query loop (used by ListExecutionsForTask).
@@ -864,6 +871,7 @@ func scanExecutionDetail(row rowScanner) (*Execution, error) {
 	var approvalDecisionAt sql.NullTime
 	var labelsJSON string
 	var reportedCost sql.NullFloat64
+	var branchPushed sql.NullInt64
 	err := row.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &startedAt, &completedAt,
 		&exec.TokensInput, &exec.TokensOutput, &exec.TokensTotal, &exec.TokensCacheRead, &exec.TokensCacheWrite,
 		&exec.EstimatedCostUSD, &exec.FilesChanged, &exec.LinesAdded, &exec.LinesRemoved, &exec.ModelName,
@@ -871,9 +879,13 @@ func scanExecutionDetail(row rowScanner) (*Execution, error) {
 		&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON,
 		&exec.ApprovalRequestID, &exec.ApprovalDecision, &approvalDecisionAt, &exec.ApprovalDecisionBy,
 		&exec.EffortLevel, &exec.ComplexityLevel, &exec.IsCanary,
-		&exec.KeySource, &reportedCost)
+		&exec.KeySource, &reportedCost, &branchPushed)
 	if err != nil {
 		return nil, err
+	}
+	if branchPushed.Valid {
+		v := branchPushed.Int64 != 0
+		exec.BranchPushed = &v
 	}
 	if reportedCost.Valid {
 		v := reportedCost.Float64
@@ -3485,6 +3497,19 @@ func (s *Store) MarkExecutionCompletedIfNotTerminal(id, prURL, commitSHA string,
 		s.logRejectedTerminalWrite("MarkExecutionCompletedIfNotTerminal", id, "completed")
 	}
 	return applied, err
+}
+
+// SetExecutionBranchPushed records holdPushedBranch's push result on the row
+// (1 pushed, 0 push failed). GH-5715.
+func (s *Store) SetExecutionBranchPushed(id string, pushed bool) error {
+	v := 0
+	if pushed {
+		v = 1
+	}
+	return s.withRetry("SetExecutionBranchPushed", func() error {
+		_, err := s.db.Exec(`UPDATE executions SET branch_pushed = ? WHERE id = ?`, v, id)
+		return err
+	})
 }
 
 // UpdateExecutionEffort records the resolved effort and complexity levels for a completed execution.

@@ -42,8 +42,11 @@ type HandlerResult struct {
 	PRURL      string
 	HeadSHA    string
 	BranchName string
-	Error      error
-	Duration   time.Duration
+	// BranchPushed is holdPushedBranch's persisted push result (needs_human
+	// rows): true pushed, false push failed, nil no push attempted. GH-5715.
+	BranchPushed *bool
+	Error        error
+	Duration     time.Duration
 	// Result carries the raw execution result for adapters that need rich metrics
 	// (e.g., GitHub uses it for the rich PR comment with token/cost/file stats).
 	Result *executor.ExecutionResult
@@ -500,6 +503,7 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			}
 		}
 		hr.HeadSHA = result.CommitSHA
+		hr.BranchPushed = result.BranchPushed
 		hr.Duration = result.Duration
 	}
 
@@ -607,7 +611,9 @@ func classifyWaitedExecution(taskID string, exec *memory.Execution) (result *exe
 		Error:     exec.Error,
 		PRUrl:     exec.PRUrl,
 		CommitSHA: exec.CommitSHA,
-		Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
+		// GH-5715: the persisted push result of a needs_human row.
+		BranchPushed: exec.BranchPushed,
+		Duration:     time.Duration(exec.DurationMs) * time.Millisecond,
 	}
 	return result, nil, executor.IsTerminalByDesignStatus(exec.Status)
 }

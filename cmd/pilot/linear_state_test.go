@@ -47,6 +47,16 @@ type linearStateFake struct {
 	failUpdate  bool
 	// startedNodes overrides the started-type nodes (empty = two default states).
 	startedNodes string
+	// stateType overrides the type of the state GetIssue reports ("" = backlog,
+	// the issue's state before the start leg).
+	stateType string
+}
+
+// setStateType changes the state type GetIssue reports from now on.
+func (f *linearStateFake) setStateType(t string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stateType = t
 }
 
 func newLinearStateFake() *linearStateFake {
@@ -84,8 +94,12 @@ func newLinearStateFake() *linearStateFake {
 				_, _ = w.Write([]byte(`{"errors":[{"message":"Entity not found: Issue"}]}`))
 				return
 			}
+			stateType := f.stateType
+			if stateType == "" {
+				stateType = "backlog"
+			}
 			_, _ = w.Write([]byte(`{"data":{"issue":{"id":"` + testLinearIssueUUID + `","identifier":"` + testLinearIssueIdent +
-				`","title":"t","team":{"id":"team-1","name":"QF","key":"QF"},"state":{"id":"` + testLinearBacklogID + `","name":"Backlog","type":"backlog"},"labels":{"nodes":[]}}}}`))
+				`","title":"t","team":{"id":"team-1","name":"QF","key":"QF"},"state":{"id":"` + testLinearBacklogID + `","name":"Backlog","type":"` + stateType + `"},"labels":{"nodes":[]}}}}`))
 		case strings.Contains(req.Query, "GetTeamDoneState"):
 			f.ops = append(f.ops, "doneState")
 			_, _ = w.Write([]byte(`{"data":{"workflowStates":{"nodes":[{"id":"` + testLinearCompletedID + `","name":"Done","type":"completed"}]}}}`))
@@ -419,6 +433,8 @@ func TestLinearAbsPathRe(t *testing.T) {
 		{"trailing colon before a digit", "at /tmp/wt/x.go:12", "at <path>:12"},
 		{"path at end of string with a trailing colon", "see /tmp/wt:", "see <path>:"},
 		{"fractions survive", "ratio 3/4 and/or 1/2", "ratio 3/4 and/or 1/2"},
+		{"PATH list splits at the colon before a slash", "PATH=/usr/bin:/opt/x", "PATH=<path>:<path>"},
+		{"colon then text keeps the text", "/tmp/wt:remote rejected", "<path>:remote rejected"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -512,6 +528,11 @@ func (m recMover) Move(_ context.Context, issueUUID, _ string, leg linearLeg) er
 	return m.err
 }
 
+func (m recMover) MoveSuperseded(_ context.Context, issueUUID, _ string) error {
+	m.rec.add("move:superseded:" + issueUUID)
+	return m.err
+}
+
 func (m recMover) MoveNoPR(_ context.Context, issueUUID, _ string) error {
 	m.rec.add("move:nopr:" + issueUUID)
 	return m.err
@@ -527,7 +548,7 @@ func (n recNotifier) NotifyTaskCompleted(_ context.Context, issueID, prURL, _ st
 	return n.err
 }
 
-func (n recNotifier) NotifyTaskEnded(_ context.Context, issueID string, kind linearEndKind, branch, _ string) error {
+func (n recNotifier) NotifyTaskEnded(_ context.Context, issueID string, kind linearEndKind, branch string, _ *bool, _ string) error {
 	n.rec.add("ended:" + string(kind) + ":" + issueID + ":" + branch)
 	return n.err
 }
@@ -599,10 +620,10 @@ func TestRunLinearStateLegs(t *testing.T) {
 			wantEvents: []string{"move:start:uuid-1", "run", "ended:canceled:uuid-1:", "move:nopr:uuid-1"},
 		},
 		{
-			name:       "superseded: cause comment only, no state move (GH-5708)",
+			name:       "superseded: cause comment, then the guarded restore (GH-5708, GH-5715)",
 			res:        &sdkcore.IssueResult{Success: true},
 			outcome:    "superseded",
-			wantEvents: []string{"move:start:uuid-1", "run", "ended:superseded:uuid-1:"},
+			wantEvents: []string{"move:start:uuid-1", "run", "ended:superseded:uuid-1:", "move:superseded:uuid-1"},
 		},
 		{
 			name:       "rate_limited: failure comment starts with the status (GH-5705)",

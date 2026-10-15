@@ -374,9 +374,11 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, ev sdk
 			HeadSHA:    hr.HeadSHA,
 			Error:      hr.Error,
 		},
-		Outcome:    linearOutcome(hr),
-		BranchName: hr.BranchName,
-		Detail:     linearOutcomeDetail(hr),
+		Outcome:      linearOutcome(hr),
+		BranchName:   hr.BranchName,
+		CommitSHA:    hr.HeadSHA,
+		BranchPushed: hr.BranchPushed,
+		Detail:       linearOutcomeDetail(hr),
 	}, execErr
 }
 

@@ -881,6 +881,10 @@ type ExecutionResult struct {
 	PRUrl string
 	// CommitSHA is the git commit SHA of the last commit made during execution.
 	CommitSHA string
+	// BranchPushed is holdPushedBranch's push result: true pushed, false the
+	// push failed, nil no push was attempted (direct-commit mode). Persisted
+	// as executions.branch_pushed. GH-5715.
+	BranchPushed *bool
 	// TokensInput is the number of input tokens consumed.
 	TokensInput int64
 	// TokensOutput is the number of output tokens generated.
@@ -3117,6 +3121,7 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 
 	pushed := false
 	pushFailed := false
+	result.BranchPushed = nil
 	if git != nil && task.Branch != "" {
 		if pushErr := git.Push(pushCtx, task.Branch); pushErr != nil {
 			if git.RemoteBranchExists(pushCtx, task.Branch) {
@@ -3128,11 +3133,13 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 					slog.String("branch", task.Branch),
 					slog.Any("error", pushErr),
 				)
-				reason = fmt.Sprintf("%s (branch push also failed: %v)", reason, pushErr)
+				reason = fmt.Sprintf("%s (branch push also failed: %s)", reason, PushFailureReason(pushErr))
 			}
 		} else {
 			pushed = true
 		}
+		// GH-5715: structured push result, persisted via the lifecycle.
+		result.BranchPushed = &pushed
 	}
 
 	if pushFailed && preserveWorktree != nil {
@@ -3182,6 +3189,26 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 	result.Error = reason
 	r.reportProgress(task.ID, "NeedsHuman", 100, reason)
 	r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, reason)
+}
+
+// PushFailureReason reduces a failed `git push` error to one line: the first
+// line of git's output that starts with "!" or contains "rejected", "denied" or
+// "error:", else the last non-empty line. Git prints the remote URL header
+// ("To https://…") first, which says nothing about why. GH-5715.
+func PushFailureReason(err error) string {
+	var last string
+	for _, line := range strings.Split(err.Error(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		last = line
+		if strings.HasPrefix(line, "!") || strings.Contains(line, "rejected") ||
+			strings.Contains(line, "denied") || strings.Contains(line, "error:") {
+			return line
+		}
+	}
+	return last
 }
 
 // pushAndCreatePRAfterTimeout pushes task.Branch and opens (or adopts) its
