@@ -14,6 +14,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/linear"
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
 	"github.com/qf-studio/pilot/internal/adapters/skipreason"
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
 )
 
@@ -526,4 +527,40 @@ func TestRouteLinearIssue_DispatchesToResolvedPath(t *testing.T) {
 	if err != nil || res == nil || !res.Success || got != "/repos/client" {
 		t.Errorf("got (%+v, %v) path %q, want success at /repos/client", res, err, got)
 	}
+}
+
+// TestLinearPollerRegistration_StateLegsWired is a source-level guard for
+// GH-5701 (see merged-feature-dead-callback-not-bridged-onprcreated): the
+// mover and merge notifier are correct in isolation, so this fails if either
+// is unwired from the live call site in linearPollerRegistration.
+func TestLinearPollerRegistration_StateLegsWired(t *testing.T) {
+	body := githubFuncBody(t, "poller_linear.go", "func linearPollerRegistration() PollerRegistration {")
+
+	loopIdx := strings.Index(body, "for _, ws := range internalWss {")
+	clientIdx := strings.Index(body, "client := linearSDK.NewClient(ws.APIKey)")
+	moverIdx := strings.Index(body, "mover := newLinearStateMover(client, ")
+	if loopIdx < 0 || moverIdx < clientIdx || clientIdx < loopIdx {
+		t.Error("one linearStateMover must be built per workspace from that workspace's own client, inside the workspace loop")
+	}
+
+	startedIdx := strings.Index(body, "NotifyTaskStarted(")
+	legsIdx := strings.Index(body, "runLinearStateLegs(issueCtx, ev, notifier, mover, ")
+	handleIdx := strings.Index(body, "handleLinearIssueWithResult(issueCtx")
+	if legsIdx < 0 || startedIdx < 0 || startedIdx >= legsIdx || legsIdx >= handleIdx {
+		t.Error("the dispatch closure must call NotifyTaskStarted, then runLinearStateLegs wrapping handleLinearIssueWithResult")
+	}
+
+	if !strings.Contains(body, "registerLinearDoneNotifier(newLinearDoneNotifier(doneWorkspaces), deps.AutopilotController, deps.AutopilotControllers)") {
+		t.Error("the Linear merge-leg notifier must be registered on the default and every per-repo autopilot controller")
+	}
+	if !strings.Contains(body, "preflightLinearTransitions(") {
+		t.Error("configured transitions must be preflighted per workspace")
+	}
+}
+
+// TestRegisterLinearDoneNotifier_NilSafe: nil controllers (autopilot disabled,
+// or a repo without one) are skipped rather than dereferenced.
+func TestRegisterLinearDoneNotifier_NilSafe(t *testing.T) {
+	registerLinearDoneNotifier(newLinearDoneNotifier(nil), nil, nil)
+	registerLinearDoneNotifier(newLinearDoneNotifier(nil), nil, map[string]*autopilot.Controller{"o/r": nil})
 }

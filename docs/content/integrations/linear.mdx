@@ -198,18 +198,56 @@ Pilot filters issues by state type during polling:
 
 ## Status Notifications
 
-Pilot posts comments on Linear issues as it works:
+Pilot posts these comments on a Linear issue (polling mode):
 
-| Phase | Emoji | Example |
-|-------|-------|---------|
-| Started | 🤖 | "Pilot started working on this issue" |
-| Exploring | 🔍 | "Exploring codebase..." |
-| Implementing | 🔨 | "Implementing changes..." |
-| Testing | 🧪 | "Running tests..." |
-| Reviewing | 📝 | "Reviewing code..." |
-| Waiting | ⏳ | "Waiting for CI..." |
-| Completed | ✅ | "Successfully completed — PR #42" |
-| Failed | ❌ | "Failed: test suite errors" |
+| When | Emoji | Comment |
+|------|-------|---------|
+| Task dispatched | 🤖 | "Pilot started working on this issue" |
+| PR / MR opened | ✅ | "Pilot completed this task!" with the pull request or merge request URL |
+| Task failed | ❌ | "Pilot could not complete this task" with the (truncated) reason |
+
+Issues Pilot declines or supersedes (for example an admission-gate decline, or an issue with no project mapping) get no completion or failure comment. Phase-by-phase progress comments are not posted.
+
+## Workflow state transitions
+
+Besides comments, Pilot moves the issue's native workflow state as the task progresses, so the board reflects reality. This needs no configuration: the defaults use Linear's state **types**, which are stable across teams (state names are not).
+
+| Moment | Config key | Default when unset |
+|--------|------------|--------------------|
+| Task dispatched | `in_progress` | The team's first `started`-type state (lowest position) |
+| PR / MR opened | `in_review` | No move (comment only) |
+| PR merged | `done` | The team's first `completed`-type state |
+| Task failed | `failed` | No move (comment only) |
+
+Each value is a workflow-state **name** (for example `In Review`) or a state **UUID**; an empty value uses the default. State names are plain strings — do not put a `$` in them, because config values are environment-expanded when loaded.
+
+```yaml
+adapters:
+  linear:
+    enabled: true
+    api_key: "${LINEAR_API_KEY}"
+    team_id: "APP"
+    transitions:
+      in_progress: "In Progress"
+      in_review: "In Review"
+      # done:   defaults to the team's completed-type state
+      # failed: no move unless set
+    workspaces:
+      - name: appbooster
+        team_id: APP
+        transitions:        # overrides the top level, per key
+          done: "Shipped"
+```
+
+`transitions` can be set at the top level (applies to the legacy single workspace and is the default for every `workspaces[]` entry) and per workspace (a non-empty key overrides the top level). A configured name that matches no state of the team is logged as a WARN at startup.
+
+Every attempted move logs `Linear state transition` at INFO with `issue`, `to` and `leg` (`start`, `pr`, `merge` or `failed`); a failure logs a WARN. A failed move never stops a task or blocks a merge. If no INFO line follows a dispatch, the move did not run.
+
+<Callout type="warning">
+The `done` move happens when autopilot merges (or observes the merge of) a `pilot/LIN-*` pull request. Pull requests autopilot does not observe — today, all GitLab merge requests — never get the merge move; for those, `in_review` is the last state Pilot can set.
+</Callout>
+
+The `pilot-in-progress`, `pilot-done` and `pilot-failed` labels are unchanged; the native state is additive.
 
 ## Project Mapping
 

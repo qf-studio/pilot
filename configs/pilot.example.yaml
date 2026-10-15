@@ -185,6 +185,14 @@ adapters:
     team_id: "your-team-id"
     pilot_label: "pilot"    # Issues with this label are picked up
     auto_assign: true        # Auto-assign issues to Pilot
+    # Native workflow-state write-back (GH-5701). Each value is a Linear
+    # workflow-state name or UUID (plain strings, no "$"); empty = default.
+    # Also valid per entry in workspaces[], where it overrides the top level.
+    # transitions:
+    #   in_progress: "In Progress"  # on dispatch; default: team's first started-type state
+    #   in_review: "In Review"      # when a PR/MR opens; default: no move (comment only)
+    #   done: "Done"                # when autopilot merges the PR; default: first completed-type state
+    #   failed: "Canceled"          # when the task fails; default: no move (comment only)
     # Polled issues are routed to one Pilot project, never to default_project
     # (GH-5570, GH-5575). Resolution order:
     #   1. label "repo:<pilot project name>" on the issue

@@ -1327,6 +1327,11 @@ type PRState struct {
 	// and must never retry indefinitely against a permanently failing Jira
 	// call. Persisted.
 	JiraDoneNotified bool
+	// LinearDoneNotified is true once notifyLinearDone (GH-5701) has attempted
+	// the Linear merge-side done leg (move to the completed-type state) for
+	// this PR. Same attempt-once, persisted-immediately semantics as
+	// JiraDoneNotified (GH-4999). Persisted.
+	LinearDoneNotified bool
 	// InfraRerunCount tracks how many times handleCIFailed has auto-retried
 	// this PR's failed jobs after classifying the failure as a CI
 	// infrastructure outage rather than a code failure (GH-4533). Scoped to
@@ -1508,6 +1513,7 @@ func (ps *PRState) snapshot() *PRState {
 		ConflictRecorded:             ps.ConflictRecorded,
 		MergeFollowupPosted:          ps.MergeFollowupPosted,
 		JiraDoneNotified:             ps.JiraDoneNotified,
+		LinearDoneNotified:           ps.LinearDoneNotified,
 		InfraRerunCount:              ps.InfraRerunCount,
 		InfraRerunSHA:                ps.InfraRerunSHA,
 		RebaseHoldActive:             ps.RebaseHoldActive,

@@ -2,6 +2,35 @@ package linear
 
 import "time"
 
+// Transitions maps task lifecycle legs to the Linear workflow state the issue
+// moves to (GH-5701). Each value is a workflow-state name or UUID; empty means
+// "use the default" — in_progress → the team's first started-type state,
+// done → its first completed-type state, in_review and failed → no state move
+// (comment only). State names are plain strings: YAML values are env-expanded
+// at load, so a "$" in a name would be blanked.
+type Transitions struct {
+	InProgress string `yaml:"in_progress,omitempty"`
+	InReview   string `yaml:"in_review,omitempty"`
+	Done       string `yaml:"done,omitempty"`
+	Failed     string `yaml:"failed,omitempty"`
+}
+
+// Override returns t with every non-empty field of o taking precedence.
+func (t Transitions) Override(o Transitions) Transitions {
+	pick := func(base, over string) string {
+		if over != "" {
+			return over
+		}
+		return base
+	}
+	return Transitions{
+		InProgress: pick(t.InProgress, o.InProgress),
+		InReview:   pick(t.InReview, o.InReview),
+		Done:       pick(t.Done, o.Done),
+		Failed:     pick(t.Failed, o.Failed),
+	}
+}
+
 // Config holds Linear adapter configuration
 type Config struct {
 	Enabled    bool               `yaml:"enabled"`
@@ -13,6 +42,11 @@ type Config struct {
 	AutoAssign bool     `yaml:"auto_assign"`
 	PilotLabel string   `yaml:"pilot_label,omitempty"`
 	ProjectIDs []string `yaml:"project_ids,omitempty"` // Filter issues by project ID(s)
+
+	// Transitions are the workflow-state targets for the task lifecycle
+	// (GH-5701). At the top level they apply to the legacy workspace and act
+	// as the default for every entry in Workspaces.
+	Transitions Transitions `yaml:"transitions,omitempty"`
 
 	// WebhookPublicKey is the PEM-encoded Ed25519 public key used to verify
 	// incoming Linear webhook signatures (TASK-295). If empty, signature
@@ -38,6 +72,9 @@ type WorkspaceConfig struct {
 	ProjectIDs []string `yaml:"project_ids,omitempty"`
 	Projects   []string `yaml:"projects"` // Pilot project names
 	AutoAssign bool     `yaml:"auto_assign"`
+
+	// Transitions override the top-level transitions per field (GH-5701).
+	Transitions Transitions `yaml:"transitions,omitempty"`
 
 	// Polling configuration (workspace-level override)
 	Polling *PollingConfig `yaml:"polling,omitempty"`
@@ -72,11 +109,24 @@ func (ws *WorkspaceConfig) ResolvePilotProject(issue *Issue) string {
 }
 
 // GetWorkspaces returns all configured workspaces.
-// If workspaces array is set, returns it directly.
+// If workspaces array is set, returns it; top-level transitions fill any
+// field a workspace leaves empty (the workspace is copied only in that case).
 // Otherwise, converts legacy single-workspace config to a workspace slice for backward compatibility.
 func (c *Config) GetWorkspaces() []*WorkspaceConfig {
 	if len(c.Workspaces) > 0 {
-		return c.Workspaces
+		if c.Transitions == (Transitions{}) {
+			return c.Workspaces
+		}
+		out := make([]*WorkspaceConfig, len(c.Workspaces))
+		for i, ws := range c.Workspaces {
+			if ws == nil {
+				continue
+			}
+			cp := *ws
+			cp.Transitions = c.Transitions.Override(ws.Transitions)
+			out[i] = &cp
+		}
+		return out
 	}
 
 	// Legacy single-workspace mode
@@ -86,12 +136,13 @@ func (c *Config) GetWorkspaces() []*WorkspaceConfig {
 			pilotLabel = "pilot"
 		}
 		return []*WorkspaceConfig{{
-			Name:       "default",
-			APIKey:     c.APIKey,
-			TeamID:     c.TeamID,
-			PilotLabel: pilotLabel,
-			ProjectIDs: c.ProjectIDs,
-			AutoAssign: c.AutoAssign,
+			Name:        "default",
+			APIKey:      c.APIKey,
+			TeamID:      c.TeamID,
+			PilotLabel:  pilotLabel,
+			ProjectIDs:  c.ProjectIDs,
+			AutoAssign:  c.AutoAssign,
+			Transitions: c.Transitions,
 		}}
 	}
 

@@ -12,6 +12,7 @@ import (
 	linearSDK "github.com/qf-studio/studio-sdk/sdk/integrations/linear"
 
 	"github.com/qf-studio/pilot/internal/adapters/skipreason"
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/logging"
 )
@@ -421,6 +422,9 @@ func linearPollerRegistration() PollerRegistration {
 			}
 
 			pollers := make([]linearWorkspacePoller, 0, len(internalWss))
+			// GH-5701: one mover per workspace (own client/API key); the merge
+			// leg registered after the loop looks the issue's workspace up in this.
+			doneWorkspaces := make([]linearDoneWorkspace, 0, len(internalWss))
 			for _, ws := range internalWss {
 				triggerLabel := ws.PilotLabel
 				if triggerLabel == "" {
@@ -439,6 +443,13 @@ func linearPollerRegistration() PollerRegistration {
 
 				sdkWS := newSDKLinearWorkspace(ws.Name, ws.APIKey, ws.TeamID, triggerLabel, ws.ProjectIDs, ws.Projects, wsInterval)
 				notifier := linearSDK.NewNotifier(client)
+
+				// GH-5701: native workflow-state write-back. Names/UUIDs from
+				// adapters.linear.transitions; empty falls back to the team's
+				// started/completed-type states.
+				preflightLinearTransitions(ctx, logging.WithComponent("linear"), client, ws.TeamID, ws.Transitions)
+				mover := newLinearStateMover(client, linearSDK.NewSyncAdapter(client), ws.Transitions)
+				doneWorkspaces = append(doneWorkspaces, linearDoneWorkspace{teamRef: ws.TeamID, mover: mover})
 
 				// GH-5576: bound after the poller exists. The handler only runs
 				// once the poller has started, so the late binding is race-free.
@@ -461,7 +472,11 @@ func linearPollerRegistration() PollerRegistration {
 								slog.Any("error", err),
 							)
 						}
-						return handleLinearIssueWithResult(issueCtx, deps.Cfg, ev, projectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+						// GH-5701: start move before dispatch; completion/failure
+						// comment + optional state move after. Never alters the result.
+						return runLinearStateLegs(issueCtx, ev, notifier, mover, func() (*sdkcore.IssueResult, error) {
+							return handleLinearIssueWithResult(issueCtx, deps.Cfg, ev, projectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+						})
 					})
 
 				// One adapter per workspace: with a single workspace the SDK
@@ -483,6 +498,13 @@ func linearPollerRegistration() PollerRegistration {
 				pollers = append(pollers, linearWorkspacePoller{name: ws.Name, poller: poller})
 			}
 
+			// GH-5701: merge-side done leg for pilot/LIN-* PRs on every controller
+			// newLinearOnPRCreated can route to (default + per-repo, GH-5584).
+			// PRs autopilot never observes (all GitLab MRs today) get no merge leg.
+			if len(doneWorkspaces) > 0 {
+				registerLinearDoneNotifier(newLinearDoneNotifier(doneWorkspaces), deps.AutopilotController, deps.AutopilotControllers)
+			}
+
 			logging.WithComponent("start").Info("Linear polling enabled",
 				slog.String("workspaces", fmt.Sprintf("%d workspace(s)", len(internalWss))),
 				slog.Duration("interval", interval),
@@ -498,6 +520,19 @@ func linearPollerRegistration() PollerRegistration {
 				})
 			}
 		},
+	}
+}
+
+// registerLinearDoneNotifier wires the Linear merge leg (GH-5701) on the
+// default controller and every per-repo controller (nil entries skipped).
+func registerLinearDoneNotifier(n autopilot.LinearDoneNotifier, def *autopilot.Controller, byRepo map[string]*autopilot.Controller) {
+	if def != nil {
+		def.SetLinearDoneNotifier(n)
+	}
+	for _, c := range byRepo {
+		if c != nil {
+			c.SetLinearDoneNotifier(n)
+		}
 	}
 }
 

@@ -164,6 +164,17 @@ type JiraDoneNotifier interface {
 	NotifyTaskCompleted(ctx context.Context, issueKey, prURL, summary string) error
 }
 
+// LinearDoneNotifier fires the merge-side "done" leg for a Linear-originated
+// task (GH-5701): the issue moves to its completed-type workflow state.
+// Implemented by cmd/pilot's linearDoneNotifier and wired in via
+// SetLinearDoneNotifier; the narrow interface keeps studio-sdk out of
+// internal/autopilot's import graph, like JiraDoneNotifier above.
+type LinearDoneNotifier interface {
+	// NotifyMerged moves the issue identified by issueIdentifier (e.g.
+	// "QF-295", parsed from the pilot/LIN-QF-295 branch) to its done state.
+	NotifyMerged(ctx context.Context, issueIdentifier, prURL string) error
+}
+
 // TaskMonitor allows autopilot to update task display state.
 // GH-1336: Sync monitor state when autopilot merges PR so dashboard shows correct status.
 type TaskMonitor interface {
@@ -492,6 +503,7 @@ type Controller struct {
 	deployer            *Deployer
 	notifier            Notifier
 	jiraDoneNotifier    JiraDoneNotifier   // GH-4987: merge-side done leg for JIRA-* tasks (optional, nil = no Jira notify)
+	linearDoneNotifier  LinearDoneNotifier // GH-5701: merge-side done leg for LIN-* tasks (optional, nil = no Linear notify)
 	monitor             TaskMonitor        // GH-1336: sync dashboard state on merge
 	dispatcherLive      DispatcherLiveness // GH-4412: always-on live-worker signal (unlike monitor, dashboard-only)
 	laneQueueStatus     LaneQueueStatus    // GH-4454: project-scoped queued/running count for lane-starvation detection
@@ -1333,6 +1345,13 @@ func (c *Controller) SetNotifier(n Notifier) {
 // notification (matching today's behavior for every task source).
 func (c *Controller) SetJiraDoneNotifier(n JiraDoneNotifier) {
 	c.jiraDoneNotifier = n
+}
+
+// SetLinearDoneNotifier wires the merge-side Linear done leg (GH-5701).
+// This is optional; if not set, LIN-* tasks get no merge-side Linear
+// state transition.
+func (c *Controller) SetLinearDoneNotifier(n LinearDoneNotifier) {
+	c.linearDoneNotifier = n
 }
 
 // SetMonitor sets the task monitor for dashboard state sync.
@@ -5506,6 +5525,55 @@ func (c *Controller) notifyJiraDone(ctx context.Context, prState *PRState) {
 	c.persistPRState(prState)
 }
 
+// linearTaskIDPrefix is the SDK adapter's prefix for Linear-originated task
+// IDs (SequenceID = "LIN-" + issue identifier, e.g. "LIN-QF-295"), so a
+// Linear-originated PR's branch is "pilot/LIN-QF-295".
+const linearTaskIDPrefix = "LIN-"
+
+// linearIssueIdentifierFromBranch extracts the Linear issue identifier (e.g.
+// "QF-295") from a Pilot branch name (e.g. "pilot/LIN-QF-295"). Returns ""
+// for any branch that isn't a LIN-* task, mirroring jiraIssueKeyFromBranch.
+func linearIssueIdentifierFromBranch(branchName string) string {
+	taskID := strings.TrimPrefix(branchName, "pilot/")
+	if !strings.HasPrefix(taskID, linearTaskIDPrefix) {
+		return ""
+	}
+	return strings.TrimPrefix(taskID, linearTaskIDPrefix)
+}
+
+// notifyLinearDone fires the Linear merge-side done leg (GH-5701): the
+// issue moves to its completed-type state for a LIN-* task's merged PR.
+// No-op when linearDoneNotifier isn't wired or when prState's branch isn't
+// "pilot/LIN-<IDENTIFIER>". Failure is WARN-only and never blocks the merge.
+//
+// Like notifyJiraDone it is called from handleMerging and from
+// checkExternalMergeOrClose's merged branch; the latter has no persist
+// between detecting the merge and its terminal removePR, so
+// LinearDoneNotified is set unconditionally after the first attempt and
+// persisted immediately. PRs autopilot never observes (today: all GitLab
+// MRs) do not reach this leg.
+func (c *Controller) notifyLinearDone(ctx context.Context, prState *PRState) {
+	if c.linearDoneNotifier == nil {
+		return
+	}
+	identifier := linearIssueIdentifierFromBranch(prState.BranchName)
+	if identifier == "" {
+		return
+	}
+	if prState.LinearDoneNotified {
+		return
+	}
+	if err := c.linearDoneNotifier.NotifyMerged(ctx, identifier, prState.PRURL); err != nil {
+		c.log.Warn("failed to move Linear issue to done",
+			"issue", identifier,
+			"pr", prState.PRNumber,
+			"error", err,
+		)
+	}
+	prState.LinearDoneNotified = true
+	c.persistPRState(prState)
+}
+
 func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error {
 	// GH-4792 (TASK-458 part 2): suppress merges while the platform-outage
 	// breaker is open — CI signal itself is untrustworthy during a platform
@@ -5926,6 +5994,10 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	// gated purely on the branch-derived task ID, so GH-/Linear-originated
 	// PRs are untouched (jiraIssueKeyFromBranch returns "" for them).
 	c.notifyJiraDone(ctx, prState)
+
+	// GH-5701: merge-side Linear done leg, gated on the pilot/LIN-* branch
+	// prefix (linearIssueIdentifierFromBranch returns "" for everything else).
+	c.notifyLinearDone(ctx, prState)
 
 	// GH-4164: PRs gated by human approval (Telegram/Slack) get a short
 	// "🔀 Merged <sha>" follow-up in the same chat the approval decision was
@@ -10479,6 +10551,9 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		// (jiraIssueKeyFromBranch returns "" for GH-/Linear-originated
 		// branches), so those are untouched.
 		c.notifyJiraDone(ctx, prState)
+
+		// GH-5701: same for a human/externally merged pilot/LIN-* PR.
+		c.notifyLinearDone(ctx, prState)
 
 		// GH-1486: Close associated issue and add pilot-done label on external merge
 		if prState.IssueNumber > 0 {
