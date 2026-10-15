@@ -153,7 +153,7 @@ func TestPushAndCreatePRAfterTimeout_PushRejectedIsOneLine(t *testing.T) {
 
 	task := &Task{ID: "LIN-5720", ProjectPath: dir, Branch: branch, SourceAdapter: "linear"}
 	git := NewGitOperations(dir)
-	if pushErr := git.Push(context.Background(), branch); pushErr == nil || !strings.Contains(pushErr.Error(), "\nTo ") && !strings.Contains(pushErr.Error(), ": To ") {
+	if pushErr := git.Push(context.Background(), branch, "GH-5715"); pushErr == nil || !strings.Contains(pushErr.Error(), "\nTo ") && !strings.Contains(pushErr.Error(), ": To ") {
 		t.Fatalf("precondition: raw push error = %v, want git's multi-line stderr with a To header", pushErr)
 	}
 
