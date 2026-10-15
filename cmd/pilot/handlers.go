@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -375,22 +374,19 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, ev sdk
 			HeadSHA:    hr.HeadSHA,
 			Error:      hr.Error,
 		},
-		Outcome:          linearOutcome(hr),
-		TerminalByDesign: hr.TerminalByDesign,
-		BranchName:       hr.BranchName,
-		Cause:            linearOutcomeCause(hr),
+		Outcome:    linearOutcome(hr),
+		BranchName: hr.BranchName,
+		Detail:     linearOutcomeDetail(hr),
 	}, execErr
 }
 
 // linearOutcome is the classified outcome of a finished handler run: the
-// runner's Outcome tag when set, else the persisted execution status, else
-// "completed" for a plain success ("" for a failure with no classification).
+// result's Outcome (the runner's tag, or the persisted row status on the
+// dispatcher path), else "completed" for a plain success ("" for a failure
+// with no classification, e.g. a failed row, which has no result).
 func linearOutcome(hr *HandlerResult) string {
 	if hr.Result != nil && hr.Result.Outcome != "" {
 		return hr.Result.Outcome
-	}
-	if hr.Status != "" {
-		return hr.Status
 	}
 	if hr.Success {
 		return string(executor.ExecStatusCompleted)
@@ -398,14 +394,14 @@ func linearOutcome(hr *HandlerResult) string {
 	return ""
 }
 
-// linearOutcomeCause is the failure detail for a run whose HandlerResult.Error
-// is nil — a rate_limited or stalled row reports its message in the execution
-// row's Error string, not as a Go error.
-func linearOutcomeCause(hr *HandlerResult) error {
-	if hr.Error == nil && hr.Result != nil && strings.TrimSpace(hr.Result.Error) != "" {
-		return errors.New(hr.Result.Error)
+// linearOutcomeDetail is the execution row's error text for a run whose
+// HandlerResult.Error is nil — a rate_limited, stalled or needs_human row
+// reports its message in the row's Error string, not as a Go error.
+func linearOutcomeDetail(hr *HandlerResult) string {
+	if hr.Error == nil && hr.Result != nil {
+		return hr.Result.Error
 	}
-	return hr.Error
+	return ""
 }
 
 // handleJiraSDKIssueWithResult processes a Jira issue delivered as a SDK core.IssueEvent

@@ -205,12 +205,12 @@ Pilot posts these comments on a Linear issue (polling mode):
 | Task dispatched | 🤖 | "Pilot started working on this issue". Posted when the issue is picked up, **before** the admission gates run, so a gated decline can still leave this one comment |
 | PR / MR opened (`completed`) | ✅ | "Pilot completed this task!" with the pull request or merge request URL |
 | No changes needed (`no_op`) | ℹ️ | "Pilot finished this task without opening a pull request" — no changes were needed. Never reported as a failure |
-| Branch held for review (`needs_human`) | ⏸️ | "Pilot held this task for human review" — names the pushed branch (`pilot/<identifier>`) |
+| Branch held for review (`needs_human`) | ⏸️ | "Pilot held this task for human review" — names the branch (`pilot/<identifier>`) and the reason from the execution. When the branch push failed, the comment says the branch is **not** on the remote instead of calling it pushed |
 | Canceled / superseded | ℹ️ | "Pilot stopped this task: it was canceled" (operator cancel) or "…it was superseded" (issue closed or replaced during the run) |
-| Completed without a PR / MR | ℹ️ | "Pilot finished this task without opening a pull request" — the run completed but produced no pull request |
+| Completed without a PR / MR | ℹ️ | "Pilot finished this task without opening a pull request" — the run completed but produced no pull request; names the branch when there is one |
 | Any other outcome (`failed`, `rate_limited`, `stalled`, `declined`, `skipped`, …) | ❌ | "Pilot could not complete this task" with a short reason: the execution status and the first line of the error (for example `rate_limited: …`), with absolute paths replaced by `<path>` and capped at 200 characters. The full error chain stays in the Pilot logs |
 
-An admission-gate decline (the task is already queued or running, is in repick backoff, or already has a terminal completion) and an issue with no project mapping get no comment and **no state move**: the issue is left exactly as it was, so a Done issue that is re-offered on every poll tick is never flipped back to In Progress. Phase-by-phase progress comments are not posted.
+An admission-gate decline (the task is already queued or running, is in repick backoff, or already has a terminal completion) gets no further comment and **no state move**. The 🤖 "started" comment is posted before the gates run, so a declined pickup can still leave that one comment; an issue with no project mapping gets neither. The issue's state is left exactly as it was, so a Done issue that is re-offered on every poll tick is never flipped back to In Progress. Phase-by-phase progress comments are not posted.
 
 ## Workflow state transitions
 
@@ -222,10 +222,11 @@ Besides comments, Pilot moves the issue's native workflow state as the task prog
 | PR / MR opened | `in_review` | No move (comment only) |
 | PR merged | `done` | The team's first `completed`-type state |
 | `failed`, `rate_limited`, `stalled` and other non-success outcomes | `failed` | No move (comment only) |
-| `no_op`, `canceled`, `superseded`, or completed without a PR / MR | `failed` if set | Back to the state the issue had before the dispatch move |
+| `no_op`, `canceled`, or completed without a PR / MR | `failed` if set | Back to the state the issue had before the dispatch move |
+| `superseded` (issue closed or replaced during the run) | none | No move: comment only, so a close made by a person is never undone |
 | `needs_human` (branch held for review) | `in_review` if set | No move: the issue stays in the started state |
 
-The comment and the move follow the execution's classified outcome, not just "succeeded or not" and whether a PR exists. The dispatch move happens only once the task has passed every admission gate and won its claim — after the "started working" comment, and never for a gated decline. A run that ends without a PR or MR (no changes needed, issue closed mid-run, operator cancel) would otherwise stay in the `started` state forever; Pilot posts the matching comment above and moves the issue to the configured `failed` state when one is set, otherwise back to the state it had before the dispatch move. That prior state is remembered in memory, so a daemon restart mid-run loses it and the issue gets the comment only.
+The comment and the move follow the execution's classified outcome, not just "succeeded or not" and whether a PR exists. The dispatch move happens only once the task has passed every admission gate and won its claim — after the "started working" comment, and never for a gated decline. A run that ends without a PR or MR (no changes needed, operator cancel) would otherwise stay in the `started` state forever; Pilot posts the matching comment above and moves the issue to the configured `failed` state when one is set, otherwise back to the state it had before the dispatch move. That prior state is remembered in memory, so a daemon restart mid-run loses it and the issue gets the comment only. A run superseded because the issue was closed or replaced never moves the issue: whoever closed it owns its state.
 
 Each value is a workflow-state **name** (for example `In Review`) or a state **UUID**; an empty value uses the default. State names are plain strings — do not put a `$` in them, because config values are environment-expanded when loaded.
 

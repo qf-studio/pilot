@@ -51,10 +51,6 @@ type HandlerResult struct {
 	// status (superseded or canceled, see executor.IsTerminalByDesignStatus) —
 	// deliberately not carried out rather than genuinely failed (GH-4794).
 	TerminalByDesign bool
-	// Status is the persisted execution row status the dispatcher path waited
-	// on (completed, failed, no_op, needs_human, rate_limited, ...). Empty on
-	// the direct-runner path and on admission-gate declines (GH-5705).
-	Status string
 }
 
 // IsDispatchGated reports whether this result's Error is (or wraps)
@@ -337,8 +333,6 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	// so steps 8/10 can suppress the false failure report/alert without
 	// touching the genuine-failure path.
 	var terminalByDesign bool
-	// execStatus is the waited-on row's persisted status (HandlerResult.Status).
-	var execStatus string
 
 	if deps.Dispatcher != nil {
 		execID, qErr := deps.Dispatcher.QueueTask(ctx, task)
@@ -425,7 +419,6 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			if waitErr != nil {
 				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
 			} else {
-				execStatus = exec.Status
 				result, execErr, terminalByDesign = classifyWaitedExecution(task.ID, exec)
 			}
 		}
@@ -479,7 +472,6 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 		Error:            hrErr,
 		Result:           result,
 		TerminalByDesign: terminalByDesign,
-		Status:           execStatus,
 	}
 	if result != nil {
 		if result.PRUrl != "" {
@@ -592,6 +584,9 @@ func execFailureMsg(execError string) string {
 	return execError
 }
 
+// execFailedPrefix wraps the row error of a failed execution.
+const execFailedPrefix = "execution failed: "
+
 // classifyWaitedExecution turns a terminal execution row (as returned by
 // Dispatcher.WaitForExecution) into the (result, err, terminalByDesign)
 // triple handleIssueGeneric needs. GH-4794: a superseded or canceled
@@ -602,10 +597,11 @@ func execFailureMsg(execError string) string {
 // (exec.Status == "failed" is untouched below).
 func classifyWaitedExecution(taskID string, exec *memory.Execution) (result *executor.ExecutionResult, execErr error, terminalByDesign bool) {
 	if exec.Status == "failed" {
-		return nil, fmt.Errorf("execution failed: %s", execFailureMsg(exec.Error)), false
+		return nil, fmt.Errorf("%s%s", execFailedPrefix, execFailureMsg(exec.Error)), false
 	}
 	result = &executor.ExecutionResult{
 		TaskID:    taskID,
+		Outcome:   exec.Status, // GH-5708: the persisted row status is the classified outcome (GH-5705)
 		Success:   exec.Status == "completed",
 		Output:    exec.Output,
 		Error:     exec.Error,

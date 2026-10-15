@@ -51,8 +51,11 @@ func TestLinearOutcomeDrivesCommentAndState(t *testing.T) {
 		// wantComment is a substring of the single comment posted after the
 		// start comment; "" means no comment at all.
 		wantComment string
-		wantStates  []string // issueUpdate stateIds in order: start first
-		wantFailed  int32    // NotifyTaskFailed calls
+		// wantAlso / wantNot are further substrings the comment must / must not contain.
+		wantAlso   []string
+		wantNot    []string
+		wantStates []string // issueUpdate stateIds in order: start first
+		wantFailed int32    // NotifyTaskFailed calls
 	}{
 		{
 			name: "completed with PR: completion comment, in_review", status: "completed", prURL: prURL,
@@ -68,6 +71,22 @@ func TestLinearOutcomeDrivesCommentAndState(t *testing.T) {
 			wantComment: "Branch `pilot/LIN-QF-5705` is pushed and held for human review", wantStates: []string{started},
 		},
 		{
+			name: "needs_human, push failed: names the reason and says the branch is not on the remote", status: "needs_human",
+			execError:   "timeout salvage (branch push also failed: remote rejected: protected branch)",
+			wantComment: "Branch `pilot/LIN-QF-5705` is NOT on the remote",
+			wantAlso:    []string{"**Reason**: timeout salvage (branch push also failed: remote rejected: protected branch)"},
+			wantNot:     []string{"is pushed and held"},
+			wantStates:  []string{started},
+		},
+		{
+			name: "needs_human, pushed: carries the row error as the reason", status: "needs_human",
+			execError:   "timeout salvage: ran out of budget",
+			wantComment: "is pushed and held for human review",
+			wantAlso:    []string{"**Reason**: timeout salvage: ran out of budget"},
+			wantNot:     []string{"NOT on the remote"},
+			wantStates:  []string{started},
+		},
+		{
 			name: "needs_human with in_review configured: moves to in_review", status: "needs_human",
 			transitions: linear.Transitions{InReview: inReview},
 			wantComment: "held for human review", wantStates: []string{started, inReview},
@@ -77,13 +96,19 @@ func TestLinearOutcomeDrivesCommentAndState(t *testing.T) {
 			wantComment: "it was canceled", wantStates: []string{started, backlog},
 		},
 		{
-			name: "superseded: names the cause, restores prior state", status: "superseded",
-			wantComment: "it was superseded", wantStates: []string{started, backlog},
+			name: "superseded: one comment, no state move, no reopen advice", status: "superseded",
+			wantComment: "it was superseded", wantNot: []string{"Reopen", "re-label"}, wantStates: []string{started},
+		},
+		{
+			name: "completed without a PR: says no PR was produced and names the branch", status: "completed",
+			wantComment: "The run completed on branch `pilot/LIN-QF-5705` but produced no pull request",
+			wantNot:     []string{"issue was closed during the run", "was canceled"},
+			wantStates:  []string{started, backlog},
 		},
 		{
 			name: "failed: status is the class, failed leg", status: "failed", execError: "boom in /tmp/wt/x.go",
 			transitions: linear.Transitions{Failed: inReview},
-			wantComment: "failed: execution failed: boom in <path>", wantStates: []string{started, inReview}, wantFailed: 1,
+			wantComment: "**Reason**: failed: boom in <path>", wantNot: []string{"execution failed:"}, wantStates: []string{started, inReview}, wantFailed: 1,
 		},
 		{
 			name: "rate_limited: comment starts with rate_limited:", status: "rate_limited", execError: "429 from https://api.example.test/v1, retry later",
@@ -192,6 +217,17 @@ func TestLinearOutcomeDrivesCommentAndState(t *testing.T) {
 				}
 			} else if len(f.comments) != 1 || !strings.Contains(f.comments[0], tt.wantComment) {
 				t.Errorf("comments = %q, want exactly one containing %q", f.comments, tt.wantComment)
+			} else {
+				for _, w := range tt.wantAlso {
+					if !strings.Contains(f.comments[0], w) {
+						t.Errorf("comment = %q, want it to contain %q", f.comments[0], w)
+					}
+				}
+				for _, w := range tt.wantNot {
+					if strings.Contains(f.comments[0], w) {
+						t.Errorf("comment = %q, must not contain %q", f.comments[0], w)
+					}
+				}
 			}
 			if got := notifier.failed.Load(); got != tt.wantFailed {
 				t.Errorf("NotifyTaskFailed calls = %d, want %d", got, tt.wantFailed)
@@ -200,19 +236,16 @@ func TestLinearOutcomeDrivesCommentAndState(t *testing.T) {
 	}
 }
 
-// The reason in a failure comment for a row with no error text falls back to
-// the status alone, never "unknown error".
-func TestLinearOutcomeCause(t *testing.T) {
+func TestLinearOutcomeDetail(t *testing.T) {
 	hr := &HandlerResult{Result: &executor.ExecutionResult{Error: "  stalled for 10m "}}
-	if err := linearOutcomeCause(hr); err == nil || err.Error() != "  stalled for 10m " {
-		t.Errorf("cause = %v, want the row's error text", err)
+	if got := linearOutcomeDetail(hr); got != "  stalled for 10m " {
+		t.Errorf("detail = %q, want the row's error text", got)
 	}
-	boom := errors.New("boom")
-	if err := linearOutcomeCause(&HandlerResult{Error: boom, Result: &executor.ExecutionResult{Error: "x"}}); err != boom {
-		t.Errorf("cause = %v, want hr.Error to win", err)
+	if got := linearOutcomeDetail(&HandlerResult{Error: errors.New("boom"), Result: &executor.ExecutionResult{Error: "x"}}); got != "" {
+		t.Errorf("detail = %q, want none when hr.Error is set", got)
 	}
-	if err := linearOutcomeCause(&HandlerResult{}); err != nil {
-		t.Errorf("cause = %v, want nil", err)
+	if got := linearOutcomeDetail(&HandlerResult{}); got != "" {
+		t.Errorf("detail = %q, want none", got)
 	}
 }
 
@@ -222,9 +255,9 @@ func TestLinearOutcome(t *testing.T) {
 		hr   *HandlerResult
 		want string
 	}{
-		{"runner tag wins", &HandlerResult{Status: "completed", Result: &executor.ExecutionResult{Outcome: "no_op"}}, "no_op"},
-		{"row status", &HandlerResult{Status: "needs_human", Result: &executor.ExecutionResult{}}, "needs_human"},
-		{"failed row has no result", &HandlerResult{Status: "failed"}, "failed"},
+		{"result outcome (runner tag or row status)", &HandlerResult{Result: &executor.ExecutionResult{Outcome: "no_op"}}, "no_op"},
+		{"outcome wins over success", &HandlerResult{Success: true, Result: &executor.ExecutionResult{Outcome: "needs_human"}}, "needs_human"},
+		{"failed row has no result", &HandlerResult{}, ""},
 		{"direct-runner success", &HandlerResult{Success: true}, "completed"},
 		{"direct-runner failure", &HandlerResult{}, ""},
 	}

@@ -363,7 +363,7 @@ func TestLinearFailureReason_NoLeak(t *testing.T) {
 			name:   "wrapped chain with worktree path keeps first line, drops path",
 			status: "failed",
 			err:    fmt.Errorf("execution failed: git push in %s: exit 1\nremote: secret detail\n  at /var/lib/pilot/x.go:12", wt),
-			want:   "failed: execution failed: git push in <path>: exit 1",
+			want:   "failed: git push in <path>: exit 1",
 		},
 		{
 			name:   "path in quotes and after colon",
@@ -414,6 +414,10 @@ func TestLinearAbsPathRe(t *testing.T) {
 		{"semicolon-separated paths both redacted", "see /tmp/a;/var/b", "see <path>;<path>"},
 		{"path after a URL is still redacted", "fetch https://x.test/a then /tmp/wt/file", "fetch https://x.test/a then <path>"},
 		{"leading path", "/tmp/wt/x.go:12: boom", "<path>:12: boom"},
+		{"colon inside a path stays in the path", "read /clients/acme:prod/secrets.env failed", "read <path> failed"},
+		{"colon inside a path, then a trailing colon", "open /clients/acme:prod/x: denied", "open <path>: denied"},
+		{"trailing colon before a digit", "at /tmp/wt/x.go:12", "at <path>:12"},
+		{"path at end of string with a trailing colon", "see /tmp/wt:", "see <path>:"},
 		{"fractions survive", "ratio 3/4 and/or 1/2", "ratio 3/4 and/or 1/2"},
 	}
 	for _, tt := range tests {
@@ -523,12 +527,7 @@ func (n recNotifier) NotifyTaskCompleted(_ context.Context, issueID, prURL, _ st
 	return n.err
 }
 
-func (n recNotifier) NotifyTaskEndedWithoutPR(_ context.Context, issueID string) error {
-	n.rec.add("nopr:" + issueID)
-	return n.err
-}
-
-func (n recNotifier) NotifyTaskEnded(_ context.Context, issueID string, kind linearEndKind, branch string) error {
+func (n recNotifier) NotifyTaskEnded(_ context.Context, issueID string, kind linearEndKind, branch, _ string) error {
 	n.rec.add("ended:" + string(kind) + ":" + issueID + ":" + branch)
 	return n.err
 }
@@ -547,7 +546,7 @@ func TestRunLinearStateLegs(t *testing.T) {
 		res        *sdkcore.IssueResult
 		outcome    string // classified outcome handed to the legs (GH-5705)
 		branch     string
-		cause      error
+		detail     string
 		runErr     error
 		moverErr   error
 		notifyErr  error
@@ -572,7 +571,7 @@ func TestRunLinearStateLegs(t *testing.T) {
 		{
 			name:       "success without PR URL: terminal comment and no-PR move (GH-5703)",
 			res:        &sdkcore.IssueResult{Success: true},
-			wantEvents: []string{"move:start:uuid-1", "run", "nopr:uuid-1", "move:nopr:uuid-1"},
+			wantEvents: []string{"move:start:uuid-1", "run", "ended:completed:uuid-1:", "move:nopr:uuid-1"},
 		},
 		{
 			name:       "gated decline (success + ErrDispatchGated) never moves or comments (GH-5703)",
@@ -600,16 +599,16 @@ func TestRunLinearStateLegs(t *testing.T) {
 			wantEvents: []string{"move:start:uuid-1", "run", "ended:canceled:uuid-1:", "move:nopr:uuid-1"},
 		},
 		{
-			name:       "superseded: cause comment and restore (GH-5705)",
+			name:       "superseded: cause comment only, no state move (GH-5708)",
 			res:        &sdkcore.IssueResult{Success: true},
 			outcome:    "superseded",
-			wantEvents: []string{"move:start:uuid-1", "run", "ended:superseded:uuid-1:", "move:nopr:uuid-1"},
+			wantEvents: []string{"move:start:uuid-1", "run", "ended:superseded:uuid-1:"},
 		},
 		{
 			name:       "rate_limited: failure comment starts with the status (GH-5705)",
 			res:        &sdkcore.IssueResult{Success: false},
 			outcome:    "rate_limited",
-			cause:      errors.New("429 too many requests"),
+			detail:     "429 too many requests",
 			wantEvents: []string{"move:start:uuid-1", "run", "failed:uuid-1:rate_limited: 429 too many requests", "move:failed:uuid-1"},
 		},
 		{
@@ -663,7 +662,7 @@ func TestRunLinearStateLegs(t *testing.T) {
 					if tt.res == nil {
 						return nil, tt.runErr
 					}
-					return &linearRun{Result: tt.res, Outcome: tt.outcome, BranchName: tt.branch, Cause: tt.cause}, tt.runErr
+					return &linearRun{Result: tt.res, Outcome: tt.outcome, BranchName: tt.branch, Detail: tt.detail}, tt.runErr
 				})
 			if got != tt.res || err != tt.runErr {
 				t.Errorf("result/error altered: got (%v, %v), want (%v, %v)", got, err, tt.res, tt.runErr)
