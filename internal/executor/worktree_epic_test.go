@@ -364,7 +364,7 @@ func TestWorktreeEpicBranchOperations(t *testing.T) {
 	}
 
 	// Push from worktree
-	if err := gitOps.Push(ctx, branchName); err != nil {
+	if err := gitOps.Push(ctx, branchName, "test"); err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
 

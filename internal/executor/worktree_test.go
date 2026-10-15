@@ -620,7 +620,7 @@ func TestWorktreeGitOperationsIntegration(t *testing.T) {
 	}
 
 	// Test Push
-	if err := gitOps.Push(ctx, branchName); err != nil {
+	if err := gitOps.Push(ctx, branchName, "test"); err != nil {
 		t.Errorf("Push failed: %v", err)
 	}
 

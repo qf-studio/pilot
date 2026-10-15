@@ -120,7 +120,7 @@ func preserveDirtyWorktreeAsWIP(ctx context.Context, git *GitOperations, task *T
 		}
 		return "", false
 	}
-	if pushErr := git.Push(ctx, task.Branch); pushErr != nil {
+	if pushErr := git.Push(ctx, task.Branch, task.ID); pushErr != nil {
 		// Pin the commit under a recovery ref (GH-3785 pattern) so it
 		// survives worktree cleanup even though the push itself failed —
 		// never leave a preserved commit reachable only via a worktree that

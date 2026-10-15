@@ -1,11 +1,13 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHooksConfig_Defaults(t *testing.T) {
@@ -46,8 +48,17 @@ func TestGenerateClaudeSettings(t *testing.T) {
 			result := GenerateClaudeSettings(tt.config, "/test/scripts")
 
 			if tt.expectKeys == 0 {
-				if len(result) != 0 {
-					t.Errorf("Expected empty result, got %d keys", len(result))
+				// GH-5719: an enabled config with no hook entries still carries
+				// includeCoAuthoredBy=false; a disabled config returns nothing.
+				wantKeys := 0
+				if tt.config != nil && tt.config.Enabled {
+					wantKeys = 1
+				}
+				if len(result) != wantKeys {
+					t.Errorf("Expected %d keys, got %d: %v", wantKeys, len(result), result)
+				}
+				if _, ok := result["hooks"]; ok {
+					t.Errorf("Expected no hooks key, got %v", result)
 				}
 				return
 			}
@@ -1056,5 +1067,88 @@ func TestMergeWithExisting_ForcesCoAuthoredByFalse(t *testing.T) {
 	}
 	if got["model"] != "x" {
 		t.Errorf("project setting lost: %v", got)
+	}
+}
+
+func TestGenerateClaudeSettings_CoAuthoredByWithoutSubHooks(t *testing.T) {
+	cfg := &HooksConfig{
+		Enabled:          true,
+		RunTestsOnStop:   boolPtr(false),
+		BlockDestructive: boolPtr(false),
+	}
+	settings := GenerateClaudeSettings(cfg, "/tmp/scripts")
+	if v, ok := settings["includeCoAuthoredBy"].(bool); !ok || v {
+		t.Fatalf("includeCoAuthoredBy = %v, want false: %v", settings["includeCoAuthoredBy"], settings)
+	}
+	if _, ok := settings["hooks"]; ok {
+		t.Errorf("hooks key should be absent when no hook entries were generated: %v", settings)
+	}
+
+	path := filepath.Join(t.TempDir(), ".claude", "settings.json")
+	if _, _, err := MergeWithExisting(path, settings); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"includeCoAuthoredBy": false`) {
+		t.Errorf("written settings.json missing includeCoAuthoredBy=false: %s", data)
+	}
+}
+
+// settingsSnapshotBackend records .claude/settings.json as seen by the session.
+type settingsSnapshotBackend struct {
+	settings []byte
+	readErr  error
+}
+
+func (b *settingsSnapshotBackend) Name() string      { return "mock" }
+func (b *settingsSnapshotBackend) IsAvailable() bool { return true }
+func (b *settingsSnapshotBackend) Execute(_ context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	b.settings, b.readErr = os.ReadFile(filepath.Join(opts.ProjectPath, ".claude", "settings.json"))
+	return &BackendResult{Success: true, Output: "done"}, nil
+}
+
+// TestExecute_WritesCoAuthoredByFalse_IndependentOfHooks pins GH-5719: the
+// includeCoAuthoredBy=false key reaches the session's settings.json whether
+// hooks are disabled or enabled with every sub-hook off, and the file is gone
+// again after the run.
+func TestExecute_WritesCoAuthoredByFalse_IndependentOfHooks(t *testing.T) {
+	tests := []struct {
+		name  string
+		hooks *HooksConfig
+	}{
+		{"hooks disabled", &HooksConfig{Enabled: false}},
+		{"hooks enabled, no sub-hooks", &HooksConfig{
+			Enabled:          true,
+			RunTestsOnStop:   boolPtr(false),
+			BlockDestructive: boolPtr(false),
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			backend := &settingsSnapshotBackend{}
+			runner := NewRunnerWithBackend(backend)
+			runner.skipPreflightChecks = true
+			runner.config = &BackendConfig{Hooks: tt.hooks}
+
+			task := &Task{ID: "GH-5719-" + strings.ReplaceAll(tt.name, " ", "-"), Title: "Fix typo", Description: "Fix typo", ProjectPath: dir}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := runner.Execute(ctx, task); err != nil {
+				t.Fatalf("Execute() error: %v", err)
+			}
+			if backend.readErr != nil {
+				t.Fatalf("session saw no settings.json: %v", backend.readErr)
+			}
+			if !strings.Contains(string(backend.settings), `"includeCoAuthoredBy": false`) {
+				t.Errorf("settings.json missing includeCoAuthoredBy=false: %s", backend.settings)
+			}
+			if _, err := os.Stat(filepath.Join(dir, ".claude", "settings.json")); !os.IsNotExist(err) {
+				t.Errorf("settings.json should be removed after the run, stat err=%v", err)
+			}
+		})
 	}
 }
