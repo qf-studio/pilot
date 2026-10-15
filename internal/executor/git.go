@@ -853,42 +853,224 @@ const commitTrailerGuidance = "Commit messages: no `Co-Authored-By` trailer and 
 // anthropicCoAuthorRe matches the default Claude Code co-author trailer line.
 var anthropicCoAuthorRe = regexp.MustCompile(`(?im)^[ \t]*Co-Authored-By:[^\n]*@anthropic\.com[^\n]*(?:\n|$)`)
 
-// StripAnthropicCoAuthor rewrites the HEAD commit message without any
-// `Co-Authored-By:` trailer carrying an Anthropic address (GH-5711). The amend
-// is message-only (`--only`, no paths), so the tree hash is unchanged. Returns
-// true when the commit was rewritten; a commit without the trailer is untouched.
+// StripAnthropicCoAuthor removes any `Co-Authored-By:` trailer carrying an
+// Anthropic address from every commit the branch is about to publish (GH-5711,
+// GH-5719). Returns true when at least one commit was rewritten; commits
+// without the trailer are untouched. See StripAnthropicCoAuthorRange.
 func (g *GitOperations) StripAnthropicCoAuthor(ctx context.Context) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "log", "-1", "--format=%B")
+	shas, err := g.StripAnthropicCoAuthorRange(ctx)
+	return len(shas) > 0, err
+}
+
+// StripAnthropicCoAuthorRange is StripAnthropicCoAuthor returning the original
+// shas of the rewritten commits. The GitHub squash body aggregates co-authors
+// from every commit in the PR, so HEAD alone is not enough: the session, the
+// memory-doc fixups and the wip auto-preserve commit all stack on one branch.
+//
+// The range is `<base>..HEAD` where base is the remote-tracking ref of the
+// default branch, falling back to the branch's own remote ref, then HEAD alone.
+// Decision: commits already reachable from the branch's own remote ref are
+// excluded — they are published, and rewriting them would turn the next
+// non-force push into a rejected non-fast-forward.
+//
+// When only HEAD matches it is amended (`--only`, no paths); otherwise the
+// range is rewritten message-only via commit-tree so every tree hash is
+// unchanged.
+func (g *GitOperations) StripAnthropicCoAuthorRange(ctx context.Context) ([]string, error) {
+	commits, err := g.unpublishedCommits(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var matching []string
+	for _, sha := range commits {
+		msg, err := g.commitMessage(ctx, sha)
+		if err != nil {
+			return nil, err
+		}
+		if anthropicCoAuthorRe.MatchString(msg) {
+			matching = append(matching, sha)
+		}
+	}
+	if len(matching) == 0 {
+		return nil, nil
+	}
+	if len(matching) == 1 && matching[0] == commits[0] {
+		return matching, g.amendHeadWithoutAnthropicCoAuthor(ctx)
+	}
+	if err := g.rewriteCommitMessages(ctx, commits); err != nil {
+		return nil, err
+	}
+	return matching, nil
+}
+
+func stripAnthropicCoAuthorLines(msg string) string {
+	return strings.TrimRight(anthropicCoAuthorRe.ReplaceAllString(msg, ""), " \t\r\n") + "\n"
+}
+
+func (g *GitOperations) gitOutput(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = g.projectPath
 	out, err := cmd.Output()
 	if err != nil {
-		return false, fmt.Errorf("failed to read HEAD commit message: %w", err)
+		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
-	msg := string(out)
-	if !anthropicCoAuthorRe.MatchString(msg) {
-		return false, nil
-	}
-	cleaned := strings.TrimRight(anthropicCoAuthorRe.ReplaceAllString(msg, ""), " \t\r\n") + "\n"
+	return string(out), nil
+}
 
+func (g *GitOperations) refExists(ctx context.Context, ref string) bool {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	cmd.Dir = g.projectPath
+	return cmd.Run() == nil
+}
+
+func (g *GitOperations) commitMessage(ctx context.Context, sha string) (string, error) {
+	out, err := g.gitOutput(ctx, "log", "-1", "--format=%B", sha)
+	if err != nil {
+		return "", fmt.Errorf("failed to read commit message: %w", err)
+	}
+	return out, nil
+}
+
+// unpublishedCommits lists the commits the next push would publish, newest
+// first (HEAD at index 0). Falls back to HEAD alone when no base ref resolves.
+func (g *GitOperations) unpublishedCommits(ctx context.Context) ([]string, error) {
+	head, err := g.gitOutput(ctx, "rev-parse", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve HEAD: %w", err)
+	}
+	head = strings.TrimSpace(head)
+
+	branch, _ := g.GetCurrentBranch(ctx)
+	ownRemote := ""
+	if branch != "" && branch != "HEAD" && g.refExists(ctx, "refs/remotes/origin/"+branch) {
+		ownRemote = "refs/remotes/origin/" + branch
+	}
+	base := ""
+	if def, defErr := g.GetDefaultBranch(ctx); defErr == nil && g.refExists(ctx, "refs/remotes/origin/"+def) {
+		base = "refs/remotes/origin/" + def
+	} else if ownRemote != "" {
+		base = ownRemote
+	}
+	if base == "" {
+		return []string{head}, nil
+	}
+
+	args := []string{"rev-list", "HEAD", "^" + base}
+	if ownRemote != "" && ownRemote != base {
+		args = append(args, "^"+ownRemote)
+	}
+	out, err := g.gitOutput(ctx, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list unpublished commits: %w", err)
+	}
+	commits := strings.Fields(out)
+	if len(commits) == 0 || commits[0] != head {
+		// HEAD is already published (or the range is empty): nothing to rewrite.
+		return nil, nil
+	}
+	return commits, nil
+}
+
+func (g *GitOperations) amendHeadWithoutAnthropicCoAuthor(ctx context.Context) error {
+	msg, err := g.commitMessage(ctx, "HEAD")
+	if err != nil {
+		return err
+	}
 	amend := exec.CommandContext(ctx, "git", "commit", "--amend", "--only", "--no-verify", "--allow-empty", "-F", "-")
 	amend.Dir = g.projectPath
-	amend.Stdin = strings.NewReader(cleaned)
+	amend.Stdin = strings.NewReader(stripAnthropicCoAuthorLines(msg))
 	if output, err := amend.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("failed to amend commit message: %w: %s", err, output)
+		return fmt.Errorf("failed to amend commit message: %w: %s", err, output)
 	}
-	return true, nil
+	return nil
+}
+
+// rewriteCommitMessages rebuilds the given commits (newest first, HEAD first)
+// with the Anthropic trailer removed, keeping each tree, author and committer
+// identity and date. Commits whose ancestors were rewritten are re-created on
+// top of the new parents; untouched leading commits keep their shas. Finally
+// the checked-out branch is moved to the rewritten HEAD. Trees are identical,
+// so the index and working tree stay valid.
+func (g *GitOperations) rewriteCommitMessages(ctx context.Context, commits []string) error {
+	oldHead := commits[0]
+	rewritten := make(map[string]string, len(commits))
+	inRange := make(map[string]bool, len(commits))
+	for _, sha := range commits {
+		inRange[sha] = true
+	}
+	// rev-list order is newest first; parents must be created before children.
+	for i := len(commits) - 1; i >= 0; i-- {
+		sha := commits[i]
+		meta, err := g.gitOutput(ctx, "log", "-1", "--date=raw", "--format=%an%n%ae%n%ad%n%cn%n%ce%n%cd%n%T%n%P", sha)
+		if err != nil {
+			return err
+		}
+		f := strings.Split(strings.TrimRight(meta, "\n"), "\n")
+		if len(f) < 8 {
+			return fmt.Errorf("unexpected commit metadata for %s", sha)
+		}
+		msg, err := g.commitMessage(ctx, sha)
+		if err != nil {
+			return err
+		}
+
+		changed := anthropicCoAuthorRe.MatchString(msg)
+		var parents []string
+		for _, p := range strings.Fields(f[7]) {
+			if np, ok := rewritten[p]; ok {
+				p = np
+				changed = true
+			}
+			parents = append(parents, p)
+		}
+		if !changed {
+			continue
+		}
+		args := []string{"commit-tree", f[6]}
+		for _, p := range parents {
+			args = append(args, "-p", p)
+		}
+		args = append(args, "-F", "-")
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = g.projectPath
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME="+f[0], "GIT_AUTHOR_EMAIL="+f[1], "GIT_AUTHOR_DATE="+f[2],
+			"GIT_COMMITTER_NAME="+f[3], "GIT_COMMITTER_EMAIL="+f[4], "GIT_COMMITTER_DATE="+f[5])
+		cmd.Stdin = strings.NewReader(stripAnthropicCoAuthorLines(msg))
+		out, err := cmd.Output()
+		if err != nil {
+			return fmt.Errorf("failed to rewrite commit %s: %w", sha, err)
+		}
+		rewritten[sha] = strings.TrimSpace(string(out))
+	}
+
+	newHead, ok := rewritten[oldHead]
+	if !ok {
+		return nil
+	}
+	if out, err := exec.CommandContext(ctx, "git", "-C", g.projectPath, "update-ref",
+		"-m", "pilot: strip Anthropic co-author trailer", "HEAD", newHead, oldHead).CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to move branch to rewritten commits: %w: %s", err, out)
+	}
+	return nil
 }
 
 // Push pushes the current branch to remote. Before pushing it strips the
-// Claude co-author trailer from the HEAD commit (GH-5711): belt and braces for
-// backends that ignore includeCoAuthoredBy. Covers every push call site.
-func (g *GitOperations) Push(ctx context.Context, branchName string) error {
-	if stripped, err := g.StripAnthropicCoAuthor(ctx); err != nil {
+// Claude co-author trailer from every commit the push would publish (GH-5711,
+// GH-5719): belt and braces for backends that ignore includeCoAuthoredBy.
+// Covers every push call site. taskID is only used to name the task in logs.
+func (g *GitOperations) Push(ctx context.Context, branchName, taskID string) error {
+	if shas, err := g.StripAnthropicCoAuthorRange(ctx); err != nil {
 		slog.Warn("Failed to strip co-author trailer before push",
-			slog.String("branch", branchName), slog.Any("error", err))
-	} else if stripped {
-		slog.Warn("Stripped Anthropic Co-Authored-By trailer from commit before push",
-			slog.String("branch", branchName))
+			slog.String("task_id", taskID), slog.String("branch", branchName), slog.Any("error", err))
+	} else if len(shas) > 0 {
+		short := make([]string, len(shas))
+		for i, s := range shas {
+			short[i] = s[:min(7, len(s))]
+		}
+		slog.Warn("Stripped Anthropic Co-Authored-By trailer from commits before push",
+			slog.String("task_id", taskID), slog.String("branch", branchName),
+			slog.Any("rewritten_shas", short))
 	}
 	cmd := exec.CommandContext(ctx, "git", "push", "-u", "origin", branchName)
 	cmd.Dir = g.projectPath

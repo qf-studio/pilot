@@ -2483,7 +2483,7 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 
 	// Push the parent branch. TASK-359: a real deliverable that fails to push is a
 	// failure, not an advisory warning (was warn+continue pre-TASK-359 — Shape A).
-	if err := git.Push(ctx, task.Branch); err != nil {
+	if err := git.Push(ctx, task.Branch, task.ID); err != nil {
 		// GH-1389: a worktree push may report a chdir error even though the data
 		// reached the remote. Treat the branch existing on the remote as success.
 		if git.RemoteBranchExists(ctx, task.Branch) {
@@ -3142,7 +3142,7 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 	pushFailed := false
 	result.BranchPushed = nil
 	if git != nil && task.Branch != "" {
-		if pushErr := git.Push(pushCtx, task.Branch); pushErr != nil {
+		if pushErr := git.Push(pushCtx, task.Branch, task.ID); pushErr != nil {
 			if git.RemoteBranchExists(pushCtx, task.Branch) {
 				pushed = true
 			} else {
@@ -3255,7 +3255,7 @@ func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, gi
 		}
 	}
 
-	if err := git.Push(ctx, task.Branch); err != nil {
+	if err := git.Push(ctx, task.Branch, task.ID); err != nil {
 		if !git.RemoteBranchExists(ctx, task.Branch) {
 			// GH-5720: no raw Push error here — it is git's multi-line stderr and
 			// holdPushedBranch re-pushes and appends the single one-line reason.
@@ -4610,6 +4610,29 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						slog.String("settings_path", settingsPath),
 						slog.String("script_dir", scriptDir))
 				}
+			}
+		}
+	}
+
+	// GH-5719: includeCoAuthoredBy=false must not depend on the hooks setup —
+	// hooks.enabled=false, or a failure above, would otherwise leave the
+	// default Claude co-author trailer on. Merge just that key and restore the
+	// settings file byte-for-byte afterwards.
+	if hookRestoreFunc == nil {
+		coAuthorSettingsPath := filepath.Join(executionPath, ".claude", "settings.json")
+		coRestore, coPreExisted, coErr := MergeWithExisting(coAuthorSettingsPath, coAuthorSettings())
+		if coErr != nil {
+			log.Warn("Failed to disable co-author trailer in Claude settings", slog.Any("error", coErr))
+		} else {
+			hookRestoreFunc = func() error {
+				if err := coRestore(); err != nil {
+					log.Warn("Failed to restore Claude settings", slog.Any("error", err))
+				} else if !coPreExisted {
+					if err := removeClaudeDirIfEmpty(coAuthorSettingsPath); err != nil {
+						log.Warn("Failed to remove empty .claude directory", slog.Any("error", err))
+					}
+				}
+				return nil
 			}
 		}
 	}
@@ -6795,7 +6818,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			})
 			var pushErr error
 			for attempt := 1; attempt <= gitPushRetryAttempts; attempt++ {
-				pushErr = git.Push(ctx, task.Branch)
+				pushErr = git.Push(ctx, task.Branch, task.ID)
 				if pushErr == nil {
 					break
 				}

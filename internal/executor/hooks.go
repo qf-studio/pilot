@@ -157,16 +157,20 @@ func GenerateClaudeSettings(config *HooksConfig, scriptDir string) map[string]in
 		}
 	}
 
-	if len(hooks) == 0 {
-		return map[string]interface{}{}
+	// GH-5711: the executor owns the commit identity; CLAUDE.md forbids tool
+	// mentions in commits, so turn the default co-author trailer off. GH-5719:
+	// the key is returned even when no hook entries were generated.
+	settings := coAuthorSettings()
+	if len(hooks) > 0 {
+		settings["hooks"] = hooks
 	}
+	return settings
+}
 
-	return map[string]interface{}{
-		"hooks": hooks,
-		// GH-5711: the executor owns the commit identity; CLAUDE.md forbids tool
-		// mentions in commits, so turn the default co-author trailer off.
-		"includeCoAuthoredBy": false,
-	}
+// coAuthorSettings is the minimal Pilot-owned settings map: only the key that
+// turns off the Claude Code co-author trailer (GH-5711, GH-5719).
+func coAuthorSettings() map[string]interface{} {
+	return map[string]interface{}{"includeCoAuthoredBy": false}
 }
 
 // WriteClaudeSettings writes the .claude/settings.json file

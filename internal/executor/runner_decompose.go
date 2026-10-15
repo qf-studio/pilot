@@ -546,7 +546,7 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 
 	var pushErr error
 	for attempt := 1; attempt <= gitPushRetryAttempts; attempt++ {
-		pushErr = git.Push(ctx, task.Branch)
+		pushErr = git.Push(ctx, task.Branch, task.ID)
 		if pushErr == nil {
 			break
 		}

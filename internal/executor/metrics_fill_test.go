@@ -40,7 +40,9 @@ func TestExecute_MetricsFill_PopulatesLinesFromDiff(t *testing.T) {
 					t.Errorf("write %s: %v", name, err)
 				}
 			}
-			runGit(t, dir, "add", "-A")
+			// GH-5719: Pilot's own .claude/settings.json is present during the
+			// session, so stage the fixture files explicitly rather than -A.
+			runGit(t, dir, "add", "a.go", "b.go", "c.go")
 			runGit(t, dir, "commit", "-m", "feat: add files")
 			// Only one Write call recorded, so FilesChanged==3 can only come from the diff.
 			emitWriteToolUse(opts, filepath.Join(dir, "a.go"))

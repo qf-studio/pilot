@@ -1911,6 +1911,43 @@ func TestStripAnthropicCoAuthor(t *testing.T) {
 		}
 	})
 
+	t.Run("multi-commit branch: older commits are rewritten message-only", func(t *testing.T) {
+		_, dir, cleanup := newRemoteAndLocalRepo(t)
+		defer cleanup()
+		gitOut(t, dir, "checkout", "-b", "pilot/GH-multi")
+		trailer := "\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+		commitWith(t, dir, "feat(a): one"+trailer)
+		commitWith(t, dir, "feat(b): two, no trailer")
+		commitWith(t, dir, "feat(c): three"+trailer)
+		commitWith(t, dir, "feat(d): four, no trailer")
+		treesBefore := gitOut(t, dir, "log", "--format=%T", "-4")
+		authorsBefore := gitOut(t, dir, "log", "--format=%an|%ae|%ad", "--date=raw", "-4")
+
+		shas, err := NewGitOperations(dir).StripAnthropicCoAuthorRange(context.Background())
+		if err != nil || len(shas) != 2 {
+			t.Fatalf("shas=%v err=%v, want 2 rewritten shas", shas, err)
+		}
+		all := gitOut(t, dir, "log", "--format=%B", "-4")
+		if strings.Contains(strings.ToLower(all), "anthropic") || strings.Contains(strings.ToLower(all), "co-authored-by") {
+			t.Errorf("trailer still reachable on branch: %q", all)
+		}
+		if got := gitOut(t, dir, "log", "--format=%T", "-4"); got != treesBefore {
+			t.Errorf("tree hashes changed:\n%s\nwant\n%s", got, treesBefore)
+		}
+		if got := gitOut(t, dir, "log", "--format=%an|%ae|%ad", "--date=raw", "-4"); got != authorsBefore {
+			t.Errorf("author identity/date changed:\n%s\nwant\n%s", got, authorsBefore)
+		}
+		if got := gitOut(t, dir, "log", "--format=%s", "-4"); got != "feat(d): four, no trailer\nfeat(c): three\nfeat(b): two, no trailer\nfeat(a): one" {
+			t.Errorf("subjects/order = %q", got)
+		}
+		if got := gitOut(t, dir, "branch", "--show-current"); got != "pilot/GH-multi" {
+			t.Errorf("branch = %q, want pilot/GH-multi", got)
+		}
+		if st := gitOut(t, dir, "status", "--porcelain"); st != "" {
+			t.Errorf("working tree dirty after rewrite: %q", st)
+		}
+	})
+
 	t.Run("commit without trailer is untouched", func(t *testing.T) {
 		dir, _ := initTestRepo(t)
 		commitWith(t, dir, "fix(x): plain\n\nCo-Authored-By: Human <human@example.com>")
@@ -1924,4 +1961,58 @@ func TestStripAnthropicCoAuthor(t *testing.T) {
 			t.Errorf("HEAD changed: %s -> %s", shaBefore, got)
 		}
 	})
+}
+
+// TestPush_StripsAnthropicCoAuthorFromWholeBranch pins the wiring (GH-5719):
+// Push must strip the trailer from every new commit, not just HEAD, before the
+// commits reach the remote. Removing the call from Push turns this red.
+func TestPush_StripsAnthropicCoAuthorFromWholeBranch(t *testing.T) {
+	remoteDir, localDir, cleanup := newRemoteAndLocalRepo(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = localDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	const branch = "pilot/GH-5719-push"
+	run("checkout", "-b", branch)
+	trailer := "\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+	for i, msg := range []string{"feat(a): one" + trailer, "feat(b): two" + trailer, "feat(c): three"} {
+		name := fmt.Sprintf("f%d.txt", i)
+		if err := os.WriteFile(filepath.Join(localDir, name), []byte(msg), 0644); err != nil {
+			t.Fatal(err)
+		}
+		run("add", name)
+		run("commit", "-m", msg)
+	}
+	treesBefore := run("log", "--format=%T", "-3")
+
+	if err := NewGitOperations(localDir).Push(ctx, branch, "GH-5719"); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+
+	remoteLog := func(format string) string {
+		cmd := exec.Command("git", "--git-dir", remoteDir, "log", "--format="+format, "-3", branch)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("remote log: %v\n%s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if msgs := run("log", "--format=%B", "-3", "origin/"+branch); strings.Contains(msgs, "@anthropic.com") {
+		t.Errorf("origin/%s still carries the trailer: %q", branch, msgs)
+	}
+	if msgs := remoteLog("%B"); strings.Contains(msgs, "@anthropic.com") {
+		t.Errorf("remote still carries the trailer: %q", msgs)
+	}
+	if got := remoteLog("%T"); got != treesBefore {
+		t.Errorf("tree hashes changed:\n%s\nwant\n%s", got, treesBefore)
+	}
 }
