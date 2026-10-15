@@ -24,6 +24,8 @@ type preservedAdoption struct {
 	sha    string // full SHA of the preserved commit
 	branch string
 	stage  string // classification point that preserved it, e.g. "before no-commit retry"
+
+	finished bool // finishAdoption already ran (GH-5718: fire exactly once)
 }
 
 func (a *preservedAdoption) shortSHA() string {
@@ -82,7 +84,7 @@ func (r *Runner) adoptPreservedWorktree(ctx context.Context, git *GitOperations,
 	if !preserved {
 		return nil
 	}
-	return r.beginAdoption(task, result, sha, stage)
+	return r.beginAdoption(task, result, sha, stage, true)
 }
 
 // adoptGhostPreserved is the same rescue for the ghost-SHA classification
@@ -96,16 +98,23 @@ func (r *Runner) adoptGhostPreserved(task *Task, result *ExecutionResult, backen
 	sha := result.CommitSHA
 	result.Success = true
 	result.Error = ""
-	return r.beginAdoption(task, result, sha, "at no-op classification")
+	// GH-5718: applyGhostSHAGuardWithPreserve already recorded work_preserved
+	// for this commit, so the ghost path must not record a second one.
+	return r.beginAdoption(task, result, sha, "at no-op classification", false)
 }
 
-func (r *Runner) beginAdoption(task *Task, result *ExecutionResult, sha, stage string) *preservedAdoption {
+// beginAdoption starts an adoption. recordPreserved controls the
+// work_preserved event: the worktree path preserves the work itself and has
+// not recorded one yet; the ghost path's guard already did.
+func (r *Runner) beginAdoption(task *Task, result *ExecutionResult, sha, stage string, recordPreserved bool) *preservedAdoption {
 	a := &preservedAdoption{sha: sha, branch: task.Branch, stage: stage}
 	result.CommitSHA = sha
-	r.recordExecutionEvent(task.LogExecutionID(), memory.StageWorkPreserved, fmt.Sprintf(
-		"worktree had uncommitted work %s — auto-preserved as %s on branch %s; adopting as the deliverable pending quality gates",
-		stage, a.shortSHA(), task.Branch,
-	))
+	if recordPreserved {
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageWorkPreserved, fmt.Sprintf(
+			"worktree had uncommitted work %s — auto-preserved as %s on branch %s; adopting as the deliverable pending quality gates",
+			stage, a.shortSHA(), task.Branch,
+		))
+	}
 	r.reportProgress(task.ID, "Adopting", 91, "Uncommitted work auto-preserved; verifying it with quality gates")
 	return a
 }
@@ -113,8 +122,14 @@ func (r *Runner) beginAdoption(task *Task, result *ExecutionResult, sha, stage s
 // finishAdoption logs the one INFO line per adoption (task id, sha, gate
 // result) so the daemon log shows which runs were rescued, and — when the
 // gates were green — records the StageWorkAdopted event. gateResult is
-// "passed" or "failed".
+// "passed" or "failed". It fires at most once per adoption (GH-5718): the
+// gate section's explicit red/green sites and the deferred finalizer in
+// executeWithOptions can both reach it.
 func (r *Runner) finishAdoption(task *Task, a *preservedAdoption, gateResult string, log *slog.Logger) {
+	if a.finished {
+		return
+	}
+	a.finished = true
 	msg := "executor: auto-preserved commit failed quality gates — not adopted"
 	if gateResult == "passed" {
 		msg = "executor: adopted auto-preserved commit as the deliverable"

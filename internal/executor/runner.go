@@ -5255,6 +5255,27 @@ retrySucceeded:
 	if r.applyGhostSHAGuardWithPreserve(ctx, task, result, executionPath, log) {
 		adoption = r.adoptGhostPreserved(task, result, backendResult, state, executionPath, log)
 	}
+	// GH-5718: every begun adoption is finished exactly once. The gate section
+	// has several early returns (gate checker error, deadline hold, pre-retry
+	// reset failure, retry backend failure) that leave adoption != nil without
+	// reaching the red/green finishAdoption sites; without this, those exits
+	// lose the auto-preserved marker (so IsPermanentFailure is false and the
+	// dispatcher re-picks) and never log the INFO line. Declared here, before
+	// the later "before no-commit retry" adoption, so the closure sees both.
+	// Deferred ⇒ it runs after holdPushedBranch has rewritten result.Error.
+	defer func() {
+		if adoption == nil || adoption.finished || result == nil {
+			return
+		}
+		gateResult := "passed"
+		if !result.Success {
+			gateResult = "failed"
+			if !strings.Contains(result.Error, autoPreservedFailureMarker) {
+				result.Error = adoption.failureText(result.Error)
+			}
+		}
+		r.finishAdoption(task, adoption, gateResult, log)
+	}()
 
 	// GH-4670: post-run GitHub side-effect audit — detective backstop for the
 	// GH-4649 incident class. Runs regardless of result.Success (a session
@@ -5906,7 +5927,15 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 							// reset pattern — a parent deadline that has already run out
 							// must not doom a retry that is otherwise recoverable.
 							resetCtx, resetCancel := context.WithTimeout(context.Background(), 30*time.Second)
-							resetErr := git.ResetHardToCommit(resetCtx, preAttemptSHA)
+							// GH-5718: an adopted preserved commit is the retry baseline.
+							// In direct mode it was already pushed (before the gates), so
+							// rewinding to preAttemptSHA would drop it and the retry's
+							// commit would diverge from the remote branch.
+							resetTarget := preAttemptSHA
+							if adoption != nil {
+								resetTarget = adoption.sha
+							}
+							resetErr := git.ResetHardToCommit(resetCtx, resetTarget)
 							resetCancel()
 							if resetErr != nil {
 								// GH-4876: a failed pre-retry reset means the working tree is
@@ -5958,7 +5987,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 							log.Info("Reset clone to pre-attempt state before quality-gate retry",
 								slog.String("task_id", task.ID),
 								slog.Int("retry_attempt", retryAttempt+1),
-								slog.String("sha", preAttemptSHA),
+								slog.String("sha", resetTarget),
 							)
 						}
 
