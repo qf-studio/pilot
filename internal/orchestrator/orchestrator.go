@@ -417,6 +417,12 @@ func (o *Orchestrator) SetContractDependencyLookup(lookup executor.ContractDepen
 	o.runner.SetContractDependencyLookup(lookup)
 }
 
+// SetNavigatorEnabledLookup sets the per-project Navigator opt-in lookup used
+// by the executor's Navigator copy-back (GH-5710).
+func (o *Orchestrator) SetNavigatorEnabledLookup(lookup executor.NavigatorEnabledLookup) {
+	o.runner.SetNavigatorEnabledLookup(lookup)
+}
+
 // SetContractContentFetcher sets the fetcher used by the executor's
 // Contract Evidence gate (GH-5009/GH-5011/GH-5022) to independently verify
 // a citation's producer source. Mirrors SetContractDependencyLookup's

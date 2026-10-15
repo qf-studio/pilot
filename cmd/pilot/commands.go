@@ -770,6 +770,7 @@ Examples:
 			// GH-5022: wire the Contract Evidence gate's content fetcher,
 			// mirroring the dependency lookup wiring above.
 			runner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
+			runner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
 
 			// Decomposer status (GH-218) - wired via NewRunnerWithConfig
 			if cfg.Executor != nil && cfg.Executor.Decompose != nil && cfg.Executor.Decompose.Enabled {

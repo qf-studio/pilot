@@ -1168,3 +1168,41 @@ func TestTelegramApprovalHandler_WithAllowedUsersChains(t *testing.T) {
 		t.Fatal("WithAllowedUsers returned nil, want chainable *TelegramHandler")
 	}
 }
+
+// GH-5710: every runner-construction site that wires the quality-checker
+// factory must also wire the per-project Navigator opt-in lookup, or that
+// code path copies Navigator learnings back into `navigator: false` projects.
+func TestNavigatorEnabledLookupWiredAtEveryQualityCheckerFactorySite(t *testing.T) {
+	mainContent, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	commandsContent, err := os.ReadFile("commands.go")
+	if err != nil {
+		t.Fatalf("read commands.go: %v", err)
+	}
+	src := string(mainContent) + string(commandsContent)
+
+	qualityCount := strings.Count(src, "SetQualityCheckerFactory(")
+	lookupCount := strings.Count(src, "SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))")
+	if lookupCount != qualityCount {
+		t.Errorf("SetNavigatorEnabledLookup( occurs %d times across main.go+commands.go, want %d (parity with SetQualityCheckerFactory)", lookupCount, qualityCount)
+	}
+}
+
+func TestNewProjectNavigatorEnabledLookup(t *testing.T) {
+	cfg := &config.Config{Projects: []*config.ProjectConfig{
+		{Name: "on", Path: "/tmp/on", Navigator: true},
+		{Name: "off", Path: "/tmp/off", Navigator: false},
+	}}
+	lookup := newProjectNavigatorEnabledLookup(cfg)
+	if !lookup("/tmp/on") {
+		t.Error("navigator: true project must be enabled")
+	}
+	if lookup("/tmp/off") {
+		t.Error("navigator: false project must be disabled")
+	}
+	if !lookup("/tmp/unknown") {
+		t.Error("unregistered path must stay enabled")
+	}
+}

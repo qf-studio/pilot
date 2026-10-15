@@ -265,6 +265,17 @@ func newProjectContractDependencyLookup(cfg *config.Config) executor.ContractDep
 	}
 }
 
+// newProjectNavigatorEnabledLookup builds an executor.NavigatorEnabledLookup
+// from the project list (GH-5710): a registered project reports its own
+// `navigator` flag, so `navigator: false` opts it out of Navigator copy-back;
+// a path matching no registered project stays enabled.
+func newProjectNavigatorEnabledLookup(cfg *config.Config) executor.NavigatorEnabledLookup {
+	return func(taskProjectPath string) bool {
+		proj := cfg.FindProjectByPath(taskProjectPath)
+		return proj == nil || proj.Navigator
+	}
+}
+
 // newProjectContractContentFetcher builds an executor.ContractContentFetcher
 // backed by the shared *github.Client (GH-5022, the activation leg of
 // GH-5009/GH-5011). *github.Client's GetFileContent method (PR#5015)

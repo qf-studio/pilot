@@ -1,10 +1,13 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -418,5 +421,40 @@ func TestCopyFile_PreservesModTime(t *testing.T) {
 	di, _ := os.Stat(dst)
 	if !si.ModTime().Equal(di.ModTime()) {
 		t.Errorf("dst mtime %v != src mtime %v", di.ModTime(), si.ModTime())
+	}
+}
+
+// GH-5710: a project with `navigator: false` gets no copy-back and no INFO line.
+func TestRunner_CopyNavigatorBack_SkippedWhenProjectNavigatorDisabled(t *testing.T) {
+	tests := []struct {
+		name        string
+		lookup      NavigatorEnabledLookup
+		wantWritten bool
+	}{
+		{"navigator false", func(string) bool { return false }, false},
+		{"navigator true", func(string) bool { return true }, true},
+		{"no lookup wired", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clone, wt := newCopyBackRepos(t)
+			writeCopyBackFile(t, wt, copyBackMemoryRel, "learned", time.Now())
+
+			var logs bytes.Buffer
+			runner := NewRunnerWithBackend(&ctxRespectingBackend{})
+			runner.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			runner.SetNavigatorEnabledLookup(tt.lookup)
+
+			runner.copyNavigatorBack("GH-5710", wt, clone)
+
+			_, err := os.Stat(filepath.Join(clone, filepath.FromSlash(copyBackMemoryRel)))
+			if written := err == nil; written != tt.wantWritten {
+				t.Errorf("memory file written = %v, want %v", written, tt.wantWritten)
+			}
+			hasInfo := strings.Contains(logs.String(), "level=INFO")
+			if hasInfo == !tt.wantWritten {
+				t.Errorf("INFO line present = %v, want %v; logs:\n%s", hasInfo, tt.wantWritten, logs.String())
+			}
+		})
 	}
 }

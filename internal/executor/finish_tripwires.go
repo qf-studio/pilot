@@ -168,6 +168,11 @@ func emitTripwireAlertEvent(processor AlertEventProcessor, event AlertEvent) {
 // worktree (or any other path that leaves the root dirty). A git invocation
 // error (missing directory, not a repo, git unavailable) is not itself a
 // finding — there's nothing observable from here to report.
+//
+// Untracked files under the Navigator copy-back paths (navigatorCopyBackDirs
+// and navigatorCopyBackGraph) are exempt: CopyNavigatorBackFromWorktree
+// leaves them in the clone by design (GH-5710). Staged changes and any path
+// outside those directories still trip the check.
 func checkRootClean(row *memory.Execution) tripwireCheckResult {
 	if row.ProjectPath == "" {
 		return tripwireCheckResult{}
@@ -176,19 +181,51 @@ func checkRootClean(row *memory.Execution) tripwireCheckResult {
 	ctx, cancel := context.WithTimeout(context.Background(), finishTripwireGitTimeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "git", "-C", row.ProjectPath, "status", "--porcelain").Output()
+	// -uall lists every untracked file (not a collapsed `?? .agent/`) so the
+	// copy-back exemption below can judge each path; -z avoids path quoting.
+	out, err := exec.CommandContext(ctx, "git", "-C", row.ProjectPath, "status", "--porcelain", "-z", "-uall").Output()
 	if err != nil {
 		return tripwireCheckResult{}
 	}
-	if strings.TrimSpace(string(out)) == "" {
-		return tripwireCheckResult{}
-	}
 
-	return tripwireCheckResult{
-		violated: true,
-		reason: fmt.Sprintf("project root %s has a staged or unstaged diff after execution %s finished",
-			row.ProjectPath, row.ID),
+	ignored := 0
+	for _, entry := range strings.Split(string(out), "\x00") {
+		if entry == "" {
+			continue
+		}
+		// Only an untracked ("??") copy-back path is exempt; a staged or
+		// unstaged change, a rename, or any other path is real dirt.
+		if path, ok := strings.CutPrefix(entry, "?? "); ok && isNavigatorCopyBackPath(path) {
+			ignored++
+			continue
+		}
+		return tripwireCheckResult{
+			violated: true,
+			reason: fmt.Sprintf("project root %s has a staged or unstaged diff after execution %s finished",
+				row.ProjectPath, row.ID),
+		}
 	}
+	if ignored > 0 {
+		logging.WithComponent("executor.finish_tripwires").Debug(
+			"root-clean tripwire ignored untracked Navigator copy-back paths",
+			"execution_id", row.ID, "ignored_paths", ignored)
+	}
+	return tripwireCheckResult{}
+}
+
+// isNavigatorCopyBackPath reports whether path (slash-separated, relative to
+// the project root) is somewhere Navigator copy-back writes: under one of
+// navigatorCopyBackDirs, or the knowledge graph itself (GH-5710).
+func isNavigatorCopyBackPath(path string) bool {
+	if path == navigatorCopyBackGraph {
+		return true
+	}
+	for _, dir := range navigatorCopyBackDirs {
+		if strings.HasPrefix(path, dir+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // checkLabelLifecycle guards the poller-labels-removed-log-means-never-

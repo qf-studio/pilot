@@ -1273,6 +1273,11 @@ type Runner struct {
 	// verify citations; nil makes every citation a hard fetch_error
 	// rejection rather than a silent pass. Set via SetContractContentFetcher.
 	contractContentFetcher ContractContentFetcher
+	// GH-5710: navigatorEnabledLookup reports whether a project opted into
+	// Navigator (`navigator: true` in its project config). nil means "no
+	// per-project knowledge" and leaves copy-back governed by the global
+	// navigator.copy_back switch alone. Set via SetNavigatorEnabledLookup.
+	navigatorEnabledLookup NavigatorEnabledLookup
 	// contractEvidenceFetchFn overrides getContractEvidence for testing, so
 	// tests can supply fake evidence without shelling out to the real
 	// `claude` CLI. nil uses the real getContractEvidence implementation.
@@ -1676,6 +1681,13 @@ func (r *Runner) SetContractDependencyLookup(lookup ContractDependencyLookup) {
 // gate (lookup set, fetcher not yet set) fails closed, not open.
 func (r *Runner) SetContractContentFetcher(fetcher ContractContentFetcher) {
 	r.contractContentFetcher = fetcher
+}
+
+// SetNavigatorEnabledLookup sets the per-project Navigator opt-in lookup
+// (GH-5710). A project that reports false gets no Navigator copy-back into
+// its clone. A nil lookup (the default) leaves copy-back enabled.
+func (r *Runner) SetNavigatorEnabledLookup(lookup NavigatorEnabledLookup) {
+	r.navigatorEnabledLookup = lookup
 }
 
 // SetModelRouter sets the model router for complexity-based model and timeout selection.

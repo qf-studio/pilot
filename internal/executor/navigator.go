@@ -684,11 +684,30 @@ func (n *NavigatorInitializer) detectFromCargoToml(projectPath string) *ProjectI
 	}
 }
 
+// NavigatorEnabledLookup reports whether the project at projectPath opted into
+// Navigator (`navigator: true` in its project config). Projects it does not
+// know about must report true so ad-hoc paths keep the default behaviour.
+// cmd/pilot supplies the config-backed implementation (GH-5710).
+type NavigatorEnabledLookup func(projectPath string) bool
+
 // copyNavigatorBack is the task-finalisation hook that carries the Navigator
 // learnings of an isolated worktree back to the project clone. Failures are
 // logged, never returned: learnings are best effort and must not fail a task.
+//
+// Copy-back leaves the merged files in the clone as untracked entries, by
+// design: the clone is only a hand-off point for the next task, and the PR
+// carries the tracked changes. checkRootClean (finish_tripwires.go) exempts
+// exactly those paths (navigatorCopyBackDirs + navigatorCopyBackGraph).
+// A project with `navigator: false` gets no copy-back at all (GH-5710).
 func (r *Runner) copyNavigatorBack(taskID, worktreePath, projectPath string) {
 	if r.config != nil && !r.config.Navigator.CopyBackEnabled() {
+		return
+	}
+	if r.navigatorEnabledLookup != nil && !r.navigatorEnabledLookup(projectPath) {
+		r.log.Debug("Navigator copy-back skipped: navigator disabled for project",
+			slog.String("task_id", taskID),
+			slog.String("project_path", projectPath),
+		)
 		return
 	}
 	merged, err := CopyNavigatorBackFromWorktree(worktreePath, projectPath)

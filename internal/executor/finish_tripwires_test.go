@@ -531,3 +531,64 @@ type panicOnFirstCallProcessor struct{}
 func (panicOnFirstCallProcessor) ProcessEvent(AlertEvent) {
 	panic("simulated processor panic")
 }
+
+// GH-5710: Navigator copy-back leaves untracked files in the clone by design;
+// the root-clean tripwire exempts exactly those paths and nothing else.
+func TestCheckRootClean_NavigatorCopyBackPaths(t *testing.T) {
+	write := func(t *testing.T, dir, rel string) {
+		t.Helper()
+		full := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	copyBackPaths := []string{
+		".agent/knowledge/memories/patterns/p.md",
+		".agent/knowledge/graph.json",
+		".agent/sops/deploy/ship.md",
+		".agent/system/arch.md",
+	}
+
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T, dir string)
+		violation bool
+	}{
+		{"only untracked copy-back paths", func(t *testing.T, dir string) {
+			for _, rel := range copyBackPaths {
+				write(t, dir, rel)
+			}
+		}, false},
+		{"copy-back paths plus an untracked file outside .agent", func(t *testing.T, dir string) {
+			for _, rel := range copyBackPaths {
+				write(t, dir, rel)
+			}
+			write(t, dir, "stray.txt")
+		}, true},
+		{"untracked .agent file outside the copy-back dirs", func(t *testing.T, dir string) {
+			write(t, dir, ".agent/tasks/TASK-1.md")
+		}, true},
+		{"staged change under .agent/sops", func(t *testing.T, dir string) {
+			write(t, dir, ".agent/sops/deploy/ship.md")
+			cmd := exec.Command("git", "add", ".agent/sops/deploy/ship.md")
+			cmd.Dir = dir
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git add: %v\n%s", err, out)
+			}
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			initGitRepo(t, dir)
+			tt.setup(t, dir)
+			result := checkRootClean(&memory.Execution{ID: "exec-5710", ProjectPath: dir})
+			if result.violated != tt.violation {
+				t.Errorf("violated = %v, want %v (reason %q)", result.violated, tt.violation, result.reason)
+			}
+		})
+	}
+}
