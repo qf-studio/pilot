@@ -143,7 +143,7 @@ func TestLinearPollerRegistration_NotifierPerWorkspace(t *testing.T) {
 
 	loopIdx := strings.Index(body, "for _, ws := range internalWss {")
 	clientIdx := strings.Index(body, "client := linearSDK.NewClient(ws.APIKey)")
-	notifierIdx := strings.Index(body, "notifier := linearSDK.NewNotifier(client)")
+	notifierIdx := strings.Index(body, "notifier := newLinearLegNotifier(client)")
 	if loopIdx < 0 || clientIdx < loopIdx || notifierIdx < clientIdx {
 		t.Error("linearPollerRegistration must construct one SDK notifier per workspace, from that workspace's own client, inside the workspace loop")
 	}

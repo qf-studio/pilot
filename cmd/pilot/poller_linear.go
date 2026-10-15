@@ -442,7 +442,7 @@ func linearPollerRegistration() PollerRegistration {
 				preflightLinearLabels(ctx, logging.WithComponent("linear"), client, ws.TeamID, triggerLabel, linearStatusLabels)
 
 				sdkWS := newSDKLinearWorkspace(ws.Name, ws.APIKey, ws.TeamID, triggerLabel, ws.ProjectIDs, ws.Projects, wsInterval)
-				notifier := linearSDK.NewNotifier(client)
+				notifier := newLinearLegNotifier(client)
 
 				// GH-5701: native workflow-state write-back. Names/UUIDs from
 				// adapters.linear.transitions; empty falls back to the team's
@@ -472,10 +472,10 @@ func linearPollerRegistration() PollerRegistration {
 								slog.Any("error", err),
 							)
 						}
-						// GH-5701: start move before dispatch; completion/failure
+						// GH-5701/GH-5703: start move once the dispatch is admitted (after the gates); completion/failure
 						// comment + optional state move after. Never alters the result.
-						return runLinearStateLegs(issueCtx, ev, notifier, mover, func() (*sdkcore.IssueResult, error) {
-							return handleLinearIssueWithResult(issueCtx, deps.Cfg, ev, projectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+						return runLinearStateLegs(issueCtx, ev, notifier, mover, func(admitted func()) (*sdkcore.IssueResult, error) {
+							return handleLinearIssueWithResult(issueCtx, deps.Cfg, ev, projectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer, admitted)
 						})
 					})
 

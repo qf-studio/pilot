@@ -298,8 +298,10 @@ func extractGitHubLabelNames(issue *github.Issue) []string {
 }
 
 // handleLinearIssueWithResult processes a Linear issue delivered as a SDK core.IssueEvent.
+// onClaimed (nil-safe) fires once the dispatch has passed every admission gate
+// and won its claim (GH-5703: the Linear start-state move hangs off it).
 // ev.SequenceID is already prefixed (e.g. "APP-123") by the SDK adapter — use it directly.
-func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*sdkcore.IssueResult, error) {
+func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer, onClaimed func()) (*sdkcore.IssueResult, error) {
 	taskID := ev.SequenceID // e.g., "APP-123"; already prefixed by the SDK adapter
 	title := ev.Title
 
@@ -343,6 +345,12 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, ev sdk
 		AlertsEngine: alertsEngine,
 		Enforcer:     enforcer,
 		ProjectPath:  projectPath,
+		OnClaimed:    onClaimed,
+	}
+	// Without a dispatcher there are no admission gates (handleIssueGeneric
+	// executes directly), so the work is admitted as of now.
+	if dispatcher == nil && onClaimed != nil {
+		onClaimed()
 	}
 	info := IssueInfo{
 		TaskID:  taskID,

@@ -14,6 +14,7 @@ import (
 	linearSDK "github.com/qf-studio/studio-sdk/sdk/integrations/linear"
 
 	"github.com/qf-studio/pilot/internal/adapters/linear"
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
@@ -31,6 +32,10 @@ const (
 	legPR     linearLeg = "pr"     // PR/MR opened → in_review (default: no move)
 	legMerge  linearLeg = "merge"  // PR merged → done (default: completed-type state)
 	legFailed linearLeg = "failed" // task failed → failed (default: no move)
+
+	// legRestore is not configurable: it names the GH-5703 move of a
+	// success-without-PR issue back to the state recorded by the start leg.
+	legRestore linearLeg = "restore"
 )
 
 // errNoTransition means the leg has no configured state and no type default;
@@ -42,7 +47,7 @@ const (
 	linearStateTypeCompleted = "completed"
 
 	// linearFailureReasonMax bounds the failure reason posted as a comment.
-	linearFailureReasonMax = 300
+	linearFailureReasonMax = 200
 )
 
 var linearUUIDRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -72,6 +77,7 @@ type linearStateMover struct {
 
 	mu            sync.Mutex
 	startedByTeam map[string]string // team key → started-type state id
+	priorState    map[string]string // issue UUID → state id before the start leg (GH-5703)
 }
 
 func newLinearStateMover(api linearStateAPI, transitions linearTransitioner, cfg linear.Transitions) *linearStateMover {
@@ -81,6 +87,7 @@ func newLinearStateMover(api linearStateAPI, transitions linearTransitioner, cfg
 		cfg:           cfg,
 		log:           logging.WithComponent("linear"),
 		startedByTeam: make(map[string]string),
+		priorState:    make(map[string]string),
 	}
 }
 
@@ -106,6 +113,18 @@ func (m *linearStateMover) configured(leg linearLeg) string {
 // leg has no state to move to) logs DEBUG and is returned for the caller to
 // skip.
 func (m *linearStateMover) Move(ctx context.Context, issueUUID, issueLabel string, leg linearLeg) error {
+	return m.move(ctx, nil, issueUUID, issueLabel, leg)
+}
+
+// move is Move with an optional already-fetched issue, so MoveIdentifier does
+// not read the same issue twice (GH-5703).
+func (m *linearStateMover) move(ctx context.Context, issue *linearSDK.Issue, issueUUID, issueLabel string, leg linearLeg) error {
+	// Any leg after start ends the prior-state bookkeeping for this issue
+	// (a PR, a failure or a merge supersedes "go back to where it was").
+	if leg != legStart {
+		m.forgetPrior(issueUUID)
+	}
+
 	target := m.configured(leg)
 	to := target
 	if target == "" {
@@ -123,13 +142,29 @@ func (m *linearStateMover) Move(ctx context.Context, issueUUID, issueLabel strin
 		}
 	}
 
+	// GH-5703: remember the state the issue had before the start leg so a
+	// success-without-PR run can put it back. Best effort: a read failure only
+	// loses the restore, never the start move.
+	if leg == legStart {
+		if issue == nil {
+			if got, gerr := m.api.GetIssue(ctx, issueUUID); gerr == nil {
+				issue = got
+			}
+		}
+		if issue != nil && issue.State.ID != "" {
+			m.mu.Lock()
+			m.priorState[issueUUID] = issue.State.ID
+			m.mu.Unlock()
+		}
+	}
+
 	m.log.Info("Linear state transition",
 		slog.String("issue", issueLabel),
 		slog.String("to", to),
 		slog.String("leg", string(leg)),
 	)
 
-	if err := m.transition(ctx, issueUUID, leg, target); err != nil {
+	if err := m.transition(ctx, issue, issueUUID, leg, target); err != nil {
 		m.log.Warn("Linear state transition failed",
 			slog.String("issue", issueLabel),
 			slog.String("to", to),
@@ -141,23 +176,73 @@ func (m *linearStateMover) Move(ctx context.Context, issueUUID, issueLabel strin
 	return nil
 }
 
-func (m *linearStateMover) transition(ctx context.Context, issueUUID string, leg linearLeg, target string) error {
+func (m *linearStateMover) forgetPrior(issueUUID string) {
+	m.mu.Lock()
+	delete(m.priorState, issueUUID)
+	m.mu.Unlock()
+}
+
+// MoveNoPR closes out a run that succeeded without producing a PR/MR (no
+// changes needed, issue closed mid-run, operator cancel — GH-5703): the issue
+// goes to the configured failed state when set, otherwise back to the state the
+// start leg recorded. errNoTransition means there is nowhere to move it (no
+// failed state configured and no recorded prior state).
+func (m *linearStateMover) MoveNoPR(ctx context.Context, issueUUID, issueLabel string) error {
+	if m.configured(legFailed) != "" {
+		return m.Move(ctx, issueUUID, issueLabel, legFailed)
+	}
+
+	m.mu.Lock()
+	prior := m.priorState[issueUUID]
+	delete(m.priorState, issueUUID)
+	m.mu.Unlock()
+	if prior == "" {
+		m.log.Debug("Linear state restore skipped: no prior state recorded",
+			slog.String("issue", issueLabel),
+		)
+		return errNoTransition
+	}
+
+	m.log.Info("Linear state transition",
+		slog.String("issue", issueLabel),
+		slog.String("to", "prior:"+prior),
+		slog.String("leg", string(legRestore)),
+	)
+	if err := m.transitions.TransitionState(ctx, issueUUID, prior); err != nil {
+		m.log.Warn("Linear state transition failed",
+			slog.String("issue", issueLabel),
+			slog.String("to", "prior:"+prior),
+			slog.String("leg", string(legRestore)),
+			slog.Any("error", err),
+		)
+		return err
+	}
+	return nil
+}
+
+func (m *linearStateMover) transition(ctx context.Context, issue *linearSDK.Issue, issueUUID string, leg linearLeg, target string) error {
 	if target != "" {
 		return m.transitions.TransitionState(ctx, issueUUID, target)
 	}
 
 	// Type default: the team comes from the issue itself, so the workspace's
 	// team_id may be either a key or a UUID.
-	issue, err := m.api.GetIssue(ctx, issueUUID)
-	if err != nil {
-		return fmt.Errorf("resolve issue team: %w", err)
+	if issue == nil {
+		var err error
+		issue, err = m.api.GetIssue(ctx, issueUUID)
+		if err != nil {
+			return fmt.Errorf("resolve issue team: %w", err)
+		}
 	}
 	teamKey := issue.Team.Key
 	if teamKey == "" {
 		return fmt.Errorf("issue %s has no team key", issueUUID)
 	}
 
-	var stateID string
+	var (
+		stateID string
+		err     error
+	)
 	switch leg {
 	case legStart:
 		stateID, err = m.startedStateID(ctx, teamKey)
@@ -209,7 +294,7 @@ func (m *linearStateMover) MoveIdentifier(ctx context.Context, identifier string
 		// caller (autopilot's notifyLinearDone) WARNs if every workspace missed.
 		return fmt.Errorf("resolve issue %s: %w", identifier, err)
 	}
-	return m.Move(ctx, issue.ID, identifier, leg)
+	return m.move(ctx, issue, issue.ID, identifier, leg)
 }
 
 type linearTeamState struct {
@@ -273,6 +358,9 @@ func preflightLinearTransitions(ctx context.Context, log *slog.Logger, api inter
 		{"done", t.Done},
 		{"failed", t.Failed},
 	}
+	if teamRef == "" {
+		return
+	}
 	configured := false
 	for _, tg := range targets {
 		if tg.value != "" {
@@ -316,31 +404,69 @@ func preflightLinearTransitions(ctx context.Context, log *slog.Logger, api inter
 	}
 }
 
-// linearLifecycleNotifier is the slice of *linearSDK.Notifier the state legs use.
+// linearLifecycleNotifier is the slice of the Linear notifier the state legs use.
 type linearLifecycleNotifier interface {
 	NotifyTaskCompleted(ctx context.Context, issueID, prURL, summary string) error
 	NotifyTaskFailed(ctx context.Context, issueID, reason string) error
+	// NotifyTaskEndedWithoutPR posts the terminal comment for a run that
+	// succeeded without a PR/MR (GH-5703).
+	NotifyTaskEndedWithoutPR(ctx context.Context, issueID string) error
+}
+
+// linearLegNotifier adds the GH-5703 no-PR comment to the SDK notifier, which
+// only has completed/failed shapes (its completed comment promises a PR).
+type linearLegNotifier struct {
+	*linearSDK.Notifier
+	client *linearSDK.Client
+}
+
+func newLinearLegNotifier(client *linearSDK.Client) *linearLegNotifier {
+	return &linearLegNotifier{Notifier: linearSDK.NewNotifier(client), client: client}
+}
+
+const linearNoPRComment = "ℹ️ **Pilot finished this task without opening a pull request**\n\n" +
+	"No changes were needed, the issue was closed during the run, or the run was canceled. " +
+	"Nothing is waiting for review.\n\n" +
+	"_Reopen or re-label the issue if work is still expected._"
+
+// NotifyTaskEndedWithoutPR implements linearLifecycleNotifier.
+func (n *linearLegNotifier) NotifyTaskEndedWithoutPR(ctx context.Context, issueID string) error {
+	if err := n.client.AddComment(ctx, issueID, linearNoPRComment); err != nil {
+		return fmt.Errorf("failed to add no-PR comment: %w", err)
+	}
+	return nil
 }
 
 // linearMover is the slice of *linearStateMover the handler legs use.
 type linearMover interface {
 	Move(ctx context.Context, issueUUID, issueLabel string, leg linearLeg) error
+	MoveNoPR(ctx context.Context, issueUUID, issueLabel string) error
 }
 
 // runLinearStateLegs wraps one Linear dispatch with the native-state legs
-// (GH-5701): the start move before run, then — on a non-skipped result — the
-// completion comment + optional in_review move (a PR/MR URL was produced) or
-// the failure comment + optional failed move. It never alters run's result or
-// error, and a comment or transition failure is only logged. Skipped results
-// (admission-gate declines, superseded, unmapped) post and move nothing.
-func runLinearStateLegs(ctx context.Context, ev sdkcore.IssueEvent, notifier linearLifecycleNotifier, mover linearMover, run func() (*sdkcore.IssueResult, error)) (*sdkcore.IssueResult, error) {
+// (GH-5701): the start move once the dispatch is admitted, then — on a
+// non-skipped result — the completion comment + optional in_review move (a
+// PR/MR URL was produced), the failure comment + optional failed move, or
+// (GH-5703) the no-PR comment + move to failed/prior state. It never alters
+// run's result or error, and a comment or transition failure is only logged.
+// Skipped results and admission-gate declines (executor.ErrDispatchGated)
+// post and move nothing.
+//
+// run receives admitted, which it must call exactly when the dispatch won its
+// claim, i.e. after every admission gate (IsActive, repick backoff, terminal
+// completion, claim-lost). The start move happens inside it, so a gated decline
+// never touches the Linear state (GH-5703). admitted is safe to call more than
+// once; only the first call moves.
+func runLinearStateLegs(ctx context.Context, ev sdkcore.IssueEvent, notifier linearLifecycleNotifier, mover linearMover, run func(admitted func()) (*sdkcore.IssueResult, error)) (*sdkcore.IssueResult, error) {
 	log := logging.WithComponent("linear")
 
 	// Failures are logged inside Move; errNoTransition is the expected "comment only" case.
-	_ = mover.Move(ctx, ev.IssueID, ev.SequenceID, legStart)
+	admitted := sync.OnceFunc(func() {
+		_ = mover.Move(ctx, ev.IssueID, ev.SequenceID, legStart)
+	})
 
-	res, err := run()
-	if res == nil || res.Skipped {
+	res, err := run(admitted)
+	if res == nil || res.Skipped || errors.Is(res.Error, executor.ErrDispatchGated) {
 		return res, err
 	}
 
@@ -353,7 +479,18 @@ func runLinearStateLegs(ctx context.Context, ev sdkcore.IssueEvent, notifier lin
 			)
 		}
 		_ = mover.Move(ctx, ev.IssueID, ev.SequenceID, legPR)
-	case !res.Success:
+	case res.Success:
+		// GH-5703: no PR/MR and not a gated decline (no changes needed, issue
+		// closed mid-run, operator cancel). Without this the issue would sit in
+		// the started-type state forever.
+		if nerr := notifier.NotifyTaskEndedWithoutPR(ctx, ev.IssueID); nerr != nil {
+			log.Warn("Failed to notify task ended without PR",
+				slog.String("issue_id", ev.IssueID),
+				slog.Any("error", nerr),
+			)
+		}
+		_ = mover.MoveNoPR(ctx, ev.IssueID, ev.SequenceID)
+	default:
 		if nerr := notifier.NotifyTaskFailed(ctx, ev.IssueID, linearFailureReason(res.Error)); nerr != nil {
 			log.Warn("Failed to notify task failed",
 				slog.String("issue_id", ev.IssueID),
@@ -365,17 +502,39 @@ func runLinearStateLegs(ctx context.Context, ev sdkcore.IssueEvent, notifier lin
 	return res, err
 }
 
-// linearFailureReason renders a handler error for the failure comment,
-// truncated to linearFailureReasonMax runes. Only truncation is applied: no
-// shared redaction helper exists in this package.
+// linearAbsPathRe matches an absolute filesystem path token (preceded by start,
+// whitespace or an opening delimiter) so it can be dropped from public comments.
+var linearAbsPathRe = regexp.MustCompile(`(^|[\s"'(=:\[])/[^\s"')\]]+`)
+
+// linearFailureReason renders a handler error for the public failure comment
+// (GH-5703): "<class>: <first line>" — the class is the backend error type
+// when the chain carries a classified BackendError (rate_limit, timeout, ...),
+// else "error". Only the first line is kept, absolute paths (worktrees, /tmp)
+// are replaced by "<path>", and the result is capped at linearFailureReasonMax
+// runes, so the wrapped error chain and stderr never reach the issue.
 func linearFailureReason(err error) string {
 	if err == nil {
 		return "unknown error"
 	}
-	r := []rune(strings.TrimSpace(err.Error()))
-	if len(r) == 0 {
-		return "unknown error"
+	class, msg := "error", err.Error()
+	var be executor.BackendError
+	if errors.As(err, &be) {
+		if t := be.ErrorType(); t != "" {
+			class = t
+		}
+		if m := be.ErrorMessage(); strings.TrimSpace(m) != "" {
+			msg = m
+		}
 	}
+	msg = strings.TrimSpace(msg)
+	if i := strings.IndexAny(msg, "\r\n"); i >= 0 {
+		msg = strings.TrimSpace(msg[:i])
+	}
+	msg = linearAbsPathRe.ReplaceAllString(msg, "${1}<path>")
+	if msg == "" {
+		return class
+	}
+	r := []rune(class + ": " + msg)
 	if len(r) > linearFailureReasonMax {
 		return string(r[:linearFailureReasonMax]) + "…"
 	}
@@ -395,9 +554,10 @@ type linearIdentifierMover interface {
 
 // linearDoneNotifier is autopilot's LinearDoneNotifier (GH-5701): on a merged
 // pilot/LIN-* PR it moves the issue to done. With several workspaces the
-// issue's workspace is picked by team key; when no team_id matches (e.g.
-// team_id is a UUID), each workspace is tried until one can read the issue —
-// a workspace's API key cannot see another workspace's issues.
+// issue's workspace is picked by team key and only that workspace is tried;
+// when no team_id matches (e.g. team_id is a UUID), each workspace is tried
+// until one can read the issue — a workspace's API key cannot see another
+// workspace's issues.
 //
 // PRs autopilot never observes (today: all GitLab MRs) never reach this leg;
 // for those the PR leg's in_review is the terminal state Pilot can reach.
@@ -419,20 +579,23 @@ func (n *linearDoneNotifier) NotifyMerged(ctx context.Context, identifier, _ str
 		teamKey = identifier[:i]
 	}
 
-	ordered := make([]linearDoneWorkspace, 0, len(n.workspaces))
+	// A workspace whose team key matches owns the issue: its error is the
+	// answer (GH-5703) — trying other workspaces would only bury it under a
+	// "not found" from a key that cannot see the issue. Only when no team key
+	// matches (e.g. team_id is a UUID) is every workspace tried.
+	var matched []linearDoneWorkspace
 	for _, w := range n.workspaces {
 		if strings.EqualFold(w.teamRef, teamKey) {
-			ordered = append(ordered, w)
+			matched = append(matched, w)
 		}
 	}
-	for _, w := range n.workspaces {
-		if !strings.EqualFold(w.teamRef, teamKey) {
-			ordered = append(ordered, w)
-		}
+	candidates := n.workspaces
+	if len(matched) > 0 {
+		candidates = matched
 	}
 
 	var lastErr error
-	for _, w := range ordered {
+	for _, w := range candidates {
 		err := w.mover.MoveIdentifier(ctx, identifier, legMerge)
 		if err == nil {
 			return nil
