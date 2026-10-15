@@ -163,6 +163,9 @@ func GenerateClaudeSettings(config *HooksConfig, scriptDir string) map[string]in
 
 	return map[string]interface{}{
 		"hooks": hooks,
+		// GH-5711: the executor owns the commit identity; CLAUDE.md forbids tool
+		// mentions in commits, so turn the default co-author trailer off.
+		"includeCoAuthoredBy": false,
 	}
 }
 
@@ -249,6 +252,12 @@ func MergeWithExisting(settingsPath string, pilotSettings map[string]interface{}
 	} else {
 		// No existing settings, use pilot settings directly
 		merged = pilotSettings
+	}
+
+	// GH-5711: Pilot owns the commit identity, so its value wins over whatever
+	// the project's own settings say.
+	if v, ok := pilotSettings["includeCoAuthoredBy"]; ok {
+		merged["includeCoAuthoredBy"] = v
 	}
 
 	// Write merged settings

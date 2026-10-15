@@ -1019,3 +1019,42 @@ func TestRestoreHookSettings_EntriesUnderScriptDirRemoved_EvenWhenDirStillExists
 func boolPtr(b bool) *bool {
 	return &b
 }
+
+func TestGenerateClaudeSettings_DisablesCoAuthoredBy(t *testing.T) {
+	settings := GenerateClaudeSettings(DefaultHooksConfig(), "/tmp/scripts")
+	data, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"includeCoAuthoredBy":false`) {
+		t.Errorf("settings JSON missing includeCoAuthoredBy=false: %s", data)
+	}
+}
+
+func TestMergeWithExisting_ForcesCoAuthoredByFalse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"includeCoAuthoredBy": true, "model": "x"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	pilot := GenerateClaudeSettings(DefaultHooksConfig(), "/tmp/scripts")
+	if _, _, err := MergeWithExisting(path, pilot); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := got["includeCoAuthoredBy"].(bool); !ok || v {
+		t.Errorf("includeCoAuthoredBy = %v, want false", got["includeCoAuthoredBy"])
+	}
+	if got["model"] != "x" {
+		t.Errorf("project setting lost: %v", got)
+	}
+}

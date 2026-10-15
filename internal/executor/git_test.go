@@ -1849,3 +1849,79 @@ func TestGetDiffStats(t *testing.T) {
 		})
 	}
 }
+
+func TestStripAnthropicCoAuthor(t *testing.T) {
+	gitOut := func(t *testing.T, dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	commitWith := func(t *testing.T, dir, msg string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte(msg), 0644); err != nil {
+			t.Fatal(err)
+		}
+		gitOut(t, dir, "add", "f.txt")
+		gitOut(t, dir, "commit", "-m", msg)
+	}
+
+	t.Run("trailer is amended, tree unchanged", func(t *testing.T) {
+		dir, _ := initTestRepo(t)
+		commitWith(t, dir, "feat(x): add thing\n\nbody line\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>")
+		treeBefore := gitOut(t, dir, "rev-parse", "HEAD^{tree}")
+		parentBefore := gitOut(t, dir, "rev-parse", "HEAD^")
+
+		stripped, err := NewGitOperations(dir).StripAnthropicCoAuthor(context.Background())
+		if err != nil || !stripped {
+			t.Fatalf("stripped=%v err=%v, want true,nil", stripped, err)
+		}
+		msg := gitOut(t, dir, "log", "-1", "--format=%B")
+		if strings.Contains(strings.ToLower(msg), "co-authored-by") || strings.Contains(msg, "anthropic") {
+			t.Errorf("trailer still present: %q", msg)
+		}
+		if want := "feat(x): add thing\n\nbody line"; msg != want {
+			t.Errorf("message = %q, want %q", msg, want)
+		}
+		if got := gitOut(t, dir, "rev-parse", "HEAD^{tree}"); got != treeBefore {
+			t.Errorf("tree changed: %s -> %s", treeBefore, got)
+		}
+		if got := gitOut(t, dir, "rev-parse", "HEAD^"); got != parentBefore {
+			t.Errorf("parent changed: %s -> %s", parentBefore, got)
+		}
+	})
+
+	t.Run("staged changes are not swept into the amend", func(t *testing.T) {
+		dir, _ := initTestRepo(t)
+		commitWith(t, dir, "fix(x): y\n\nCo-Authored-By: Claude <noreply@anthropic.com>")
+		treeBefore := gitOut(t, dir, "rev-parse", "HEAD^{tree}")
+		if err := os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("s"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		gitOut(t, dir, "add", "staged.txt")
+		if _, err := NewGitOperations(dir).StripAnthropicCoAuthor(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := gitOut(t, dir, "rev-parse", "HEAD^{tree}"); got != treeBefore {
+			t.Errorf("tree changed: %s -> %s", treeBefore, got)
+		}
+	})
+
+	t.Run("commit without trailer is untouched", func(t *testing.T) {
+		dir, _ := initTestRepo(t)
+		commitWith(t, dir, "fix(x): plain\n\nCo-Authored-By: Human <human@example.com>")
+		shaBefore := gitOut(t, dir, "rev-parse", "HEAD")
+
+		stripped, err := NewGitOperations(dir).StripAnthropicCoAuthor(context.Background())
+		if err != nil || stripped {
+			t.Fatalf("stripped=%v err=%v, want false,nil", stripped, err)
+		}
+		if got := gitOut(t, dir, "rev-parse", "HEAD"); got != shaBefore {
+			t.Errorf("HEAD changed: %s -> %s", shaBefore, got)
+		}
+	})
+}

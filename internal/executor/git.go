@@ -847,8 +847,49 @@ func taskExplicitlyTargetsMemoryFiles(task *Task) bool {
 	return false
 }
 
-// Push pushes the current branch to remote
+// commitTrailerGuidance is appended to every execution prompt (GH-5711).
+const commitTrailerGuidance = "Commit messages: no `Co-Authored-By` trailer and no mention of Claude, Claude Code or any AI tool in the subject or body.\n"
+
+// anthropicCoAuthorRe matches the default Claude Code co-author trailer line.
+var anthropicCoAuthorRe = regexp.MustCompile(`(?im)^[ \t]*Co-Authored-By:[^\n]*@anthropic\.com[^\n]*(?:\n|$)`)
+
+// StripAnthropicCoAuthor rewrites the HEAD commit message without any
+// `Co-Authored-By:` trailer carrying an Anthropic address (GH-5711). The amend
+// is message-only (`--only`, no paths), so the tree hash is unchanged. Returns
+// true when the commit was rewritten; a commit without the trailer is untouched.
+func (g *GitOperations) StripAnthropicCoAuthor(ctx context.Context) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "log", "-1", "--format=%B")
+	cmd.Dir = g.projectPath
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("failed to read HEAD commit message: %w", err)
+	}
+	msg := string(out)
+	if !anthropicCoAuthorRe.MatchString(msg) {
+		return false, nil
+	}
+	cleaned := strings.TrimRight(anthropicCoAuthorRe.ReplaceAllString(msg, ""), " \t\r\n") + "\n"
+
+	amend := exec.CommandContext(ctx, "git", "commit", "--amend", "--only", "--no-verify", "--allow-empty", "-F", "-")
+	amend.Dir = g.projectPath
+	amend.Stdin = strings.NewReader(cleaned)
+	if output, err := amend.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("failed to amend commit message: %w: %s", err, output)
+	}
+	return true, nil
+}
+
+// Push pushes the current branch to remote. Before pushing it strips the
+// Claude co-author trailer from the HEAD commit (GH-5711): belt and braces for
+// backends that ignore includeCoAuthoredBy. Covers every push call site.
 func (g *GitOperations) Push(ctx context.Context, branchName string) error {
+	if stripped, err := g.StripAnthropicCoAuthor(ctx); err != nil {
+		slog.Warn("Failed to strip co-author trailer before push",
+			slog.String("branch", branchName), slog.Any("error", err))
+	} else if stripped {
+		slog.Warn("Stripped Anthropic Co-Authored-By trailer from commit before push",
+			slog.String("branch", branchName))
+	}
 	cmd := exec.CommandContext(ctx, "git", "push", "-u", "origin", branchName)
 	cmd.Dir = g.projectPath
 	withGitCredentials(ctx, cmd)
