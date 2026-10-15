@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -114,6 +115,11 @@ func TestPushFailureReason(t *testing.T) {
 			"failed to push: exit status 1: hint: updates were rejected",
 		},
 		{
+			"fatal: line from a bad remote URL",
+			"failed to push: exit status 128: fatal: '/nope' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.",
+			"fatal: '/nope' does not appear to be a git repository",
+		},
+		{
 			"no match falls back to the last non-empty line",
 			"failed to push: exit status 1: To https://x\nsomething odd happened\n\n",
 			"something odd happened",
@@ -125,5 +131,64 @@ func TestPushFailureReason(t *testing.T) {
 				t.Errorf("PushFailureReason = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestPushAndCreatePRAfterTimeout_PushRejectedIsOneLine (GH-5720) drives the
+// timeout-salvage push against a remote whose pre-receive hook rejects the
+// push, so git's stderr is multi-line with the "To <url>" header first. The row
+// error is what Linear's first-line reason shows: it must be one line and must
+// not start with that header.
+func TestPushAndCreatePRAfterTimeout_PushRejectedIsOneLine(t *testing.T) {
+	const branch = "pilot/LIN-5720-salvage"
+	dir, bare := setupFreshnessRepo(t)
+	hook := filepath.Join(bare, "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\necho 'protected branch hook declined' >&2\nexit 1\n"), 0o755); err != nil { //nolint:gosec // test hook must be executable
+		t.Fatalf("write hook: %v", err)
+	}
+	runGit(t, dir, "checkout", "-b", branch)
+	writeUncommittedFile(t, dir, "held.go")
+	runGit(t, dir, "add", "held.go")
+	runGit(t, dir, "commit", "-m", "held work")
+
+	task := &Task{ID: "LIN-5720", ProjectPath: dir, Branch: branch, SourceAdapter: "linear"}
+	git := NewGitOperations(dir)
+	if pushErr := git.Push(context.Background(), branch); pushErr == nil || !strings.Contains(pushErr.Error(), "\nTo ") && !strings.Contains(pushErr.Error(), ": To ") {
+		t.Fatalf("precondition: raw push error = %v, want git's multi-line stderr with a To header", pushErr)
+	}
+
+	result := &ExecutionResult{TaskID: task.ID}
+	NewRunner().pushAndCreatePRAfterTimeout(context.Background(), task, git, result, nil, slog.Default(), "", nil)
+
+	if result.Outcome != "needs_human" {
+		t.Fatalf("Outcome = %q, want needs_human", result.Outcome)
+	}
+	if strings.Contains(result.Error, "\n") {
+		t.Errorf("row error = %q, want one line", result.Error)
+	}
+	first, _, _ := strings.Cut(result.Error, "\n")
+	if strings.Contains(first, "To ") || strings.Contains(first, "failed to push:") {
+		t.Errorf("first line of row error = %q, want no git To header / raw wrapper", first)
+	}
+	if !strings.Contains(result.Error, "declined") {
+		t.Errorf("row error = %q, want the hook's rejection reason", result.Error)
+	}
+}
+
+// TestFormatGitStepFailureWithRecovery_PushIsOneLine (GH-5720): a push step's
+// multi-line stderr is reduced to the cause so the recovery tail survives the
+// first-line cut; other steps keep their error verbatim.
+func TestFormatGitStepFailureWithRecovery_PushIsOneLine(t *testing.T) {
+	dir, _ := setupFreshnessRepo(t)
+	git := NewGitOperations(dir)
+	raw := errors.New("failed to push: exit status 1: To https://github.com/o/r.git\n ! [remote rejected] b -> b (hook declined)\nerror: failed to push some refs")
+
+	got := formatGitStepFailureWithRecovery(context.Background(), git, "push", 3, raw, "GH-5720", "pilot/GH-5720", "abcdef1234")
+	if strings.Contains(got, "\n") || strings.Contains(got, "To https") || !strings.Contains(got, "hook declined") || !strings.Contains(got, "recovery: branch=pilot/GH-5720") {
+		t.Errorf("push step = %q, want one line with the cause and the recovery tail", got)
+	}
+	got = formatGitStepFailureWithRecovery(context.Background(), git, "pr-create", 3, errors.New("gh: boom"), "GH-5720", "pilot/GH-5720", "abcdef1234")
+	if !strings.Contains(got, "pr-create failed after 3 attempt(s): gh: boom — recovery:") {
+		t.Errorf("pr-create step = %q, want the error verbatim", got)
 	}
 }

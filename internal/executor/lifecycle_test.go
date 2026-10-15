@@ -994,3 +994,78 @@ func TestExecutionLifecycle_Finish_FailedGitHubTask_RecordsLabelStripDeadManEven
 		}
 	})
 }
+
+// TestExecutionLifecycle_Persist_BranchPushedVisibleWithTerminalStatus (GH-5720)
+// pins the write order: the push result lands before the terminal status, so a
+// poller that returns on the first terminal read never sees branch_pushed NULL.
+// A trigger makes the terminal status write fail if branch_pushed is still
+// NULL at that moment — the deterministic version of "pause between the two
+// writes".
+func TestExecutionLifecycle_Persist_BranchPushedVisibleWithTerminalStatus(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	if _, err := store.DB().Exec(`
+		CREATE TRIGGER gh5720_terminal_needs_branch_pushed
+		BEFORE UPDATE OF status ON executions
+		WHEN NEW.status = 'needs_human' AND NEW.branch_pushed IS NULL
+		BEGIN SELECT RAISE(ABORT, 'terminal status written before branch_pushed'); END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	task := &Task{ID: "GH-5720-T1", ProjectPath: "/tmp/project"}
+	lifecycle := NewExecutionLifecycle(store)
+	execID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	pushed := true
+	result := &ExecutionResult{TaskID: task.ID, Outcome: "needs_human", BranchPushed: &pushed}
+	if err := lifecycle.Persist(execID, FinishOutcome{Status: ExecStatusNeedsHuman, Error: "held"}, result, time.Second); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	row, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if row.Status != string(ExecStatusNeedsHuman) {
+		t.Fatalf("status = %q, want needs_human", row.Status)
+	}
+	if row.BranchPushed == nil || !*row.BranchPushed {
+		t.Errorf("branch_pushed = %v on the terminal row, want true", row.BranchPushed)
+	}
+}
+
+// TestExecutionLifecycle_Persist_RejectedFinisherDoesNotStampBranchPushed
+// (GH-5720): the push result is guarded like the status CAS, so a duplicate
+// finisher whose status write is rejected leaves the first finisher's value.
+func TestExecutionLifecycle_Persist_RejectedFinisherDoesNotStampBranchPushed(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-5720-T2", ProjectPath: "/tmp/project"}
+	lifecycle := NewExecutionLifecycle(store)
+	execID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	pushed, notPushed := true, false
+	outcome := FinishOutcome{Status: ExecStatusNeedsHuman, Error: "held"}
+	if err := lifecycle.Persist(execID, outcome, &ExecutionResult{TaskID: task.ID, BranchPushed: &pushed}, time.Second); err != nil {
+		t.Fatalf("first Persist: %v", err)
+	}
+	if err := lifecycle.Persist(execID, outcome, &ExecutionResult{TaskID: task.ID, BranchPushed: &notPushed}, time.Second); err != nil {
+		t.Fatalf("second Persist: %v", err)
+	}
+
+	row, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if row.BranchPushed == nil || !*row.BranchPushed {
+		t.Errorf("branch_pushed = %v, want the first finisher's true", row.BranchPushed)
+	}
+}

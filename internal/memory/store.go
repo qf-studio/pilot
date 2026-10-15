@@ -3500,14 +3500,20 @@ func (s *Store) MarkExecutionCompletedIfNotTerminal(id, prURL, commitSHA string,
 }
 
 // SetExecutionBranchPushed records holdPushedBranch's push result on the row
-// (1 pushed, 0 push failed). GH-5715.
+// (1 pushed, 0 push failed). GH-5715. It is guarded like the status CAS
+// (status NOT IN terminal): callers write it BEFORE the terminal status so a
+// poller that sees the terminal row also sees the push result, and a row some
+// other writer already finished is not stamped by a later, rejected finisher.
+// GH-5720.
 func (s *Store) SetExecutionBranchPushed(id string, pushed bool) error {
 	v := 0
 	if pushed {
 		v = 1
 	}
+	notTerminal, notTerminalArgs := notTerminalClause()
 	return s.withRetry("SetExecutionBranchPushed", func() error {
-		_, err := s.db.Exec(`UPDATE executions SET branch_pushed = ? WHERE id = ?`, v, id)
+		args := append([]interface{}{v, id}, notTerminalArgs...)
+		_, err := s.db.Exec(`UPDATE executions SET branch_pushed = ? WHERE id = ? AND status NOT IN (`+notTerminal+`)`, args...)
 		return err
 	})
 }

@@ -316,14 +316,19 @@ func TestLinearPushMarkerGone(t *testing.T) {
 }
 
 // TestLinearSupersededForgetsPrior (GH-5715) drives MoveSuperseded directly:
-// both branches (human-closed, restored) forget the recorded prior state.
+// both branches (human-closed, restored) forget the recorded prior state; a
+// failed state read keeps it (the issue would otherwise stay started forever)
+// and moves nothing.
 func TestLinearSupersededForgetsPrior(t *testing.T) {
 	for _, tt := range []struct {
 		name, stateType string
+		failRead        bool
 		wantUpdates     int
+		wantPrior       int
 	}{
-		{"closed by a human", "completed", 0},
-		{"still started", "started", 1},
+		{"closed by a human", "completed", false, 0, 0},
+		{"still started", "started", false, 1, 0},
+		{"state read fails", "started", true, 0, 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newLinearStateFake()
@@ -334,9 +339,15 @@ func TestLinearSupersededForgetsPrior(t *testing.T) {
 				t.Fatalf("start: %v", err)
 			}
 			f.setStateType(tt.stateType)
-			_ = m.MoveSuperseded(ctx, testLinearIssueUUID, "LIN-QF-295")
-			if len(m.priorState) != 0 {
-				t.Errorf("priorState = %v, want empty", m.priorState)
+			f.mu.Lock()
+			f.failGetIssue = tt.failRead
+			f.mu.Unlock()
+			err := m.MoveSuperseded(ctx, testLinearIssueUUID, "LIN-QF-295")
+			if tt.failRead && err == nil {
+				t.Error("MoveSuperseded error = nil, want the read error")
+			}
+			if len(m.priorState) != tt.wantPrior {
+				t.Errorf("priorState = %v, want %d entries", m.priorState, tt.wantPrior)
 			}
 			if got := f.count("issueUpdate") - 1; got != tt.wantUpdates {
 				t.Errorf("moves after start = %d, want %d", got, tt.wantUpdates)

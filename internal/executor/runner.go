@@ -390,7 +390,14 @@ func formatGitStepFailureWithRecovery(ctx context.Context, git *GitOperations, s
 	} else if refErr != nil {
 		recovery += fmt.Sprintf(" (recovery ref also failed: %v)", refErr)
 	}
-	return fmt.Sprintf("%s failed after %d attempt(s): %v — recovery: %s", step, attempts, stepErr, recovery)
+	// GH-5720: a push error is git's whole stderr ("To <url>" header first);
+	// the Linear/GitHub reason text keeps only the first line, which would be
+	// that header and cut off the recovery tail. Reduce it to the one-line cause.
+	detail := fmt.Sprint(stepErr)
+	if step == "push" {
+		detail = PushFailureReason(stepErr)
+	}
+	return fmt.Sprintf("%s failed after %d attempt(s): %s — recovery: %s", step, attempts, detail, recovery)
 }
 
 // Non-failure terminal-outcome signatures. The dispatcher classifies an execution
@@ -2487,7 +2494,7 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 			)
 		} else {
 			result.Success = false
-			result.Error = fmt.Sprintf("epic branch push failed: %v", err)
+			result.Error = fmt.Sprintf("epic branch push failed: %s", PushFailureReason(err))
 			r.log.Warn("Epic branch push failed",
 				slog.String("task_id", task.ID),
 				slog.String("branch", task.Branch),
@@ -3205,8 +3212,9 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 
 // PushFailureReason reduces a failed `git push` error to one line: the first
 // line of git's output that starts with "!" or contains "rejected", "denied" or
-// "error:", else the last non-empty line. Git prints the remote URL header
-// ("To https://…") first, which says nothing about why. GH-5715.
+// "error:", else the last non-empty line; a "fatal:" line (a bad remote URL)
+// wins from the keyword on. Git prints the remote URL header ("To https://…")
+// first, which says nothing about why. GH-5715, GH-5720.
 func PushFailureReason(err error) string {
 	var last string
 	for _, line := range strings.Split(err.Error(), "\n") {
@@ -3215,6 +3223,11 @@ func PushFailureReason(err error) string {
 			continue
 		}
 		last = line
+		// The first stderr line carries Push's "failed to push: exit status N: "
+		// wrapper; a fatal: cause starts at the keyword.
+		if i := strings.Index(line, "fatal:"); i >= 0 {
+			return line[i:]
+		}
 		if strings.HasPrefix(line, "!") || strings.Contains(line, "rejected") ||
 			strings.Contains(line, "denied") || strings.Contains(line, "error:") {
 			return line
@@ -3244,8 +3257,10 @@ func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, gi
 
 	if err := git.Push(ctx, task.Branch); err != nil {
 		if !git.RemoteBranchExists(ctx, task.Branch) {
+			// GH-5720: no raw Push error here — it is git's multi-line stderr and
+			// holdPushedBranch re-pushes and appends the single one-line reason.
 			r.holdPushedBranch(ctx, task, git, result, log,
-				fmt.Sprintf("timeout salvage: branch push failed: %v", err),
+				"timeout salvage: branch push failed",
 				executionPath, preserveWorktree)
 			return
 		}

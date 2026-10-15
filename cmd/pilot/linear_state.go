@@ -224,11 +224,13 @@ func (m *linearStateMover) MoveNoPR(ctx context.Context, issueUUID, issueLabel s
 // in the started state. So: when the issue's current state is completed or
 // canceled a human closed it and nothing moves; otherwise it is restored like a
 // no_op/canceled run. If the state cannot be read a human close cannot be ruled
-// out, so nothing moves. The prior-state entry is forgotten either way.
+// out, so nothing moves and the prior-state entry is kept: the read failure is
+// transient, and forgetting the prior would strand the issue in the started
+// state with no way back. Nothing retries it yet; that is a separate decision.
+// Both closed/restored outcomes forget the entry.
 func (m *linearStateMover) MoveSuperseded(ctx context.Context, issueUUID, issueLabel string) error {
 	issue, err := m.api.GetIssue(ctx, issueUUID)
 	if err != nil {
-		m.forgetPrior(issueUUID)
 		m.log.Warn("Linear superseded restore skipped: cannot read issue state",
 			slog.String("issue", issueLabel),
 			slog.Any("error", err),

@@ -313,6 +313,17 @@ func (l *ExecutionLifecycle) Persist(execID string, outcome FinishOutcome, resul
 		return nil
 	}
 
+	// GH-5715/GH-5720: holdPushedBranch's push result is a companion write and
+	// goes BEFORE the status CAS, like the event rows (GH-4259 above): a poller
+	// (WaitForExecution) returns on the first terminal read, so a push result
+	// written after the status was visible as NULL ("no branch was pushed").
+	// The write is itself guarded to non-terminal rows, so a finisher whose
+	// status CAS is going to be rejected does not stamp another writer's row.
+	var pushErr error
+	if result != nil && result.BranchPushed != nil {
+		pushErr = l.store.SetExecutionBranchPushed(execID, *result.BranchPushed)
+	}
+
 	// GH-4423: both branches route through the CAS-guarded store writes — a
 	// duplicate Finish call (the same execID finished twice, e.g. a retried
 	// callback) can no longer silently overwrite a terminal status this row
@@ -329,12 +340,8 @@ func (l *ExecutionLifecycle) Persist(execID string, outcome FinishOutcome, resul
 	} else {
 		_, statusErr = l.store.UpdateExecutionStatusIfNotTerminal(execID, string(outcome.Status), outcome.Error)
 	}
-
-	// GH-5715: holdPushedBranch's push result rides on the same terminal write.
-	if result != nil && result.BranchPushed != nil {
-		if bpErr := l.store.SetExecutionBranchPushed(execID, *result.BranchPushed); bpErr != nil && statusErr == nil {
-			statusErr = bpErr
-		}
+	if statusErr == nil {
+		statusErr = pushErr
 	}
 
 	if result != nil {

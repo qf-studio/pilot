@@ -39,12 +39,13 @@ const (
 type linearStateFake struct {
 	server *httptest.Server
 
-	mu          sync.Mutex
-	ops         []string            // operation markers in request order
-	updates     []map[string]string // issueUpdate variables: id, stateId
-	comments    []string
-	getIssueIDs []string
-	failUpdate  bool
+	mu           sync.Mutex
+	ops          []string            // operation markers in request order
+	updates      []map[string]string // issueUpdate variables: id, stateId
+	comments     []string
+	getIssueIDs  []string
+	failUpdate   bool
+	failGetIssue bool
 	// startedNodes overrides the started-type nodes (empty = two default states).
 	startedNodes string
 	// stateType overrides the type of the state GetIssue reports ("" = backlog,
@@ -89,6 +90,10 @@ func newLinearStateFake() *linearStateFake {
 		case strings.Contains(req.Query, "query GetIssue"):
 			f.ops = append(f.ops, "getIssue")
 			f.getIssueIDs = append(f.getIssueIDs, str("id"))
+			if f.failGetIssue {
+				_, _ = w.Write([]byte(`{"errors":[{"message":"injected read failure"}]}`))
+				return
+			}
 			id := str("id")
 			if id != testLinearIssueUUID && id != testLinearIssueIdent {
 				_, _ = w.Write([]byte(`{"errors":[{"message":"Entity not found: Issue"}]}`))
