@@ -1164,6 +1164,13 @@ const (
 	// (B8), 2026-07-23 — 44 minutes of completed, test-passing work destroyed
 	// before this backstop existed.
 	StageWorkPreserved Stage = "work_preserved"
+	// StageWorkAdopted records the GH-5709 rescue: the commit
+	// StageWorkPreserved auto-committed was green under the project's quality
+	// gates, so the executor adopted it as the deliverable and continued the
+	// normal push/PR finalisation instead of failing the task. Always paired
+	// with a preceding StageWorkPreserved on the same execution. Detail is a
+	// human-readable line naming the short SHA, branch and gate result.
+	StageWorkAdopted Stage = "work_adopted"
 	// StageGithubSideEffect records a GH-4670 post-run audit hit: a GitHub
 	// issue in the task's own repo was closed or reopened during the run
 	// window OTHER than the issue the session was dispatched to fix — the

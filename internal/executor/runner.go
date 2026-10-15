@@ -2020,10 +2020,12 @@ func fillDiffMetrics(ctx context.Context, task *Task, git *GitOperations, result
 // execution_events audit trail — without this, the only trace of a
 // ~44-minute rescue is a WARN log line, invisible in `pilot trace` and the
 // dashboard (AC3).
-func (r *Runner) applyGhostSHAGuardWithPreserve(ctx context.Context, task *Task, result *ExecutionResult, executionPath string, log *slog.Logger) {
-	if applyGhostSHAGuard(ctx, task, result, executionPath, log) {
+func (r *Runner) applyGhostSHAGuardWithPreserve(ctx context.Context, task *Task, result *ExecutionResult, executionPath string, log *slog.Logger) bool {
+	preserved := applyGhostSHAGuard(ctx, task, result, executionPath, log)
+	if preserved {
 		r.recordExecutionEvent(task.LogExecutionID(), memory.StageWorkPreserved, result.Error)
 	}
+	return preserved
 }
 
 // recordResearchPhaseEvent persists the parallel-research phase's cost to the
@@ -5217,7 +5219,15 @@ retrySucceeded:
 	// Skipped for LocalMode tasks (read-only intents have no commit expectation — GH-3642).
 	// GH-4517: also auto-preserves any uncommitted worktree changes it finds
 	// before the caller's deferred worktree cleanup can delete them.
-	r.applyGhostSHAGuardWithPreserve(ctx, task, result, executionPath, log)
+	//
+	// GH-5709: when that preserved commit is the backend's finished work (a
+	// successful result event, quality gates configured, no decline
+	// evidence), it is adopted as the deliverable and the normal gate → push →
+	// PR flow runs on it; red gates re-fail it with the auto-preserved marker.
+	var adoption *preservedAdoption
+	if r.applyGhostSHAGuardWithPreserve(ctx, task, result, executionPath, log) {
+		adoption = r.adoptGhostPreserved(task, result, backendResult, state, executionPath, log)
+	}
 
 	// GH-4670: post-run GitHub side-effect audit — detective backstop for the
 	// GH-4649 incident class. Runs regardless of result.Success (a session
@@ -5380,6 +5390,16 @@ retrySucceeded:
 			}
 
 			commitCount, countErr := git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
+			if countErr == nil && commitCount == 0 && adoption == nil {
+				// GH-5709: a dirty tree after a successful result is likely
+				// finished work the session never got to commit (#5701).
+				// Preserve it and, if allowed, let the normal gate → PR flow
+				// verify it instead of failing as "needs manual review".
+				if adoption = r.adoptPreservedWorktree(ctx, git, task, result, backendResult, state, executionPath, log, "before no-commit retry"); adoption != nil {
+					commitCount, countErr = git.CountNewCommitsAgainstOrigin(ctx, baseBranch)
+					fillDiffMetrics(ctx, task, git, result, log)
+				}
+			}
 			if countErr != nil {
 				// GH-5342 (subtask 4): logGitCtxErr downgrades to Debug when
 				// ctx is already Done() — that's the designed fast-fail gate
@@ -6065,6 +6085,13 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					gatePlainErr, gateFullErr := formatQualityGateFailure(gateHeadline, outcome)
 					result.Error = gateFullErr
 					result.Outcome = OutcomeQualityGateFailed
+					if adoption != nil {
+						// GH-5709: the preserved commit failed its gates — keep
+						// today's auto-preserved failure (terminal, escalated
+						// with the sha/branch) and append the gate output.
+						result.Error = adoption.failureText(gateFullErr)
+						r.finishAdoption(task, adoption, "failed", log)
+					}
 
 					r.reportProgress(task.ID, "Quality Failed", 100, "Quality gates did not pass")
 
@@ -6106,6 +6133,10 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			}
 		} else {
 			log.Debug("Quality gates skipped: task.SkipQualityGates=true", slog.String("task_id", task.ID))
+		}
+
+		if adoption != nil {
+			r.finishAdoption(task, adoption, "passed", log)
 		}
 
 		r.reportProgress(task.ID, "Finalizing", 95, "Preparing for completion")
