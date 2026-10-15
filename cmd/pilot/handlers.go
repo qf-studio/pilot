@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -301,7 +302,7 @@ func extractGitHubLabelNames(issue *github.Issue) []string {
 // onClaimed (nil-safe) fires once the dispatch has passed every admission gate
 // and won its claim (GH-5703: the Linear start-state move hangs off it).
 // ev.SequenceID is already prefixed (e.g. "APP-123") by the SDK adapter — use it directly.
-func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer, onClaimed func()) (*sdkcore.IssueResult, error) {
+func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer, onClaimed func()) (*linearRun, error) {
 	taskID := ev.SequenceID // e.g., "APP-123"; already prefixed by the SDK adapter
 	title := ev.Title
 
@@ -362,14 +363,49 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, ev sdk
 
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
-	return &sdkcore.IssueResult{
-		Success:    hr.EffectiveSuccess(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
-		BranchName: hr.BranchName,
-		PRNumber:   hr.PRNumber,
-		PRURL:      hr.PRURL,
-		HeadSHA:    hr.HeadSHA,
-		Error:      hr.Error,
+	// GH-5705: carry the classified outcome next to the SDK result, so the
+	// Linear comment and state move follow the execution status rather than
+	// Success/PRURL alone.
+	return &linearRun{
+		Result: &sdkcore.IssueResult{
+			Success:    hr.EffectiveSuccess(), // GH-4587/GH-4794: admission-gate declines and superseded/canceled executions are not genuine failures
+			BranchName: hr.BranchName,
+			PRNumber:   hr.PRNumber,
+			PRURL:      hr.PRURL,
+			HeadSHA:    hr.HeadSHA,
+			Error:      hr.Error,
+		},
+		Outcome:          linearOutcome(hr),
+		TerminalByDesign: hr.TerminalByDesign,
+		BranchName:       hr.BranchName,
+		Cause:            linearOutcomeCause(hr),
 	}, execErr
+}
+
+// linearOutcome is the classified outcome of a finished handler run: the
+// runner's Outcome tag when set, else the persisted execution status, else
+// "completed" for a plain success ("" for a failure with no classification).
+func linearOutcome(hr *HandlerResult) string {
+	if hr.Result != nil && hr.Result.Outcome != "" {
+		return hr.Result.Outcome
+	}
+	if hr.Status != "" {
+		return hr.Status
+	}
+	if hr.Success {
+		return string(executor.ExecStatusCompleted)
+	}
+	return ""
+}
+
+// linearOutcomeCause is the failure detail for a run whose HandlerResult.Error
+// is nil — a rate_limited or stalled row reports its message in the execution
+// row's Error string, not as a Go error.
+func linearOutcomeCause(hr *HandlerResult) error {
+	if hr.Error == nil && hr.Result != nil && strings.TrimSpace(hr.Result.Error) != "" {
+		return errors.New(hr.Result.Error)
+	}
+	return hr.Error
 }
 
 // handleJiraSDKIssueWithResult processes a Jira issue delivered as a SDK core.IssueEvent

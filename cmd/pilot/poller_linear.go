@@ -474,7 +474,7 @@ func linearPollerRegistration() PollerRegistration {
 						}
 						// GH-5701/GH-5703: start move once the dispatch is admitted (after the gates); completion/failure
 						// comment + optional state move after. Never alters the result.
-						return runLinearStateLegs(issueCtx, ev, notifier, mover, func(admitted func()) (*sdkcore.IssueResult, error) {
+						return runLinearStateLegs(issueCtx, ev, notifier, mover, func(admitted func()) (*linearRun, error) {
 							return handleLinearIssueWithResult(issueCtx, deps.Cfg, ev, projectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer, admitted)
 						})
 					})

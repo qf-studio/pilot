@@ -51,6 +51,10 @@ type HandlerResult struct {
 	// status (superseded or canceled, see executor.IsTerminalByDesignStatus) —
 	// deliberately not carried out rather than genuinely failed (GH-4794).
 	TerminalByDesign bool
+	// Status is the persisted execution row status the dispatcher path waited
+	// on (completed, failed, no_op, needs_human, rate_limited, ...). Empty on
+	// the direct-runner path and on admission-gate declines (GH-5705).
+	Status string
 }
 
 // IsDispatchGated reports whether this result's Error is (or wraps)
@@ -333,6 +337,8 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	// so steps 8/10 can suppress the false failure report/alert without
 	// touching the genuine-failure path.
 	var terminalByDesign bool
+	// execStatus is the waited-on row's persisted status (HandlerResult.Status).
+	var execStatus string
 
 	if deps.Dispatcher != nil {
 		execID, qErr := deps.Dispatcher.QueueTask(ctx, task)
@@ -419,6 +425,7 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			if waitErr != nil {
 				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
 			} else {
+				execStatus = exec.Status
 				result, execErr, terminalByDesign = classifyWaitedExecution(task.ID, exec)
 			}
 		}
@@ -472,6 +479,7 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 		Error:            hrErr,
 		Result:           result,
 		TerminalByDesign: terminalByDesign,
+		Status:           execStatus,
 	}
 	if result != nil {
 		if result.PRUrl != "" {

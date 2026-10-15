@@ -329,16 +329,22 @@ func (e *fakeBackendErr) ErrorMessage() string { return e.msg }
 func (e *fakeBackendErr) ErrorStderr() string  { return e.stderr }
 
 func TestLinearFailureReason(t *testing.T) {
-	if got := linearFailureReason(nil); got != "unknown error" {
-		t.Errorf("nil error → %q", got)
+	if got := linearFailureReason("", nil); got != "unknown error" {
+		t.Errorf("nil error, no status → %q", got)
+	}
+	if got := linearFailureReason("rate_limited", nil); got != "rate_limited: no error detail" {
+		t.Errorf("status only → %q", got)
 	}
 	long := errors.New(strings.Repeat("x", 500))
-	got := linearFailureReason(long)
+	got := linearFailureReason("failed", long)
 	if r := []rune(got); len(r) != linearFailureReasonMax+1 {
 		t.Errorf("truncated length = %d runes, want %d", len(r), linearFailureReasonMax+1)
 	}
-	if got := linearFailureReason(errors.New("  boom \n")); got != "error: boom" {
+	if got := linearFailureReason("", errors.New("  boom \n")); got != "error: boom" {
 		t.Errorf("trim → %q", got)
+	}
+	if got := linearFailureReason("stalled", errors.New("no output for 10m")); got != "stalled: no output for 10m" {
+		t.Errorf("status is the class → %q", got)
 	}
 }
 
@@ -348,24 +354,33 @@ func TestLinearFailureReason(t *testing.T) {
 func TestLinearFailureReason_NoLeak(t *testing.T) {
 	const wt = "/tmp/pilot-worktree-GH-5703-1792064788020163877"
 	tests := []struct {
-		name string
-		err  error
-		want string
+		name   string
+		status string
+		err    error
+		want   string
 	}{
 		{
-			name: "wrapped chain with worktree path keeps first line, drops path",
-			err:  fmt.Errorf("execution failed: git push in %s: exit 1\nremote: secret detail\n  at /var/lib/pilot/x.go:12", wt),
-			want: "error: execution failed: git push in <path> exit 1",
+			name:   "wrapped chain with worktree path keeps first line, drops path",
+			status: "failed",
+			err:    fmt.Errorf("execution failed: git push in %s: exit 1\nremote: secret detail\n  at /var/lib/pilot/x.go:12", wt),
+			want:   "failed: execution failed: git push in <path>: exit 1",
 		},
 		{
-			name: "path in quotes and after colon",
-			err:  errors.New(`open "` + wt + `/a.go": no such file; cwd:/home/ec2-user/repo`),
-			want: "error: open \"<path>\": no such file; cwd:<path>",
+			name:   "path in quotes and after colon",
+			status: "failed",
+			err:    errors.New(`open "` + wt + `/a.go": no such file; cwd:/home/ec2-user/repo`),
+			want:   "failed: open \"<path>\": no such file; cwd:<path>",
 		},
 		{
-			name: "classified backend error uses its type and message, not stderr",
+			name: "classified backend error without a status uses its type and message, not stderr",
 			err:  fmt.Errorf("wrapped: %w", &fakeBackendErr{typ: "rate_limit", msg: "429 from " + wt, stderr: "trace at /tmp/secret/stderr.log"}),
 			want: "rate_limit: 429 from <path>",
+		},
+		{
+			name:   "the status wins over the backend error type, message still comes from the backend",
+			status: "rate_limited",
+			err:    &fakeBackendErr{typ: "rate_limit", msg: "429 from " + wt, stderr: "trace at /tmp/secret/stderr.log"},
+			want:   "rate_limited: 429 from <path>",
 		},
 		{
 			name: "non-path slashes survive",
@@ -375,7 +390,7 @@ func TestLinearFailureReason_NoLeak(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := linearFailureReason(tt.err)
+			got := linearFailureReason(tt.status, tt.err)
 			if got != tt.want {
 				t.Errorf("reason = %q\nwant     %q", got, tt.want)
 			}
@@ -383,6 +398,28 @@ func TestLinearFailureReason_NoLeak(t *testing.T) {
 				if strings.Contains(got, bad) {
 					t.Errorf("reason %q leaks %q", got, bad)
 				}
+			}
+		})
+	}
+}
+
+// TestLinearAbsPathRe pins GH-5705: a path token stops at ':', ',' and ';' so
+// the punctuation after it survives, and a URL's "//" is never read as a path.
+func TestLinearAbsPathRe(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{"colon after a path is kept", "git push in /tmp/wt: exit 1", "git push in <path>: exit 1"},
+		{"URL with a comma is unchanged", "429 from https://api.linear.app/graphql, retry later", "429 from https://api.linear.app/graphql, retry later"},
+		{"URL with a port and path is unchanged", "dial http://localhost:8080/v1/x failed", "dial http://localhost:8080/v1/x failed"},
+		{"comma-separated paths both redacted", "missing /tmp/a/b,/var/lib/c", "missing <path>,<path>"},
+		{"semicolon-separated paths both redacted", "see /tmp/a;/var/b", "see <path>;<path>"},
+		{"path after a URL is still redacted", "fetch https://x.test/a then /tmp/wt/file", "fetch https://x.test/a then <path>"},
+		{"leading path", "/tmp/wt/x.go:12: boom", "<path>:12: boom"},
+		{"fractions survive", "ratio 3/4 and/or 1/2", "ratio 3/4 and/or 1/2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := linearAbsPathRe.ReplaceAllString(tt.in, "${1}<path>"); got != tt.want {
+				t.Errorf("redact(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
 	}
@@ -491,6 +528,11 @@ func (n recNotifier) NotifyTaskEndedWithoutPR(_ context.Context, issueID string)
 	return n.err
 }
 
+func (n recNotifier) NotifyTaskEnded(_ context.Context, issueID string, kind linearEndKind, branch string) error {
+	n.rec.add("ended:" + string(kind) + ":" + issueID + ":" + branch)
+	return n.err
+}
+
 func (n recNotifier) NotifyTaskFailed(_ context.Context, issueID, reason string) error {
 	n.rec.add("failed:" + issueID + ":" + reason)
 	return n.err
@@ -503,6 +545,9 @@ func TestRunLinearStateLegs(t *testing.T) {
 	tests := []struct {
 		name       string
 		res        *sdkcore.IssueResult
+		outcome    string // classified outcome handed to the legs (GH-5705)
+		branch     string
+		cause      error
 		runErr     error
 		moverErr   error
 		notifyErr  error
@@ -517,7 +562,7 @@ func TestRunLinearStateLegs(t *testing.T) {
 		{
 			name:       "failure: failure comment and failed leg",
 			res:        &sdkcore.IssueResult{Success: false, Error: boom},
-			wantEvents: []string{"move:start:uuid-1", "run", "failed:uuid-1:error: executor exploded", "move:failed:uuid-1"},
+			wantEvents: []string{"move:start:uuid-1", "run", "failed:uuid-1:failed: executor exploded", "move:failed:uuid-1"},
 		},
 		{
 			name:       "skipped result posts and moves nothing after the start leg",
@@ -534,6 +579,56 @@ func TestRunLinearStateLegs(t *testing.T) {
 			res:        &sdkcore.IssueResult{Success: true, Error: executor.ErrDispatchGated},
 			noAdmit:    true,
 			wantEvents: []string{"run"},
+		},
+		{
+			name:       "no_op: no-changes comment and restore, never a failure (GH-5705)",
+			res:        &sdkcore.IssueResult{Success: false},
+			outcome:    "no_op",
+			wantEvents: []string{"move:start:uuid-1", "run", "ended:no_op:uuid-1:", "move:nopr:uuid-1"},
+		},
+		{
+			name:       "needs_human: held-branch comment naming the branch, pr leg only (GH-5705)",
+			res:        &sdkcore.IssueResult{Success: true},
+			outcome:    "needs_human",
+			branch:     "pilot/LIN-QF-295",
+			wantEvents: []string{"move:start:uuid-1", "run", "ended:held:uuid-1:pilot/LIN-QF-295", "move:pr:uuid-1"},
+		},
+		{
+			name:       "canceled: cause comment and restore (GH-5705)",
+			res:        &sdkcore.IssueResult{Success: true},
+			outcome:    "canceled",
+			wantEvents: []string{"move:start:uuid-1", "run", "ended:canceled:uuid-1:", "move:nopr:uuid-1"},
+		},
+		{
+			name:       "superseded: cause comment and restore (GH-5705)",
+			res:        &sdkcore.IssueResult{Success: true},
+			outcome:    "superseded",
+			wantEvents: []string{"move:start:uuid-1", "run", "ended:superseded:uuid-1:", "move:nopr:uuid-1"},
+		},
+		{
+			name:       "rate_limited: failure comment starts with the status (GH-5705)",
+			res:        &sdkcore.IssueResult{Success: false},
+			outcome:    "rate_limited",
+			cause:      errors.New("429 too many requests"),
+			wantEvents: []string{"move:start:uuid-1", "run", "failed:uuid-1:rate_limited: 429 too many requests", "move:failed:uuid-1"},
+		},
+		{
+			name:       "stalled without detail still names the status (GH-5705)",
+			res:        &sdkcore.IssueResult{Success: false},
+			outcome:    "stalled",
+			wantEvents: []string{"move:start:uuid-1", "run", "failed:uuid-1:stalled: no error detail", "move:failed:uuid-1"},
+		},
+		{
+			name:       "failed status with an error: status is the class (GH-5705)",
+			res:        &sdkcore.IssueResult{Success: false, Error: boom},
+			outcome:    "failed",
+			wantEvents: []string{"move:start:uuid-1", "run", "failed:uuid-1:failed: executor exploded", "move:failed:uuid-1"},
+		},
+		{
+			name:       "completed with a PR is unchanged by the outcome (GH-5705)",
+			res:        &sdkcore.IssueResult{Success: true, PRURL: "https://github.com/o/r/pull/1"},
+			outcome:    "completed",
+			wantEvents: []string{"move:start:uuid-1", "run", "completed:uuid-1:https://github.com/o/r/pull/1", "move:pr:uuid-1"},
 		},
 		{
 			name:       "nil result: nothing after run",
@@ -559,13 +654,16 @@ func TestRunLinearStateLegs(t *testing.T) {
 			rec := &legRecorder{}
 			got, err := runLinearStateLegs(context.Background(), ev,
 				recNotifier{rec: rec, err: tt.notifyErr}, recMover{rec: rec, err: tt.moverErr},
-				func(admitted func()) (*sdkcore.IssueResult, error) {
+				func(admitted func()) (*linearRun, error) {
 					if !tt.noAdmit {
 						admitted()
 						admitted() // idempotent: only the first call moves
 					}
 					rec.add("run")
-					return tt.res, tt.runErr
+					if tt.res == nil {
+						return nil, tt.runErr
+					}
+					return &linearRun{Result: tt.res, Outcome: tt.outcome, BranchName: tt.branch, Cause: tt.cause}, tt.runErr
 				})
 			if got != tt.res || err != tt.runErr {
 				t.Errorf("result/error altered: got (%v, %v), want (%v, %v)", got, err, tt.res, tt.runErr)
@@ -590,12 +688,12 @@ func TestLinearHandlerRunsStateLegs(t *testing.T) {
 	ev := sdkcore.IssueEvent{IssueID: testLinearIssueUUID, SequenceID: "LIN-QF-295"}
 	const mr = "https://gitlab.example.test/g/p/-/merge_requests/12"
 
-	_, err := runLinearStateLegs(context.Background(), ev, notifier, mover, func(admitted func()) (*sdkcore.IssueResult, error) {
+	_, err := runLinearStateLegs(context.Background(), ev, notifier, mover, func(admitted func()) (*linearRun, error) {
 		admitted()
 		if f.count("issueUpdate") != 1 {
 			t.Error("start leg must have moved the issue before dispatch")
 		}
-		return &sdkcore.IssueResult{Success: true, PRURL: mr}, nil
+		return &linearRun{Result: &sdkcore.IssueResult{Success: true, PRURL: mr}}, nil
 	})
 	if err != nil {
 		t.Fatalf("runLinearStateLegs: %v", err)
@@ -663,7 +761,7 @@ func TestLinearGatedDeclineMakesNoStateMutation(t *testing.T) {
 
 	var res *sdkcore.IssueResult
 	for i := 0; i < 3; i++ { // a repick storm: every tick is declined
-		res, err = runLinearStateLegs(context.Background(), ev, notifier, mover, func(admitted func()) (*sdkcore.IssueResult, error) {
+		res, err = runLinearStateLegs(context.Background(), ev, notifier, mover, func(admitted func()) (*linearRun, error) {
 			return handleLinearIssueWithResult(context.Background(), cfg, ev, projectPath, dispatcher, executor.NewRunner(), executor.NewMonitor(), nil, nil, nil, admitted)
 		})
 		if err != nil {
@@ -694,9 +792,9 @@ func TestLinearSuccessWithoutPRRestoresPriorState(t *testing.T) {
 	notifier := newLinearLegNotifier(c)
 	ev := sdkcore.IssueEvent{IssueID: testLinearIssueUUID, SequenceID: "LIN-QF-295"}
 
-	res, err := runLinearStateLegs(context.Background(), ev, notifier, mover, func(admitted func()) (*sdkcore.IssueResult, error) {
+	res, err := runLinearStateLegs(context.Background(), ev, notifier, mover, func(admitted func()) (*linearRun, error) {
 		admitted()
-		return &sdkcore.IssueResult{Success: true}, nil
+		return &linearRun{Result: &sdkcore.IssueResult{Success: true}}, nil
 	})
 	if err != nil || res == nil || !res.Success {
 		t.Fatalf("result altered: %+v, %v", res, err)
@@ -727,9 +825,9 @@ func TestLinearSuccessWithoutPRPrefersConfiguredFailedState(t *testing.T) {
 	notifier := newLinearLegNotifier(c)
 	ev := sdkcore.IssueEvent{IssueID: testLinearIssueUUID, SequenceID: "LIN-QF-295"}
 
-	_, err := runLinearStateLegs(context.Background(), ev, notifier, mover, func(admitted func()) (*sdkcore.IssueResult, error) {
+	_, err := runLinearStateLegs(context.Background(), ev, notifier, mover, func(admitted func()) (*linearRun, error) {
 		admitted()
-		return &sdkcore.IssueResult{Success: true}, nil
+		return &linearRun{Result: &sdkcore.IssueResult{Success: true}}, nil
 	})
 	if err != nil {
 		t.Fatalf("runLinearStateLegs: %v", err)

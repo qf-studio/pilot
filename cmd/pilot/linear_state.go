@@ -158,13 +158,21 @@ func (m *linearStateMover) move(ctx context.Context, issue *linearSDK.Issue, iss
 		}
 	}
 
+	return m.apply(issueLabel, to, leg, func() error {
+		return m.transition(ctx, issue, issueUUID, leg, target)
+	})
+}
+
+// apply runs one transition with the shared log pair: INFO "Linear state
+// transition" before, WARN "Linear state transition failed" (and the error
+// returned) after a failure.
+func (m *linearStateMover) apply(issueLabel, to string, leg linearLeg, do func() error) error {
 	m.log.Info("Linear state transition",
 		slog.String("issue", issueLabel),
 		slog.String("to", to),
 		slog.String("leg", string(leg)),
 	)
-
-	if err := m.transition(ctx, issue, issueUUID, leg, target); err != nil {
+	if err := do(); err != nil {
 		m.log.Warn("Linear state transition failed",
 			slog.String("issue", issueLabel),
 			slog.String("to", to),
@@ -203,21 +211,9 @@ func (m *linearStateMover) MoveNoPR(ctx context.Context, issueUUID, issueLabel s
 		return errNoTransition
 	}
 
-	m.log.Info("Linear state transition",
-		slog.String("issue", issueLabel),
-		slog.String("to", "prior:"+prior),
-		slog.String("leg", string(legRestore)),
-	)
-	if err := m.transitions.TransitionState(ctx, issueUUID, prior); err != nil {
-		m.log.Warn("Linear state transition failed",
-			slog.String("issue", issueLabel),
-			slog.String("to", "prior:"+prior),
-			slog.String("leg", string(legRestore)),
-			slog.Any("error", err),
-		)
-		return err
-	}
-	return nil
+	return m.apply(issueLabel, "prior:"+prior, legRestore, func() error {
+		return m.transitions.TransitionState(ctx, issueUUID, prior)
+	})
 }
 
 func (m *linearStateMover) transition(ctx context.Context, issue *linearSDK.Issue, issueUUID string, leg linearLeg, target string) error {
@@ -411,10 +407,25 @@ type linearLifecycleNotifier interface {
 	// NotifyTaskEndedWithoutPR posts the terminal comment for a run that
 	// succeeded without a PR/MR (GH-5703).
 	NotifyTaskEndedWithoutPR(ctx context.Context, issueID string) error
+	// NotifyTaskEnded posts the terminal comment for a classified non-failure
+	// outcome that has no PR/MR (GH-5705); branch is only used by
+	// linearEndHeld.
+	NotifyTaskEnded(ctx context.Context, issueID string, kind linearEndKind, branch string) error
 }
 
-// linearLegNotifier adds the GH-5703 no-PR comment to the SDK notifier, which
-// only has completed/failed shapes (its completed comment promises a PR).
+// linearEndKind names a classified non-failure outcome without a PR/MR.
+type linearEndKind string
+
+const (
+	linearEndNoOp       linearEndKind = "no_op"
+	linearEndHeld       linearEndKind = "held"
+	linearEndCanceled   linearEndKind = "canceled"
+	linearEndSuperseded linearEndKind = "superseded"
+)
+
+// linearLegNotifier adds the GH-5703/GH-5705 terminal comments to the SDK
+// notifier, which only has completed/failed shapes (its completed comment
+// promises a PR).
 type linearLegNotifier struct {
 	*linearSDK.Notifier
 	client *linearSDK.Client
@@ -437,27 +448,86 @@ func (n *linearLegNotifier) NotifyTaskEndedWithoutPR(ctx context.Context, issueI
 	return nil
 }
 
+// linearEndComment renders the terminal comment for kind. branch is rendered
+// only for linearEndHeld.
+func linearEndComment(kind linearEndKind, branch string) string {
+	switch kind {
+	case linearEndNoOp:
+		return "ℹ️ **Pilot finished this task without opening a pull request**\n\n" +
+			"No changes were needed. Nothing is waiting for review.\n\n" +
+			"_Reopen or re-label the issue if work is still expected._"
+	case linearEndHeld:
+		where := "The work"
+		if branch != "" {
+			where = fmt.Sprintf("Branch `%s`", branch)
+		}
+		return "⏸️ **Pilot held this task for human review**\n\n" +
+			where + " is pushed and held for human review. No pull request was opened.\n\n" +
+			"_Review the branch, then open a pull request or re-label the issue to retry._"
+	case linearEndCanceled:
+		return "ℹ️ **Pilot stopped this task: it was canceled**\n\n" +
+			"An operator canceled the run. No pull request was opened and nothing is waiting for review.\n\n" +
+			"_Re-label the issue if work is still expected._"
+	case linearEndSuperseded:
+		return "ℹ️ **Pilot stopped this task: it was superseded**\n\n" +
+			"The issue was closed or replaced before the run finished. No pull request was opened and nothing is waiting for review.\n\n" +
+			"_Reopen or re-label the issue if work is still expected._"
+	}
+	return linearNoPRComment
+}
+
+// NotifyTaskEnded implements linearLifecycleNotifier.
+func (n *linearLegNotifier) NotifyTaskEnded(ctx context.Context, issueID string, kind linearEndKind, branch string) error {
+	if err := n.client.AddComment(ctx, issueID, linearEndComment(kind, branch)); err != nil {
+		return fmt.Errorf("failed to add %s comment: %w", kind, err)
+	}
+	return nil
+}
+
 // linearMover is the slice of *linearStateMover the handler legs use.
 type linearMover interface {
 	Move(ctx context.Context, issueUUID, issueLabel string, leg linearLeg) error
 	MoveNoPR(ctx context.Context, issueUUID, issueLabel string) error
 }
 
+// linearRun is a Linear dispatch's result plus the classified outcome the
+// state legs need (GH-5705): sdkcore.IssueResult alone only carries
+// Success/PRURL/Error, which cannot tell a no_op from a failure or a
+// needs_human hold from a success.
+type linearRun struct {
+	Result *sdkcore.IssueResult
+	// Outcome is the classified execution outcome: the runner's Outcome tag
+	// when set, else the persisted execution status ("" on the direct-runner
+	// path without a tag and on gated declines).
+	Outcome          string
+	TerminalByDesign bool
+	BranchName       string
+	// Cause is the failure detail when Result.Error is nil (a rate_limited or
+	// stalled row carries its message in the execution row, not as an error).
+	Cause error
+}
+
 // runLinearStateLegs wraps one Linear dispatch with the native-state legs
-// (GH-5701): the start move once the dispatch is admitted, then — on a
-// non-skipped result — the completion comment + optional in_review move (a
-// PR/MR URL was produced), the failure comment + optional failed move, or
-// (GH-5703) the no-PR comment + move to failed/prior state. It never alters
-// run's result or error, and a comment or transition failure is only logged.
-// Skipped results and admission-gate declines (executor.ErrDispatchGated)
-// post and move nothing.
+// (GH-5701), driven by the classified outcome (GH-5705) rather than
+// Success/PRURL:
+//
+//	completed + PR/MR      completion comment, in_review leg
+//	completed, no PR/MR    no-PR comment, failed/prior-state move (GH-5703)
+//	no_op                  "no changes were needed" comment, failed/prior-state move
+//	needs_human            held-branch comment, in_review leg (none when unset)
+//	canceled / superseded  cause comment, failed/prior-state move
+//	anything else          "<status>: <reason>" failure comment, failed leg
+//
+// It never alters run's result or error, and a comment or transition failure is
+// only logged. Skipped results and admission-gate declines
+// (executor.ErrDispatchGated) post and move nothing.
 //
 // run receives admitted, which it must call exactly when the dispatch won its
 // claim, i.e. after every admission gate (IsActive, repick backoff, terminal
 // completion, claim-lost). The start move happens inside it, so a gated decline
 // never touches the Linear state (GH-5703). admitted is safe to call more than
 // once; only the first call moves.
-func runLinearStateLegs(ctx context.Context, ev sdkcore.IssueEvent, notifier linearLifecycleNotifier, mover linearMover, run func(admitted func()) (*sdkcore.IssueResult, error)) (*sdkcore.IssueResult, error) {
+func runLinearStateLegs(ctx context.Context, ev sdkcore.IssueEvent, notifier linearLifecycleNotifier, mover linearMover, run func(admitted func()) (*linearRun, error)) (*sdkcore.IssueResult, error) {
 	log := logging.WithComponent("linear")
 
 	// Failures are logged inside Move; errNoTransition is the expected "comment only" case.
@@ -465,65 +535,104 @@ func runLinearStateLegs(ctx context.Context, ev sdkcore.IssueEvent, notifier lin
 		_ = mover.Move(ctx, ev.IssueID, ev.SequenceID, legStart)
 	})
 
-	res, err := run(admitted)
-	if res == nil || res.Skipped || errors.Is(res.Error, executor.ErrDispatchGated) {
+	out, err := run(admitted)
+	if out == nil || out.Result == nil {
+		return nil, err
+	}
+	res := out.Result
+	if res.Skipped || errors.Is(res.Error, executor.ErrDispatchGated) {
 		return res, err
 	}
 
-	switch {
-	case res.Success && res.PRURL != "":
-		if nerr := notifier.NotifyTaskCompleted(ctx, ev.IssueID, res.PRURL, ""); nerr != nil {
-			log.Warn("Failed to notify task completed",
+	warn := func(what string, nerr error) {
+		if nerr != nil {
+			log.Warn("Failed to notify "+what,
 				slog.String("issue_id", ev.IssueID),
 				slog.Any("error", nerr),
 			)
 		}
+	}
+	ended := func(kind linearEndKind) {
+		warn("task ended ("+string(kind)+")", notifier.NotifyTaskEnded(ctx, ev.IssueID, kind, out.BranchName))
+	}
+
+	switch out.Outcome {
+	case string(executor.ExecStatusNeedsHuman):
+		// holdPushedBranch pushed a salvaged branch for a human: keep the
+		// started state (or move to in_review when configured).
+		ended(linearEndHeld)
 		_ = mover.Move(ctx, ev.IssueID, ev.SequenceID, legPR)
-	case res.Success:
-		// GH-5703: no PR/MR and not a gated decline (no changes needed, issue
-		// closed mid-run, operator cancel). Without this the issue would sit in
-		// the started-type state forever.
-		if nerr := notifier.NotifyTaskEndedWithoutPR(ctx, ev.IssueID); nerr != nil {
-			log.Warn("Failed to notify task ended without PR",
-				slog.String("issue_id", ev.IssueID),
-				slog.Any("error", nerr),
-			)
-		}
+	case string(executor.ExecStatusNoOp):
+		ended(linearEndNoOp)
+		_ = mover.MoveNoPR(ctx, ev.IssueID, ev.SequenceID)
+	case string(executor.ExecStatusCanceled):
+		ended(linearEndCanceled)
+		_ = mover.MoveNoPR(ctx, ev.IssueID, ev.SequenceID)
+	case string(executor.ExecStatusSuperseded):
+		ended(linearEndSuperseded)
 		_ = mover.MoveNoPR(ctx, ev.IssueID, ev.SequenceID)
 	default:
-		if nerr := notifier.NotifyTaskFailed(ctx, ev.IssueID, linearFailureReason(res.Error)); nerr != nil {
-			log.Warn("Failed to notify task failed",
-				slog.String("issue_id", ev.IssueID),
-				slog.Any("error", nerr),
-			)
+		switch {
+		case res.Success && res.PRURL != "":
+			warn("task completed", notifier.NotifyTaskCompleted(ctx, ev.IssueID, res.PRURL, ""))
+			_ = mover.Move(ctx, ev.IssueID, ev.SequenceID, legPR)
+		case res.Success:
+			// GH-5703: completed without a PR/MR and not a gated decline (issue
+			// closed mid-run, ...). Without this the issue would sit in the
+			// started-type state forever.
+			warn("task ended without PR", notifier.NotifyTaskEndedWithoutPR(ctx, ev.IssueID))
+			_ = mover.MoveNoPR(ctx, ev.IssueID, ev.SequenceID)
+		default:
+			cause := res.Error
+			if cause == nil {
+				cause = out.Cause
+			}
+			status := out.Outcome
+			if status == "" {
+				status = string(executor.ExecStatusFailed)
+			}
+			warn("task failed", notifier.NotifyTaskFailed(ctx, ev.IssueID, linearFailureReason(status, cause)))
+			_ = mover.Move(ctx, ev.IssueID, ev.SequenceID, legFailed)
 		}
-		_ = mover.Move(ctx, ev.IssueID, ev.SequenceID, legFailed)
 	}
 	return res, err
 }
 
 // linearAbsPathRe matches an absolute filesystem path token (preceded by start,
-// whitespace or an opening delimiter) so it can be dropped from public comments.
-var linearAbsPathRe = regexp.MustCompile(`(^|[\s"'(=:\[])/[^\s"')\]]+`)
+// whitespace or an opening/separating delimiter) so it can be dropped from
+// public comments. The token stops at ':', ',' and ';' so the punctuation after
+// a path survives, and it never starts with '/', so the "//" of a URL
+// (https://host/x) is not mistaken for a path.
+var linearAbsPathRe = regexp.MustCompile(`(^|[\s"'(=:,;\[])/[^\s"')\]:,;/][^\s"')\]:,;]*`)
 
-// linearFailureReason renders a handler error for the public failure comment
-// (GH-5703): "<class>: <first line>" — the class is the backend error type
-// when the chain carries a classified BackendError (rate_limit, timeout, ...),
-// else "error". Only the first line is kept, absolute paths (worktrees, /tmp)
-// are replaced by "<path>", and the result is capped at linearFailureReasonMax
+// linearFailureReason renders a failure for the public failure comment
+// (GH-5703, GH-5705): "<status>: <first line>" — the class is the classified
+// execution status (failed, rate_limited, stalled, ...), because the error the
+// daemon path sees is rebuilt from a DB string and carries no type. Without a
+// status the class is the backend error type when the chain carries one, else
+// "error". Only the first line is kept, absolute paths (worktrees, /tmp) are
+// replaced by "<path>", and the result is capped at linearFailureReasonMax
 // runes, so the wrapped error chain and stderr never reach the issue.
-func linearFailureReason(err error) string {
-	if err == nil {
+func linearFailureReason(status string, err error) string {
+	if err == nil && status == "" {
 		return "unknown error"
 	}
-	class, msg := "error", err.Error()
-	var be executor.BackendError
-	if errors.As(err, &be) {
-		if t := be.ErrorType(); t != "" {
-			class = t
-		}
-		if m := be.ErrorMessage(); strings.TrimSpace(m) != "" {
-			msg = m
+	class, msg := "error", "no error detail"
+	if status != "" {
+		class = status
+	}
+	if err != nil {
+		msg = err.Error()
+		var be executor.BackendError
+		if errors.As(err, &be) {
+			if status == "" {
+				if t := be.ErrorType(); t != "" {
+					class = t
+				}
+			}
+			if m := be.ErrorMessage(); strings.TrimSpace(m) != "" {
+				msg = m
+			}
 		}
 	}
 	msg = strings.TrimSpace(msg)
