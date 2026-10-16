@@ -916,12 +916,6 @@ func (g *GitOperations) gitOutput(ctx context.Context, args ...string) (string, 
 	return string(out), nil
 }
 
-func (g *GitOperations) refExists(ctx context.Context, ref string) bool {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", ref+"^{commit}")
-	cmd.Dir = g.projectPath
-	return cmd.Run() == nil
-}
-
 func (g *GitOperations) commitMessage(ctx context.Context, sha string) (string, error) {
 	out, err := g.gitOutput(ctx, "log", "-1", "--format=%B", sha)
 	if err != nil {
