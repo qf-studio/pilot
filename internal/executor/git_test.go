@@ -1961,6 +1961,129 @@ func TestStripAnthropicCoAuthor(t *testing.T) {
 			t.Errorf("HEAD changed: %s -> %s", shaBefore, got)
 		}
 	})
+
+	const trailer = "\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+	commitFile := func(t *testing.T, dir, name, msg string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(msg), 0644); err != nil {
+			t.Fatal(err)
+		}
+		gitOut(t, dir, "add", name)
+		gitOut(t, dir, "commit", "-m", msg)
+	}
+
+	// GH-5731: two lines of history in the unpublished range, every commit in
+	// the same second, so only --topo-order guarantees parents are rewritten
+	// before their children.
+	t.Run("merge commit: two lines are rewritten in topo order", func(t *testing.T) {
+		_, dir, cleanup := newRemoteAndLocalRepo(t)
+		defer cleanup()
+		t.Setenv("GIT_AUTHOR_DATE", "2026-01-01T00:00:00Z")
+		t.Setenv("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
+		gitOut(t, dir, "checkout", "-b", "pilot/GH-merge")
+
+		// HEAD's first parent is the epic-two line, so plain rev-list pops
+		// "epic one" after "child two" but before "child one" is re-parented.
+		commitFile(t, dir, "epic1.txt", "feat: epic one"+trailer)
+		epicOne := gitOut(t, dir, "rev-parse", "HEAD")
+		commitFile(t, dir, "epic2.txt", "feat: epic two")
+		gitOut(t, dir, "checkout", "-b", "side", epicOne)
+		commitFile(t, dir, "child1.txt", "feat: child one"+trailer)
+		commitFile(t, dir, "child2.txt", "feat: child two")
+		gitOut(t, dir, "checkout", "pilot/GH-merge")
+		gitOut(t, dir, "merge", "--no-ff", "-m", "merge side", "side")
+		gitOut(t, dir, "branch", "-D", "side")
+
+		countBefore := gitOut(t, dir, "rev-list", "--count", "HEAD")
+		treesBefore := gitOut(t, dir, "log", "--format=%T", "--topo-order")
+
+		shas, err := NewGitOperations(dir).StripAnthropicCoAuthorRange(context.Background())
+		if err != nil || len(shas) != 2 {
+			t.Fatalf("shas=%v err=%v, want 2 rewritten shas", shas, err)
+		}
+		if got := gitOut(t, dir, "rev-list", "--count", "HEAD"); got != countBefore {
+			t.Errorf("commit count = %s, want %s (history duplicated)", got, countBefore)
+		}
+		if all := gitOut(t, dir, "log", "--format=%B", "HEAD"); strings.Contains(all, "@anthropic.com") {
+			t.Errorf("trailer still reachable from HEAD: %q", all)
+		}
+		if got := gitOut(t, dir, "log", "--format=%T", "--topo-order"); got != treesBefore {
+			t.Errorf("tree hashes changed:\n%s\nwant\n%s", got, treesBefore)
+		}
+		if parents := strings.Fields(gitOut(t, dir, "rev-list", "--parents", "-n", "1", "HEAD")); len(parents) != 3 {
+			t.Errorf("HEAD has %d parents, want 2 (merge commit lost): %v", len(parents)-1, parents)
+		}
+	})
+
+	// GH-5731: the default branch (develop) cannot be resolved — no
+	// origin/HEAD symbolic ref and no main/master — so the range must still
+	// cover the whole unpublished branch, not HEAD alone.
+	t.Run("default branch unresolvable: unpublished branch is still stripped", func(t *testing.T) {
+		_, dir, cleanup := newRemoteAndLocalRepo(t)
+		defer cleanup()
+		orig := gitOut(t, dir, "branch", "--show-current")
+		gitOut(t, dir, "branch", "-m", "develop")
+		gitOut(t, dir, "push", "-u", "origin", "develop")
+		gitOut(t, dir, "update-ref", "-d", "refs/remotes/origin/"+orig)
+		if out, err := exec.Command("git", "-C", dir, "symbolic-ref", "refs/remotes/origin/HEAD").CombinedOutput(); err == nil {
+			t.Fatalf("origin/HEAD unexpectedly set: %s", out)
+		}
+		if _, err := NewGitOperations(dir).GetDefaultBranch(context.Background()); err == nil {
+			t.Fatal("GetDefaultBranch resolved; test needs it to fail")
+		}
+
+		gitOut(t, dir, "checkout", "-b", "pilot/GH-develop")
+		commitFile(t, dir, "one.txt", "feat: one"+trailer)
+		commitFile(t, dir, "two.txt", "feat: two")
+
+		shas, err := NewGitOperations(dir).StripAnthropicCoAuthorRange(context.Background())
+		if err != nil || len(shas) != 1 {
+			t.Fatalf("shas=%v err=%v, want 1 rewritten sha", shas, err)
+		}
+		if all := gitOut(t, dir, "log", "--format=%B", "HEAD"); strings.Contains(all, "@anthropic.com") {
+			t.Errorf("trailer survived: %q", all)
+		}
+		if got := gitOut(t, dir, "log", "--format=%s", "-2"); got != "feat: two\nfeat: one" {
+			t.Errorf("subjects/order = %q", got)
+		}
+	})
+
+	// GH-5731: a commit already published on a second origin ref (an epic
+	// branch) and reachable from HEAD must not be rewritten, or the push
+	// would no longer fast-forward from it.
+	t.Run("epic child: commit published on another origin ref is not rewritten", func(t *testing.T) {
+		remoteDir, dir, cleanup := newRemoteAndLocalRepo(t)
+		defer cleanup()
+		gitOut(t, dir, "checkout", "-b", "pilot/epic-1")
+		commitFile(t, dir, "epic.txt", "feat: epic base"+trailer)
+		epicSHA := gitOut(t, dir, "rev-parse", "HEAD")
+		gitOut(t, dir, "push", "origin", "pilot/epic-1")
+
+		const child = "pilot/GH-epic-child"
+		gitOut(t, dir, "checkout", "-b", child)
+		commitFile(t, dir, "child.txt", "feat: child"+trailer)
+		commitFile(t, dir, "child2.txt", "feat: child two"+trailer)
+
+		if err := NewGitOperations(dir).Push(context.Background(), child, "GH-epic-child"); err != nil {
+			t.Fatalf("Push: %v", err)
+		}
+		if got := gitOut(t, dir, "rev-parse", "origin/pilot/epic-1"); got != epicSHA {
+			t.Errorf("origin epic ref moved: %s -> %s", epicSHA, got)
+		}
+		if err := exec.Command("git", "-C", dir, "merge-base", "--is-ancestor", epicSHA, "HEAD").Run(); err != nil {
+			t.Errorf("epic commit %s no longer an ancestor of HEAD: %v", epicSHA, err)
+		}
+		if msg := gitOut(t, dir, "log", "-1", "--format=%B", epicSHA); !strings.Contains(msg, "@anthropic.com") {
+			t.Errorf("published epic commit was rewritten: %q", msg)
+		}
+		out, err := exec.Command("git", "--git-dir", remoteDir, "log", "--format=%B", "-2", child).CombinedOutput()
+		if err != nil {
+			t.Fatalf("remote log: %v\n%s", err, out)
+		}
+		if strings.Contains(string(out), "@anthropic.com") {
+			t.Errorf("unpublished child commits still carry the trailer: %q", out)
+		}
+	})
 }
 
 // TestPush_StripsAnthropicCoAuthorFromWholeBranch pins the wiring (GH-5719):

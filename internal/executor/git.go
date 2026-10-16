@@ -867,11 +867,10 @@ func (g *GitOperations) StripAnthropicCoAuthor(ctx context.Context) (bool, error
 // from every commit in the PR, so HEAD alone is not enough: the session, the
 // memory-doc fixups and the wip auto-preserve commit all stack on one branch.
 //
-// The range is `<base>..HEAD` where base is the remote-tracking ref of the
-// default branch, falling back to the branch's own remote ref, then HEAD alone.
-// Decision: commits already reachable from the branch's own remote ref are
-// excluded — they are published, and rewriting them would turn the next
-// non-force push into a rejected non-fast-forward.
+// The range is `HEAD --not --remotes=origin` (see unpublishedCommits).
+// Decision: commits already reachable from any origin ref are excluded — they
+// are published, and rewriting them would turn the next non-force push into a
+// rejected non-fast-forward.
 //
 // When only HEAD matches it is amended (`--only`, no paths); otherwise the
 // range is rewritten message-only via commit-tree so every tree hash is
@@ -932,7 +931,12 @@ func (g *GitOperations) commitMessage(ctx context.Context, sha string) (string, 
 }
 
 // unpublishedCommits lists the commits the next push would publish, newest
-// first (HEAD at index 0). Falls back to HEAD alone when no base ref resolves.
+// first (HEAD at index 0). Decision: the range is `HEAD --not --remotes=origin`
+// — everything not yet on any origin ref — so no default-branch resolution is
+// needed (a failed lookup used to degrade silently to HEAD-only), and commits
+// already published on another origin ref (epic children) are left alone.
+// `--topo-order` guarantees children before parents even across merges, which
+// rewriteCommitMessages relies on to re-parent correctly.
 func (g *GitOperations) unpublishedCommits(ctx context.Context) ([]string, error) {
 	head, err := g.gitOutput(ctx, "rev-parse", "HEAD")
 	if err != nil {
@@ -940,26 +944,7 @@ func (g *GitOperations) unpublishedCommits(ctx context.Context) ([]string, error
 	}
 	head = strings.TrimSpace(head)
 
-	branch, _ := g.GetCurrentBranch(ctx)
-	ownRemote := ""
-	if branch != "" && branch != "HEAD" && g.refExists(ctx, "refs/remotes/origin/"+branch) {
-		ownRemote = "refs/remotes/origin/" + branch
-	}
-	base := ""
-	if def, defErr := g.GetDefaultBranch(ctx); defErr == nil && g.refExists(ctx, "refs/remotes/origin/"+def) {
-		base = "refs/remotes/origin/" + def
-	} else if ownRemote != "" {
-		base = ownRemote
-	}
-	if base == "" {
-		return []string{head}, nil
-	}
-
-	args := []string{"rev-list", "HEAD", "^" + base}
-	if ownRemote != "" && ownRemote != base {
-		args = append(args, "^"+ownRemote)
-	}
-	out, err := g.gitOutput(ctx, args...)
+	out, err := g.gitOutput(ctx, "rev-list", "--topo-order", "HEAD", "--not", "--remotes=origin")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list unpublished commits: %w", err)
 	}
@@ -998,14 +983,18 @@ func (g *GitOperations) rewriteCommitMessages(ctx context.Context, commits []str
 	for _, sha := range commits {
 		inRange[sha] = true
 	}
-	// rev-list order is newest first; parents must be created before children.
+	// topo order lists children before parents; walk it backwards so parents are created first.
 	for i := len(commits) - 1; i >= 0; i-- {
 		sha := commits[i]
 		meta, err := g.gitOutput(ctx, "log", "-1", "--date=raw", "--format=%an%n%ae%n%ad%n%cn%n%ce%n%cd%n%T%n%P", sha)
 		if err != nil {
 			return err
 		}
+		// A root commit has an empty %P line, which the trim above drops.
 		f := strings.Split(strings.TrimRight(meta, "\n"), "\n")
+		if len(f) == 7 {
+			f = append(f, "")
+		}
 		if len(f) < 8 {
 			return fmt.Errorf("unexpected commit metadata for %s", sha)
 		}
