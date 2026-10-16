@@ -3320,10 +3320,7 @@ func (r *Runner) leasePushFixContinuation(ctx context.Context, git *GitOperation
 		slog.String("old_sha", task.FixFromSHA),
 		slog.String("new_sha", localHead),
 	)
-	if err := git.PushForceWithLease(ctx, task.Branch, task.FixFromSHA, task.ID); err != nil {
-		return err
-	}
-	return nil
+	return git.PushForceWithLease(ctx, task.Branch, task.FixFromSHA, task.ID)
 }
 
 // pushAndCreatePRAfterTimeout pushes task.Branch and opens (or adopts) its
