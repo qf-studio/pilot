@@ -276,6 +276,27 @@ func newProjectNavigatorEnabledLookup(cfg *config.Config) executor.NavigatorEnab
 	}
 }
 
+// logNavigatorDisabledProjects emits one INFO line listing the registered
+// projects whose `navigator` flag is false (GH-5732). ProjectConfig.Navigator
+// is a plain bool, so a project registered before its .agent/ existed reads as
+// opted out and loses Navigator auto-init, bootstrap and copy-back; the line
+// makes that visible at daemon start. Returns the listed project names; no
+// line is logged when every project has Navigator on.
+func logNavigatorDisabledProjects(cfg *config.Config, log *slog.Logger) []string {
+	var names []string
+	for _, proj := range cfg.Projects {
+		if proj != nil && !proj.Navigator {
+			names = append(names, proj.Name)
+		}
+	}
+	if len(names) > 0 {
+		log.Info("Navigator disabled for projects (navigator: false): no auto-init, bootstrap or copy-back",
+			slog.Any("projects", names),
+		)
+	}
+	return names
+}
+
 // newProjectContractContentFetcher builds an executor.ContractContentFetcher
 // backed by the shared *github.Client (GH-5022, the activation leg of
 // GH-5009/GH-5011). *github.Client's GetFileContent method (PR#5015)

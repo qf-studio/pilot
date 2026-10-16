@@ -3578,6 +3578,66 @@ func TestLocalModeSkipsNavigatorAutoInit(t *testing.T) {
 	}
 }
 
+// TestNavigatorAutoInit_HonoursProjectNavigatorFlag pins GH-5732: the
+// auto_init branch consults the per-project lookup, so a `navigator: false`
+// project's execution path is never scaffolded.
+func TestNavigatorAutoInit_HonoursProjectNavigatorFlag(t *testing.T) {
+	enabled := func(string) bool { return true }
+	disabled := func(string) bool { return false }
+
+	tests := []struct {
+		name       string
+		lookup     NavigatorEnabledLookup
+		wantAgent  bool
+		wantLookup bool
+	}{
+		{"lookup false skips scaffold", disabled, false, true},
+		{"lookup true scaffolds", enabled, true, true},
+		{"nil lookup scaffolds", nil, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projectDir := t.TempDir()
+
+			backend := &mockSelfReviewBackend{output: "done"}
+			runner := NewRunnerWithBackend(backend)
+			runner.config = &BackendConfig{Navigator: &NavigatorConfig{AutoInit: true}}
+			runner.SetRecordingEnabled(false)
+			runner.skipPreflightChecks = true
+
+			var lookedUp []string
+			if tt.lookup != nil {
+				lookup := tt.lookup
+				runner.SetNavigatorEnabledLookup(func(p string) bool {
+					lookedUp = append(lookedUp, p)
+					return lookup(p)
+				})
+			}
+
+			task := &Task{
+				ID:          "NAV-AUTOINIT-001",
+				Title:       "Navigator auto-init gate",
+				Description: "auto-init must honour navigator: false",
+				ProjectPath: projectDir,
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if _, err := runner.Execute(ctx, task); err != nil {
+				t.Fatalf("Execute() error: %v", err)
+			}
+
+			_, err := os.Stat(filepath.Join(projectDir, ".agent"))
+			if got := err == nil; got != tt.wantAgent {
+				t.Errorf(".agent/ created = %v, want %v", got, tt.wantAgent)
+			}
+			if tt.wantLookup && (len(lookedUp) == 0 || lookedUp[0] != projectDir) {
+				t.Errorf("lookup keys = %v, want task.ProjectPath %q", lookedUp, projectDir)
+			}
+		})
+	}
+}
+
 func TestLocalModeRunsQualityGates(t *testing.T) {
 	// Quality gates are now enabled in LocalMode (re-enabled for bench,
 	// deps are pre-installed so OOM risk is mitigated).

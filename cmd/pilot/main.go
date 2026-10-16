@@ -597,6 +597,9 @@ Examples:
 				cfg.Adapters.Slack.SocketMode = false
 			}
 
+			// GH-5732: surface projects that opted out of Navigator
+			logNavigatorDisabledProjects(cfg, logging.WithComponent("start"))
+
 			// Stamp build version into executor config for feature matrix updates (GH-1388)
 			if cfg.Executor == nil {
 				cfg.Executor = executor.DefaultBackendConfig()

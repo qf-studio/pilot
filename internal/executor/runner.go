@@ -3936,8 +3936,17 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// Auto-init Navigator if configured and missing
 	// Use executionPath to check/init in worktree if worktree isolation is active
 	// Skip for LocalMode — bench/sandbox tasks don't use Navigator (GH-2108)
+	// GH-5732: a project with `navigator: false` gets no scaffold either, so the
+	// prompt builder (which keys on .agent/ in the worktree) selects the plain
+	// prompt. The lookup is keyed by task.ProjectPath: executionPath may be a
+	// worktree that matches no registered project.
 	if !task.LocalMode && r.config != nil && r.config.Navigator != nil && r.config.Navigator.AutoInit {
-		if err := r.maybeInitNavigator(ctx, executionPath); err != nil {
+		if r.navigatorEnabledLookup != nil && !r.navigatorEnabledLookup(task.ProjectPath) {
+			r.log.Debug("Navigator auto-init skipped: navigator disabled for project",
+				slog.String("task_id", task.ID),
+				slog.String("project_path", task.ProjectPath),
+			)
+		} else if err := r.maybeInitNavigator(ctx, executionPath); err != nil {
 			r.log.Warn("Navigator auto-init failed", slog.Any("error", err))
 			// Continue without Navigator - graceful degradation
 		}

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1204,5 +1206,34 @@ func TestNewProjectNavigatorEnabledLookup(t *testing.T) {
 	}
 	if !lookup("/tmp/unknown") {
 		t.Error("unregistered path must stay enabled")
+	}
+}
+
+func TestLogNavigatorDisabledProjects(t *testing.T) {
+	cfg := &config.Config{Projects: []*config.ProjectConfig{
+		{Name: "on-proj", Path: "/tmp/on", Navigator: true},
+		{Name: "off-proj", Path: "/tmp/off", Navigator: false},
+	}}
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	names := logNavigatorDisabledProjects(cfg, log)
+
+	if len(names) != 1 || names[0] != "off-proj" {
+		t.Fatalf("names = %v, want [off-proj]", names)
+	}
+	out := buf.String()
+	if strings.Count(out, "level=INFO") != 1 {
+		t.Errorf("want exactly one INFO line, got:\n%s", out)
+	}
+	if !strings.Contains(out, "off-proj") || strings.Contains(out, "on-proj") {
+		t.Errorf("INFO line must name only the navigator: false project, got:\n%s", out)
+	}
+
+	// All-enabled config logs nothing.
+	buf.Reset()
+	cfg.Projects[1].Navigator = true
+	if names := logNavigatorDisabledProjects(cfg, log); len(names) != 0 || buf.Len() != 0 {
+		t.Errorf("all enabled: names=%v log=%q, want none", names, buf.String())
 	}
 }

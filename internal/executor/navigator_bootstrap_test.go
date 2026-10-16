@@ -338,6 +338,32 @@ func TestNavigatorBootstrap_AutoSkipsFilledReadme(t *testing.T) {
 	}
 }
 
+func TestNavigatorBootstrap_AutoSkippedWhenProjectNavigatorDisabled(t *testing.T) {
+	dir := fixtureClone(t)
+	b := &bootstrapFakeBackend{script: fillingScript(t, dir)}
+	r := newBootstrapRunner(b, "auto")
+	var keys []string
+	r.SetNavigatorEnabledLookup(func(p string) bool {
+		keys = append(keys, p)
+		return false
+	})
+
+	r.maybeBootstrapNavigator(context.Background(), dir)
+
+	if n := b.callCount(); n != 0 {
+		t.Errorf("bootstrap calls = %d, want 0 for a navigator: false project", n)
+	}
+	if len(keys) != 1 || keys[0] != dir {
+		t.Errorf("lookup keys = %v, want [%s]", keys, dir)
+	}
+	// The skip must not burn the once-per-process slot: enabling later runs it.
+	r.SetNavigatorEnabledLookup(func(string) bool { return true })
+	r.maybeBootstrapNavigator(context.Background(), dir)
+	if n := b.callCount(); n != 1 {
+		t.Errorf("bootstrap calls after enabling = %d, want 1", n)
+	}
+}
+
 func TestNavigatorBootstrap_AutoRetriesOnlyOncePerProcess(t *testing.T) {
 	dir := fixtureClone(t)
 	b := &bootstrapFakeBackend{} // never fills the README

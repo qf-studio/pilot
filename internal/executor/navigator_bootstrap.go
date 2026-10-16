@@ -362,6 +362,13 @@ func (r *Runner) maybeBootstrapNavigator(ctx context.Context, projectPath string
 	if r.config == nil || r.config.Navigator.BootstrapMode() != NavigatorBootstrapAuto {
 		return
 	}
+	// GH-5732: `navigator: false` projects never get a bootstrap session.
+	if r.navigatorEnabledLookup != nil && !r.navigatorEnabledLookup(projectPath) {
+		r.log.Debug("Navigator bootstrap skipped: navigator disabled for project",
+			slog.String("project_path", projectPath),
+		)
+		return
+	}
 	if !navigatorReadmeHasPlaceholder(projectPath) {
 		return
 	}
