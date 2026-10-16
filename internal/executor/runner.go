@@ -3236,6 +3236,96 @@ func PushFailureReason(err error) string {
 	return last
 }
 
+// isNonFastForwardPush reports whether a Push error is git's rejection of a
+// push that would not fast-forward the remote branch. Retrying it cannot help.
+func isNonFastForwardPush(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "non-fast-forward") || strings.Contains(msg, "(fetch first)")
+}
+
+// pushBranchWithRetry pushes task.Branch, retrying transient failures
+// (GH-3785). A failed push is only forgiven when origin's branch head equals
+// the local HEAD — the GH-1389 chdir false positive, where the data had
+// already landed. A mere existing remote branch is not enough (GH-5729: a
+// rejected non-fast-forward push was swallowed because the branch existed, and
+// the stale PR was adopted as success).
+//
+// An autopilot-fix continuation (FromPR > 0 and FixFromSHA != "") rebases the
+// branch, so it can never fast-forward: when the rejection is non-fast-forward
+// and origin still sits on the footer SHA, it is pushed once more with a lease
+// on that SHA. If origin is anywhere else the push is not forced.
+func (r *Runner) pushBranchWithRetry(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger) error {
+	var pushErr error
+	for attempt := 1; attempt <= gitPushRetryAttempts; attempt++ {
+		pushErr = git.Push(ctx, task.Branch, task.ID)
+		if pushErr == nil {
+			return nil
+		}
+		localHead, localErr := git.LocalHead(ctx)
+		remoteHead, remoteOK := git.RemoteBranchHead(ctx, task.Branch)
+		if localErr == nil && remoteOK && remoteHead == localHead {
+			// GH-1389: worktree push may fail with a chdir error even though the
+			// data was already pushed.
+			log.Warn("Push reported error but remote head equals local HEAD, continuing",
+				slog.String("task_id", task.ID),
+				slog.Any("error", pushErr),
+				slog.String("branch", task.Branch),
+				slog.String("head", localHead),
+			)
+			return nil
+		}
+		if isNonFastForwardPush(pushErr) {
+			if task.FromPR > 0 && task.FixFromSHA != "" {
+				return r.leasePushFixContinuation(ctx, git, task, log, pushErr, localHead, remoteHead, remoteOK)
+			}
+			log.Warn("Push rejected as non-fast-forward, not retrying",
+				slog.String("task_id", task.ID),
+				slog.String("branch", task.Branch),
+				slog.String("remote_head", remoteHead),
+				slog.String("local_head", localHead),
+				slog.Any("error", pushErr),
+			)
+			return pushErr
+		}
+		if attempt < gitPushRetryAttempts {
+			log.Warn("Push failed, retrying",
+				slog.String("task_id", task.ID),
+				slog.Int("attempt", attempt),
+				slog.Int("max_attempts", gitPushRetryAttempts),
+				slog.Any("error", pushErr),
+			)
+			time.Sleep(gitPushRetryDelay)
+		}
+	}
+	return pushErr
+}
+
+// leasePushFixContinuation is the single forced push an autopilot-fix
+// continuation gets after a non-fast-forward rejection (GH-5729). It only
+// fires when origin's branch is still at the footer SHA task.FixFromSHA.
+func (r *Runner) leasePushFixContinuation(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger, pushErr error, localHead, remoteHead string, remoteOK bool) error {
+	if !remoteOK || remoteHead != task.FixFromSHA {
+		remote := remoteHead
+		if !remoteOK {
+			remote = "unknown"
+		}
+		// The SHA line goes first: PushFailureReason surfaces the first line
+		// that mentions "rejected", and this is the one that names the SHAs.
+		return fmt.Errorf("push rejected, refusing to force-push %s: remote head %s is neither local HEAD %s nor footer SHA %s\n%w",
+			task.Branch, remote, localHead, task.FixFromSHA, pushErr)
+	}
+	log.Warn("Autopilot-fix continuation rejected as non-fast-forward, pushing with lease on footer SHA",
+		slog.String("task_id", task.ID),
+		slog.String("branch", task.Branch),
+		slog.String("old_sha", task.FixFromSHA),
+		slog.String("new_sha", localHead),
+	)
+	if err := git.PushForceWithLease(ctx, task.Branch, task.FixFromSHA, task.ID); err != nil {
+		return err
+	}
+	return nil
+}
+
 // pushAndCreatePRAfterTimeout pushes task.Branch and opens (or adopts) its
 // PR after attemptBackendTimeoutSalvage confirmed real commits and (if
 // quality gates are configured) a passing single gate run. Simplified,
@@ -6808,40 +6898,15 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// label-lifecycle. RecordAttempt covers the whole retry loop (one
 			// push operation, not one per internal retry); only exhausting
 			// every attempt counts as a tracker failure — a retry that
-			// eventually succeeds, or a chdir false-positive resolved via
-			// RemoteBranchExists below, is a success.
+			// eventually succeeds, or a chdir false-positive (remote head equals local
+			// HEAD, see pushBranchWithRetry), is a success.
 			r.emitAlertEvent(AlertEvent{
 				Type:      AlertEventTypeDeadManAttempt,
 				TaskID:    task.ID,
 				Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
 				Timestamp: time.Now(),
 			})
-			var pushErr error
-			for attempt := 1; attempt <= gitPushRetryAttempts; attempt++ {
-				pushErr = git.Push(ctx, task.Branch, task.ID)
-				if pushErr == nil {
-					break
-				}
-				// GH-1389: Worktree push may fail with chdir error even if data was already pushed.
-				// Check if branch exists on remote before declaring failure.
-				if git.RemoteBranchExists(ctx, task.Branch) {
-					log.Warn("Push reported error but branch exists on remote, continuing",
-						slog.Any("error", pushErr),
-						slog.String("branch", task.Branch),
-					)
-					pushErr = nil
-					break
-				}
-				if attempt < gitPushRetryAttempts {
-					log.Warn("Push failed, retrying",
-						slog.String("task_id", task.ID),
-						slog.Int("attempt", attempt),
-						slog.Int("max_attempts", gitPushRetryAttempts),
-						slog.Any("error", pushErr),
-					)
-					time.Sleep(gitPushRetryDelay)
-				}
-			}
+			pushErr := r.pushBranchWithRetry(ctx, git, task, log)
 			if pushErr != nil {
 				r.emitAlertEvent(AlertEvent{
 					Type:      AlertEventTypeDeadManFailure,

@@ -2016,3 +2016,53 @@ func TestPush_StripsAnthropicCoAuthorFromWholeBranch(t *testing.T) {
 		t.Errorf("tree hashes changed:\n%s\nwant\n%s", got, treesBefore)
 	}
 }
+
+// TestRemoteBranchHead_WithRemote (GH-5729) checks RemoteBranchHead returns the
+// SHA origin's branch points at, and !ok for an absent branch or no remote.
+func TestRemoteBranchHead_WithRemote(t *testing.T) {
+	remoteDir, localDir, cleanup := newRemoteAndLocalRepo(t)
+	defer cleanup()
+	ctx := context.Background()
+	git := NewGitOperations(localDir)
+
+	branch, err := git.GetCurrentBranch(ctx)
+	if err != nil {
+		t.Fatalf("GetCurrentBranch: %v", err)
+	}
+	want, err := git.LocalHead(ctx)
+	if err != nil {
+		t.Fatalf("LocalHead: %v", err)
+	}
+
+	if got, ok := git.RemoteBranchHead(ctx, branch); !ok || got != want {
+		t.Errorf("RemoteBranchHead(%q) = %q, %v; want %q, true", branch, got, ok, want)
+	}
+
+	// A new local commit is not on origin yet: the head stays at the old SHA.
+	if err := os.WriteFile(filepath.Join(localDir, "more.txt"), []byte("more"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, localDir, "add", "more.txt")
+	runGit(t, localDir, "commit", "-m", "more")
+	if got, ok := git.RemoteBranchHead(ctx, branch); !ok || got != want {
+		t.Errorf("after a local commit RemoteBranchHead = %q, %v; want %q, true", got, ok, want)
+	}
+	if local, _ := git.LocalHead(ctx); local == want {
+		t.Errorf("LocalHead did not move after commit")
+	}
+
+	if got, ok := git.RemoteBranchHead(ctx, "no-such-branch"); ok || got != "" {
+		t.Errorf("RemoteBranchHead(absent) = %q, %v; want \"\", false", got, ok)
+	}
+	// A prefix of an existing name must not match.
+	if got, ok := git.RemoteBranchHead(ctx, branch[:1]); ok {
+		t.Errorf("RemoteBranchHead(prefix) = %q, true; want false", got)
+	}
+
+	_ = remoteDir
+	noRemote, cleanup2 := initTestRepo(t)
+	defer cleanup2()
+	if _, ok := NewGitOperations(noRemote).RemoteBranchHead(ctx, branch); ok {
+		t.Error("RemoteBranchHead with no remote = ok, want false")
+	}
+}

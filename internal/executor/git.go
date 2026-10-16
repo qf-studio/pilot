@@ -1055,29 +1055,57 @@ func (g *GitOperations) rewriteCommitMessages(ctx context.Context, commits []str
 	return nil
 }
 
+// stripCoAuthorBeforePush strips the Claude co-author trailer from every commit
+// the next push would publish (GH-5711, GH-5719), logging instead of failing.
+func (g *GitOperations) stripCoAuthorBeforePush(ctx context.Context, branchName, taskID string) {
+	shas, err := g.StripAnthropicCoAuthorRange(ctx)
+	if err != nil {
+		slog.Warn("Failed to strip co-author trailer before push",
+			slog.String("task_id", taskID), slog.String("branch", branchName), slog.Any("error", err))
+		return
+	}
+	if len(shas) == 0 {
+		return
+	}
+	short := make([]string, len(shas))
+	for i, s := range shas {
+		short[i] = s[:min(7, len(s))]
+	}
+	slog.Warn("Stripped Anthropic Co-Authored-By trailer from commits before push",
+		slog.String("task_id", taskID), slog.String("branch", branchName),
+		slog.Any("rewritten_shas", short))
+}
+
 // Push pushes the current branch to remote. Before pushing it strips the
 // Claude co-author trailer from every commit the push would publish (GH-5711,
 // GH-5719): belt and braces for backends that ignore includeCoAuthoredBy.
 // Covers every push call site. taskID is only used to name the task in logs.
 func (g *GitOperations) Push(ctx context.Context, branchName, taskID string) error {
-	if shas, err := g.StripAnthropicCoAuthorRange(ctx); err != nil {
-		slog.Warn("Failed to strip co-author trailer before push",
-			slog.String("task_id", taskID), slog.String("branch", branchName), slog.Any("error", err))
-	} else if len(shas) > 0 {
-		short := make([]string, len(shas))
-		for i, s := range shas {
-			short[i] = s[:min(7, len(s))]
-		}
-		slog.Warn("Stripped Anthropic Co-Authored-By trailer from commits before push",
-			slog.String("task_id", taskID), slog.String("branch", branchName),
-			slog.Any("rewritten_shas", short))
-	}
+	g.stripCoAuthorBeforePush(ctx, branchName, taskID)
 	cmd := exec.CommandContext(ctx, "git", "push", "-u", "origin", branchName)
 	cmd.Dir = g.projectPath
 	withGitCredentials(ctx, cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to push: %w: %s", err, output)
+	}
+	return nil
+}
+
+// PushForceWithLease pushes branchName with a lease pinned to expectedRemoteSHA
+// (GH-5729): the push replaces the remote branch only while it still points at
+// that SHA, so a rebased autopilot-fix continuation can publish its history
+// without clobbering anything that landed on the branch since the footer SHA
+// was recorded. A plain --force is never used.
+func (g *GitOperations) PushForceWithLease(ctx context.Context, branchName, expectedRemoteSHA, taskID string) error {
+	g.stripCoAuthorBeforePush(ctx, branchName, taskID)
+	lease := fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", branchName, expectedRemoteSHA)
+	cmd := exec.CommandContext(ctx, "git", "push", "-u", lease, "origin", branchName)
+	cmd.Dir = g.projectPath
+	withGitCredentials(ctx, cmd)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to push with lease: %w: %s", err, output)
 	}
 	return nil
 }
@@ -1745,6 +1773,30 @@ func (g *GitOperations) RemoteBranchExists(ctx context.Context, branchName strin
 	}
 	// ls-remote returns non-empty output if branch exists
 	return len(strings.TrimSpace(string(output))) > 0
+}
+
+// RemoteBranchHead returns the commit SHA origin's branch points at (GH-5729).
+// ok is false when the branch is absent or the remote cannot be queried.
+// Unlike RemoteBranchExists it distinguishes "pushed my commit" from "a branch
+// by that name exists", which is what a rejected push must be checked against.
+func (g *GitOperations) RemoteBranchHead(ctx context.Context, branchName string) (sha string, ok bool) {
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--heads", "origin", "refs/heads/"+branchName)
+	cmd.Dir = g.projectPath
+	withGitCredentials(ctx, cmd)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) < 2 || fields[1] != "refs/heads/"+branchName {
+		return "", false
+	}
+	return fields[0], true
+}
+
+// LocalHead returns the SHA of the working tree's HEAD commit.
+func (g *GitOperations) LocalHead(ctx context.Context) (sha string, err error) {
+	return g.GetCurrentCommitSHA(ctx)
 }
 
 // ResolveFixContinuationBaseRef resolves the ref an autopilot-fix task's
