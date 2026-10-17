@@ -10870,13 +10870,33 @@ func (c *Controller) markSelfClosed(prState *PRState, fixIssueNum int) {
 // Decision: write at the self-close sites rather than branching inside the
 // StageFailed demotion, so the intent is stated where the hand-off happens
 // and the demotion chokepoint keeps one meaning.
+//
+// cmd/pilot wires evalStore only when the learning system is enabled, while
+// memoryStore is always wired, so fall back to the latter (the same
+// *memory.Store) rather than silently skipping the write.
 func (c *Controller) markOriginalSuperseded(prState *PRState, fixIssueNum int) {
-	if c.evalStore == nil || prState.IssueNumber <= 0 {
+	if prState.IssueNumber <= 0 {
+		return
+	}
+	var store interface {
+		ReclassifyCompletionAsSuperseded(taskID, projectPath, reason string) error
+	}
+	switch {
+	case c.evalStore != nil:
+		store = c.evalStore
+	case c.memoryStore != nil:
+		if s, ok := c.memoryStore.(interface {
+			ReclassifyCompletionAsSuperseded(taskID, projectPath, reason string) error
+		}); ok {
+			store = s
+		}
+	}
+	if store == nil {
 		return
 	}
 	taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
 	reason := fmt.Sprintf("continued by fix issue #%d", fixIssueNum)
-	if err := c.evalStore.ReclassifyCompletionAsSuperseded(taskID, c.projectPath, reason); err != nil {
+	if err := store.ReclassifyCompletionAsSuperseded(taskID, c.projectPath, reason); err != nil {
 		c.log.Warn("failed to mark original task superseded after self-close hand-off",
 			"task_id", taskID, "pr", prState.PRNumber, "fix_issue", fixIssueNum, "error", err)
 	}

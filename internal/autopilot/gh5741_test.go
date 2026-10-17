@@ -84,7 +84,8 @@ func TestHandleCIFailed_SelfClose_OriginalHasTerminalCompletion(t *testing.T) {
 	server := newHandOffCIServer(t, "gh5741chain", 57411, 57412, 57413)
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo", WithProjectPath(projectPath))
-	c.SetEvalStore(store)
+	// memoryStore only: evalStore is wired just when learning is enabled, and
+	// the hand-off write must not depend on it.
 	c.SetMemoryStore(store)
 
 	prState := &PRState{PRNumber: 57411, IssueNumber: 57412, HeadSHA: "gh5741chain", Stage: StageCIFailed}
