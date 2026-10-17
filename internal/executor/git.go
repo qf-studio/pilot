@@ -876,30 +876,38 @@ func (g *GitOperations) StripAnthropicCoAuthor(ctx context.Context) (bool, error
 // range is rewritten message-only via commit-tree so every tree hash is
 // unchanged.
 func (g *GitOperations) StripAnthropicCoAuthorRange(ctx context.Context) ([]string, error) {
-	commits, err := g.unpublishedCommits(ctx)
+	shas, _, err := g.stripAnthropicCoAuthorRange(ctx)
+	return shas, err
+}
+
+// stripAnthropicCoAuthorRange does the work of StripAnthropicCoAuthorRange and
+// additionally reports headOnly when the range was limited to HEAD because no
+// origin refs exist, so the caller can warn.
+func (g *GitOperations) stripAnthropicCoAuthorRange(ctx context.Context) (shas []string, headOnly bool, err error) {
+	commits, headOnly, err := g.unpublishedCommits(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var matching []string
 	for _, sha := range commits {
 		msg, err := g.commitMessage(ctx, sha)
 		if err != nil {
-			return nil, err
+			return nil, headOnly, err
 		}
 		if anthropicCoAuthorRe.MatchString(msg) {
 			matching = append(matching, sha)
 		}
 	}
 	if len(matching) == 0 {
-		return nil, nil
+		return nil, headOnly, nil
 	}
 	if len(matching) == 1 && matching[0] == commits[0] {
-		return matching, g.amendHeadWithoutAnthropicCoAuthor(ctx)
+		return matching, headOnly, g.amendHeadWithoutAnthropicCoAuthor(ctx)
 	}
 	if err := g.rewriteCommitMessages(ctx, commits); err != nil {
-		return nil, err
+		return nil, headOnly, err
 	}
-	return matching, nil
+	return matching, headOnly, nil
 }
 
 func stripAnthropicCoAuthorLines(msg string) string {
@@ -931,23 +939,37 @@ func (g *GitOperations) commitMessage(ctx context.Context, sha string) (string, 
 // already published on another origin ref (epic children) are left alone.
 // `--topo-order` guarantees children before parents even across merges, which
 // rewriteCommitMessages relies on to re-parent correctly.
-func (g *GitOperations) unpublishedCommits(ctx context.Context) ([]string, error) {
+//
+// Decision: when no ref exists under refs/remotes/origin/ (no remote, or only
+// a remote with another name) `--not --remotes=origin` excludes nothing and
+// rev-list would return the whole history, which the strip would then rewrite
+// back to the root before a push that cannot succeed. In that case the range
+// degrades to HEAD alone and headOnly is true so the caller can warn.
+func (g *GitOperations) unpublishedCommits(ctx context.Context) (commits []string, headOnly bool, err error) {
 	head, err := g.gitOutput(ctx, "rev-parse", "HEAD")
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve HEAD: %w", err)
+		return nil, false, fmt.Errorf("failed to resolve HEAD: %w", err)
 	}
 	head = strings.TrimSpace(head)
 
+	refs, err := g.gitOutput(ctx, "for-each-ref", "--count=1", "--format=%(refname)", "refs/remotes/origin/")
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to list origin refs: %w", err)
+	}
+	if strings.TrimSpace(refs) == "" {
+		return []string{head}, true, nil
+	}
+
 	out, err := g.gitOutput(ctx, "rev-list", "--topo-order", "HEAD", "--not", "--remotes=origin")
 	if err != nil {
-		return nil, fmt.Errorf("failed to list unpublished commits: %w", err)
+		return nil, false, fmt.Errorf("failed to list unpublished commits: %w", err)
 	}
-	commits := strings.Fields(out)
+	commits = strings.Fields(out)
 	if len(commits) == 0 || commits[0] != head {
 		// HEAD is already published (or the range is empty): nothing to rewrite.
-		return nil, nil
+		return nil, false, nil
 	}
-	return commits, nil
+	return commits, false, nil
 }
 
 func (g *GitOperations) amendHeadWithoutAnthropicCoAuthor(ctx context.Context) error {
@@ -1041,7 +1063,12 @@ func (g *GitOperations) rewriteCommitMessages(ctx context.Context, commits []str
 // stripCoAuthorBeforePush strips the Claude co-author trailer from every commit
 // the next push would publish (GH-5711, GH-5719), logging instead of failing.
 func (g *GitOperations) stripCoAuthorBeforePush(ctx context.Context, branchName, taskID string) {
-	shas, err := g.StripAnthropicCoAuthorRange(ctx)
+	shas, headOnly, err := g.stripAnthropicCoAuthorRange(ctx)
+	if headOnly {
+		slog.Warn("Co-author strip limited to HEAD",
+			slog.String("task_id", taskID), slog.String("branch", branchName),
+			slog.String("reason", "no origin refs; co-author strip limited to HEAD"))
+	}
 	if err != nil {
 		slog.Warn("Failed to strip co-author trailer before push",
 			slog.String("task_id", taskID), slog.String("branch", branchName), slog.Any("error", err))

@@ -1,9 +1,11 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2083,6 +2085,60 @@ func TestStripAnthropicCoAuthor(t *testing.T) {
 		if strings.Contains(string(out), "@anthropic.com") {
 			t.Errorf("unpublished child commits still carry the trailer: %q", out)
 		}
+	})
+
+	// GH-5738: with no ref under refs/remotes/origin/, `--not --remotes=origin`
+	// excludes nothing; the strip must stay HEAD-only and warn instead of
+	// rewriting the whole history back to the root.
+	headOnlyWithWarn := func(t *testing.T, dir string) {
+		t.Helper()
+		commitFile(t, dir, "one.txt", "feat: one"+trailer)
+		commitFile(t, dir, "two.txt", "feat: two, no trailer")
+		commitFile(t, dir, "three.txt", "feat: three"+trailer)
+		oldest := gitOut(t, dir, "rev-parse", "HEAD~2")
+		parentBefore := gitOut(t, dir, "rev-parse", "HEAD^")
+
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+		t.Cleanup(func() { slog.SetDefault(prev) })
+
+		NewGitOperations(dir).stripCoAuthorBeforePush(context.Background(), "pilot/GH-noorigin", "GH-5738")
+
+		if got := gitOut(t, dir, "rev-parse", "HEAD^"); got != parentBefore {
+			t.Errorf("HEAD's parent changed: %s -> %s (history rewritten beyond HEAD)", parentBefore, got)
+		}
+		if msg := gitOut(t, dir, "log", "-1", "--format=%B", oldest); !strings.Contains(msg, "@anthropic.com") {
+			t.Errorf("older commit was rewritten: %q", msg)
+		}
+		if msg := gitOut(t, dir, "log", "-1", "--format=%B", "HEAD"); strings.Contains(msg, "@anthropic.com") {
+			t.Errorf("HEAD still carries the trailer: %q", msg)
+		}
+		if n := gitOut(t, dir, "rev-list", "--count", "HEAD"); n != "4" {
+			t.Errorf("commit count = %s, want 4", n)
+		}
+		log := buf.String()
+		for _, want := range []string{"task_id=GH-5738", "branch=pilot/GH-noorigin", `reason="no origin refs; co-author strip limited to HEAD"`} {
+			if !strings.Contains(log, want) {
+				t.Errorf("log missing %q:\n%s", want, log)
+			}
+		}
+	}
+
+	t.Run("no remote: strip stays HEAD-only and warns", func(t *testing.T) {
+		dir, _ := initTestRepo(t)
+		headOnlyWithWarn(t, dir)
+	})
+
+	t.Run("only a non-origin remote: strip stays HEAD-only and warns", func(t *testing.T) {
+		remoteDir, dir, cleanup := newRemoteAndLocalRepo(t)
+		defer cleanup()
+		gitOut(t, dir, "remote", "rename", "origin", "upstream")
+		gitOut(t, dir, "remote", "set-url", "upstream", remoteDir)
+		if out := gitOut(t, dir, "for-each-ref", "refs/remotes/origin/"); out != "" {
+			t.Fatalf("origin refs unexpectedly present: %q", out)
+		}
+		headOnlyWithWarn(t, dir)
 	})
 }
 
