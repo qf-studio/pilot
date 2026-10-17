@@ -4378,6 +4378,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	// than only on ClosePullRequest success) means the marker is in place
 	// even if this call errors and GitHub's close still lands moments later.
 	c.markSelfClosed(prState, issueNum)
+	c.markOriginalSuperseded(prState, issueNum)
 
 	// GH-5361: persist the marker immediately rather than relying solely on
 	// ProcessPR's tail persistPRState call. A daemon death between the
@@ -4898,6 +4899,7 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 	// removePRTracking(pr, false) instead — tracking stops, but the branch
 	// and its commits survive.
 	c.markSelfClosed(prState, issueNum)
+	c.markOriginalSuperseded(prState, issueNum)
 
 	// GH-5377: persist the marker immediately rather than relying solely on
 	// ProcessPR's tail persistPRState call, mirroring the same fix
@@ -10850,6 +10852,34 @@ func (c *Controller) clearRetryLabels(ctx context.Context, issueNumber int) {
 // (handleCIFailed runs inside ProcessPR's prState.mu.Lock()).
 func (c *Controller) markSelfClosed(prState *PRState, fixIssueNum int) {
 	prState.SelfClosedFixIssue = fixIssueNum
+}
+
+// markOriginalSuperseded records the original task's execution row as
+// "superseded" (reason "continued by fix issue #N") the moment autopilot
+// hands its PR to a fix/revision issue. GH-5741: the self-close marker makes
+// checkExternalMergeOrClose skip notifyExternalClose — the only other
+// ReclassifyCompletionAsSuperseded caller — and recordExecutionEvent's
+// StageFailed branch then demotes the original's completed row to failed,
+// which HasTerminalCompletion does not count as done. The dispatcher
+// re-picked the original from scratch while the fix run owned its branch
+// (GH-5731 x3, 2026-10-16). Writing superseded here, before the StageFailed
+// transition, leaves nothing for the failed demotion to touch
+// (ReclassifyCompletionAsFailed only matches status='completed'), and
+// tryRearmSuperseded still re-arms the task on a human relabel or reopen.
+//
+// Decision: write at the self-close sites rather than branching inside the
+// StageFailed demotion, so the intent is stated where the hand-off happens
+// and the demotion chokepoint keeps one meaning.
+func (c *Controller) markOriginalSuperseded(prState *PRState, fixIssueNum int) {
+	if c.evalStore == nil || prState.IssueNumber <= 0 {
+		return
+	}
+	taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
+	reason := fmt.Sprintf("continued by fix issue #%d", fixIssueNum)
+	if err := c.evalStore.ReclassifyCompletionAsSuperseded(taskID, c.projectPath, reason); err != nil {
+		c.log.Warn("failed to mark original task superseded after self-close hand-off",
+			"task_id", taskID, "pr", prState.PRNumber, "fix_issue", fixIssueNum, "error", err)
+	}
 }
 
 // consumeSelfClosedMarker reports whether prState carries a self-close

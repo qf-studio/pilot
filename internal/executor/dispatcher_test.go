@@ -5478,6 +5478,68 @@ func TestNextRetryGeneration_CanceledVsStalled(t *testing.T) {
 	})
 }
 
+// TestNextRetryGeneration_SelfClosedHandOff is the GH-5741 regression guard:
+// when autopilot closes a PR to hand its work to a CI fix issue, the original
+// task's claim row ends terminal-but-not-done (failed, pr_url set) unless the
+// hand-off also records it superseded. HasTerminalCompletion counts
+// superseded as done, so nextRetryGeneration must grant no retry — the
+// GH-5731 loop re-ran the original from scratch into the fix run's branch.
+func TestNextRetryGeneration_SelfClosedHandOff(t *testing.T) {
+	setup := func(t *testing.T, id, project string, superseded bool) *Dispatcher {
+		t.Helper()
+		store, cleanup := setupTestStore(t)
+		t.Cleanup(cleanup)
+
+		task := &Task{ID: id, ProjectPath: project}
+		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+		if err != nil {
+			t.Fatalf("setup Begin: %v", err)
+		}
+		if _, err := store.UpdateExecutionStatusIfNotTerminal(execID, "failed", "pr #1: ci_failed -> failed"); err != nil {
+			t.Fatalf("setup failed: %v", err)
+		}
+		if err := store.SaveExecution(&memory.Execution{
+			ID: id + "-pr", TaskID: id, ProjectPath: project,
+			Status: "failed", PRUrl: "https://github.com/qf-studio/pilot/pull/1",
+		}); err != nil {
+			t.Fatalf("SaveExecution(failed): %v", err)
+		}
+		if superseded {
+			if err := store.SaveExecution(&memory.Execution{
+				ID: id + "-sup", TaskID: id, ProjectPath: project,
+				Status: "superseded", Error: "continued by fix issue #2",
+			}); err != nil {
+				t.Fatalf("SaveExecution(superseded): %v", err)
+			}
+		}
+		return NewDispatcher(store, NewRunner(), nil)
+	}
+
+	t.Run("failed with pr_url and no superseded row: retried (the pre-fix loop)", func(t *testing.T) {
+		d := setup(t, "GH-5741-FAILED", "/project-5741-failed", false)
+		gen, retry, err := d.nextRetryGeneration("GH-5741-FAILED", "/project-5741-failed")
+		if err != nil {
+			t.Fatalf("nextRetryGeneration: %v", err)
+		}
+		if !retry || gen != 1 {
+			t.Fatalf("got gen=%d retry=%v, want gen=1 retry=true", gen, retry)
+		}
+	})
+
+	t.Run("failed with pr_url plus superseded row: no retry across repeated cycles", func(t *testing.T) {
+		d := setup(t, "GH-5741-SUPERSEDED", "/project-5741-superseded", true)
+		for i := 0; i < 3; i++ {
+			gen, retry, err := d.nextRetryGeneration("GH-5741-SUPERSEDED", "/project-5741-superseded")
+			if err != nil {
+				t.Fatalf("nextRetryGeneration (cycle %d): %v", i, err)
+			}
+			if retry || gen != 0 {
+				t.Fatalf("cycle %d: got gen=%d retry=%v, want gen=0 retry=false", i, gen, retry)
+			}
+		}
+	})
+}
+
 // TestNextRetryGeneration_NeedsHuman is the GH-5399 regression guard for Fix
 // 2: a needs_human row (holdPushedBranch's hand-off — salvaged work already
 // pushed and parked for manual review) must never be handed a fresh retry

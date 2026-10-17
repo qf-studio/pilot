@@ -302,3 +302,69 @@ internal/autopilot/controller.go:1:1: some lint error (errcheck)
 		})
 	}
 }
+
+// TestHandleCIFailed_HandOff_MarksOriginalSuperseded is the GH-5741 guard:
+// when handleCIFailed self-closes a PR to a fix issue, the original task's
+// execution row must be recorded as superseded ("continued by fix issue #N")
+// at the hand-off itself. The self-close marker makes checkExternalMergeOrClose
+// skip notifyExternalClose — the only other ReclassifyCompletionAsSuperseded
+// caller — so without this write the original is demoted to failed and the
+// dispatcher re-picks it into the fix run's branch (GH-5731, 2026-10-16).
+func TestHandleCIFailed_HandOff_MarksOriginalSuperseded(t *testing.T) {
+	server := newHandOffCIServer(t, "gh5741hoff", 57401, 57402, 57403)
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo", WithProjectPath("/proj/pilot"))
+	evalMock := &mockEvalStore{}
+	c.SetEvalStore(evalMock)
+
+	prState := &PRState{PRNumber: 57401, IssueNumber: 57402, HeadSHA: "gh5741hoff", Stage: StageCIFailed}
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed: %v", err)
+	}
+	if prState.SelfClosedFixIssue != 57403 {
+		t.Fatalf("SelfClosedFixIssue = %d, want 57403", prState.SelfClosedFixIssue)
+	}
+
+	want := reclassifyCall{TaskID: "GH-57402", ProjectPath: "/proj/pilot", Reason: "continued by fix issue #57403"}
+	if len(evalMock.reclassifiedSuperseded) != 1 || evalMock.reclassifiedSuperseded[0] != want {
+		t.Errorf("ReclassifyCompletionAsSuperseded calls = %+v, want exactly [%+v]", evalMock.reclassifiedSuperseded, want)
+	}
+	if len(evalMock.reclassified) != 0 {
+		t.Errorf("ReclassifyCompletionAsFailed calls = %+v, want none", evalMock.reclassified)
+	}
+}
+
+// newHandOffCIServer serves the GitHub endpoints handleCIFailed touches for a
+// healthy fix-issue hand-off: one failed code-lint check, a source issue with
+// no iteration metadata, a successful fix-issue create (returning fixNum) and
+// a PR close.
+func newHandOffCIServer(t *testing.T, sha string, prNum, issueNum, fixNum int) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/"+sha+"/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns:  []github.CheckRun{{ID: 5741, Name: "lint", Status: "completed", Conclusion: "failure"}},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/actions/jobs/5741/logs":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("Run golangci-lint run ./...\ninternal/x.go:1:1: some lint error (errcheck)\n##[error]Process completed with exit code 1."))
+		case r.Method == http.MethodGet && r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", issueNum):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, github.Issue{Number: issueNum, Body: "no-meta"}))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, github.Issue{Number: fixNum}))
+		case r.URL.Path == fmt.Sprintf("/repos/owner/repo/pulls/%d", prNum) && r.Method == http.MethodPatch:
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}

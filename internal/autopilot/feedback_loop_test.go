@@ -1123,6 +1123,69 @@ func TestFeedbackLoop_GenerateBody_WithPatterns(t *testing.T) {
 	}
 }
 
+// TestFeedbackLoop_GenerateBody_ClosesOriginal pins GH-5741: a pre-merge fix
+// issue carries a bare "Closes #<source>" line (lifted into the fix PR body
+// by the executor) so merging the fix PR closes the original issue too; a
+// post-merge fix issue must not, since its origin already shipped.
+func TestFeedbackLoop_GenerateBody_ClosesOriginal(t *testing.T) {
+	fl := NewFeedbackLoop(github.NewClient(testutil.FakeGitHubToken), "owner", "repo", DefaultConfig())
+	prState := &PRState{PRNumber: 42, IssueNumber: 10, HeadSHA: "abc1234567890", BranchName: "pilot/GH-10"}
+
+	tests := []struct {
+		name string
+		typ  FailureType
+		want bool
+	}{
+		{"pre-merge CI", FailureCIPreMerge, true},
+		{"merge conflict", FailureMerge, true},
+		{"review requested", FailureReviewRequested, true},
+		{"post-merge CI", FailureCIPostMerge, false},
+		{"deployment", FailureDeployment, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := fl.generateBody(prState, tt.typ, []string{"lint"}, "", 0, nil)
+			if got := strings.Contains(body, "\nCloses #10\n"); got != tt.want {
+				t.Errorf("body has bare 'Closes #10' line = %v, want %v\n%s", got, tt.want, body)
+			}
+		})
+	}
+
+	t.Run("no source issue", func(t *testing.T) {
+		body := fl.generateBody(&PRState{PRNumber: 42, HeadSHA: "abc1234567890"}, FailureCIPreMerge, nil, "", 0, nil)
+		if strings.Contains(body, "Closes #") {
+			t.Errorf("body must not carry a Closes line without a source issue:\n%s", body)
+		}
+	})
+}
+
+// TestFeedbackLoop_CreateReviewIssue_ClosesOriginal pins GH-5741 for the
+// review-revision issue body, which is built outside generateBody.
+func TestFeedbackLoop_CreateReviewIssue_ClosesOriginal(t *testing.T) {
+	capturedBody := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/owner/repo/issues" && r.Method == "POST" {
+			var input github.IssueInput
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			capturedBody = input.Body
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(github.Issue{Number: 113})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	fl := NewFeedbackLoop(github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL), "owner", "repo", DefaultConfig())
+	prState := &PRState{PRNumber: 42, IssueNumber: 10, HeadSHA: "abc1234567890", BranchName: "pilot/GH-10"}
+	if _, err := fl.CreateReviewIssue(context.Background(), prState, nil, nil, 0); err != nil {
+		t.Fatalf("CreateReviewIssue: %v", err)
+	}
+	if !strings.Contains(capturedBody, "\nCloses #10\n") {
+		t.Errorf("review issue body should carry a bare 'Closes #10' line:\n%s", capturedBody)
+	}
+}
+
 func TestFeedbackLoop_GenerateBody_NoPatterns(t *testing.T) {
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
 	cfg := DefaultConfig()
