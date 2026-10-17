@@ -3636,6 +3636,50 @@ func TestNavigatorAutoInit_HonoursProjectNavigatorFlag(t *testing.T) {
 			}
 		})
 	}
+
+	// GH-5739: with worktree isolation executionPath is a worktree that matches
+	// no registered project; the lookup must still be keyed on the clone.
+	t.Run("distinct worktree execution path", func(t *testing.T) {
+		const branch = "pilot/GH-5739-autoinit"
+		cloneDir, _ := setupFreshnessRepo(t)
+
+		var execPath string
+		backend := &ctxRespectingBackend{
+			run: func(_ context.Context, _ int, opts ExecuteOptions) (*BackendResult, error) {
+				execPath = opts.ProjectPath
+				_, err := os.Stat(filepath.Join(opts.ProjectPath, ".agent"))
+				if err == nil {
+					t.Errorf(".agent/ scaffolded in worktree %q for a navigator: false project", opts.ProjectPath)
+				}
+				return &BackendResult{Success: true, Output: "done"}, nil
+			},
+		}
+		runner := newGH4964Runner(backend)
+		runner.config.UseWorktree = true
+		runner.config.Navigator = &NavigatorConfig{AutoInit: true, Bootstrap: "auto"}
+		var lookedUp []string
+		runner.SetNavigatorEnabledLookup(func(p string) bool {
+			lookedUp = append(lookedUp, p)
+			return false
+		})
+		task := newGH4964Task("GH-5739", branch, cloneDir)
+		task.CreatePR = false
+
+		if _, err := runner.Execute(context.Background(), task); err != nil {
+			t.Fatalf("Execute() error: %v", err)
+		}
+		if execPath == "" || execPath == cloneDir {
+			t.Fatalf("backend did not run in an isolated worktree (path %q)", execPath)
+		}
+		if len(lookedUp) == 0 || lookedUp[0] != cloneDir {
+			t.Errorf("lookup keys = %v, want task.ProjectPath %q", lookedUp, cloneDir)
+		}
+		for _, k := range lookedUp {
+			if k == execPath {
+				t.Errorf("lookup keyed on worktree path %q", k)
+			}
+		}
+	})
 }
 
 func TestLocalModeRunsQualityGates(t *testing.T) {

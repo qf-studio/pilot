@@ -308,7 +308,7 @@ func TestNavigatorBootstrap_AutoDoesNotRunTwice(t *testing.T) {
 	b := &bootstrapFakeBackend{script: fillingScript(t, dir)}
 	r := newBootstrapRunner(b, "auto")
 
-	if err := r.maybeInitNavigator(context.Background(), dir); err != nil {
+	if err := r.maybeInitNavigator(context.Background(), dir, dir); err != nil {
 		t.Fatalf("first maybeInitNavigator: %v", err)
 	}
 	if n := b.callCount(); n != 1 {
@@ -316,7 +316,7 @@ func TestNavigatorBootstrap_AutoDoesNotRunTwice(t *testing.T) {
 	}
 	// Even with a fresh runner (daemon restart) the filled README is the guard.
 	r2 := newBootstrapRunner(b, "auto")
-	if err := r2.maybeInitNavigator(context.Background(), dir); err != nil {
+	if err := r2.maybeInitNavigator(context.Background(), dir, dir); err != nil {
 		t.Fatalf("second maybeInitNavigator: %v", err)
 	}
 	if n := b.callCount(); n != 1 {
@@ -330,7 +330,7 @@ func TestNavigatorBootstrap_AutoSkipsFilledReadme(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := &bootstrapFakeBackend{}
-	if err := newBootstrapRunner(b, "auto").maybeInitNavigator(context.Background(), dir); err != nil {
+	if err := newBootstrapRunner(b, "auto").maybeInitNavigator(context.Background(), dir, dir); err != nil {
 		t.Fatalf("maybeInitNavigator: %v", err)
 	}
 	if n := b.callCount(); n != 0 {
@@ -339,8 +339,52 @@ func TestNavigatorBootstrap_AutoSkipsFilledReadme(t *testing.T) {
 }
 
 func TestNavigatorBootstrap_AutoSkippedWhenProjectNavigatorDisabled(t *testing.T) {
-	dir := fixtureClone(t)
-	b := &bootstrapFakeBackend{script: fillingScript(t, dir)}
+	// GH-5739: the lookup must be keyed on the registered clone path, not on
+	// the (worktree) path the scaffold and session live in.
+	cases := []struct {
+		name     string
+		distinct bool
+	}{
+		{"same clone and execution path", false},
+		{"distinct worktree and clone paths", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			execDir := fixtureClone(t)
+			cloneDir := execDir
+			if tc.distinct {
+				cloneDir = t.TempDir()
+			}
+			b := &bootstrapFakeBackend{script: fillingScript(t, execDir)}
+			r := newBootstrapRunner(b, "auto")
+			var keys []string
+			r.SetNavigatorEnabledLookup(func(p string) bool {
+				keys = append(keys, p)
+				return false
+			})
+
+			r.maybeBootstrapNavigator(context.Background(), execDir, cloneDir)
+
+			if n := b.callCount(); n != 0 {
+				t.Errorf("bootstrap calls = %d, want 0 for a navigator: false project", n)
+			}
+			if len(keys) != 1 || keys[0] != cloneDir {
+				t.Errorf("lookup keys = %v, want [%s] (the clone path)", keys, cloneDir)
+			}
+			// The skip must not burn the once-per-process slot: enabling later runs it.
+			r.SetNavigatorEnabledLookup(func(string) bool { return true })
+			r.maybeBootstrapNavigator(context.Background(), execDir, cloneDir)
+			if n := b.callCount(); n != 1 {
+				t.Errorf("bootstrap calls after enabling = %d, want 1", n)
+			}
+		})
+	}
+}
+
+func TestNavigatorBootstrap_InitSkippedWhenCloneNavigatorDisabled(t *testing.T) {
+	execDir := fixtureClone(t)
+	cloneDir := t.TempDir()
+	b := &bootstrapFakeBackend{script: fillingScript(t, execDir)}
 	r := newBootstrapRunner(b, "auto")
 	var keys []string
 	r.SetNavigatorEnabledLookup(func(p string) bool {
@@ -348,19 +392,15 @@ func TestNavigatorBootstrap_AutoSkippedWhenProjectNavigatorDisabled(t *testing.T
 		return false
 	})
 
-	r.maybeBootstrapNavigator(context.Background(), dir)
+	if err := r.maybeInitNavigator(context.Background(), execDir, cloneDir); err != nil {
+		t.Fatalf("maybeInitNavigator: %v", err)
+	}
 
 	if n := b.callCount(); n != 0 {
-		t.Errorf("bootstrap calls = %d, want 0 for a navigator: false project", n)
+		t.Errorf("bootstrap calls = %d, want 0", n)
 	}
-	if len(keys) != 1 || keys[0] != dir {
-		t.Errorf("lookup keys = %v, want [%s]", keys, dir)
-	}
-	// The skip must not burn the once-per-process slot: enabling later runs it.
-	r.SetNavigatorEnabledLookup(func(string) bool { return true })
-	r.maybeBootstrapNavigator(context.Background(), dir)
-	if n := b.callCount(); n != 1 {
-		t.Errorf("bootstrap calls after enabling = %d, want 1", n)
+	if len(keys) != 1 || keys[0] != cloneDir {
+		t.Errorf("lookup keys = %v, want [%s]", keys, cloneDir)
 	}
 }
 
@@ -369,7 +409,7 @@ func TestNavigatorBootstrap_AutoRetriesOnlyOncePerProcess(t *testing.T) {
 	b := &bootstrapFakeBackend{} // never fills the README
 	r := newBootstrapRunner(b, "auto")
 	for i := 0; i < 3; i++ {
-		if err := r.maybeInitNavigator(context.Background(), dir); err != nil {
+		if err := r.maybeInitNavigator(context.Background(), dir, dir); err != nil {
 			t.Fatalf("maybeInitNavigator: %v", err)
 		}
 	}
@@ -382,7 +422,7 @@ func TestNavigatorBootstrap_ManualAndOffDoNothingAutomatically(t *testing.T) {
 	for _, mode := range []string{"", "manual", "off", "bogus"} {
 		dir := fixtureClone(t)
 		b := &bootstrapFakeBackend{}
-		if err := newBootstrapRunner(b, mode).maybeInitNavigator(context.Background(), dir); err != nil {
+		if err := newBootstrapRunner(b, mode).maybeInitNavigator(context.Background(), dir, dir); err != nil {
 			t.Fatalf("mode %q: %v", mode, err)
 		}
 		if n := b.callCount(); n != 0 {

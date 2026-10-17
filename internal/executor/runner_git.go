@@ -197,22 +197,26 @@ func (r *Runner) syncNavigatorIndex(task *Task, status string, executionPath str
 // This enables auto-init for projects that don't have .agent/ yet.
 // With navigator.bootstrap=auto it then runs the one-time bootstrap session
 // while the README still carries a placeholder section.
-func (r *Runner) maybeInitNavigator(ctx context.Context, projectPath string) error {
+//
+// executionPath is where the scaffold lives (a worktree when isolation is
+// active); projectPath is the registered clone path the config knows, used for
+// the per-project `navigator: false` lookup (GH-5739).
+func (r *Runner) maybeInitNavigator(ctx context.Context, executionPath, projectPath string) error {
 	initializer, err := NewNavigatorInitializer(r.log)
 	if err != nil {
 		return fmt.Errorf("failed to create navigator initializer: %w", err)
 	}
 
-	if !initializer.IsInitialized(projectPath) {
+	if !initializer.IsInitialized(executionPath) {
 		r.log.Info("Auto-initializing Navigator for project",
-			slog.String("path", projectPath),
+			slog.String("path", executionPath),
 		)
-		if err := initializer.Initialize(projectPath); err != nil {
+		if err := initializer.Initialize(executionPath); err != nil {
 			return err
 		}
 	}
 
-	r.maybeBootstrapNavigator(ctx, projectPath)
+	r.maybeBootstrapNavigator(ctx, executionPath, projectPath)
 	return nil
 }
 

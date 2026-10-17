@@ -3946,7 +3946,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				slog.String("task_id", task.ID),
 				slog.String("project_path", task.ProjectPath),
 			)
-		} else if err := r.maybeInitNavigator(ctx, executionPath); err != nil {
+		} else if err := r.maybeInitNavigator(ctx, executionPath, task.ProjectPath); err != nil {
 			r.log.Warn("Navigator auto-init failed", slog.Any("error", err))
 			// Continue without Navigator - graceful degradation
 		}

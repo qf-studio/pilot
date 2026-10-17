@@ -355,10 +355,14 @@ func readmeSectionBody(text, header string) (string, bool) {
 	return rest, true
 }
 
-// maybeBootstrapNavigator runs the bootstrap once per project path before the
+// maybeBootstrapNavigator runs the bootstrap once per execution path before the
 // first task when navigator.bootstrap is auto and the README still carries a
 // placeholder section. Failures degrade gracefully: the task continues.
-func (r *Runner) maybeBootstrapNavigator(ctx context.Context, projectPath string) {
+//
+// GH-5739: the `navigator: false` lookup is keyed on projectPath (the clone the
+// config registers), never executionPath — under worktree isolation the latter
+// matches no project and the gate would be inert.
+func (r *Runner) maybeBootstrapNavigator(ctx context.Context, executionPath, projectPath string) {
 	if r.config == nil || r.config.Navigator.BootstrapMode() != NavigatorBootstrapAuto {
 		return
 	}
@@ -366,23 +370,24 @@ func (r *Runner) maybeBootstrapNavigator(ctx context.Context, projectPath string
 	if r.navigatorEnabledLookup != nil && !r.navigatorEnabledLookup(projectPath) {
 		r.log.Debug("Navigator bootstrap skipped: navigator disabled for project",
 			slog.String("project_path", projectPath),
+			slog.String("execution_path", executionPath),
 		)
 		return
 	}
-	if !navigatorReadmeHasPlaceholder(projectPath) {
+	if !navigatorReadmeHasPlaceholder(executionPath) {
 		return
 	}
 	// A failed or partial run must not retry on every task of this daemon.
-	if _, loaded := r.navBootstrapAttempted.LoadOrStore(projectPath, struct{}{}); loaded {
+	if _, loaded := r.navBootstrapAttempted.LoadOrStore(executionPath, struct{}{}); loaded {
 		return
 	}
-	res, err := r.ExecuteNavigatorBootstrap(ctx, projectPath)
+	res, err := r.ExecuteNavigatorBootstrap(ctx, executionPath)
 	if err != nil {
-		r.log.Warn("Navigator bootstrap failed", slog.String("path", projectPath), slog.Any("error", err))
+		r.log.Warn("Navigator bootstrap failed", slog.String("path", executionPath), slog.Any("error", err))
 		return
 	}
 	r.log.Info("Navigator bootstrap finished",
-		slog.String("path", projectPath),
+		slog.String("path", executionPath),
 		slog.Int("files_written", len(res.FilesWritten)),
 		slog.Bool("partial", res.Partial),
 		slog.Float64("cost_usd", res.CostUSD),
