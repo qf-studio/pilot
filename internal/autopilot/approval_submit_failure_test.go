@@ -6,8 +6,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/alerts"
+	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/testutil"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
@@ -141,5 +143,71 @@ func TestSubmitAsyncApprovalRequest_SubmitFailure_AlertsCommentsAndCountsOnce(t 
 	}
 	if postCount != 1 {
 		t.Errorf("expected PR comment to post exactly once across 2 ticks, got %d", postCount)
+	}
+}
+
+// TestSubmitAsyncApprovalRequest_NoHandlerFailsClosed_PRStaysUnmerged is the
+// GH-5756 controller leg: a pre-merge ask with no registered handler (and no
+// preferred channel, so Manager takes its handler==nil branch) must surface as
+// a submit error. The PR must not be merged, no approval request may be
+// recorded for the wall-clock guard to later default-approve, and the
+// submit-failure alert fires exactly once across repeated ticks — even with
+// default_action: approved.
+func TestSubmitAsyncApprovalRequest_NoHandlerFailsClosed_PRStaysUnmerged(t *testing.T) {
+	var mergeCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/merge") {
+			mergeCalls++
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"merged":true,"sha":"abc"}`))
+			return
+		}
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/comments") {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":1,"body":"posted"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer server.Close()
+
+	mgr := approval.NewManager(&approval.Config{
+		Enabled:        true,
+		DefaultTimeout: time.Hour,
+		DefaultAction:  approval.DecisionApproved,
+		PreMerge: &approval.StageConfig{
+			Enabled:       true,
+			Timeout:       time.Hour,
+			DefaultAction: approval.DecisionApproved,
+		},
+	})
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, mgr, "owner", "repo")
+	c.resolvedApprovalSource = "" // no preferred channel -> Manager's handler==nil branch
+	sink := &fakeAlertSink{}
+	c.SetAlertsEngine(sink)
+
+	prState := &PRState{PRNumber: 42, PRURL: "https://github.com/owner/repo/pull/42", Stage: StageAwaitApproval}
+
+	for tick := 1; tick <= 2; tick++ {
+		if err := c.handleAwaitApproval(context.Background(), prState); err == nil {
+			t.Fatalf("tick %d: expected a submit error with no handler registered, got nil", tick)
+		}
+	}
+
+	if mergeCalls != 0 {
+		t.Errorf("merge API called %d times, want 0 (PR must stay unmerged)", mergeCalls)
+	}
+	if prState.ApprovalRequestID != "" || !prState.ApprovalRequestedAt.IsZero() {
+		t.Errorf("no approval request may be recorded on submit failure, got ID %q requestedAt %v",
+			prState.ApprovalRequestID, prState.ApprovalRequestedAt)
+	}
+	if prState.Stage != StageAwaitApproval {
+		t.Errorf("Stage = %v, want StageAwaitApproval", prState.Stage)
+	}
+	if len(sink.events) != 1 {
+		t.Errorf("expected the submit-failure alert exactly once across 2 ticks, got %d", len(sink.events))
 	}
 }

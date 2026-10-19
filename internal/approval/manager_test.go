@@ -1140,3 +1140,68 @@ func (b *syncBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+// TestManager_SubmitApprovalRequest_NoHandlerFailsClosed is the GH-5756
+// regression test: with the stage enabled and no handler registered, the ask
+// reaches no human. Returning success let the controller wait out the timeout
+// and then apply default_action — with `approved`, a PR a human never saw was
+// approved. It must be a submit error with no pending entry. A disabled stage
+// with no rule firing still succeeds without a handler (auto-approve is
+// intended there).
+func TestManager_SubmitApprovalRequest_NoHandlerFailsClosed(t *testing.T) {
+	t.Run("enabled stage, no handler -> error, no pending entry", func(t *testing.T) {
+		config := DefaultConfig()
+		config.Enabled = true
+		config.PreMerge.Enabled = true
+		config.PreMerge.Timeout = 5 * time.Second
+		config.PreMerge.DefaultAction = DecisionApproved
+
+		m := NewManager(config)
+		req := &Request{
+			ID:        "async-nohandler-1",
+			TaskID:    "TASK-01",
+			Stage:     StagePreMerge,
+			Title:     "Merge approval",
+			CreatedAt: time.Now(),
+		}
+
+		id, err := m.SubmitApprovalRequest(context.Background(), req)
+		if err == nil {
+			t.Fatal("expected an error when the stage is enabled and no handler is registered, got nil")
+		}
+		if id != "" {
+			t.Errorf("request ID = %q, want empty on failure", id)
+		}
+		if !strings.Contains(err.Error(), string(StagePreMerge)) {
+			t.Errorf("expected error to name the stage %q, got: %v", StagePreMerge, err)
+		}
+		m.mu.RLock()
+		pending := len(m.pending)
+		m.mu.RUnlock()
+		if pending != 0 {
+			t.Errorf("expected no pending entry, got %d", pending)
+		}
+	})
+
+	t.Run("disabled stage, no rule, no handler -> success", func(t *testing.T) {
+		config := DefaultConfig()
+		config.Enabled = true
+		config.PreMerge.Enabled = false
+
+		m := NewManager(config)
+		req := &Request{
+			ID:        "async-nohandler-3",
+			TaskID:    "TASK-03",
+			Stage:     StagePreMerge,
+			CreatedAt: time.Now(),
+		}
+
+		id, err := m.SubmitApprovalRequest(context.Background(), req)
+		if err != nil {
+			t.Fatalf("disabled stage must still succeed without a handler, got: %v", err)
+		}
+		if id != req.ID {
+			t.Errorf("request ID = %q, want %q", id, req.ID)
+		}
+	})
+}

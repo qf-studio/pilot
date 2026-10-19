@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -308,10 +310,30 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 			req.PreferredChannel, req.PreferredChannel, req.PreferredChannel)
 	}
 
+	// GH-5756: fail closed. The stage is enabled (or a rule fired) but nothing
+	// can deliver the ask. Returning success here sent nothing and kept no
+	// pending entry, so the controller waited out the timeout and then applied
+	// default_action — with `approved`, a merge ask that reached no human
+	// approved the PR. Surface it as a submit error instead; the controller's
+	// submit-failure path alerts once and does not merge.
 	if handler == nil {
-		m.log.Warn("no approval handlers registered for async dispatch",
-			slog.String("task_id", req.TaskID))
-		return req.ID, nil
+		m.mu.RLock()
+		names := make([]string, 0, len(m.handlers))
+		for name := range m.handlers {
+			names = append(names, name)
+		}
+		m.mu.RUnlock()
+		sort.Strings(names)
+		registered := "none"
+		if len(names) > 0 {
+			registered = strings.Join(names, ", ")
+		}
+		m.log.Warn("no approval handler registered for enabled stage — failing closed",
+			slog.String("task_id", req.TaskID),
+			slog.String("stage", string(req.Stage)),
+			slog.Any("registered_handlers", names))
+		return "", fmt.Errorf("no approval handler registered for stage %q (registered handlers: %s; check adapters.<name>.enabled + credentials, and adapters.<name>.approval.enabled)",
+			req.Stage, registered)
 	}
 
 	dispatchCtx, cancel := context.WithTimeout(context.Background(), timeout)
