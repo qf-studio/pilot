@@ -209,10 +209,19 @@ func TestProcessPRWithDeadline_PanicCountedWhenAbandoned(t *testing.T) {
 // its result on done before the loop's post-deadline recheck, which used to
 // swallow the timeout. Every such expiry must be counted, never a subset.
 func TestProcessPRWithDeadline_CtxHonoringHandlerCountsTimeout(t *testing.T) {
+	// A local server answers the PR fetch instantly. Against the real GitHub
+	// API the fetch itself fails (401/DNS) before the 5ms deadline, so the
+	// handler returns un-expired and never reaches processPRFn.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"number": 1, "state": "open"}`))
+	}))
+	t.Cleanup(server.Close)
+
 	cfg := DefaultConfig()
 	cfg.StageTimeout = 5 * time.Millisecond
 	cfg.ReviewFeedback = nil
-	c := NewController(cfg, github.NewClient(testutil.FakeGitHubToken), nil, "owner", "repo")
+	c := NewController(cfg, github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL), nil, "owner", "repo")
 	c.mu.Lock()
 	c.activePRs[1] = &PRState{PRNumber: 1, IssueNumber: 101, BranchName: "pilot/GH-101", HeadSHA: "abc1234", Stage: StageReleasing}
 	c.mu.Unlock()
