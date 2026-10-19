@@ -142,11 +142,17 @@ type Config struct {
 
 // StageConfig holds configuration for a specific approval stage
 type StageConfig struct {
-	Enabled       bool          `yaml:"enabled"`
-	Approvers     []string      `yaml:"approvers"`      // User IDs/handles who can approve
-	Timeout       time.Duration `yaml:"timeout"`        // Timeout for this stage
-	DefaultAction Decision      `yaml:"default_action"` // Action on timeout
-	RequireAll    bool          `yaml:"require_all"`    // Require all approvers (vs any one)
+	Enabled   bool     `yaml:"enabled"`
+	Approvers []string `yaml:"approvers"` // User IDs/handles who can approve (all channels)
+	// ApproversByChannel holds per-channel approver lists keyed by channel
+	// name in config spelling ("slack", "telegram", "github-review"); keys are
+	// normalized with NormalizeChannelName at lookup. A matching entry wins
+	// over the flat Approvers list, because Slack and Telegram user IDs are
+	// different identity systems (GH-5753).
+	ApproversByChannel map[string][]string `yaml:"approvers_by_channel"`
+	Timeout            time.Duration       `yaml:"timeout"`        // Timeout for this stage
+	DefaultAction      Decision            `yaml:"default_action"` // Action on timeout
+	RequireAll         bool                `yaml:"require_all"`    // Require all approvers (vs any one)
 }
 
 // Rule defines a conditional approval trigger

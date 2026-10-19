@@ -837,6 +837,13 @@ executor:
 #     # It does not grant that handle authorization to decide the request.
 #     approvers:
 #       - "${TELEGRAM_APPROVER_CHAT_ID}"   # Chat ID of the approver
+#     # GH-5753: per-channel approvers for mixed Slack/Telegram routing. A
+#     # matching entry wins over the flat list above (keys: slack, telegram,
+#     # github-review). A project can override both with
+#     # projects[].approval.approvers.
+#     approvers_by_channel:
+#       slack:    ["U0123ABCD"]
+#       telegram: ["123456789"]
 #     timeout: 24h
 #     default_action: rejected
 #   pre_execution:

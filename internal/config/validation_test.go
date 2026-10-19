@@ -1,10 +1,14 @@
 package config
 
 import (
+	"bytes"
+	"log"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/budget"
 	"github.com/qf-studio/pilot/internal/executor"
@@ -1059,6 +1063,106 @@ func TestConfig_Validate_GitHubApp(t *testing.T) {
 				}
 			} else if err != nil {
 				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// GH-5753: approvers_by_channel keys are validated against the approval
+// source vocabulary; mismatched ID shapes only warn.
+func TestConfig_Validate_ApproversByChannel(t *testing.T) {
+	telegram := autopilot.ApprovalSourceTelegram
+	tests := []struct {
+		name     string
+		build    func(cfg *Config)
+		wantErr  string
+		wantWarn []string
+		noWarn   bool
+	}{
+		{
+			name: "valid keys and shapes",
+			build: func(cfg *Config) {
+				cfg.Approval.PreMerge.ApproversByChannel = map[string][]string{
+					"slack":         {"U0123ABC"},
+					"telegram":      {"424242", "@someone"},
+					"github-review": {"octocat"},
+				}
+			},
+			noWarn: true,
+		},
+		{
+			name: "unknown channel key fails",
+			build: func(cfg *Config) {
+				cfg.Approval.PreMerge.ApproversByChannel = map[string][]string{"discord": {"1"}}
+			},
+			wantErr: "approval.pre_merge.approvers_by_channel key",
+		},
+		{
+			name: "empty channel key fails",
+			build: func(cfg *Config) {
+				cfg.Approval.PreMerge.ApproversByChannel = map[string][]string{"": {"1"}}
+			},
+			wantErr: "approval.pre_merge.approvers_by_channel key",
+		},
+		{
+			name: "mismatched shapes warn but pass",
+			build: func(cfg *Config) {
+				cfg.Approval.PreMerge.ApproversByChannel = map[string][]string{
+					"telegram": {"U0123ABC"},
+					"slack":    {"424242"},
+				}
+			},
+			wantWarn: []string{`"U0123ABC" does not look like a telegram`, `"424242" does not look like a slack`},
+		},
+		{
+			name: "project approvers mismatching resolved source warn",
+			build: func(cfg *Config) {
+				cfg.Projects[0].Approval = &autopilot.ProjectApprovalOverride{
+					ApprovalSource: &telegram,
+					Approvers:      []string{"U0123ABC"},
+				}
+			},
+			wantWarn: []string{`projects[0].approval.approvers entry "U0123ABC" does not look like a telegram`},
+		},
+		{
+			name: "project approvers matching source do not warn",
+			build: func(cfg *Config) {
+				cfg.Projects[0].Approval = &autopilot.ProjectApprovalOverride{
+					ApprovalSource: &telegram,
+					Approvers:      []string{"424242"},
+				}
+			},
+			noWarn: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Approval = approval.DefaultConfig()
+			tt.build(cfg)
+
+			var buf bytes.Buffer
+			log.SetOutput(&buf)
+			defer log.SetOutput(os.Stderr)
+
+			err := cfg.Validate()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, w := range tt.wantWarn {
+				if !strings.Contains(buf.String(), w) {
+					t.Errorf("expected warning containing %q, got %q", w, buf.String())
+				}
+			}
+			if tt.noWarn && strings.Contains(buf.String(), "config warning") {
+				t.Errorf("unexpected warning: %q", buf.String())
 			}
 		})
 	}

@@ -630,6 +630,9 @@ type Controller struct {
 	// must be cached fields rather than re-derived from c.config each time.
 	resolvedRequireApproval bool
 	resolvedApprovalSource  ApprovalSource
+	// resolvedApprovers is the per-project approver override (GH-5753); nil
+	// inherits the stage config's list in Manager.SubmitApprovalRequest.
+	resolvedApprovers []string
 
 	// resolvedReleaseCfg is the effective release config computed once in
 	// NewController: env-scoped config wins over global, then projectRelease
@@ -1004,6 +1007,11 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		// review, 2026-08-07.
 		if c.projectApproval.ApprovalSource != nil && *c.projectApproval.ApprovalSource != "" {
 			c.resolvedApprovalSource = *c.projectApproval.ApprovalSource
+		}
+		// GH-5753: copy so later mutation of the shared config slice cannot
+		// change what this controller resolved.
+		if len(c.projectApproval.Approvers) > 0 {
+			c.resolvedApprovers = append([]string(nil), c.projectApproval.Approvers...)
 		}
 	}
 
@@ -5247,6 +5255,9 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		// Manager.SubmitApprovalRequest always fell through to whichever
 		// handler happened to win Go's map iteration order.
 		PreferredChannel: string(c.resolvedApprovalSource),
+		// GH-5753: a per-project approvers override wins; nil lets the
+		// manager resolve per-channel / flat stage approvers.
+		Approvers: c.resolvedApprovers,
 		// GH-4773: canonicalize c.projectPath the same way the store keys its
 		// own scoping (the #4297 cross-project collision lesson) so the
 		// persisted row and any later scoped lookup agree on the same string.

@@ -1375,6 +1375,11 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// GH-5753: per-channel / per-project approver lists.
+	if err := c.validateApprovers(); err != nil {
+		return err
+	}
+
 	// GH-5010: Validate each project's contract_dependencies entries.
 	for i, p := range c.Projects {
 		if p == nil {
@@ -1514,6 +1519,68 @@ func (c *Config) GetDefaultProject() *ProjectConfig {
 	}
 	if len(c.Projects) > 0 {
 		return c.Projects[0]
+	}
+	return nil
+}
+
+var (
+	telegramApproverRe = regexp.MustCompile(`^(-?[0-9]+|@[A-Za-z0-9_]{3,})$`)
+	slackApproverRe    = regexp.MustCompile(`^[UW][A-Z0-9]+$`)
+)
+
+// approverLooksValid reports whether id has the shape of a user ID for the
+// (normalized) channel. Channels without a known shape always pass.
+func approverLooksValid(channel, id string) bool {
+	switch approval.NormalizeChannelName(channel) {
+	case "telegram":
+		return telegramApproverRe.MatchString(id)
+	case "slack":
+		return slackApproverRe.MatchString(id)
+	}
+	return true
+}
+
+// validateApprovers rejects unknown approvers_by_channel keys (GH-5753) and
+// logs a warning for entries whose shape does not match their channel.
+func (c *Config) validateApprovers() error {
+	warn := func(path, channel string, ids []string) {
+		for _, id := range ids {
+			if !approverLooksValid(channel, id) {
+				log.Printf("config warning: %s entry %q does not look like a %s user ID", path, id, channel)
+			}
+		}
+	}
+
+	if c.Approval != nil {
+		stages := map[string]*approval.StageConfig{
+			"pre_execution": c.Approval.PreExecution,
+			"pre_merge":     c.Approval.PreMerge,
+			"post_failure":  c.Approval.PostFailure,
+		}
+		for name, sc := range stages {
+			if sc == nil {
+				continue
+			}
+			for key, ids := range sc.ApproversByChannel {
+				if key == "" || !approval.ApprovalSourceValues[key] {
+					return fmt.Errorf("approval.%s.approvers_by_channel key must be \"telegram\", \"slack\", or \"github-review\", got %q", name, key)
+				}
+				warn(fmt.Sprintf("approval.%s.approvers_by_channel.%s", name, key), key, ids)
+			}
+		}
+	}
+
+	for i, p := range c.Projects {
+		if p == nil || p.Approval == nil || len(p.Approval.Approvers) == 0 {
+			continue
+		}
+		var source autopilot.ApprovalSource
+		if p.Approval.ApprovalSource != nil && *p.Approval.ApprovalSource != "" {
+			source = *p.Approval.ApprovalSource
+		} else if c.Orchestrator != nil && c.Orchestrator.Autopilot != nil {
+			source = c.Orchestrator.Autopilot.EffectiveApprovalSource()
+		}
+		warn(fmt.Sprintf("projects[%d].approval.approvers", i), string(source), p.Approval.Approvers)
 	}
 	return nil
 }

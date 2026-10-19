@@ -452,6 +452,10 @@ type ProjectApprovalOverride struct {
 	// ApprovalSource overrides the resolved EffectiveApprovalSource for this
 	// project. Nil inherits.
 	ApprovalSource *ApprovalSource `yaml:"approval_source,omitempty"`
+	// Approvers overrides the stage's approver list (approval.<stage>.
+	// approvers_by_channel / approvers) for this project's pre-merge asks
+	// (GH-5753). Nil (or empty) inherits.
+	Approvers []string `yaml:"approvers,omitempty"`
 }
 
 // defaultEnvironments returns built-in environment configs matching legacy behavior.

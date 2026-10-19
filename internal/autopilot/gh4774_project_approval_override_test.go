@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/testutil"
@@ -203,5 +204,52 @@ func TestSubmitAsyncApprovalRequest_ProjectApprovalOverride_PreferredChannel_GH4
 	}
 	if got := slack.sent[0].PreferredChannel; got != "slack" {
 		t.Errorf("PreferredChannel = %q, want %q", got, "slack")
+	}
+}
+
+// GH-5753: a project approvers override reaches req.Approvers on the
+// pre-merge request; a nil override inherits (req.Approvers stays empty so the
+// manager resolves the stage list).
+func TestSubmitAsyncApprovalRequest_ProjectApprovers_GH5753(t *testing.T) {
+	tests := []struct {
+		name     string
+		override *ProjectApprovalOverride
+		want     []string
+	}{
+		{"override reaches request", &ProjectApprovalOverride{Approvers: []string{"424242"}}, []string{"424242"}},
+		{"nil approvers inherit", &ProjectApprovalOverride{}, nil},
+		{"no override inherits", nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ghClient := github.NewClient(testutil.FakeGitHubToken)
+			cfg := DefaultConfig()
+			cfg.Environment = EnvDev
+
+			mgr := asyncApprovalManager()
+			h := &mockCapturingApprovalHandler{}
+			mgr.RegisterHandler(&namedApprovalHandler{mockCapturingApprovalHandler: h, name: "telegram"})
+
+			var opts []ControllerOption
+			if tt.override != nil {
+				opts = append(opts, WithApprovalOverride(tt.override))
+			}
+			c := NewController(cfg, ghClient, mgr, "owner", "work-repo", opts...)
+			prState := &PRState{
+				PRNumber:         78,
+				PRURL:            "https://github.com/owner/work-repo/pull/78",
+				Stage:            StageAwaitApproval,
+				EscalationReason: "size_floor: 600 net additions exceeds 500 threshold",
+			}
+			if err := c.submitAsyncApprovalRequest(context.Background(), prState); err != nil {
+				t.Fatalf("submitAsyncApprovalRequest: %v", err)
+			}
+			if len(h.sent) != 1 {
+				t.Fatalf("expected 1 request, got %d", len(h.sent))
+			}
+			if got := h.sent[0].Approvers; !reflect.DeepEqual(got, tt.want) && (len(got) != 0 || len(tt.want) != 0) {
+				t.Errorf("Approvers = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

@@ -269,7 +269,7 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 	req.ExpiresAt = time.Now().Add(timeout)
 
 	if len(req.Approvers) == 0 {
-		req.Approvers = stageConfig.Approvers
+		req.Approvers = stageConfig.approversFor(req.PreferredChannel)
 	}
 
 	m.mu.RLock()
@@ -503,4 +503,21 @@ func (m *Manager) RecordDecision(ctx context.Context, requestID string, decision
 	}
 
 	return writerErr
+}
+
+// approversFor resolves the stage's approver list for a channel (GH-5753):
+// the per-channel entry (keys normalized with NormalizeChannelName, so the
+// "github-review" config spelling matches) wins, otherwise the flat
+// Approvers list — the pre-GH-5753 behavior — applies. An empty channel
+// always uses the flat list.
+func (sc *StageConfig) approversFor(channel string) []string {
+	if channel != "" {
+		want := NormalizeChannelName(channel)
+		for key, list := range sc.ApproversByChannel {
+			if len(list) > 0 && NormalizeChannelName(key) == want {
+				return list
+			}
+		}
+	}
+	return sc.Approvers
 }
