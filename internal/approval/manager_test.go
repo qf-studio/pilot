@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -274,7 +275,7 @@ func TestManager_SubmitApprovalRequest_NonBlocking(t *testing.T) {
 
 	m := NewManager(config)
 
-	handler := &mockHandler{name: "test"}
+	handler := &mockHandler{name: DefaultChannelName}
 	m.RegisterHandler(handler)
 
 	req := &Request{
@@ -359,7 +360,7 @@ func TestManager_SubmitApprovalRequest_LogsEmptyDestinationForNonDescribingHandl
 	logger, buf := newCapturingLogger()
 	m.log = logger
 
-	handler := &mockHandler{name: "test"}
+	handler := &mockHandler{name: DefaultChannelName}
 	m.RegisterHandler(handler)
 
 	req := &Request{
@@ -523,18 +524,18 @@ func TestManager_SubmitApprovalRequest_UnresolvableChannelStillHardErrors(t *tes
 	}
 }
 
-// TestManager_SubmitApprovalRequest_NoPreferredChannel_FallsBackToFirstAvailable
-// preserves the pre-existing behavior for requests that don't specify a
-// PreferredChannel at all (e.g. legacy callers) — the fail-fast behavior only
-// applies when PreferredChannel is explicitly set but unregistered.
-func TestManager_SubmitApprovalRequest_NoPreferredChannel_FallsBackToFirstAvailable(t *testing.T) {
+// TestManager_SubmitApprovalRequest_NoPreferredChannel_UsesDefaultChannel
+// covers requests that don't specify a PreferredChannel at all (e.g. legacy
+// callers): they route to the default channel handler (GH-5760), the same
+// owner Rehydrate picks via ownsChannel.
+func TestManager_SubmitApprovalRequest_NoPreferredChannel_UsesDefaultChannel(t *testing.T) {
 	config := DefaultConfig()
 	config.Enabled = true
 	config.PreExecution.Enabled = true
 	config.PreExecution.Timeout = 5 * time.Second
 
 	m := NewManager(config)
-	handler := &mockHandler{name: "test"}
+	handler := &mockHandler{name: DefaultChannelName}
 	m.RegisterHandler(handler)
 
 	req := &Request{
@@ -550,6 +551,92 @@ func TestManager_SubmitApprovalRequest_NoPreferredChannel_FallsBackToFirstAvaila
 	}
 	if len(handler.sentReqs) != 1 {
 		t.Errorf("expected 1 request sent to handler, got %d", len(handler.sentReqs))
+	}
+}
+
+// TestManager_SubmitApprovalRequest_EmptyChannelIsDeterministic is the GH-5760
+// regression test: an empty PreferredChannel used to pick the first entry of a
+// Go map range, so with several handlers registered the channel was random
+// (and could differ from the owner Rehydrate picks). It must always reach the
+// default channel handler.
+func TestManager_SubmitApprovalRequest_EmptyChannelIsDeterministic(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 5 * time.Second
+
+	m := NewManager(config)
+	def := &mockHandler{name: DefaultChannelName}
+	slack := &mockHandler{name: "slack"}
+	github := &mockHandler{name: "github"}
+	m.RegisterHandler(slack)
+	m.RegisterHandler(def)
+	m.RegisterHandler(github)
+
+	const n = 100
+	for i := 0; i < n; i++ {
+		req := &Request{
+			ID:        fmt.Sprintf("async-empty-channel-%d", i),
+			TaskID:    "TASK-01",
+			Stage:     StagePreExecution,
+			Title:     "Test task",
+			CreatedAt: time.Now(),
+		}
+		if _, err := m.SubmitApprovalRequest(context.Background(), req); err != nil {
+			t.Fatalf("request %d: unexpected error: %v", i, err)
+		}
+	}
+
+	if len(def.sentReqs) != n {
+		t.Errorf("default handler got %d requests, want %d", len(def.sentReqs), n)
+	}
+	if len(slack.sentReqs) != 0 || len(github.sentReqs) != 0 {
+		t.Errorf("non-default handlers got slack=%d github=%d requests, want 0",
+			len(slack.sentReqs), len(github.sentReqs))
+	}
+}
+
+// TestManager_SubmitApprovalRequest_EmptyChannelNoDefaultHandlerFailsClosed:
+// an empty channel with handlers registered but none under the default
+// channel name is an error, never a fallback to some other handler (GH-5760).
+func TestManager_SubmitApprovalRequest_EmptyChannelNoDefaultHandlerFailsClosed(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 5 * time.Second
+
+	m := NewManager(config)
+	slack := &mockHandler{name: "slack"}
+	github := &mockHandler{name: "github"}
+	m.RegisterHandler(slack)
+	m.RegisterHandler(github)
+
+	req := &Request{
+		ID:        "async-empty-channel-nodefault",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		CreatedAt: time.Now(),
+	}
+	id, err := m.SubmitApprovalRequest(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected an error when the default channel handler is not registered, got nil")
+	}
+	if id != "" {
+		t.Errorf("request ID = %q, want empty on failure", id)
+	}
+	if !strings.Contains(err.Error(), DefaultChannelName) {
+		t.Errorf("expected error to name the default channel %q, got: %v", DefaultChannelName, err)
+	}
+	if len(slack.sentReqs) != 0 || len(github.sentReqs) != 0 {
+		t.Errorf("request leaked to a non-default handler: slack=%d github=%d",
+			len(slack.sentReqs), len(github.sentReqs))
+	}
+	m.mu.RLock()
+	pending := len(m.pending)
+	m.mu.RUnlock()
+	if pending != 0 {
+		t.Errorf("expected no pending entry, got %d", pending)
 	}
 }
 
@@ -592,7 +679,7 @@ func TestManager_SubmitApprovalRequest_PersistsResponseViaWriter(t *testing.T) {
 	m.WithStateWriter(writer)
 
 	handler := &mockHandler{
-		name: "test",
+		name: DefaultChannelName,
 		respondWith: &Response{
 			RequestID:  "async-write-1",
 			Decision:   DecisionApproved,
@@ -704,7 +791,7 @@ func TestManager_RecordDecision_CleansUpPendingOnWriterError(t *testing.T) {
 	writer := &mockPRStateWriter{err: sentinel}
 	m.WithStateWriter(writer)
 
-	handler := &mockHandler{name: "test"} // never responds
+	handler := &mockHandler{name: DefaultChannelName} // never responds
 	m.RegisterHandler(handler)
 
 	req := &Request{
@@ -751,7 +838,7 @@ func TestManager_RecordDecision_CancelsPendingRequest(t *testing.T) {
 	config.PreExecution.Timeout = 10 * time.Second
 
 	m := NewManager(config)
-	handler := &mockHandler{name: "test"} // never responds
+	handler := &mockHandler{name: DefaultChannelName} // never responds
 	m.RegisterHandler(handler)
 
 	req := &Request{
@@ -794,7 +881,7 @@ func TestManager_RecordDecision_NoDoubleWrite_WhenCancelsBackgroundGoroutine(t *
 	writer := &mockPRStateWriter{}
 	m.WithStateWriter(writer)
 
-	handler := &mockHandler{name: "test"} // never responds
+	handler := &mockHandler{name: DefaultChannelName} // never responds
 	m.RegisterHandler(handler)
 
 	req := &Request{
@@ -1017,7 +1104,7 @@ func TestManager_AsyncTimeout_FailClosedOverridesApprovedDefault(t *testing.T) {
 			m := NewManager(config)
 			writer := &mockPRStateWriter{}
 			m.WithStateWriter(writer)
-			m.RegisterHandler(&mockHandler{name: "test"}) // never responds
+			m.RegisterHandler(&mockHandler{name: DefaultChannelName}) // never responds
 
 			req := &Request{
 				ID: "req-failclosed", TaskID: "GH-5599", Stage: StagePreMerge,
@@ -1090,7 +1177,7 @@ func TestManager_CancelPending_NoTimeoutDecision(t *testing.T) {
 	m.log = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	writer := &mockPRStateWriter{}
 	m.WithStateWriter(writer)
-	handler := &mockHandler{name: "test"} // never responds
+	handler := &mockHandler{name: DefaultChannelName} // never responds
 	m.RegisterHandler(handler)
 
 	req := &Request{ID: "req-cancel", TaskID: "GH-5602", Stage: StagePreMerge, Title: "Merge approval", CreatedAt: time.Now()}

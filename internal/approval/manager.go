@@ -291,10 +291,11 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 			preferredMissing = true
 		}
 	} else {
-		for _, h := range m.handlers {
-			handler = h
-			break
-		}
+		// GH-5760: an empty channel belongs to the default channel handler —
+		// the same rule ownsChannel applies on Rehydrate — never to whatever
+		// handler Go's map iteration yields first. If it is not registered,
+		// handler stays nil and the fail-closed branch below rejects it.
+		handler = m.handlers[DefaultChannelName]
 	}
 	m.mu.RUnlock()
 
@@ -327,6 +328,15 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 		registered := "none"
 		if len(names) > 0 {
 			registered = strings.Join(names, ", ")
+		}
+		if len(names) > 0 && req.PreferredChannel == "" {
+			m.log.Warn("no default-channel approval handler registered for request without a channel — failing closed",
+				slog.String("task_id", req.TaskID),
+				slog.String("stage", string(req.Stage)),
+				slog.String("default_channel", DefaultChannelName),
+				slog.Any("registered_handlers", names))
+			return "", fmt.Errorf("approval request for stage %q has no channel and the default channel %q is not registered (registered handlers: %s)",
+				req.Stage, DefaultChannelName, registered)
 		}
 		m.log.Warn("no approval handler registered for enabled stage — failing closed",
 			slog.String("task_id", req.TaskID),
