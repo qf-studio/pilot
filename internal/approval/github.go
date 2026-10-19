@@ -2,12 +2,14 @@ package approval
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // GitHubReviewClient defines the interface for GitHub PR review operations
@@ -25,6 +27,8 @@ type GitHubHandler struct {
 	pending      map[string]*githubPending // requestID -> pending state
 	mu           sync.RWMutex
 	log          *slog.Logger
+	store        PendingApprovalStore // optional; enables restart persistence (GH-5757)
+	recorder     DecisionRecorder     // optional; persists decisions directly (restart-safe, GH-5757)
 }
 
 // githubPending tracks a pending GitHub approval request
@@ -73,33 +77,226 @@ func (h *GitHubHandler) Name() string {
 	return "github"
 }
 
+// WithStore attaches a persistence store so pending approvals survive restarts
+// (GH-5757, mirrors TelegramHandler/SlackHandler.WithStore). Returns h to allow
+// builder-style chaining.
+func (h *GitHubHandler) WithStore(store PendingApprovalStore) *GitHubHandler {
+	h.store = store
+	return h
+}
+
+// WithDecisionRecorder attaches a DecisionRecorder so a review decision is
+// persisted directly to the PRState/executions store rather than relying on a
+// goroutine reading the response channel. After a restart, Rehydrate restores
+// the poll but no waiter, so without this an approval detected by the restarted
+// poll would never reach the pipeline (GH-5757, mirrors GH-3825/GH-4411).
+// Returns h to allow builder-style chaining.
+func (h *GitHubHandler) WithDecisionRecorder(recorder DecisionRecorder) *GitHubHandler {
+	h.recorder = recorder
+	return h
+}
+
+// prNumberFromMetadata extracts the PR number from request metadata. It accepts
+// int (in-process) and float64 (after a JSON round trip, e.g. a persisted row).
+func prNumberFromMetadata(md map[string]interface{}) (int, bool) {
+	switch v := md["pr_number"].(type) {
+	case int:
+		return v, true
+	case float64:
+		return int(v), true
+	}
+	return 0, false
+}
+
+// resolveTarget maps a request's Project to the GitHub owner/repo its PR lives
+// in. Decision: resolve per request and fail closed. Falling back to the default
+// repo for an unresolvable project would check the wrong repo's PR with the same
+// number and could resolve the gate as approved (GH-5716). A request with an
+// empty Project always uses the handler's default Owner/Repo. SendApprovalRequest
+// and Rehydrate both call it so a restart never resolves a project differently.
+func (h *GitHubHandler) resolveTarget(project string) (owner, repo string, err error) {
+	if project == "" {
+		return h.owner, h.repo, nil
+	}
+	var ok bool
+	if h.resolveRepo != nil {
+		owner, repo, ok = h.resolveRepo(project)
+	}
+	if !ok || owner == "" || repo == "" {
+		return "", "", fmt.Errorf("cannot resolve GitHub repo for approval project %q: refusing to check reviews against the default repo", project)
+	}
+	return owner, repo, nil
+}
+
+// deletePersisted removes the request's persisted row, if a store is attached.
+func (h *GitHubHandler) deletePersisted(requestID, why string) {
+	if h.store == nil {
+		return
+	}
+	if err := h.store.DeletePendingApproval(requestID); err != nil {
+		h.log.Warn("failed to delete persisted approval on "+why,
+			slog.String("request_id", requestID), slog.Any("error", err))
+	}
+}
+
+// resolvePending finalizes a pending request that was already removed from
+// h.pending: deletes its persisted row, records the decision directly (so it
+// reaches the pipeline even when no waiter survived a restart), and delivers
+// the response. Callers cancel polling themselves.
+func (h *GitHubHandler) resolvePending(ctx context.Context, p *githubPending, resp *Response) {
+	h.deletePersisted(resp.RequestID, "decision")
+
+	if h.recorder != nil {
+		if err := h.recorder.RecordDecision(ctx, resp.RequestID, resp.Decision, resp.ApprovedBy); err != nil {
+			if errors.Is(err, memory.ErrApprovalAlreadyDecided) {
+				h.log.Info("approval decision race lost — another decider already recorded",
+					slog.String("request_id", resp.RequestID), slog.String("by", resp.ApprovedBy))
+			} else {
+				h.log.Warn("failed to record approval decision",
+					slog.String("request_id", resp.RequestID), slog.Any("error", err))
+			}
+		}
+	}
+
+	select {
+	case p.ResponseCh <- resp:
+	default:
+	}
+	close(p.ResponseCh)
+}
+
+// Rehydrate loads persisted pending approvals this handler owns and restarts a
+// review poll for each, so an approval given on GitHub after a daemon restart is
+// still detected (GH-5757). Expired rows are deleted. A row whose project no
+// longer resolves to a repo (or that lacks a PR number) is skipped with a WARN
+// and no GitHub call is made for it — it never falls back to the default repo
+// (GH-5716). Skipped rows stay in the store for the expiry sweep. No-op when no
+// store is attached.
+func (h *GitHubHandler) Rehydrate(ctx context.Context) error {
+	if h.store == nil {
+		return nil
+	}
+	rows, err := h.store.LoadPendingApprovals()
+	if err != nil {
+		return fmt.Errorf("rehydrate: load pending approvals: %w", err)
+	}
+	now := time.Now()
+	rehydrated := 0
+	for _, row := range rows {
+		// GH-4772: only rows this handler owns ("github-review" aliases to "github").
+		if !ownsChannel(h.Name(), row.PreferredChannel) {
+			continue
+		}
+		if row.ExpiresAt.Before(now) {
+			_ = h.store.DeletePendingApproval(row.ID)
+			continue
+		}
+		prNumber, ok := prNumberFromMetadata(row.Metadata)
+		if !ok {
+			h.log.Warn("skipping rehydrate of GitHub approval: pr_number missing from persisted metadata",
+				slog.String("request_id", row.ID))
+			continue
+		}
+		owner, repo, err := h.resolveTarget(row.Project)
+		if err != nil {
+			h.log.Warn("skipping rehydrate of GitHub approval: project does not resolve to a repo",
+				slog.String("request_id", row.ID),
+				slog.String("project", row.Project),
+				slog.Any("error", err))
+			continue
+		}
+		req := &Request{
+			ID:               row.ID,
+			TaskID:           row.TaskID,
+			Stage:            Stage(row.Stage),
+			Title:            row.Title,
+			Description:      row.Description,
+			Metadata:         row.Metadata,
+			Approvers:        row.Approvers,
+			PreferredChannel: row.PreferredChannel,
+			Project:          row.Project,
+			CreatedAt:        row.CreatedAt,
+			ExpiresAt:        row.ExpiresAt,
+		}
+		pollCtx, cancelFn := context.WithCancel(ctx)
+		h.mu.Lock()
+		if _, exists := h.pending[req.ID]; exists {
+			h.mu.Unlock()
+			cancelFn()
+			continue
+		}
+		h.pending[req.ID] = &githubPending{
+			Request:    req,
+			Owner:      owner,
+			Repo:       repo,
+			PRNumber:   prNumber,
+			ResponseCh: make(chan *Response, 1),
+			CancelFn:   cancelFn,
+		}
+		h.mu.Unlock()
+		rehydrated++
+		go h.pollForApproval(pollCtx, req.ID)
+	}
+	if rehydrated > 0 {
+		h.log.Info("rehydrated pending approvals", slog.Int("count", rehydrated))
+	}
+	return nil
+}
+
+// PruneExpired stops polling for requests whose ExpiresAt has passed, removes
+// them from the pending map and deletes their persisted row. It also sweeps the
+// store for owned rows with no in-memory counterpart. A rehydrated request has
+// no waiter enforcing its timeout, so without this sweep it would poll forever
+// (GH-5757, mirrors Telegram/Slack PruneExpired). Returns the number of
+// in-memory requests pruned.
+func (h *GitHubHandler) PruneExpired(ctx context.Context) (int, error) {
+	now := time.Now()
+
+	h.mu.Lock()
+	var expired []*githubPending
+	for id, p := range h.pending {
+		if p.Request.ExpiresAt.Before(now) {
+			expired = append(expired, p)
+			delete(h.pending, id)
+		}
+	}
+	h.mu.Unlock()
+
+	for _, p := range expired {
+		p.CancelFn()
+		h.deletePersisted(p.Request.ID, "expiry")
+		select {
+		case p.ResponseCh <- &Response{RequestID: p.Request.ID, Decision: DecisionTimeout, RespondedAt: now}:
+		default:
+		}
+		close(p.ResponseCh)
+	}
+
+	if h.store != nil {
+		if _, err := h.store.PrunePendingApprovals(now, ownedChannels(h.Name())); err != nil {
+			return len(expired), fmt.Errorf("prune expired: sweep store: %w", err)
+		}
+	}
+
+	if len(expired) > 0 {
+		h.log.Info("pruned expired pending approvals", slog.Int("count", len(expired)))
+	}
+	return len(expired), nil
+}
+
 // SendApprovalRequest starts polling for PR approval reviews
 func (h *GitHubHandler) SendApprovalRequest(ctx context.Context, req *Request) (<-chan *Response, error) {
 	responseCh := make(chan *Response, 1)
 
 	// Extract PR number from metadata
-	prNumber, ok := req.Metadata["pr_number"].(int)
+	prNumber, ok := prNumberFromMetadata(req.Metadata)
 	if !ok {
-		// Try float64 (JSON unmarshaling)
-		if prFloat, ok := req.Metadata["pr_number"].(float64); ok {
-			prNumber = int(prFloat)
-		} else {
-			return nil, fmt.Errorf("pr_number missing from approval request metadata")
-		}
+		return nil, fmt.Errorf("pr_number missing from approval request metadata")
 	}
 
-	// Decision: resolve the repo per request and fail closed. Falling back to the
-	// default repo for an unresolvable project would check the wrong repo's PR
-	// with the same number and could resolve the gate as approved (GH-5716).
-	owner, repo := h.owner, h.repo
-	if req.Project != "" {
-		var ok bool
-		if h.resolveRepo != nil {
-			owner, repo, ok = h.resolveRepo(req.Project)
-		}
-		if !ok || owner == "" || repo == "" {
-			return nil, fmt.Errorf("cannot resolve GitHub repo for approval project %q: refusing to check reviews against the default repo", req.Project)
-		}
+	owner, repo, err := h.resolveTarget(req.Project)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create cancellable context for polling
@@ -116,6 +313,26 @@ func (h *GitHubHandler) SendApprovalRequest(ctx context.Context, req *Request) (
 		CancelFn:   cancelFn,
 	}
 	h.mu.Unlock()
+
+	// Best-effort persistence so the request survives a restart (GH-5757).
+	if h.store != nil {
+		row := &memory.PendingApproval{
+			ID:               req.ID,
+			TaskID:           req.TaskID,
+			Stage:            string(req.Stage),
+			Title:            req.Title,
+			Description:      req.Description,
+			Metadata:         req.Metadata,
+			Approvers:        req.Approvers,
+			PreferredChannel: req.PreferredChannel,
+			Project:          req.Project,
+			CreatedAt:        req.CreatedAt,
+			ExpiresAt:        req.ExpiresAt,
+		}
+		if err := h.store.InsertPendingApproval(row); err != nil {
+			h.log.Warn("failed to persist pending approval", slog.String("request_id", req.ID), slog.Any("error", err))
+		}
+	}
 
 	h.log.Info("Waiting for GitHub PR approval",
 		slog.String("request_id", req.ID),
@@ -179,24 +396,23 @@ func (h *GitHubHandler) checkApproval(ctx context.Context, requestID string) boo
 			slog.Int("pr_number", pending.PRNumber),
 			slog.String("approver", approver))
 
-		// Remove from pending
+		// Remove from pending; a webhook event or cancel may have won the race
+		// and already resolved (and closed) this request.
 		h.mu.Lock()
+		_, stillPending := h.pending[requestID]
 		delete(h.pending, requestID)
 		h.mu.Unlock()
+		if !stillPending {
+			return true
+		}
+		pending.CancelFn()
 
-		// Send response
-		response := &Response{
+		h.resolvePending(ctx, pending, &Response{
 			RequestID:   requestID,
 			Decision:    DecisionApproved,
 			ApprovedBy:  approver,
 			RespondedAt: time.Now(),
-		}
-
-		select {
-		case pending.ResponseCh <- response:
-		default:
-		}
-		close(pending.ResponseCh)
+		})
 
 		return true
 	}
@@ -219,6 +435,8 @@ func (h *GitHubHandler) CancelRequest(ctx context.Context, requestID string) err
 
 	// Cancel polling
 	pending.CancelFn()
+
+	h.deletePersisted(requestID, "cancel")
 
 	// Close response channel
 	close(pending.ResponseCh)
@@ -264,19 +482,12 @@ func (h *GitHubHandler) HandleReviewEvent(ctx context.Context, owner, repo strin
 	// Cancel polling
 	foundPending.CancelFn()
 
-	// Send response
-	response := &Response{
+	h.resolvePending(ctx, foundPending, &Response{
 		RequestID:   foundID,
 		Decision:    DecisionApproved,
 		ApprovedBy:  reviewer,
 		RespondedAt: time.Now(),
-	}
-
-	select {
-	case foundPending.ResponseCh <- response:
-	default:
-	}
-	close(foundPending.ResponseCh)
+	})
 
 	return true
 }
@@ -311,20 +522,13 @@ func (h *GitHubHandler) HandleChangesRequestedEvent(ctx context.Context, owner, 
 	// Cancel polling
 	foundPending.CancelFn()
 
-	// Send rejection response
-	response := &Response{
+	h.resolvePending(ctx, foundPending, &Response{
 		RequestID:   foundID,
 		Decision:    DecisionRejected,
 		ApprovedBy:  reviewer,
 		Comment:     "Changes requested",
 		RespondedAt: time.Now(),
-	}
-
-	select {
-	case foundPending.ResponseCh <- response:
-	default:
-	}
-	close(foundPending.ResponseCh)
+	})
 
 	return true
 }

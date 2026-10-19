@@ -770,6 +770,7 @@ Examples:
 			var gwAlertsEngine *alerts.Engine
 			var gwTgApprovalHandler *approval.TelegramHandler
 			var gwSlackApprovalHandler *approval.SlackHandler
+			var gwGitHubApprovalHandler *approval.GitHubHandler
 			// GH-4748: hoisted so it's still in scope after the needsPollingInfra
 			// block closes, where it's wired into p.Gateway().SetDecisionRecorder
 			// (nil when needsPollingInfra is false — mirrors gwAutopilotController
@@ -956,6 +957,16 @@ Examples:
 									Owner: parts[0], Repo: parts[1], PollInterval: pollInterval,
 									ResolveRepo: approvalRepoResolver(cfg, projectPath),
 								})
+								// GH-5757: persist decisions via the manager and keep pending
+								// requests in the store so a restart can resume the review poll.
+								// Rehydrate runs below, once the controller is attached as the
+								// manager's state writer — a restarted poll can record a decision
+								// on its first tick.
+								ghApprovalHandler.WithDecisionRecorder(approvalMgr)
+								if gwStore != nil {
+									ghApprovalHandler.WithStore(gwStore)
+								}
+								gwGitHubApprovalHandler = ghApprovalHandler
 								approvalMgr.RegisterHandler(ghApprovalHandler)
 							}
 
@@ -1034,6 +1045,18 @@ Examples:
 							}
 						}
 					}
+				}
+
+				// GH-5757: restart the GitHub review polls for approvals that were
+				// pending before the restart, and prune the ones that expire. Runs
+				// after the controller is wired as the manager's state writer above.
+				if gwGitHubApprovalHandler != nil {
+					if gwStore != nil {
+						if rErr := gwGitHubApprovalHandler.Rehydrate(context.Background()); rErr != nil {
+							logging.WithComponent("approval").Warn("github approval rehydrate failed", slog.Any("error", rErr))
+						}
+					}
+					startApprovalExpirySweep(context.Background(), gwGitHubApprovalHandler)
 				}
 
 				// GH-726: Initialize autopilot state store for gateway mode
@@ -1809,7 +1832,8 @@ const approvalExpirySweepInterval = 1 * time.Minute
 
 // expirablePendingHandler is satisfied by any approval handler that persists
 // pending requests and needs its own timeout sweep post-restart (currently
-// *approval.TelegramHandler and *approval.SlackHandler; GH-3825, GH-4411).
+// *approval.TelegramHandler, *approval.SlackHandler and *approval.GitHubHandler;
+// GH-3825, GH-4411, GH-5757).
 type expirablePendingHandler interface {
 	PruneExpired(ctx context.Context) (int, error)
 }
@@ -2276,6 +2300,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// Register Telegram approval handler if enabled
 	var tgApprovalHandler telegram.ApprovalCallbackHandler
 	var tgApprovalHandlerImpl *approval.TelegramHandler
+	var ghApprovalHandlerImpl *approval.GitHubHandler
 	if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" &&
 		(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 		tgApprovalClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
@@ -2444,6 +2469,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 							Owner: parts[0], Repo: parts[1], PollInterval: pollInterval,
 							ResolveRepo: approvalRepoResolver(cfg, projectPath),
 						})
+						// GH-5757: persist decisions via the manager; the store is attached
+						// and the polls rehydrated once the memory store opens below.
+						ghApprovalHandler.WithDecisionRecorder(approvalMgr)
+						ghApprovalHandlerImpl = ghApprovalHandler
 						approvalMgr.RegisterHandler(ghApprovalHandler)
 						logging.WithComponent("start").Info("registered GitHub approval handler",
 							slog.String("repo", cfg.Adapters.GitHub.Repo))
@@ -2625,6 +2654,18 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		}
 	}
 	startApprovalExpirySweep(ctx, slackApprovalHandlerImpl)
+
+	// GH-5757: same restart-survival treatment for GitHub review approvals —
+	// Rehydrate restarts the poll for each pending request. State writers are
+	// already attached to approvalMgr above, so a decision found on the first
+	// poll tick is recorded.
+	if store != nil && ghApprovalHandlerImpl != nil {
+		ghApprovalHandlerImpl.WithStore(store)
+		if rErr := ghApprovalHandlerImpl.Rehydrate(ctx); rErr != nil {
+			logging.WithComponent("approval").Warn("github approval rehydrate failed", slog.Any("error", rErr))
+		}
+	}
+	startApprovalExpirySweep(ctx, ghApprovalHandlerImpl)
 
 	// GH-726: Initialize autopilot state store for crash recovery
 	var autopilotStateStore *autopilot.StateStore

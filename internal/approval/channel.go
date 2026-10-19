@@ -98,10 +98,15 @@ func ownsChannel(handlerName, preferredChannel string) bool {
 
 // ownedChannels returns the set of preferred_channel values a channel-scoped
 // store sweep (PrunePendingApprovals) should delete for handlerName: its own
-// name, plus "" (empty/legacy) when handlerName is the default claimant.
+// name, plus "" (empty/legacy) when handlerName is the default claimant, plus
+// the raw "github-review" config alias for the GitHub handler (rows persist the
+// unnormalized PreferredChannel, so the alias must be swept too — GH-5757).
 func ownedChannels(handlerName string) []string {
-	if handlerName == DefaultChannelName {
+	switch handlerName {
+	case DefaultChannelName:
 		return []string{handlerName, ""}
+	case NormalizeChannelName(githubReviewAlias):
+		return []string{handlerName, githubReviewAlias}
 	}
 	return []string{handlerName}
 }

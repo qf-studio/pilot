@@ -59,6 +59,9 @@ func TestOwnedChannels(t *testing.T) {
 	if got := ownedChannels("telegram"); len(got) != 2 || got[0] != "telegram" || got[1] != "" {
 		t.Errorf("ownedChannels(telegram) = %v, want [telegram \"\"]", got)
 	}
+	if got := ownedChannels("github"); len(got) != 2 || got[0] != "github" || got[1] != "github-review" {
+		t.Errorf("ownedChannels(github) = %v, want [github github-review]", got)
+	}
 	if got := ownedChannels("slack"); len(got) != 1 || got[0] != "slack" {
 		t.Errorf("ownedChannels(slack) = %v, want [slack]", got)
 	}

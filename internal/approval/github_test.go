@@ -1,11 +1,16 @@
 package approval
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // mockGitHubReviewClient implements GitHubReviewClient for testing
@@ -545,5 +550,264 @@ func TestGitHubHandler_ReviewEvents_MatchOwnerRepoAndNumber(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// --- persistence / rehydrate tests (GH-5757) ---
+
+func newStoreHandler(client GitHubReviewClient, store PendingApprovalStore, rec DecisionRecorder) *GitHubHandler {
+	h := newProjectHandler(client, testProjectResolver)
+	h.pollInterval = 5 * time.Millisecond
+	if store != nil {
+		h.WithStore(store)
+	}
+	if rec != nil {
+		h.WithDecisionRecorder(rec)
+	}
+	return h
+}
+
+func githubReviewRequest(id, project string, pr int) *Request {
+	return &Request{
+		ID:               id,
+		TaskID:           "task-" + id,
+		Stage:            StagePreMerge,
+		Project:          project,
+		PreferredChannel: githubReviewAlias,
+		CreatedAt:        time.Now(),
+		ExpiresAt:        time.Now().Add(time.Hour),
+		Metadata:         map[string]interface{}{"pr_number": pr},
+	}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %s", what)
+}
+
+func TestGitHubHandler_RehydrateResumesPolling(t *testing.T) {
+	store := newMockPendingStore()
+
+	// Pre-restart handler: sends the request, which must persist a row. Its
+	// poll never sees an approval and is torn down to simulate the restart.
+	oldCtx, killOld := context.WithCancel(context.Background())
+	oldHandler := newStoreHandler(&mockGitHubReviewClient{}, store, nil)
+	if _, err := oldHandler.SendApprovalRequest(oldCtx, githubReviewRequest("req-1", "/work/repo-b", 7)); err != nil {
+		t.Fatalf("SendApprovalRequest: %v", err)
+	}
+	killOld()
+
+	row := store.get("req-1")
+	if row == nil {
+		t.Fatal("send did not persist a pending approval row")
+	}
+	if row.Project != "/work/repo-b" || row.PreferredChannel != githubReviewAlias {
+		t.Errorf("persisted row project=%q channel=%q", row.Project, row.PreferredChannel)
+	}
+
+	// Post-restart handler: the reviewer approved the current head SHA while the
+	// daemon was down.
+	client := &mockGitHubReviewClient{
+		approvedPRs: map[string]bool{"OrgA/RepoB#7": true},
+		approver:    "alice",
+	}
+	rec := &mockDecisionRecorder{}
+	newHandler := newStoreHandler(client, store, rec)
+	if err := newHandler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("Rehydrate: %v", err)
+	}
+
+	waitFor(t, "decision to be recorded", func() bool { return len(rec.getCalls()) == 1 })
+	call := rec.getCalls()[0]
+	if call.requestID != "req-1" || call.decision != DecisionApproved || call.by != "alice" {
+		t.Errorf("recorded decision = %+v, want req-1/approved/alice", call)
+	}
+	for _, c := range client.recordedCalls() {
+		if c != "OrgA/RepoB#7" {
+			t.Errorf("GitHub call %q, want only the project's repo OrgA/RepoB#7", c)
+		}
+	}
+	waitFor(t, "row to be deleted after decision", func() bool { return store.get("req-1") == nil })
+	newHandler.mu.RLock()
+	defer newHandler.mu.RUnlock()
+	if len(newHandler.pending) != 0 {
+		t.Errorf("pending = %d after decision, want 0", len(newHandler.pending))
+	}
+}
+
+func TestGitHubHandler_Rehydrate_JSONRoundTripPRNumber(t *testing.T) {
+	store := newMockPendingStore()
+	// pr_number comes back from the SQLite JSON column as float64.
+	if err := store.InsertPendingApproval(&memory.PendingApproval{
+		ID:               "req-json",
+		Stage:            string(StagePreMerge),
+		PreferredChannel: "github",
+		Metadata:         map[string]interface{}{"pr_number": float64(42)},
+		ExpiresAt:        time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := &mockGitHubReviewClient{hasApproval: true, approver: "bob"}
+	rec := &mockDecisionRecorder{}
+	h := newStoreHandler(client, store, rec)
+	if err := h.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("Rehydrate: %v", err)
+	}
+	waitFor(t, "decision to be recorded", func() bool { return len(rec.getCalls()) == 1 })
+	// Empty project resolves to the handler's default repo.
+	if got := client.recordedCalls()[0]; got != "OrgA/RepoA#42" {
+		t.Errorf("GitHub call = %q, want OrgA/RepoA#42", got)
+	}
+}
+
+func TestGitHubHandler_Rehydrate_UnresolvedProjectSkipped(t *testing.T) {
+	store := newMockPendingStore()
+	if err := store.InsertPendingApproval(&memory.PendingApproval{
+		ID:               "req-gone",
+		Stage:            string(StagePreMerge),
+		Project:          "/work/removed-from-config",
+		PreferredChannel: githubReviewAlias,
+		Metadata:         map[string]interface{}{"pr_number": float64(7)},
+		ExpiresAt:        time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Approve every PR: if the row fell back to the default repo it would resolve.
+	client := &mockGitHubReviewClient{hasApproval: true, approver: "mallory"}
+	rec := &mockDecisionRecorder{}
+	h := newStoreHandler(client, store, rec)
+	var logs bytes.Buffer
+	h.log = slog.New(slog.NewTextHandler(&logs, nil))
+
+	if err := h.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("Rehydrate: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond) // several poll intervals
+
+	if calls := client.recordedCalls(); len(calls) != 0 {
+		t.Errorf("GitHub called for unresolved project: %v", calls)
+	}
+	if n := len(rec.getCalls()); n != 0 {
+		t.Errorf("recorded %d decisions for unresolved project", n)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "req-gone") {
+		t.Errorf("expected WARN log naming req-gone, got: %s", out)
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if len(h.pending) != 0 {
+		t.Errorf("pending = %d, want 0 (row skipped)", len(h.pending))
+	}
+}
+
+func TestGitHubHandler_Rehydrate_OwnershipAndExpiry(t *testing.T) {
+	store := newMockPendingStore()
+	future := time.Now().Add(time.Hour)
+	for _, r := range []*memory.PendingApproval{
+		{ID: "slack-row", PreferredChannel: "slack", Metadata: map[string]interface{}{"pr_number": 1}, ExpiresAt: future},
+		{ID: "legacy-row", PreferredChannel: "", Metadata: map[string]interface{}{"pr_number": 2}, ExpiresAt: future},
+		{ID: "expired-row", PreferredChannel: "github", Metadata: map[string]interface{}{"pr_number": 3}, ExpiresAt: time.Now().Add(-time.Minute)},
+	} {
+		r.Stage = string(StagePreMerge)
+		if err := store.InsertPendingApproval(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	client := &mockGitHubReviewClient{hasApproval: true}
+	h := newStoreHandler(client, store, &mockDecisionRecorder{})
+	if err := h.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("Rehydrate: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	if calls := client.recordedCalls(); len(calls) != 0 {
+		t.Errorf("GitHub called for rows this handler does not own / expired: %v", calls)
+	}
+	if store.get("slack-row") == nil || store.get("legacy-row") == nil {
+		t.Error("handler deleted a row owned by another channel")
+	}
+	if store.get("expired-row") != nil {
+		t.Error("expired owned row was not deleted")
+	}
+}
+
+func TestGitHubHandler_Rehydrate_NoStore(t *testing.T) {
+	h := newStoreHandler(&mockGitHubReviewClient{}, nil, nil)
+	if err := h.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("Rehydrate without store: %v", err)
+	}
+}
+
+func TestGitHubHandler_DeletesPersistedRowOnCancelWebhookAndExpiry(t *testing.T) {
+	ctx := context.Background()
+	store := newMockPendingStore()
+	h := newStoreHandler(&mockGitHubReviewClient{}, store, &mockDecisionRecorder{})
+
+	for _, id := range []string{"cancel", "approve", "reject", "expire"} {
+		if _, err := h.SendApprovalRequest(ctx, githubReviewRequest(id, "/work/repo-a", map[string]int{"cancel": 1, "approve": 2, "reject": 3, "expire": 4}[id])); err != nil {
+			t.Fatalf("send %s: %v", id, err)
+		}
+	}
+	if store.len() != 4 {
+		t.Fatalf("store has %d rows, want 4", store.len())
+	}
+
+	if err := h.CancelRequest(ctx, "cancel"); err != nil {
+		t.Fatal(err)
+	}
+	if store.get("cancel") != nil {
+		t.Error("row not deleted on cancel")
+	}
+
+	if !h.HandleReviewEvent(ctx, "OrgA", "RepoA", 2, "submitted", "approved", "carol") {
+		t.Fatal("approve event not handled")
+	}
+	if store.get("approve") != nil {
+		t.Error("row not deleted on webhook approval")
+	}
+
+	if !h.HandleChangesRequestedEvent(ctx, "OrgA", "RepoA", 3, "dave") {
+		t.Fatal("changes-requested event not handled")
+	}
+	if store.get("reject") != nil {
+		t.Error("row not deleted on changes requested")
+	}
+
+	h.mu.Lock()
+	h.pending["expire"].Request.ExpiresAt = time.Now().Add(-time.Minute)
+	h.mu.Unlock()
+	n, err := h.PruneExpired(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("PruneExpired = %d, %v; want 1, nil", n, err)
+	}
+	if store.get("expire") != nil {
+		t.Error("row not deleted on expiry")
+	}
+}
+
+func TestGitHubHandler_PruneExpired_SweepsOrphanedAliasRows(t *testing.T) {
+	store := newMockPendingStore()
+	if err := store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "orphan", Stage: string(StagePreMerge), PreferredChannel: githubReviewAlias,
+		ExpiresAt: time.Now().Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := newStoreHandler(&mockGitHubReviewClient{}, store, nil)
+	if _, err := h.PruneExpired(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.get("orphan") != nil {
+		t.Error("expired github-review row (raw alias) was not swept")
 	}
 }
