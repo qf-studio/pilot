@@ -352,6 +352,13 @@ orchestrator:
     # Default 5m.
     stage_timeout: 5m
     approval_source: "telegram"   # telegram, slack, or github-review
+    # GH-5759: opt-in PR lifecycle notices (PR merged, CI failed, approval
+    # required, fix issue created, released) sent to the Telegram adapter's
+    # chat_id / message_thread_id. Default false — enabling it adds new Telegram
+    # traffic. Requires adapters.telegram.enabled, bot_token and chat_id;
+    # otherwise startup logs one WARN naming the missing setting. The released
+    # notice also needs release.notify_on_release (default true).
+    lifecycle_notifications: false
 
     # GH-4391: shared GitHub rate-limit budget. The GitHub primary rate limit
     # is pooled per authenticated user across every client/session that user

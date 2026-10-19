@@ -126,6 +126,11 @@ type Config struct {
 	AutoMerge bool `yaml:"auto_merge"`
 	// MergeMethod specifies how to merge PRs: merge, squash, or rebase.
 	MergeMethod string `yaml:"merge_method"`
+	// LifecycleNotifications opts in to PR lifecycle notices (merged, CI failed,
+	// approval required, fix issue created, released) over the Telegram adapter
+	// (GH-5759). Default false: turning on new Telegram traffic for every
+	// existing user on upgrade would be a behavior change.
+	LifecycleNotifications bool `yaml:"lifecycle_notifications"`
 
 	// CI Monitoring
 	// CIWaitTimeout is the maximum time to wait for CI to complete.

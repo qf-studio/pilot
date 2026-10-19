@@ -2895,3 +2895,42 @@ func TestLoadExampleConfigChatStanza(t *testing.T) {
 		}
 	}
 }
+
+// GH-5759: orchestrator.autopilot.lifecycle_notifications is opt-in — absent
+// means false, and an explicit true is parsed.
+func TestLoad_AutopilotLifecycleNotifications(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{"absent", "version: \"1.0\"\norchestrator:\n  autopilot:\n    enabled: true\n", false},
+		{"explicit false", "version: \"1.0\"\norchestrator:\n  autopilot:\n    enabled: true\n    lifecycle_notifications: false\n", false},
+		{"explicit true", "version: \"1.0\"\norchestrator:\n  autopilot:\n    enabled: true\n    lifecycle_notifications: true\n", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.Orchestrator == nil || cfg.Orchestrator.Autopilot == nil {
+				t.Fatal("Orchestrator.Autopilot is nil")
+			}
+			if got := cfg.Orchestrator.Autopilot.LifecycleNotifications; got != tt.want {
+				t.Errorf("LifecycleNotifications = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultConfig_AutopilotLifecycleNotificationsOff(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Orchestrator != nil && cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.LifecycleNotifications {
+		t.Error("LifecycleNotifications must default to false")
+	}
+}

@@ -1348,6 +1348,11 @@ func (c *Controller) SetNotifier(n Notifier) {
 	c.notifier = n
 }
 
+// HasNotifier reports whether a lifecycle notifier is installed (GH-5759).
+func (c *Controller) HasNotifier() bool {
+	return c.notifier != nil
+}
+
 // SetJiraDoneNotifier wires the merge-side Jira done leg (GH-4987).
 // This is optional; if not set, JIRA-* tasks get no merge-side Jira
 // notification (matching today's behavior for every task source).
