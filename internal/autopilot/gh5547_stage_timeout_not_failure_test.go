@@ -203,3 +203,30 @@ func TestProcessPRWithDeadline_PanicCountedWhenAbandoned(t *testing.T) {
 		t.Fatalf("StagePanics[releasing] = %d, want 1", got)
 	}
 }
+
+// TestProcessPRWithDeadline_CtxHonoringHandlerCountsTimeout is the GH-5771
+// regression: a handler that returns the moment its stage ctx expires leaves
+// its result on done before the loop's post-deadline recheck, which used to
+// swallow the timeout. Every such expiry must be counted, never a subset.
+func TestProcessPRWithDeadline_CtxHonoringHandlerCountsTimeout(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.StageTimeout = 5 * time.Millisecond
+	cfg.ReviewFeedback = nil
+	c := NewController(cfg, github.NewClient(testutil.FakeGitHubToken), nil, "owner", "repo")
+	c.mu.Lock()
+	c.activePRs[1] = &PRState{PRNumber: 1, IssueNumber: 101, BranchName: "pilot/GH-101", HeadSHA: "abc1234", Stage: StageReleasing}
+	c.mu.Unlock()
+	c.processPRFn = func(ctx context.Context, _ int, _ *github.PullRequest) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	const runs = 100
+	for i := 0; i < runs; i++ {
+		c.processPRWithDeadline(context.Background(), &PRState{PRNumber: 1, Stage: StageReleasing})
+		waitStageIdle(t, c, 1)
+	}
+	if got := c.Metrics().Snapshot().StageTimeouts[string(StageReleasing)]; got != runs {
+		t.Fatalf("StageTimeouts[releasing] = %d, want %d — a handler returning on ctx expiry was not counted", got, runs)
+	}
+}

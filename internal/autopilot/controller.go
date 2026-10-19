@@ -10205,6 +10205,11 @@ func (c *Controller) processPRWithDeadline(ctx context.Context, snap *PRState) (
 	type result struct {
 		stop     bool
 		panicked any
+		// expired: the stage deadline had already fired when the handler
+		// returned. Sampled before the send on done, while cancel() has not
+		// yet run (GH-5559 ordering), so it is only true for a real expiry
+		// (or a cancelled parent, which the caller filters out).
+		expired bool
 	}
 	done := make(chan result, 1) // buffered: an abandoned goroutine must never block on send
 	go func() {
@@ -10232,6 +10237,7 @@ func (c *Controller) processPRWithDeadline(ctx context.Context, snap *PRState) (
 			}()
 			res = result{stop: c.processOnePR(stageCtx, snap)}
 		}()
+		res.expired = stageCtx.Err() != nil
 
 		// GH-5554: release the in-flight guard BEFORE signalling done. With the
 		// delete in a defer (running after the send), a caller that received
@@ -10248,7 +10254,24 @@ func (c *Controller) processPRWithDeadline(ctx context.Context, snap *PRState) (
 		done <- res
 	}()
 
+	recordTimeout := func() {
+		c.log.Warn("autopilot stage exceeded deadline, moving on to next PR",
+			"pr", prNumber,
+			"stage", snap.Stage,
+			"elapsed", time.Since(started).Round(time.Millisecond),
+			"stage_timeout", timeout,
+		)
+		c.metrics.RecordStageTimeout(string(snap.Stage))
+	}
+
 	finish := func(r result) bool {
+		// GH-5771: a handler that honors the cancelled stage ctx returns within
+		// microseconds of the deadline, so the loop can find its result already
+		// on done. That is still a stage timeout — the handler ran into its
+		// deadline — and must be counted, not mistaken for a normal finish.
+		if r.expired && ctx.Err() == nil {
+			recordTimeout()
+		}
 		if r.panicked != nil {
 			// Same outcome as before the goroutine split: a handler panic
 			// propagates out of the tick.
@@ -10263,7 +10286,8 @@ func (c *Controller) processPRWithDeadline(ctx context.Context, snap *PRState) (
 	case <-stageCtx.Done():
 	}
 
-	// Deadline and completion can race; prefer a finished result.
+	// Deadline and completion can race; prefer a finished result (finish()
+	// still counts it as a timeout when the handler returned past its deadline).
 	select {
 	case r := <-done:
 		return finish(r)
@@ -10277,13 +10301,7 @@ func (c *Controller) processPRWithDeadline(ctx context.Context, snap *PRState) (
 	run.abandoned = true
 	c.mu.Unlock()
 
-	c.log.Warn("autopilot stage exceeded deadline, moving on to next PR",
-		"pr", prNumber,
-		"stage", snap.Stage,
-		"elapsed", time.Since(started).Round(time.Millisecond),
-		"stage_timeout", timeout,
-	)
-	c.metrics.RecordStageTimeout(string(snap.Stage))
+	recordTimeout()
 	return false
 }
 
