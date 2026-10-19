@@ -2171,6 +2171,28 @@ func TestFindProjectByPath(t *testing.T) {
 	}
 }
 
+func TestFindProjectByCanonicalPath(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	cfg := &Config{Projects: []*ProjectConfig{{Name: "a", Path: link}, {Name: "b", Path: "/tmp/b-missing"}}}
+
+	if p := cfg.FindProjectByCanonicalPath(memory.CanonicalizeProjectPath(link)); p == nil || p.Name != "a" {
+		t.Errorf("symlinked project path should match its canonical form, got %v", p)
+	}
+	if p := cfg.FindProjectByCanonicalPath("/tmp/b-missing"); p == nil || p.Name != "b" {
+		t.Errorf("non-existent path falls back to cleaned form, got %v", p)
+	}
+	if p := cfg.FindProjectByCanonicalPath(""); p != nil {
+		t.Errorf("empty path = %v, want nil", p)
+	}
+	if p := cfg.FindProjectByCanonicalPath("/tmp/other"); p != nil {
+		t.Errorf("unknown path = %v, want nil", p)
+	}
+}
+
 func TestProjectConfigReviewersYAML(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")

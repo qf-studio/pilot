@@ -482,6 +482,22 @@ func (c *Config) FindProjectByPath(path string) *ProjectConfig {
 	return nil
 }
 
+// FindProjectByCanonicalPath returns the ProjectConfig whose Path, canonicalized
+// with memory.CanonicalizeProjectPath, equals canonicalPath (itself expected to
+// be canonicalized, e.g. approval.Request.Project). Returns nil when canonicalPath
+// is empty or nothing matches (GH-5716).
+func (c *Config) FindProjectByCanonicalPath(canonicalPath string) *ProjectConfig {
+	if canonicalPath == "" {
+		return nil
+	}
+	for _, p := range c.Projects {
+		if p.Path != "" && memory.CanonicalizeProjectPath(p.Path) == canonicalPath {
+			return p
+		}
+	}
+	return nil
+}
+
 // DefaultDashboardStatsWindowDays is DashboardConfig.StatsWindowDays' default
 // (GH-4735), exported so callers with a nil *DashboardConfig (or that build
 // gauges/refreshers before config is loaded) can fall back to the same value

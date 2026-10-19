@@ -2,6 +2,8 @@ package approval
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -12,11 +14,31 @@ type mockGitHubReviewClient struct {
 	approver    string
 	err         error
 	callCount   int
+
+	// approvedPRs, when non-nil, overrides hasApproval: a PR is approved only
+	// if its "owner/repo#number" key is present (GH-5716 colliding-number tests).
+	approvedPRs map[string]bool
+
+	mu    sync.Mutex
+	calls []string // "owner/repo#number" per call
 }
 
 func (m *mockGitHubReviewClient) HasApprovalReview(ctx context.Context, owner, repo string, number int) (bool, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.callCount++
+	key := fmt.Sprintf("%s/%s#%d", owner, repo, number)
+	m.calls = append(m.calls, key)
+	if m.approvedPRs != nil {
+		return m.approvedPRs[key], m.approver, m.err
+	}
 	return m.hasApproval, m.approver, m.err
+}
+
+func (m *mockGitHubReviewClient) recordedCalls() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.calls...)
 }
 
 func TestNewGitHubHandler(t *testing.T) {
@@ -232,13 +254,15 @@ func TestGitHubHandler_HandleReviewEvent_Approved(t *testing.T) {
 	_, cancel := context.WithCancel(context.Background())
 	handler.pending["test-webhook"] = &githubPending{
 		Request:    &Request{ID: "test-webhook"},
+		Owner:      "owner",
+		Repo:       "repo",
 		PRNumber:   42,
 		ResponseCh: responseCh,
 		CancelFn:   cancel,
 	}
 
 	// Simulate webhook event
-	handled := handler.HandleReviewEvent(context.Background(), 42, "submitted", "approved", "charlie")
+	handled := handler.HandleReviewEvent(context.Background(), "owner", "repo", 42, "submitted", "approved", "charlie")
 
 	if !handled {
 		t.Error("HandleReviewEvent should return true for matching PR")
@@ -263,7 +287,7 @@ func TestGitHubHandler_HandleReviewEvent_WrongAction(t *testing.T) {
 	}
 
 	// "dismissed" action should not be handled
-	handled := handler.HandleReviewEvent(context.Background(), 42, "dismissed", "approved", "charlie")
+	handled := handler.HandleReviewEvent(context.Background(), "owner", "repo", 42, "dismissed", "approved", "charlie")
 
 	if handled {
 		t.Error("HandleReviewEvent should return false for non-submitted action")
@@ -276,7 +300,7 @@ func TestGitHubHandler_HandleReviewEvent_WrongState(t *testing.T) {
 	}
 
 	// Non-approved state should not be handled
-	handled := handler.HandleReviewEvent(context.Background(), 42, "submitted", "commented", "charlie")
+	handled := handler.HandleReviewEvent(context.Background(), "owner", "repo", 42, "submitted", "commented", "charlie")
 
 	if handled {
 		t.Error("HandleReviewEvent should return false for non-approved state")
@@ -289,7 +313,7 @@ func TestGitHubHandler_HandleReviewEvent_NoPendingRequest(t *testing.T) {
 	}
 
 	// No pending request for PR 42
-	handled := handler.HandleReviewEvent(context.Background(), 42, "submitted", "approved", "charlie")
+	handled := handler.HandleReviewEvent(context.Background(), "owner", "repo", 42, "submitted", "approved", "charlie")
 
 	if handled {
 		t.Error("HandleReviewEvent should return false when no pending request")
@@ -310,13 +334,15 @@ func TestGitHubHandler_HandleChangesRequestedEvent(t *testing.T) {
 	_, cancel := context.WithCancel(context.Background())
 	handler.pending["test-changes"] = &githubPending{
 		Request:    &Request{ID: "test-changes"},
+		Owner:      "owner",
+		Repo:       "repo",
 		PRNumber:   42,
 		ResponseCh: responseCh,
 		CancelFn:   cancel,
 	}
 
 	// Simulate changes requested event
-	handled := handler.HandleChangesRequestedEvent(context.Background(), 42, "reviewer")
+	handled := handler.HandleChangesRequestedEvent(context.Background(), "owner", "repo", 42, "reviewer")
 
 	if !handled {
 		t.Error("HandleChangesRequestedEvent should return true for matching PR")
@@ -340,9 +366,184 @@ func TestGitHubHandler_HandleChangesRequestedEvent_NoPendingRequest(t *testing.T
 		pending: make(map[string]*githubPending),
 	}
 
-	handled := handler.HandleChangesRequestedEvent(context.Background(), 99, "reviewer")
+	handled := handler.HandleChangesRequestedEvent(context.Background(), "owner", "repo", 99, "reviewer")
 
 	if handled {
 		t.Error("HandleChangesRequestedEvent should return false when no pending request")
+	}
+}
+
+// testProjectResolver maps canonical project paths to owner/repo for the
+// per-request repo resolution tests (GH-5716).
+func testProjectResolver(project string) (string, string, bool) {
+	switch project {
+	case "/work/repo-a":
+		return "OrgA", "RepoA", true
+	case "/work/repo-b":
+		return "OrgA", "RepoB", true
+	}
+	return "", "", false
+}
+
+func newProjectHandler(client GitHubReviewClient, resolver func(string) (string, string, bool)) *GitHubHandler {
+	return NewGitHubHandler(client, &GitHubHandlerConfig{
+		Owner:        "OrgA",
+		Repo:         "RepoA",
+		PollInterval: time.Hour,
+		ResolveRepo:  resolver,
+	})
+}
+
+func TestGitHubHandler_SendApprovalRequest_ResolvesRepoPerRequest(t *testing.T) {
+	tests := []struct {
+		name        string
+		project     string
+		resolver    func(string) (string, string, bool)
+		approved    map[string]bool
+		wantCall    string
+		wantErr     bool
+		wantApprove bool
+	}{
+		{
+			name:        "empty project uses default repo",
+			project:     "",
+			resolver:    testProjectResolver,
+			approved:    map[string]bool{"OrgA/RepoA#7": true},
+			wantCall:    "OrgA/RepoA#7",
+			wantApprove: true,
+		},
+		{
+			name:        "project PR resolves to the project's repo",
+			project:     "/work/repo-b",
+			resolver:    testProjectResolver,
+			approved:    map[string]bool{"OrgA/RepoB#7": true},
+			wantCall:    "OrgA/RepoB#7",
+			wantApprove: true,
+		},
+		{
+			name:     "colliding PR number: approved default-repo PR must not approve project PR",
+			project:  "/work/repo-b",
+			resolver: testProjectResolver,
+			approved: map[string]bool{"OrgA/RepoA#7": true},
+			wantCall: "OrgA/RepoB#7",
+		},
+		{
+			name:     "unresolvable project fails closed",
+			project:  "/work/unknown",
+			resolver: testProjectResolver,
+			approved: map[string]bool{"OrgA/RepoA#7": true},
+			wantErr:  true,
+		},
+		{
+			name:     "project set without a resolver fails closed",
+			project:  "/work/repo-b",
+			resolver: nil,
+			approved: map[string]bool{"OrgA/RepoA#7": true},
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &mockGitHubReviewClient{approver: "alice", approvedPRs: tt.approved}
+			handler := newProjectHandler(client, tt.resolver)
+
+			req := &Request{
+				ID:       "req-1",
+				Project:  tt.project,
+				Metadata: map[string]interface{}{"pr_number": 7},
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			ch, err := handler.SendApprovalRequest(ctx, req)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error for unresolvable project")
+				}
+				if got := client.recordedCalls(); len(got) != 0 {
+					t.Errorf("no GitHub query expected on fail-closed, got %v", got)
+				}
+				if len(handler.pending) != 0 {
+					t.Errorf("no pending request expected, got %d", len(handler.pending))
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SendApprovalRequest: %v", err)
+			}
+
+			if tt.wantApprove {
+				select {
+				case resp := <-ch:
+					if resp.Decision != DecisionApproved {
+						t.Errorf("Decision = %s, want approved", resp.Decision)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("timeout waiting for approval")
+				}
+			} else {
+				select {
+				case resp := <-ch:
+					t.Fatalf("request must not resolve, got %+v", resp)
+				case <-time.After(50 * time.Millisecond):
+				}
+			}
+
+			for _, call := range client.recordedCalls() {
+				if call != tt.wantCall {
+					t.Errorf("HasApprovalReview called with %s, want only %s", call, tt.wantCall)
+				}
+			}
+			if len(client.recordedCalls()) == 0 {
+				t.Errorf("expected a query to %s, got none", tt.wantCall)
+			}
+		})
+	}
+}
+
+func TestGitHubHandler_ReviewEvents_MatchOwnerRepoAndNumber(t *testing.T) {
+	events := map[string]func(h *GitHubHandler, owner, repo string) bool{
+		"HandleReviewEvent": func(h *GitHubHandler, owner, repo string) bool {
+			return h.HandleReviewEvent(context.Background(), owner, repo, 7, "submitted", "approved", "carol")
+		},
+		"HandleChangesRequestedEvent": func(h *GitHubHandler, owner, repo string) bool {
+			return h.HandleChangesRequestedEvent(context.Background(), owner, repo, 7, "carol")
+		},
+	}
+	tests := []struct {
+		name        string
+		owner, repo string
+		want        bool
+	}{
+		{"same repo and number resolves", "OrgA", "RepoB", true},
+		{"other repo with colliding number does not resolve", "OrgA", "RepoA", false},
+		{"other owner with colliding number does not resolve", "OrgZ", "RepoB", false},
+	}
+
+	for evName, fire := range events {
+		for _, tt := range tests {
+			t.Run(evName+"/"+tt.name, func(t *testing.T) {
+				handler := newProjectHandler(&mockGitHubReviewClient{}, testProjectResolver)
+				responseCh := make(chan *Response, 1)
+				_, cancel := context.WithCancel(context.Background())
+				handler.pending["req-b7"] = &githubPending{
+					Request:    &Request{ID: "req-b7", Project: "/work/repo-b"},
+					Owner:      "OrgA",
+					Repo:       "RepoB",
+					PRNumber:   7,
+					ResponseCh: responseCh,
+					CancelFn:   cancel,
+				}
+
+				if got := fire(handler, tt.owner, tt.repo); got != tt.want {
+					t.Errorf("handled = %v, want %v", got, tt.want)
+				}
+				_, stillPending := handler.pending["req-b7"]
+				if stillPending == tt.want {
+					t.Errorf("stillPending = %v, want %v", stillPending, !tt.want)
+				}
+			})
+		}
 	}
 }

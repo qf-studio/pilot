@@ -954,6 +954,7 @@ Examples:
 								}
 								ghApprovalHandler := approval.NewGitHubHandler(ghClient, &approval.GitHubHandlerConfig{
 									Owner: parts[0], Repo: parts[1], PollInterval: pollInterval,
+									ResolveRepo: approvalRepoResolver(cfg, projectPath),
 								})
 								approvalMgr.RegisterHandler(ghApprovalHandler)
 							}
@@ -2116,6 +2117,28 @@ func acquireDaemonLock(cfg *config.Config, replace bool) (*singleton.Lock, error
 // desktop app (and any other client hitting /health) can reach the daemon.
 // bootReconcile carries the GH-3600 upgrade verification outcome for the
 // dashboard to surface; may be nil.
+// approvalRepoResolver builds the GitHubHandlerConfig.ResolveRepo callback
+// (GH-5716): it maps approval.Request.Project (memory.CanonicalizeProjectPath of
+// the controller's project path) to the GitHub owner/repo that project's PRs
+// live in. A projects: entry with a github block wins; the daemon's own project
+// path resolves to the default adapters.github.repo. Anything else is
+// unresolvable and the handler fails closed rather than polling the default repo.
+func approvalRepoResolver(cfg *config.Config, defaultProjectPath string) func(project string) (string, string, bool) {
+	defaultCanonical := memory.CanonicalizeProjectPath(defaultProjectPath)
+	return func(project string) (string, string, bool) {
+		if proj := cfg.FindProjectByCanonicalPath(project); proj != nil && proj.GitHub != nil &&
+			proj.GitHub.Owner != "" && proj.GitHub.Repo != "" {
+			return proj.GitHub.Owner, proj.GitHub.Repo, true
+		}
+		if project == defaultCanonical && cfg.Adapters != nil && cfg.Adapters.GitHub != nil {
+			if parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2); len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+				return parts[0], parts[1], true
+			}
+		}
+		return "", "", false
+	}
+}
+
 func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, replace, dashboardMode, noGateway, allowArchived bool, bootReconcile *upgrade.BootReconcileResult) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -2419,6 +2442,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 						}
 						ghApprovalHandler := approval.NewGitHubHandler(ghClient, &approval.GitHubHandlerConfig{
 							Owner: parts[0], Repo: parts[1], PollInterval: pollInterval,
+							ResolveRepo: approvalRepoResolver(cfg, projectPath),
 						})
 						approvalMgr.RegisterHandler(ghApprovalHandler)
 						logging.WithComponent("start").Info("registered GitHub approval handler",

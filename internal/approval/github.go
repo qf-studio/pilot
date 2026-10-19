@@ -20,6 +20,7 @@ type GitHubHandler struct {
 	client       GitHubReviewClient
 	owner        string
 	repo         string
+	resolveRepo  func(project string) (owner, repo string, ok bool)
 	pollInterval time.Duration
 	pending      map[string]*githubPending // requestID -> pending state
 	mu           sync.RWMutex
@@ -29,6 +30,8 @@ type GitHubHandler struct {
 // githubPending tracks a pending GitHub approval request
 type githubPending struct {
 	Request    *Request
+	Owner      string // repo the PR lives in (resolved per request)
+	Repo       string
 	PRNumber   int
 	ResponseCh chan *Response
 	CancelFn   context.CancelFunc
@@ -39,6 +42,12 @@ type GitHubHandlerConfig struct {
 	Owner        string
 	Repo         string
 	PollInterval time.Duration // How often to check for reviews (default: 30s)
+
+	// ResolveRepo maps Request.Project (the canonicalized project path) to the
+	// GitHub owner/repo the project's PRs live in (GH-5716). Optional: when nil,
+	// every request with a non-empty Project fails closed. A request with an
+	// empty Project always uses the handler's default Owner/Repo.
+	ResolveRepo func(project string) (owner, repo string, ok bool)
 }
 
 // NewGitHubHandler creates a new GitHub PR review approval handler
@@ -52,6 +61,7 @@ func NewGitHubHandler(client GitHubReviewClient, cfg *GitHubHandlerConfig) *GitH
 		client:       client,
 		owner:        cfg.Owner,
 		repo:         cfg.Repo,
+		resolveRepo:  cfg.ResolveRepo,
 		pollInterval: pollInterval,
 		pending:      make(map[string]*githubPending),
 		log:          logging.WithComponent("approval.github"),
@@ -78,6 +88,20 @@ func (h *GitHubHandler) SendApprovalRequest(ctx context.Context, req *Request) (
 		}
 	}
 
+	// Decision: resolve the repo per request and fail closed. Falling back to the
+	// default repo for an unresolvable project would check the wrong repo's PR
+	// with the same number and could resolve the gate as approved (GH-5716).
+	owner, repo := h.owner, h.repo
+	if req.Project != "" {
+		var ok bool
+		if h.resolveRepo != nil {
+			owner, repo, ok = h.resolveRepo(req.Project)
+		}
+		if !ok || owner == "" || repo == "" {
+			return nil, fmt.Errorf("cannot resolve GitHub repo for approval project %q: refusing to check reviews against the default repo", req.Project)
+		}
+	}
+
 	// Create cancellable context for polling
 	pollCtx, cancelFn := context.WithCancel(ctx)
 
@@ -85,6 +109,8 @@ func (h *GitHubHandler) SendApprovalRequest(ctx context.Context, req *Request) (
 	h.mu.Lock()
 	h.pending[req.ID] = &githubPending{
 		Request:    req,
+		Owner:      owner,
+		Repo:       repo,
 		PRNumber:   prNumber,
 		ResponseCh: responseCh,
 		CancelFn:   cancelFn,
@@ -93,6 +119,7 @@ func (h *GitHubHandler) SendApprovalRequest(ctx context.Context, req *Request) (
 
 	h.log.Info("Waiting for GitHub PR approval",
 		slog.String("request_id", req.ID),
+		slog.String("repo", owner+"/"+repo),
 		slog.Int("pr_number", prNumber),
 		slog.Duration("poll_interval", h.pollInterval))
 
@@ -136,10 +163,11 @@ func (h *GitHubHandler) checkApproval(ctx context.Context, requestID string) boo
 		return true // Request was cancelled/removed
 	}
 
-	approved, approver, err := h.client.HasApprovalReview(ctx, h.owner, h.repo, pending.PRNumber)
+	approved, approver, err := h.client.HasApprovalReview(ctx, pending.Owner, pending.Repo, pending.PRNumber)
 	if err != nil {
 		h.log.Warn("Failed to check PR reviews",
 			slog.String("request_id", requestID),
+			slog.String("repo", pending.Owner+"/"+pending.Repo),
 			slog.Int("pr_number", pending.PRNumber),
 			slog.Any("error", err))
 		return false
@@ -203,18 +231,18 @@ func (h *GitHubHandler) CancelRequest(ctx context.Context, requestID string) err
 
 // HandleReviewEvent handles a GitHub pull_request_review webhook event
 // This provides instant response instead of waiting for poll
-func (h *GitHubHandler) HandleReviewEvent(ctx context.Context, prNumber int, action, state, reviewer string) bool {
+func (h *GitHubHandler) HandleReviewEvent(ctx context.Context, owner, repo string, prNumber int, action, state, reviewer string) bool {
 	// Only process submitted reviews that are approvals
 	if action != "submitted" || state != "approved" {
 		return false
 	}
 
-	// Find pending request for this PR
+	// Find pending request for this PR (owner/repo + number: PR numbers collide across repos)
 	h.mu.Lock()
 	var foundID string
 	var foundPending *githubPending
 	for id, pending := range h.pending {
-		if pending.PRNumber == prNumber {
+		if pending.PRNumber == prNumber && pending.Owner == owner && pending.Repo == repo {
 			foundID = id
 			foundPending = pending
 			delete(h.pending, id)
@@ -229,6 +257,7 @@ func (h *GitHubHandler) HandleReviewEvent(ctx context.Context, prNumber int, act
 
 	h.log.Info("PR approved via webhook",
 		slog.String("request_id", foundID),
+		slog.String("repo", owner+"/"+repo),
 		slog.Int("pr_number", prNumber),
 		slog.String("reviewer", reviewer))
 
@@ -254,13 +283,13 @@ func (h *GitHubHandler) HandleReviewEvent(ctx context.Context, prNumber int, act
 
 // HandleChangesRequestedEvent handles when changes are requested on a PR
 // This rejects the approval request
-func (h *GitHubHandler) HandleChangesRequestedEvent(ctx context.Context, prNumber int, reviewer string) bool {
-	// Find pending request for this PR
+func (h *GitHubHandler) HandleChangesRequestedEvent(ctx context.Context, owner, repo string, prNumber int, reviewer string) bool {
+	// Find pending request for this PR (owner/repo + number: PR numbers collide across repos)
 	h.mu.Lock()
 	var foundID string
 	var foundPending *githubPending
 	for id, pending := range h.pending {
-		if pending.PRNumber == prNumber {
+		if pending.PRNumber == prNumber && pending.Owner == owner && pending.Repo == repo {
 			foundID = id
 			foundPending = pending
 			delete(h.pending, id)
@@ -275,6 +304,7 @@ func (h *GitHubHandler) HandleChangesRequestedEvent(ctx context.Context, prNumbe
 
 	h.log.Info("PR changes requested via webhook",
 		slog.String("request_id", foundID),
+		slog.String("repo", owner+"/"+repo),
 		slog.Int("pr_number", prNumber),
 		slog.String("reviewer", reviewer))
 
