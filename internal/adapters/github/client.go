@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -1090,26 +1091,54 @@ func (c *Client) ListPullRequestFiles(ctx context.Context, owner, repo string, n
 	return result, nil
 }
 
-// HasApprovalReview checks if a PR has at least one approval review.
+// HasApprovalReview reports whether an open PR carries a current approval.
 // Returns (hasApproval, approverLogin, error).
-// Only considers the latest review from each user.
+//
+// Only the latest review from each user is considered, and it counts only when
+// it is APPROVED on the PR's current head SHA. A PR that is not open never
+// resolves, and an approval submitted on an older commit (head moved since) is
+// ignored: it covers code the reviewer never saw.
 func (c *Client) HasApprovalReview(ctx context.Context, owner, repo string, number int) (bool, string, error) {
+	pr, err := c.GetPullRequest(ctx, owner, repo, number)
+	if err != nil {
+		return false, "", err
+	}
+	if pr.State != "open" {
+		slog.Info("ignoring approval: PR is not open",
+			slog.String("owner", owner), slog.String("repo", repo), slog.Int("number", number),
+			slog.String("state", pr.State), slog.String("head_sha", pr.Head.SHA))
+		return false, "", nil
+	}
+
 	reviews, err := c.ListPullRequestReviews(ctx, owner, repo, number)
 	if err != nil {
 		return false, "", err
 	}
 
-	// Track latest review state per user
-	latestReviews := make(map[string]string) // user login -> state
+	// Track latest review per user, preserving first-seen order so the
+	// returned approver is deterministic.
+	latestReviews := make(map[string]*PullRequestReview)
+	var logins []string
 	for _, review := range reviews {
-		latestReviews[review.User.Login] = review.State
+		if _, seen := latestReviews[review.User.Login]; !seen {
+			logins = append(logins, review.User.Login)
+		}
+		latestReviews[review.User.Login] = review
 	}
 
-	// Check if any user's latest review is APPROVED
-	for login, state := range latestReviews {
-		if state == ReviewStateApproved {
-			return true, login, nil
+	for _, login := range logins {
+		review := latestReviews[login]
+		if review.State != ReviewStateApproved {
+			continue
 		}
+		if review.CommitID != pr.Head.SHA {
+			slog.Info("ignoring stale approval: head moved since review",
+				slog.String("owner", owner), slog.String("repo", repo), slog.Int("number", number),
+				slog.String("approver", login),
+				slog.String("review_commit_id", review.CommitID), slog.String("head_sha", pr.Head.SHA))
+			continue
+		}
+		return true, login, nil
 	}
 
 	return false, "", nil

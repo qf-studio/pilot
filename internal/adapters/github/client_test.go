@@ -1864,88 +1864,125 @@ func TestListPullRequestReviews(t *testing.T) {
 }
 
 func TestHasApprovalReview(t *testing.T) {
+	const headSHA = "headsha111"
+	const oldSHA = "oldsha000"
+
+	rev := func(id int64, login, state, sha string) *PullRequestReview {
+		return &PullRequestReview{ID: id, User: User{Login: login}, State: state, CommitID: sha}
+	}
+
 	tests := []struct {
 		name         string
-		statusCode   int
-		response     interface{}
+		prState      string
+		prMerged     bool
+		prStatus     int
+		reviews      []*PullRequestReview
+		reviewStatus int
 		wantApproved bool
 		wantApprover string
 		wantErr      bool
 	}{
 		{
-			name:       "approved - single review",
-			statusCode: http.StatusOK,
-			response: []*PullRequestReview{
-				{ID: 1, User: User{Login: "alice"}, State: ReviewStateApproved},
-			},
+			name:         "open PR approved on head SHA",
+			prState:      "open",
+			reviews:      []*PullRequestReview{rev(1, "alice", ReviewStateApproved, headSHA)},
 			wantApproved: true,
 			wantApprover: "alice",
-			wantErr:      false,
 		},
 		{
-			name:       "approved - multiple reviews from same user, latest is approval",
-			statusCode: http.StatusOK,
-			response: []*PullRequestReview{
-				{ID: 1, User: User{Login: "alice"}, State: ReviewStateChangesRequested},
-				{ID: 2, User: User{Login: "alice"}, State: ReviewStateApproved},
-			},
+			name:         "latest review from same user is approval on head",
+			prState:      "open",
+			reviews:      []*PullRequestReview{rev(1, "alice", ReviewStateChangesRequested, oldSHA), rev(2, "alice", ReviewStateApproved, headSHA)},
 			wantApproved: true,
 			wantApprover: "alice",
-			wantErr:      false,
 		},
 		{
-			name:       "not approved - changes requested after approval",
-			statusCode: http.StatusOK,
-			response: []*PullRequestReview{
-				{ID: 1, User: User{Login: "alice"}, State: ReviewStateApproved},
-				{ID: 2, User: User{Login: "alice"}, State: ReviewStateChangesRequested},
-			},
+			name:         "stale approval - head moved",
+			prState:      "open",
+			reviews:      []*PullRequestReview{rev(1, "alice", ReviewStateApproved, oldSHA)},
 			wantApproved: false,
-			wantApprover: "",
-			wantErr:      false,
 		},
 		{
-			name:       "approved - one approves, one requests changes",
-			statusCode: http.StatusOK,
-			response: []*PullRequestReview{
-				{ID: 1, User: User{Login: "alice"}, State: ReviewStateApproved},
-				{ID: 2, User: User{Login: "bob"}, State: ReviewStateChangesRequested},
-			},
+			name:         "closed PR approved on head SHA",
+			prState:      "closed",
+			reviews:      []*PullRequestReview{rev(1, "alice", ReviewStateApproved, headSHA)},
+			wantApproved: false,
+		},
+		{
+			name:         "merged PR approved on head SHA",
+			prState:      "closed", // GitHub reports merged PRs as state=closed, merged=true
+			prMerged:     true,
+			reviews:      []*PullRequestReview{rev(1, "alice", ReviewStateApproved, headSHA)},
+			wantApproved: false,
+		},
+		{
+			name:         "changes requested after approval",
+			prState:      "open",
+			reviews:      []*PullRequestReview{rev(1, "alice", ReviewStateApproved, headSHA), rev(2, "alice", ReviewStateChangesRequested, headSHA)},
+			wantApproved: false,
+		},
+		{
+			name:         "two users - stale approval and current approval",
+			prState:      "open",
+			reviews:      []*PullRequestReview{rev(1, "alice", ReviewStateApproved, oldSHA), rev(2, "bob", ReviewStateApproved, headSHA)},
+			wantApproved: true,
+			wantApprover: "bob",
+		},
+		{
+			name:         "one approves, one requests changes",
+			prState:      "open",
+			reviews:      []*PullRequestReview{rev(1, "alice", ReviewStateApproved, headSHA), rev(2, "bob", ReviewStateChangesRequested, headSHA)},
 			wantApproved: true,
 			wantApprover: "alice",
-			wantErr:      false,
 		},
 		{
-			name:       "not approved - only comments",
-			statusCode: http.StatusOK,
-			response: []*PullRequestReview{
-				{ID: 1, User: User{Login: "alice"}, State: ReviewStateCommented},
-			},
+			name:         "only comments",
+			prState:      "open",
+			reviews:      []*PullRequestReview{rev(1, "alice", ReviewStateCommented, headSHA)},
 			wantApproved: false,
-			wantApprover: "",
-			wantErr:      false,
 		},
 		{
-			name:         "not approved - no reviews",
-			statusCode:   http.StatusOK,
-			response:     []*PullRequestReview{},
+			name:         "no reviews",
+			prState:      "open",
+			reviews:      []*PullRequestReview{},
 			wantApproved: false,
-			wantApprover: "",
-			wantErr:      false,
 		},
 		{
-			name:       "error - not found",
-			statusCode: http.StatusNotFound,
-			response:   map[string]string{"message": "Not Found"},
-			wantErr:    true,
+			name:     "GetPullRequest error propagates",
+			prStatus: http.StatusNotFound,
+			reviews:  []*PullRequestReview{rev(1, "alice", ReviewStateApproved, headSHA)},
+			wantErr:  true,
+		},
+		{
+			name:         "ListPullRequestReviews error propagates",
+			prState:      "open",
+			reviewStatus: http.StatusNotFound,
+			wantErr:      true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(tt.statusCode)
-				_ = json.NewEncoder(w).Encode(tt.response)
+				switch r.URL.Path {
+				case "/repos/owner/repo/pulls/42":
+					if tt.prStatus != 0 {
+						w.WriteHeader(tt.prStatus)
+						_ = json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+						return
+					}
+					_ = json.NewEncoder(w).Encode(&PullRequest{Number: 42, State: tt.prState, Merged: tt.prMerged, Head: PRRef{Ref: "pilot/GH-1", SHA: headSHA}})
+				case "/repos/owner/repo/pulls/42/reviews":
+					if tt.reviewStatus != 0 {
+						w.WriteHeader(tt.reviewStatus)
+						_ = json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+						return
+					}
+					_ = json.NewEncoder(w).Encode(tt.reviews)
+				default:
+					t.Errorf("unexpected request path %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
 			}))
 			defer server.Close()
 
@@ -1953,16 +1990,19 @@ func TestHasApprovalReview(t *testing.T) {
 			approved, approver, err := client.HasApprovalReview(context.Background(), "owner", "repo", 42)
 
 			if (err != nil) != tt.wantErr {
-				t.Errorf("HasApprovalReview() error = %v, wantErr %v", err, tt.wantErr)
+				t.Fatalf("HasApprovalReview() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				if approved || approver != "" {
+					t.Errorf("HasApprovalReview() on error = (%v, %q), want (false, \"\")", approved, approver)
+				}
 				return
 			}
-			if !tt.wantErr {
-				if approved != tt.wantApproved {
-					t.Errorf("HasApprovalReview() approved = %v, want %v", approved, tt.wantApproved)
-				}
-				if approved && approver != tt.wantApprover {
-					t.Errorf("HasApprovalReview() approver = %s, want %s", approver, tt.wantApprover)
-				}
+			if approved != tt.wantApproved {
+				t.Errorf("HasApprovalReview() approved = %v, want %v", approved, tt.wantApproved)
+			}
+			if approver != tt.wantApprover {
+				t.Errorf("HasApprovalReview() approver = %q, want %q", approver, tt.wantApprover)
 			}
 		})
 	}

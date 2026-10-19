@@ -2112,11 +2112,6 @@ func acquireDaemonLock(cfg *config.Config, replace bool) (*singleton.Lock, error
 	return nil, fmt.Errorf("timeout waiting for existing pilot daemon (pid %d) to release lock", held.PID)
 }
 
-// runPollingMode runs lightweight polling-only mode.
-// When noGateway is false, the HTTP gateway starts in the background so the
-// desktop app (and any other client hitting /health) can reach the daemon.
-// bootReconcile carries the GH-3600 upgrade verification outcome for the
-// dashboard to surface; may be nil.
 // approvalRepoResolver builds the GitHubHandlerConfig.ResolveRepo callback
 // (GH-5716): it maps approval.Request.Project (memory.CanonicalizeProjectPath of
 // the controller's project path) to the GitHub owner/repo that project's PRs
@@ -2139,6 +2134,11 @@ func approvalRepoResolver(cfg *config.Config, defaultProjectPath string) func(pr
 	}
 }
 
+// runPollingMode runs lightweight polling-only mode.
+// When noGateway is false, the HTTP gateway starts in the background so the
+// desktop app (and any other client hitting /health) can reach the daemon.
+// bootReconcile carries the GH-3600 upgrade verification outcome for the
+// dashboard to surface; may be nil.
 func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, replace, dashboardMode, noGateway, allowArchived bool, bootReconcile *upgrade.BootReconcileResult) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

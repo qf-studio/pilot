@@ -361,7 +361,8 @@ type PullRequestReview struct {
 	ID          int64  `json:"id"`
 	User        User   `json:"user"`
 	Body        string `json:"body,omitempty"`
-	State       string `json:"state"` // APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING
+	State       string `json:"state"`               // APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING
+	CommitID    string `json:"commit_id,omitempty"` // SHA of the commit the review was submitted on
 	HTMLURL     string `json:"html_url,omitempty"`
 	SubmittedAt string `json:"submitted_at,omitempty"`
 }
