@@ -59,7 +59,19 @@ var permanentFailurePatterns = []string{
 	// Classify terminal so the dispatcher escalates to a human with the
 	// preserved sha/branch instead of burning a retry generation.
 	autoPreservedFailureMarker,
+	// GH-5762: a push rejected as non-fast-forward against a remote head this
+	// run did not push is deterministic — a re-pick starts from origin/main
+	// and never fetches origin/<branch>, so it hits the identical rejection
+	// (observed 6× on GH-5756, each run ~15 min). Terminal so the dispatcher
+	// escalates with the remote SHA and recovery ref instead of burning up to
+	// dispatcherInfraRepickCap runs.
+	nonFastForwardTaskBranchMarker,
 }
+
+// nonFastForwardTaskBranchMarker is the phrase pushBranchWithRetry embeds in
+// the error of a non-fast-forward rejection against a remote head the run did
+// not push. IsPermanentFailure and TerminalStatus key off it (GH-5762).
+const nonFastForwardTaskBranchMarker = "non-fast-forward against task branch"
 
 // autoPreservedFailureMarker is the substring shared by both GH-4517
 // auto-preserve error producers — git_freshness.go's
@@ -515,6 +527,12 @@ func TerminalStatus(result *ExecutionResult) string {
 		// scanned for the non-failure signatures below (GH-5622).
 		return "failed"
 	}
+	// GH-5762: the error still reads "push failed" (an infra signature), but a
+	// non-fast-forward against the task branch is deterministic, not infra: the
+	// dispatcher must see "failed" so it escalates instead of re-picking.
+	if strings.Contains(result.Error, nonFastForwardTaskBranchMarker) {
+		return "failed"
+	}
 	for _, c := range outcomeClassifiers {
 		if containsAny(result.Error, c.signatures) {
 			return c.status
@@ -742,6 +760,14 @@ type Task struct {
 	// fix branch silently rebuilt from main, discarding the original diff
 	// (pilot-console #275 incident).
 	FixFromSHA string
+	// pushedWIPSHA is the commit SHA this run itself pushed to origin/<Branch>
+	// through the GH-4517 auto-preserve backstop (GH-5762). Later steps
+	// (adoption, self-review, co-author strip) may rewrite the branch, so the
+	// final push is then a non-fast-forward against Pilot's own earlier push;
+	// pushBranchWithRetry may lease against exactly this SHA and no other.
+	// Unexported and run-scoped: never persisted, never set for a SHA Pilot did
+	// not push.
+	pushedWIPSHA string
 	// SourceAdapter identifies the adapter that originated this task (GH-1471).
 	// Examples: "github", "linear", "jira", "gitlab", "azuredevops"
 	// When non-empty and not "github", epic sub-issue creation uses the SubIssueCreator
@@ -3254,6 +3280,13 @@ func isNonFastForwardPush(err error) bool {
 // branch, so it can never fast-forward: when the rejection is non-fast-forward
 // and origin still sits on the footer SHA, it is pushed once more with a lease
 // on that SHA. If origin is anywhere else the push is not forced.
+//
+// GH-5762: a run that auto-preserved its dirty worktree pushed that wip commit
+// itself (task.pushedWIPSHA); if later steps rewrote the branch, origin's head
+// is that SHA and the push is retried once with a lease on it. A non-fast-forward
+// against any other remote head fails with nonFastForwardTaskBranchMarker, which
+// the dispatcher treats as deterministic (a re-pick from origin/main cannot
+// fast-forward it) and escalates instead of re-picking.
 func (r *Runner) pushBranchWithRetry(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger) error {
 	var pushErr error
 	for attempt := 1; attempt <= gitPushRetryAttempts; attempt++ {
@@ -3278,14 +3311,45 @@ func (r *Runner) pushBranchWithRetry(ctx context.Context, git *GitOperations, ta
 			if task.FromPR > 0 && task.FixFromSHA != "" {
 				return r.leasePushFixContinuation(ctx, git, task, log, pushErr, localHead, remoteHead, remoteOK)
 			}
-			log.Warn("Push rejected as non-fast-forward, not retrying",
+			// GH-5762: origin sits on the auto-preserve commit this run pushed
+			// and later steps rewrote the branch. Lease on that SHA only.
+			if remoteOK && task.pushedWIPSHA != "" && remoteHead == task.pushedWIPSHA {
+				log.Warn("Push rejected as non-fast-forward against this run's own auto-preserve push — retrying with lease (option: lease)",
+					slog.String("task_id", task.ID),
+					slog.String("branch", task.Branch),
+					slog.String("remote_head", remoteHead),
+					slog.String("local_head", localHead),
+				)
+				if leaseErr := git.PushForceWithLease(ctx, task.Branch, task.pushedWIPSHA, task.ID); leaseErr != nil {
+					return leaseErr
+				}
+				task.pushedWIPSHA = localHead
+				return nil
+			}
+			// Deterministic: re-running from origin/main cannot fast-forward a
+			// remote head this run did not push, so escalate instead of re-picking.
+			if !remoteOK {
+				// Origin could not be queried, so the remote head is unknown;
+				// keep the plain (infra) error rather than claim determinism.
+				log.Warn("Push rejected as non-fast-forward, remote head unknown — not retrying",
+					slog.String("task_id", task.ID),
+					slog.String("branch", task.Branch),
+					slog.String("local_head", localHead),
+					slog.Any("error", pushErr),
+				)
+				return pushErr
+			}
+			log.Warn("Push rejected as non-fast-forward against a SHA this run did not push — not retrying, escalating (option: escalate)",
 				slog.String("task_id", task.ID),
 				slog.String("branch", task.Branch),
 				slog.String("remote_head", remoteHead),
 				slog.String("local_head", localHead),
 				slog.Any("error", pushErr),
 			)
-			return pushErr
+			// The SHA line goes first: PushFailureReason surfaces the first line
+			// that mentions "rejected".
+			return fmt.Errorf("push rejected, %s %s: remote head %s is not a SHA this run pushed (local HEAD %s); re-running from origin/main cannot fast-forward it\n%w",
+				nonFastForwardTaskBranchMarker, task.Branch, remoteHead, localHead, pushErr)
 		}
 		if attempt < gitPushRetryAttempts {
 			log.Warn("Push failed, retrying",

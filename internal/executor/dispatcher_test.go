@@ -4618,6 +4618,16 @@ func TestDispatcher_BeginWithGenerationRetry_DeterministicAndTransientFailures(t
 			wantAlertCount: 1,
 			wantReasonHas:  "deterministic failure",
 		},
+		// GH-5762: a push rejected non-fast-forward against a remote head the
+		// run did not push is deterministic — a re-pick from origin/main hits
+		// the identical rejection. It must escalate on the first retry.
+		{
+			name:           "non-fast-forward against task branch is not re-picked",
+			priorError:     "push failed after 3 attempt(s): push rejected, " + nonFastForwardTaskBranchMarker + " pilot/GH-5756: remote head 3d1fb36 is not a SHA this run pushed (local HEAD 67b1ffd); re-running from origin/main cannot fast-forward it — recovery: branch=pilot/GH-5756 sha=67b1ffd recovery_ref=refs/pilot-recovery/GH-5756",
+			wantRePicked:   false,
+			wantAlertCount: 1,
+			wantReasonHas:  "3d1fb36",
+		},
 		{
 			name:           "transient failure IS re-picked",
 			priorError:     "connection reset by peer while cloning repo",

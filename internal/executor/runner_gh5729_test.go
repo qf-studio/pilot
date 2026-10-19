@@ -136,8 +136,10 @@ func TestPushRejectedNonFastForward_NotSwallowed(t *testing.T) {
 	if result.PRUrl != "" {
 		t.Errorf("PRUrl = %q, want no PR adoption", result.PRUrl)
 	}
-	if !strings.Contains(result.Error, "[rejected]") {
-		t.Errorf("Error = %q, want the git rejection in it", result.Error)
+	// GH-5762: the rejection is reported as the deterministic non-fast-forward
+	// escalation, naming the remote head, rather than git's raw stderr line.
+	if !strings.Contains(result.Error, nonFastForwardTaskBranchMarker) || !strings.Contains(result.Error, s.remoteHead) {
+		t.Errorf("Error = %q, want the non-fast-forward escalation naming %s", result.Error, s.remoteHead)
 	}
 	if got := s.pushes(t); len(got) != 1 {
 		t.Errorf("push invocations = %d (%q), want 1: a non-fast-forward rejection is not retried", len(got), got)

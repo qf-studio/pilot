@@ -139,6 +139,9 @@ func preserveDirtyWorktreeAsWIP(ctx context.Context, git *GitOperations, task *T
 		log.Warn("executor: dirty-worktree auto-preserve push failed — commit pinned via recovery ref", fields...)
 		return newSHA, true
 	}
+	// GH-5762: remember what this run put on origin, so a later rewrite of the
+	// branch can lease against exactly this SHA instead of failing on its own push.
+	task.pushedWIPSHA = newSHA
 	log.Warn("executor: auto-preserved uncommitted session work — worktree was dirty at no-op classification",
 		slog.String("task_id", task.ID),
 		slog.String("branch", task.Branch),
