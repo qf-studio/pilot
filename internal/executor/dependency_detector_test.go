@@ -167,6 +167,60 @@ func TestExecuteSubIssuesTracked_IndependentSiblings_NoMergeWait(t *testing.T) {
 	}
 }
 
+// TestExecuteSubIssuesTracked_SubTasksInheritParentBaseBranch is the GH-5699
+// regression: sub-issue tasks must carry the parent's BaseBranch (and canary
+// marker) as seen by the executor, so projects[].default_branch / branch_from
+// is honored instead of the runner's repo-default-branch fallback.
+func TestExecuteSubIssuesTracked_SubTasksInheritParentBaseBranch(t *testing.T) {
+	tests := []struct {
+		name       string
+		baseBranch string
+		isCanary   bool
+	}{
+		{name: "develop base branch", baseBranch: "develop"},
+		{name: "canary parent", baseBranch: "release/1.x", isCanary: true},
+		{name: "empty base branch keeps runner fallback", baseBranch: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issues := makeSubIssues(2, 9000)
+
+			var seen []*Task
+			execFn := func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+				seen = append(seen, task)
+				return &ExecutionResult{
+					TaskID:  task.ID,
+					Success: true,
+					PRUrl:   fmt.Sprintf("https://github.com/owner/repo/pull/%d", 9500+len(seen)),
+				}, nil
+			}
+			runner := newTestRunnerWithExecFunc(execFn)
+
+			parent := &Task{
+				ID:         "GH-5699-BASE",
+				Title:      "[epic] base branch inheritance",
+				BaseBranch: tt.baseBranch,
+				IsCanary:   tt.isCanary,
+			}
+			if err := runner.ExecuteSubIssues(context.Background(), parent, issues, "", ""); err != nil {
+				t.Fatalf("ExecuteSubIssues returned error: %v", err)
+			}
+
+			if len(seen) != len(issues) {
+				t.Fatalf("executor saw %d sub-tasks, want %d", len(seen), len(issues))
+			}
+			for _, task := range seen {
+				if task.BaseBranch != tt.baseBranch {
+					t.Errorf("sub-task %s BaseBranch = %q, want %q", task.ID, task.BaseBranch, tt.baseBranch)
+				}
+				if task.IsCanary != tt.isCanary {
+					t.Errorf("sub-task %s IsCanary = %v, want %v", task.ID, task.IsCanary, tt.isCanary)
+				}
+			}
+		})
+	}
+}
+
 // TestExecuteSubIssuesTracked_ExplicitDependency_WaitsAndSyncs is the GH-4234
 // acceptance criterion: a child explicitly declaring "Depends on: #<sibling>"
 // waits for that sibling's PR to merge (+ syncMainBranch) before it starts.

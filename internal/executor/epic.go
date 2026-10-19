@@ -2904,6 +2904,11 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			// GH-4240: inherit the canary marker from the epic parent so a
 			// sub-issue of a synthetic sandbox run doesn't leak into metrics.
 			IsCanary: parent.IsCanary,
+			// GH-5699: inherit the parent's base branch (projects[].default_branch
+			// / branch_from) so sub-issues branch from and target the integration
+			// branch instead of the runner's GetDefaultBranch fallback. Same rule
+			// as decomposed subtasks (decompose.go, BaseBranch: parent.BaseBranch).
+			BaseBranch: parent.BaseBranch,
 		}
 
 		// GH-4944: revalidate the child issue's live GitHub state immediately
