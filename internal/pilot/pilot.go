@@ -75,6 +75,7 @@ type Pilot struct {
 	graph                  *memory.KnowledgeGraph
 	webhookManager         *webhooks.Manager
 	approvalMgr            *approval.Manager
+	approvalInjected       bool  // approvalMgr (and any Slack approval handler) came from the caller (GH-5758)
 	dashboardFS            fs.FS // Embedded React frontend (GH-1612)
 
 	// linearTasks maps task IDs to Linear issue IDs for completion callbacks
@@ -156,6 +157,76 @@ func WithTelegramApprovalHandler(h telegram.ApprovalCallbackHandler) Option {
 	return func(p *Pilot) {
 		p.telegramApprovalHdlr = h
 	}
+}
+
+// WithApprovalManager injects the process-wide approval manager (GH-5758).
+// cmd/pilot builds the manager the autopilot controllers submit requests to;
+// without this, New builds a second manager and (when Slack approvals are
+// enabled) a second Slack handler, so a click on a card the first handler sent
+// is routed to a handler whose pending map has never seen it. When given, New
+// builds neither: the Slack approval handler comes from WithSlackApprovalHandler
+// or is absent.
+func WithApprovalManager(m *approval.Manager) Option {
+	return func(p *Pilot) {
+		if m == nil {
+			return
+		}
+		p.approvalMgr = m
+		p.approvalInjected = true
+	}
+}
+
+// WithSlackApprovalHandler injects the Slack approval handler already
+// registered on the manager given to WithApprovalManager (GH-5758), so the
+// Slack interactions webhook and Socket Mode clicks reach the instance that
+// sent the card. Mirrors WithTelegramApprovalHandler. A nil handler is a no-op.
+func WithSlackApprovalHandler(h *approval.SlackHandler) Option {
+	return func(p *Pilot) {
+		p.slackApprovalHdlr = h
+	}
+}
+
+// NewSlackInteractionHandler builds the HTTP handler for Slack's interactivity
+// webhook, routing approve/reject button clicks to h. The signing secret is
+// adapters.slack.approval.signing_secret, falling back to
+// adapters.slack.signing_secret. Shared by gateway mode (New) and polling
+// mode's background gateway so both serve the identical route (GH-5758).
+func NewSlackInteractionHandler(cfg *slack.Config, h *approval.SlackHandler) *slack.InteractionHandler {
+	signingSecret := cfg.SigningSecret
+	if cfg.Approval != nil && cfg.Approval.SigningSecret != "" {
+		signingSecret = cfg.Approval.SigningSecret
+	}
+	wh := slack.NewInteractionHandler(signingSecret)
+	wh.OnAction(func(action *slack.InteractionAction) bool {
+		return h.HandleInteraction(
+			context.Background(),
+			action.ActionID,
+			action.Value,
+			action.UserID,
+			action.Username,
+			action.ResponseURL,
+		)
+	})
+	return wh
+}
+
+// SlackInteractionsPath is the gateway route Slack's interactivity webhook is
+// served on.
+const SlackInteractionsPath = "/webhooks/slack/interactions"
+
+// LogSlackIngress logs, once at startup, how Slack button clicks reach this
+// process: the effective socket_mode (after CLI flag overrides — never read it
+// from the config file, `--slack` overwrites it) and whether the HTTP
+// interactions route is registered (GH-5758).
+func LogSlackIngress(cfg *slack.Config, httpInteractionsRoute bool) {
+	if cfg == nil || !cfg.Enabled {
+		return
+	}
+	logging.WithComponent("slack").Info("Slack ingress",
+		slog.Bool("socket_mode", cfg.SocketMode),
+		slog.Bool("http_interactions_route", httpInteractionsRoute),
+		slog.String("interactions_path", SlackInteractionsPath),
+		slog.Bool("approval_enabled", cfg.Approval != nil && cfg.Approval.Enabled))
 }
 
 // WithTeamsService enables team-scoped execution (GH-633)
@@ -270,15 +341,22 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	}
 	p.graph = graph
 
-	// Initialize approval manager
-	p.approvalMgr = approval.NewManager(cfg.Approval)
+	// Initialize approval manager. GH-5758: skip when the caller injected the
+	// process-wide one — a second manager would have its own handlers and
+	// pending maps, unreachable from the requests the controllers submit.
+	if !p.approvalInjected {
+		p.approvalMgr = approval.NewManager(cfg.Approval)
+	}
 
 	// Initialize Slack notifier if enabled
 	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled {
 		p.slackNotify = slack.NewNotifier(cfg.Adapters.Slack)
 
-		// Initialize Slack approval handler if enabled
-		if cfg.Adapters.Slack.Approval != nil && cfg.Adapters.Slack.Approval.Enabled {
+		// Initialize Slack approval handler if enabled. GH-5758: with an
+		// injected manager the handler (if any) is injected too; building one
+		// here would create a second handler whose pending map has never seen
+		// the cards the first one sent.
+		if cfg.Adapters.Slack.Approval != nil && cfg.Adapters.Slack.Approval.Enabled && !p.approvalInjected {
 			p.slackClient = slack.NewClient(cfg.Adapters.Slack.BotToken)
 			slackAdapter := slack.NewSlackClientAdapter(p.slackClient)
 			approvalChannel := cfg.Adapters.Slack.Approval.Channel
@@ -324,23 +402,12 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 					}
 				}
 			})
+		}
 
-			// Set up Slack interaction webhook handler
-			signingSecret := cfg.Adapters.Slack.Approval.SigningSecret
-			if signingSecret == "" {
-				signingSecret = cfg.Adapters.Slack.SigningSecret
-			}
-			p.slackInteractionWH = slack.NewInteractionHandler(signingSecret)
-			p.slackInteractionWH.OnAction(func(action *slack.InteractionAction) bool {
-				return p.slackApprovalHdlr.HandleInteraction(
-					context.Background(),
-					action.ActionID,
-					action.Value,
-					action.UserID,
-					action.Username,
-					action.ResponseURL,
-				)
-			})
+		// Set up the Slack interaction webhook handler for whichever handler
+		// instance this process has — built above or injected (GH-5758).
+		if cfg.Adapters.Slack.Approval != nil && cfg.Adapters.Slack.Approval.Enabled && p.slackApprovalHdlr != nil {
+			p.slackInteractionWH = NewSlackInteractionHandler(cfg.Adapters.Slack, p.slackApprovalHdlr)
 		}
 	}
 
@@ -656,10 +723,11 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 
 	// Register Slack interaction webhook handler for approval buttons
 	if p.slackInteractionWH != nil {
-		p.gateway.RegisterHandler("/webhooks/slack/interactions", p.slackInteractionWH)
+		p.gateway.RegisterHandler(SlackInteractionsPath, p.slackInteractionWH)
 		logging.WithComponent("pilot").Info("registered Slack interaction webhook handler",
-			slog.String("path", "/webhooks/slack/interactions"))
+			slog.String("path", SlackInteractionsPath))
 	}
+	LogSlackIngress(cfg.Adapters.Slack, p.slackInteractionWH != nil)
 
 	// Functional options were already applied at the top of New (GH-4755),
 	// before the adapter init blocks above ran.

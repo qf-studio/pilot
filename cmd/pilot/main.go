@@ -1366,6 +1366,18 @@ Examples:
 					slog.String("team_name", team.Name))
 			}
 
+			// GH-5758: one Slack approval stack per process. When the main
+			// approval manager exists (it is what the autopilot controllers
+			// submit to), hand it and its Slack handler to pilot.New so the
+			// interactions webhook and Socket Mode clicks reach the handler
+			// that sent the card, instead of a second one pilot.New would build.
+			if approvalMgr != nil {
+				pilotOpts = append(pilotOpts, pilot.WithApprovalManager(approvalMgr))
+				if gwSlackApprovalHandler != nil {
+					pilotOpts = append(pilotOpts, pilot.WithSlackApprovalHandler(gwSlackApprovalHandler))
+				}
+			}
+
 			// Create and start Pilot
 			p, err := pilot.New(cfg, pilotOpts...)
 			if err != nil {
@@ -1717,6 +1729,25 @@ func validateAdapterFlags(cfg *config.Config, cmd *cobra.Command) error {
 			a.flag, a.flag, a.flag)
 	}
 	return nil
+}
+
+// validateSlackApprovalIngress fails startup when Slack approval cards would be
+// posted but no click can ever reach the daemon (GH-5758): socket_mode is off
+// (checked after flag overrides — `--slack` sets it) and no gateway runs to
+// serve the HTTP interactions route. Polling mode with a gateway registers the
+// route itself, so only the no-gateway case is refused.
+func validateSlackApprovalIngress(cfg *config.Config, noGateway bool) error {
+	sc := cfg.Adapters.Slack
+	if sc == nil || !sc.Enabled || sc.BotToken == "" || sc.Approval == nil || !sc.Approval.Enabled {
+		return nil
+	}
+	if sc.SocketMode || (!noGateway && cfg.Gateway != nil) {
+		return nil
+	}
+	return fmt.Errorf("slack approvals are enabled but no click path exists: adapters.slack.socket_mode is off " +
+		"(or has no app_token) and no gateway is running to serve " + pilot.SlackInteractionsPath +
+		"; enable adapters.slack.socket_mode with an app_token, run without --no-gateway, " +
+		"or disable adapters.slack.approval")
 }
 
 // applyInputOverrides applies CLI flag overrides to config
@@ -2240,6 +2271,13 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.SocketMode && cfg.Adapters.Slack.AppToken == "" {
 		logging.WithComponent("slack").Warn("socket_mode enabled but app_token not configured, skipping Slack Socket Mode")
 		cfg.Adapters.Slack.SocketMode = false
+	}
+
+	// GH-5758: Slack approval cards need a click path. With socket_mode off the
+	// only one is the HTTP interactions route on the gateway, so refuse to start
+	// when no gateway runs rather than post cards whose buttons can never work.
+	if err := validateSlackApprovalIngress(cfg, noGateway); err != nil {
+		return err
 	}
 
 	// Dashboard-mode log redirect already happened in the start command before
@@ -2801,6 +2839,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 	// GH-1662: Start gateway in background so desktop app can reach /health
 	var gwServer *gateway.Server // hoisted so TASK-332 alert-metrics wiring can run after alerts engine is created
+	slackHTTPRoute := false      // GH-5758: true once the Slack interactions route is registered on gwServer
 	// GH-4068: aggregate every controller's Metrics (default + one per
 	// project, not just the backward-compat default) so /metrics, the
 	// metrics alerter, and the metrics persister all reflect fleet-wide PR
@@ -2944,6 +2983,14 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		// GET /api/v1/docs/tree and /docs/file (polling mode). Must mirror
 		// the gateway-mode wiring above or the routes 404 in this mode.
 		gwServer.SetDocsProjectPath(projectPath)
+		// GH-5758: polling mode with socket_mode off has no other click
+		// ingress — serve the interactions route on the background gateway,
+		// pointed at the same handler instance that sent the cards.
+		if slackApprovalHandlerImpl != nil && !cfg.Adapters.Slack.SocketMode {
+			gwServer.RegisterHandler(pilot.SlackInteractionsPath,
+				pilot.NewSlackInteractionHandler(cfg.Adapters.Slack, slackApprovalHandlerImpl))
+			slackHTTPRoute = true
+		}
 		go func() {
 			addr := fmt.Sprintf("%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
 			logging.WithComponent("gateway").Info("gateway started in background", "addr", addr)
@@ -3816,6 +3863,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			tgHandler.StartPolling(ctx)
 		}
 	}
+
+	// GH-5758: one INFO line naming the effective Slack click ingress (socket_mode
+	// after flag overrides, not the config file's value).
+	pilot.LogSlackIngress(cfg.Adapters.Slack, slackHTTPRoute)
 
 	// Start Slack Socket Mode if enabled (GH-652: wire into polling mode)
 	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.SocketMode &&

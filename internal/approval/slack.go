@@ -477,6 +477,17 @@ func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, u
 		return false // Not an approval action
 	}
 
+	// GH-5758: log every received approval interaction before any lookup, so a
+	// click that reaches the daemon is always visible — whatever happens next
+	// (unknown request, unauthorized, expired). A click that never produces
+	// this line never arrived over Socket Mode or the HTTP interactions route.
+	h.log.Info("Slack approval interaction received",
+		slog.String("request_id", requestID),
+		slog.String("action", string(decision)),
+		slog.String("action_id", actionID),
+		slog.String("user", username),
+		slog.String("user_id", userID))
+
 	h.mu.Lock()
 	pending, exists := h.pending[requestID]
 	// GH-5157: decide authorization inside the same critical section as the
