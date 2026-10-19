@@ -111,3 +111,54 @@ func TestHandleCIFailed_SelfClose_OriginalHasTerminalCompletion(t *testing.T) {
 		t.Error("HasTerminalCompletion = false for the self-closed original; the dispatcher would re-pick it into the fix run's branch")
 	}
 }
+
+// TestHandleCIFailed_SelfClose_OriginalRowNotCompleted is the GH-5747 chain
+// test: the original's latest row is still running/pending (no completed row)
+// when CI-fail → self-close runs. ReclassifyCompletionAsSuperseded matches
+// only completed rows, so without the terminate call the StageFailed
+// transition demotes the row to failed and the dispatcher re-picks the
+// original (GH-5731 loop).
+func TestHandleCIFailed_SelfClose_OriginalRowNotCompleted(t *testing.T) {
+	const projectPath = "/proj/pilot"
+	for _, rowStatus := range []string{"running", "pending"} {
+		t.Run(rowStatus, func(t *testing.T) {
+			store, err := memory.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("memory.NewStore: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			if err := store.SaveExecution(&memory.Execution{
+				ID: "exec-57422", TaskID: "GH-57422", ProjectPath: projectPath, Status: rowStatus,
+			}); err != nil {
+				t.Fatalf("SaveExecution: %v", err)
+			}
+
+			server := newHandOffCIServer(t, "gh5747chain"+rowStatus, 57421, 57422, 57423)
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo", WithProjectPath(projectPath))
+			c.SetMemoryStore(store)
+
+			prState := &PRState{PRNumber: 57421, IssueNumber: 57422, HeadSHA: "gh5747chain" + rowStatus, Stage: StageCIFailed}
+			if err := c.handleCIFailed(context.Background(), prState); err != nil {
+				t.Fatalf("handleCIFailed: %v", err)
+			}
+			c.recordExecutionEvent(prState, StageCIFailed, memory.StageFailed, prState.Error)
+
+			status, err := store.GetExecutionStatusByTaskID("GH-57422", projectPath)
+			if err != nil {
+				t.Fatalf("GetExecutionStatusByTaskID: %v", err)
+			}
+			if status != "superseded" {
+				t.Errorf("original row status = %q, want superseded", status)
+			}
+			done, err := store.HasTerminalCompletion("GH-57422", projectPath)
+			if err != nil {
+				t.Fatalf("HasTerminalCompletion: %v", err)
+			}
+			if !done {
+				t.Error("HasTerminalCompletion = false for the self-closed original; the dispatcher would re-pick it")
+			}
+		})
+	}
+}

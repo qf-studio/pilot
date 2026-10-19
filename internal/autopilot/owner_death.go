@@ -64,10 +64,13 @@ func classifyOwnerHealth(issue *github.Issue) ownerHealth {
 // CreateReviewIssue. GH-5336: the source number used to be carried via a
 // standalone "Depends on: #123" line, but the SDK poller's
 // hasPendingDependencies treats any such line as an unmet-dependency gate —
-// and the original issue stays open (pilot-superseded, never closed) after
-// hand-off, so that line permanently blocked the fix issue itself from ever
+// and the original issue stayed open (pilot-superseded) after hand-off, so
+// that line permanently blocked the fix issue itself from ever
 // dispatching. The source number now lives inside autopilot-meta instead,
-// which the poller does not parse as a dependency marker.
+// which the poller does not parse as a dependency marker. Since GH-5741 the
+// pre-merge fix issue body carries "Closes #<source>", so the fix PR's merge
+// closes the original on GitHub (GH-5747: it is labelled pilot-superseded
+// after the fact by verifyFixPRDeliversSourceScope).
 var fixIssueSourceRe = regexp.MustCompile(`<!-- autopilot-meta.*?source:(\d+).*?-->`)
 
 // fixIssueSourceLegacyRe is the pre-GH-5336 encoding: a standalone
@@ -182,7 +185,10 @@ func isReviewRevisionFixIssue(body string) bool {
 //
 // Confirmed overlap applies pilot-superseded for the first time on either
 // path. Both paths are idempotent against a source that already carries
-// pilot-superseded (e.g. a daemon restart mid-gate) or is already closed.
+// pilot-superseded (e.g. a daemon restart mid-gate). A source already closed
+// by the fix PR's "Closes #<source>" (GH-5741) but not yet labelled falls
+// through to the same overlap check, so a confirmed overlap still strips its
+// trigger labels and adds pilot-superseded (GH-5747).
 //
 // A no-op (fails open, logs a warning) whenever the merged PR isn't a
 // Pilot-spawned CI-fix/revision continuation, or any GitHub read fails —
@@ -240,12 +246,15 @@ func (c *Controller) verifyFixPRDeliversSourceScope(ctx context.Context, prState
 			"source", sourceNum, "error", err)
 		return
 	}
-	if source.State == github.StateClosed || github.HasLabel(source, github.LabelSuperseded) {
-		// Already resolved (closed) or already gated by an earlier run of
-		// this function (e.g. a daemon restart mid-gate) — idempotent,
-		// nothing more to do.
+	if github.HasLabel(source, github.LabelSuperseded) {
+		// Already gated by an earlier run of this function (e.g. a daemon
+		// restart mid-gate) — idempotent, nothing more to do.
 		return
 	}
+	// GH-5747: a closed source without pilot-superseded is the normal
+	// post-GH-5741 shape — the fix PR's "Closes #<source>" closed it on merge
+	// — so it must fall through to the label mutation below rather than
+	// return, or it ends closed with pilot/pilot-in-progress standing.
 
 	if overlap {
 		// Confirmed overlap: the fix/revision PR's diff genuinely continues

@@ -332,6 +332,15 @@ func TestHandleCIFailed_HandOff_MarksOriginalSuperseded(t *testing.T) {
 	if len(evalMock.reclassified) != 0 {
 		t.Errorf("ReclassifyCompletionAsFailed calls = %+v, want none", evalMock.reclassified)
 	}
+	// GH-5747: a non-completed original row (queued/pending/running) is only
+	// reached by the terminate variant.
+	wantTerm := terminateCall{TaskID: "GH-57402", ProjectPath: "/proj/pilot", Reason: "continued by fix issue #57403"}
+	if len(evalMock.terminatedSuperseded) != 1 || evalMock.terminatedSuperseded[0] != wantTerm {
+		t.Errorf("TerminateNonTerminalExecutionAsSuperseded calls = %+v, want exactly [%+v]", evalMock.terminatedSuperseded, wantTerm)
+	}
+	if len(evalMock.terminated) != 0 {
+		t.Errorf("TerminateNonTerminalExecution calls = %+v, want none", evalMock.terminated)
+	}
 }
 
 // newHandOffCIServer serves the GitHub endpoints handleCIFailed touches for a

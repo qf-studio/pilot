@@ -10878,16 +10878,16 @@ func (c *Controller) markOriginalSuperseded(prState *PRState, fixIssueNum int) {
 	if prState.IssueNumber <= 0 {
 		return
 	}
-	var store interface {
+	type supersedeStore interface {
 		ReclassifyCompletionAsSuperseded(taskID, projectPath, reason string) error
+		TerminateNonTerminalExecutionAsSuperseded(taskID, projectPath, reason string) error
 	}
+	var store supersedeStore
 	switch {
 	case c.evalStore != nil:
 		store = c.evalStore
 	case c.memoryStore != nil:
-		if s, ok := c.memoryStore.(interface {
-			ReclassifyCompletionAsSuperseded(taskID, projectPath, reason string) error
-		}); ok {
+		if s, ok := c.memoryStore.(supersedeStore); ok {
 			store = s
 		}
 	}
@@ -10898,6 +10898,15 @@ func (c *Controller) markOriginalSuperseded(prState *PRState, fixIssueNum int) {
 	reason := fmt.Sprintf("continued by fix issue #%d", fixIssueNum)
 	if err := store.ReclassifyCompletionAsSuperseded(taskID, c.projectPath, reason); err != nil {
 		c.log.Warn("failed to mark original task superseded after self-close hand-off",
+			"task_id", taskID, "pr", prState.PRNumber, "fix_issue", fixIssueNum, "error", err)
+	}
+	// GH-5747: the reclassify above only matches a "completed" row. An
+	// original whose latest row is still queued/pending/running (poller never
+	// finalized it, or the PR-opening run was killed) would otherwise be
+	// demoted to failed by the StageFailed transition and re-picked
+	// (GH-5731 loop). Mirrors notifyExternalClose's second call.
+	if err := store.TerminateNonTerminalExecutionAsSuperseded(taskID, c.projectPath, reason); err != nil {
+		c.log.Warn("failed to terminate non-terminal original execution after self-close hand-off",
 			"task_id", taskID, "pr", prState.PRNumber, "fix_issue", fixIssueNum, "error", err)
 	}
 }

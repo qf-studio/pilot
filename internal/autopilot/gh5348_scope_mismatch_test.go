@@ -162,15 +162,15 @@ func TestController_VerifyFixPRDeliversSourceScope(t *testing.T) {
 			wantMismatchNoSupersede: true,
 		},
 		{
-			name:     "zero overlap but source already closed — no reaction",
+			name:     "zero overlap and source already closed — mismatch still flagged (GH-5747)",
 			fixIssue: &github.Issue{Number: 200, State: github.StateClosed, Body: fixIssueBody, Labels: []github.Label{{Name: github.LabelDone}}},
 			sourceIssue: &github.Issue{
 				Number: 100, State: github.StateClosed,
 				Labels: []github.Label{{Name: github.LabelDone}},
 			},
-			fixPRFiles:     []*github.PRFile{{Filename: "internal/unrelated/thing.go"}},
-			originPRFiles:  []*github.PRFile{{Filename: "internal/foo/bar.go"}},
-			wantNoReaction: true,
+			fixPRFiles:              []*github.PRFile{{Filename: "internal/unrelated/thing.go"}},
+			originPRFiles:           []*github.PRFile{{Filename: "internal/foo/bar.go"}},
+			wantMismatchNoSupersede: true,
 		},
 		{
 			name:     "source already carries pilot-superseded — idempotent, no reaction",

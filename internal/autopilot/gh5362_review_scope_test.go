@@ -170,13 +170,13 @@ func TestController_VerifyFixPRDeliversSourceScope_ReviewRevision(t *testing.T) 
 			wantEscalate:  true,
 		},
 		{
-			name: "zero overlap but source already closed — no reaction",
+			name: "zero overlap and source already closed — still escalated (GH-5747)",
 			sourceIssue: &github.Issue{
 				Number: 100, State: github.StateClosed,
 			},
-			fixPRFiles:          []*github.PRFile{{Filename: "internal/unrelated/thing.go"}},
-			originPRFiles:       []*github.PRFile{{Filename: "internal/foo/bar.go"}},
-			wantLabelsUntouched: true,
+			fixPRFiles:    []*github.PRFile{{Filename: "internal/unrelated/thing.go"}},
+			originPRFiles: []*github.PRFile{{Filename: "internal/foo/bar.go"}},
+			wantEscalate:  true,
 		},
 		{
 			name: "source already superseded (idempotent re-run) — no reaction",
