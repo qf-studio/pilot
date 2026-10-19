@@ -136,11 +136,24 @@ func isValidTelegramChatID(s string) bool {
 	return err == nil
 }
 
-// resolveDestChatID picks the Telegram destination for req: the first
-// approver when it's a plausible Telegram chat id, otherwise the handler's
-// own configured chatID. An invalid override is logged once (deduped by
-// value) rather than retried against the Telegram API every tick (GH-4380).
+// resolveDestChatID picks the Telegram destination for req: the handler's own
+// configured chat_id when one is set, falling back to the first approver (a
+// DM) only when no chat is configured and Approvers[0] is a plausible
+// Telegram chat id. This is channel-first, mirroring SlackHandler.resolveChannel
+// (GH-4808): before GH-5755 the first approver won unconditionally, so
+// adopting `approvers_by_channel.telegram` silently moved every ask from the
+// configured group chat/thread to the first approver's DM — making chat_id
+// and message_thread_id dead for approvals, hiding the ask from the other
+// approvers, and failing outright (403) when the first approver never opened a
+// chat with the bot. Authorization is unaffected: isAuthorizedApprover still
+// matches the tapper against req.Approvers wherever the ask is posted.
+//
+// An invalid DM fallback is logged once (deduped by value) rather than retried
+// against the Telegram API every tick (GH-4380).
 func (h *TelegramHandler) resolveDestChatID(req *Request) string {
+	if h.chatID != "" {
+		return h.chatID
+	}
 	if len(req.Approvers) == 0 {
 		return h.chatID
 	}
@@ -172,7 +185,7 @@ func (h *TelegramHandler) warnInvalidDestOnce(requestID, badDest string) {
 	h.warnedInvalidDest[badDest] = true
 	h.mu.Unlock()
 
-	h.log.Warn("approval request Approvers[0] is not a valid Telegram destination, falling back to configured chat_id",
+	h.log.Warn("approval request Approvers[0] is not a valid Telegram destination and no chat_id is configured",
 		slog.String("request_id", requestID), slog.String("invalid_approver", badDest))
 }
 
@@ -259,6 +272,14 @@ func (h *TelegramHandler) isAuthorizedApprover(userID string, approvers []string
 // re-notified, so calling Rehydrate again (e.g. a second startup pass) does
 // not re-send prompts for requests already tracked in h.pending. No-op when
 // no store is attached.
+//
+// Decision (GH-5755): the destination is recomputed from the current config
+// rather than persisted. A row sent to an approver DM before the channel-first
+// upgrade is re-asked in the configured chat, and the resent message's ID is
+// what later decisions edit — so the edit and the message always agree on the
+// chat. The stale pre-upgrade DM message is simply left behind; if the resend
+// fails, MessageID stays 0 and the decision falls back to a fresh message
+// (deliverResponseCard), which is logged and non-fatal.
 func (h *TelegramHandler) Rehydrate(ctx context.Context) error {
 	if h.store == nil {
 		return nil
@@ -435,9 +456,8 @@ func (h *TelegramHandler) SendApprovalRequest(ctx context.Context, req *Request)
 	// Create inline keyboard with approve/reject buttons
 	keyboard := h.createApprovalKeyboard(req)
 
-	// Resolve destination: use first approver's chat_id when it's a valid
-	// Telegram destination, otherwise fall back to the configured chat_id
-	// (GH-4380).
+	// Resolve destination: the configured chat_id first, the first approver's
+	// DM only when no chat is configured (GH-5755, GH-4380).
 	destChatID := h.resolveDestChatID(req)
 
 	// Send message

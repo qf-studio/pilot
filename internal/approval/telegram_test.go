@@ -977,127 +977,61 @@ func TestTelegramHandler_HandleCallbackWithZeroMessageID(t *testing.T) {
 	}
 }
 
-// TestTelegramHandler_ApproverRouting verifies that the destination chat_id is
-// resolved from req.Approvers[0] when set, and falls back to the constructor
-// chat_id when the slice is empty.
+// TestTelegramHandler_ApproverRouting verifies the channel-first rule
+// (GH-5755, mirroring Slack GH-4808): the configured chat_id and topic win
+// whatever Approvers holds; Approvers[0] is only a DM fallback when no chat is
+// configured and it is a valid Telegram destination.
 func TestTelegramHandler_ApproverRouting(t *testing.T) {
-	t.Run("uses approver chat_id when set", func(t *testing.T) {
-		client := &mockTelegramClient{}
-		handler := NewTelegramHandler(client, "constructor-chat", 0)
+	tests := []struct {
+		name         string
+		chatID       string
+		threadID     int64
+		approvers    []string
+		wantChatID   string
+		wantThreadID int64
+	}{
+		{"configured chat wins over a valid numeric approver", "constructor-chat", 12, []string{"99999"}, "constructor-chat", 12},
+		{"configured chat wins over a valid @channel approver", "constructor-chat", 12, []string{"@mychannel"}, "constructor-chat", 12},
+		{"configured chat wins over an invalid approver", "constructor-chat", 12, []string{"#pointer"}, "constructor-chat", 12},
+		{"configured chat used when approvers empty", "constructor-chat", 12, []string{}, "constructor-chat", 12},
+		{"no chat configured: valid numeric approver is the DM fallback", "", 12, []string{"99999"}, "99999", 0},
+		{"no chat configured: valid @channel approver is the fallback", "", 0, []string{"@mychannel"}, "@mychannel", 0},
+		{"no chat configured: invalid approver yields empty destination", "", 0, []string{"#pointer"}, "", 0},
+		{"no chat configured and no approvers yields empty destination", "", 0, nil, "", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &mockTelegramClient{}
+			handler := NewTelegramHandler(client, tt.chatID, tt.threadID)
 
-		req := &Request{
-			ID:        "req-approver",
-			TaskID:    "TASK-01",
-			Stage:     StagePreMerge,
-			Title:     "Test",
-			Approvers: []string{"99999"},
-			ExpiresAt: time.Now().Add(1 * time.Hour),
-		}
+			req := &Request{
+				ID:        "req-routing",
+				TaskID:    "TASK-01",
+				Stage:     StagePreMerge,
+				Title:     "Test",
+				Approvers: tt.approvers,
+				ExpiresAt: time.Now().Add(1 * time.Hour),
+			}
+			if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
-		_, err := handler.SendApprovalRequest(context.Background(), req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		msgs := client.getSentMessages()
-		if len(msgs) != 1 {
-			t.Fatalf("expected 1 message sent, got %d", len(msgs))
-		}
-		if msgs[0].ChatID != "99999" {
-			t.Errorf("expected chat_id '99999', got '%s'", msgs[0].ChatID)
-		}
-	})
-
-	t.Run("falls back to constructor chat_id when approvers empty", func(t *testing.T) {
-		client := &mockTelegramClient{}
-		handler := NewTelegramHandler(client, "constructor-chat", 0)
-
-		req := &Request{
-			ID:        "req-no-approver",
-			TaskID:    "TASK-01",
-			Stage:     StagePreMerge,
-			Title:     "Test",
-			Approvers: []string{},
-			ExpiresAt: time.Now().Add(1 * time.Hour),
-		}
-
-		_, err := handler.SendApprovalRequest(context.Background(), req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		msgs := client.getSentMessages()
-		if len(msgs) != 1 {
-			t.Fatalf("expected 1 message sent, got %d", len(msgs))
-		}
-		if msgs[0].ChatID != "constructor-chat" {
-			t.Errorf("expected chat_id 'constructor-chat', got '%s'", msgs[0].ChatID)
-		}
-	})
-
-	t.Run("uses @channel approver as-is", func(t *testing.T) {
-		client := &mockTelegramClient{}
-		handler := NewTelegramHandler(client, "constructor-chat", 0)
-
-		req := &Request{
-			ID:        "req-approver-channel",
-			TaskID:    "TASK-01",
-			Stage:     StagePreMerge,
-			Title:     "Test",
-			Approvers: []string{"@mychannel"},
-			ExpiresAt: time.Now().Add(1 * time.Hour),
-		}
-
-		_, err := handler.SendApprovalRequest(context.Background(), req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		msgs := client.getSentMessages()
-		if len(msgs) != 1 {
-			t.Fatalf("expected 1 message sent, got %d", len(msgs))
-		}
-		if msgs[0].ChatID != "@mychannel" {
-			t.Errorf("expected chat_id '@mychannel', got '%s'", msgs[0].ChatID)
-		}
-	})
-
-	// GH-4380: a request routed here (e.g. by the manager's PreferredChannel
-	// fallback, or a config where Approvers was populated with an identity
-	// meant for a different channel) must not blindly dial an
-	// Approvers[0] that isn't a plausible Telegram destination — that
-	// produced a "chat not found" 400 on every retry against the live
-	// incident's PRs #4373/#4374.
-	t.Run("falls back to constructor chat_id when approver is not a valid telegram destination", func(t *testing.T) {
-		client := &mockTelegramClient{}
-		handler := NewTelegramHandler(client, "constructor-chat", 0)
-
-		req := &Request{
-			ID:        "req-invalid-approver",
-			TaskID:    "TASK-01",
-			Stage:     StagePreMerge,
-			Title:     "Test",
-			Approvers: []string{"#pointer"}, // Slack channel name, not a Telegram chat id
-			ExpiresAt: time.Now().Add(1 * time.Hour),
-		}
-
-		_, err := handler.SendApprovalRequest(context.Background(), req)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		msgs := client.getSentMessages()
-		if len(msgs) != 1 {
-			t.Fatalf("expected 1 message sent, got %d", len(msgs))
-		}
-		if msgs[0].ChatID != "constructor-chat" {
-			t.Errorf("expected fallback to constructor chat_id 'constructor-chat', got '%s'", msgs[0].ChatID)
-		}
-	})
+			msgs := client.getSentMessages()
+			if len(msgs) != 1 {
+				t.Fatalf("expected 1 message sent, got %d", len(msgs))
+			}
+			if msgs[0].ChatID != tt.wantChatID {
+				t.Errorf("chat_id = %q, want %q", msgs[0].ChatID, tt.wantChatID)
+			}
+			if msgs[0].ThreadID != tt.wantThreadID {
+				t.Errorf("message_thread_id = %d, want %d", msgs[0].ThreadID, tt.wantThreadID)
+			}
+		})
+	}
 
 	t.Run("edit after callback uses same chat_id as original send", func(t *testing.T) {
 		client := &mockTelegramClient{}
-		handler := NewTelegramHandler(client, "constructor-chat", 0)
+		handler := NewTelegramHandler(client, "", 0)
 
 		req := &Request{
 			ID:        "req-edit-routing",
@@ -1107,15 +1041,9 @@ func TestTelegramHandler_ApproverRouting(t *testing.T) {
 			Approvers: []string{"99999"},
 			ExpiresAt: time.Now().Add(1 * time.Hour),
 		}
-
-		_, err := handler.SendApprovalRequest(context.Background(), req)
-		if err != nil {
+		if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-
-		// userID must match the configured Approvers entry (GH-5155) for the
-		// callback to be authorized — this test exercises routing, not
-		// authorization, so it uses the approver identity itself.
 		handler.HandleCallback(context.Background(), "cb1", "approve:req-edit-routing", "99999", "tester")
 
 		edited := client.getEditedMessages()
@@ -1126,6 +1054,45 @@ func TestTelegramHandler_ApproverRouting(t *testing.T) {
 			t.Errorf("expected edit chat_id '99999', got '%s'", edited[0].ChatID)
 		}
 	})
+}
+
+// TestTelegramHandler_ChannelFirst_AuthorizationUnchanged (GH-5755): an ask
+// posted in the configured group chat is still decided by a listed approver
+// (matched against req.Approvers, not the destination), and a non-approver is
+// still refused.
+func TestTelegramHandler_ChannelFirst_AuthorizationUnchanged(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "group-chat", 7)
+
+	req := &Request{
+		ID:        "req-group-auth",
+		TaskID:    "TASK-01",
+		Stage:     StagePreMerge,
+		Title:     "Test",
+		Approvers: []string{"11111", "22222"},
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if msgs := client.getSentMessages(); len(msgs) != 1 || msgs[0].ChatID != "group-chat" || msgs[0].ThreadID != 7 {
+		t.Fatalf("expected ask in group-chat topic 7, got %+v", msgs)
+	}
+
+	handler.HandleCallback(context.Background(), "cb-bad", "approve:req-group-auth", "33333", "intruder")
+	if cbs := client.getAnsweredCallbacks(); len(cbs) != 1 || cbs[0].Text != "⛔ Not an approver" {
+		t.Fatalf("expected non-approver refused, got %+v", cbs)
+	}
+
+	// The second (non-first) approver can decide the group-chat ask.
+	handler.HandleCallback(context.Background(), "cb-ok", "approve:req-group-auth", "22222", "approver2")
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) != 2 || cbs[1].Text != "Approved!" {
+		t.Fatalf("expected approver accepted, got %+v", cbs)
+	}
+	if edited := client.getEditedMessages(); len(edited) != 1 || edited[0].ChatID != "group-chat" {
+		t.Fatalf("expected decision edit in group-chat, got %+v", edited)
+	}
 }
 
 func TestIsValidTelegramChatID(t *testing.T) {
@@ -1158,7 +1125,7 @@ func TestIsValidTelegramChatID(t *testing.T) {
 // approvers list doesn't spam the log every controller tick (GH-4380).
 func TestTelegramHandler_InvalidApprover_WarnsOnce(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "constructor-chat", 0)
+	handler := NewTelegramHandler(client, "", 0) // channel-first: warning only fires with no chat_id (GH-5755)
 	logger, buf := newCapturingLogger()
 	handler.log = logger
 
@@ -2300,6 +2267,76 @@ func TestTelegramHandler_Rehydrate_ResendFailureIsNonFatal(t *testing.T) {
 	}
 }
 
+// TestTelegramHandler_Rehydrate_PreUpgradeDMRowEditsResentMessage (GH-5755):
+// a row originally sent to an approver DM (pre channel-first) is re-asked in
+// the configured chat and thread on Rehydrate, and the later decision edits
+// that resent message in the same chat — never the stale DM.
+func TestTelegramHandler_Rehydrate_PreUpgradeDMRowEditsResentMessage(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "rehy-dm", TaskID: "T-DM", Stage: "pre_merge",
+		Title: "Sent to DM before upgrade", Approvers: []string{"99999"},
+		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	handler := NewTelegramHandler(client, "group-chat", 7).WithStore(store)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("rehydrate error: %v", err)
+	}
+
+	sent := client.getSentMessages()
+	if len(sent) != 1 || sent[0].ChatID != "group-chat" || sent[0].ThreadID != 7 {
+		t.Fatalf("expected resent prompt in group-chat topic 7, got %+v", sent)
+	}
+
+	handler.HandleCallback(context.Background(), "cb1", "approve:rehy-dm", "99999", "approver")
+	edited := client.getEditedMessages()
+	if len(edited) != 1 {
+		t.Fatalf("expected 1 edit, got %d", len(edited))
+	}
+	if edited[0].ChatID != "group-chat" || edited[0].MessageID != 1 {
+		t.Errorf("edit = chat %q msg %d, want group-chat msg 1 (the resent message)", edited[0].ChatID, edited[0].MessageID)
+	}
+}
+
+// TestTelegramHandler_Rehydrate_PreUpgradeDMRow_ResendFailureFallsBack
+// (GH-5755): if the resend fails, the decision cannot edit anything, so it
+// posts a fresh card in the configured chat — non-fatal and logged.
+func TestTelegramHandler_Rehydrate_PreUpgradeDMRow_ResendFailureFallsBack(t *testing.T) {
+	client := &mockTelegramClient{sendError: errors.New("network error")}
+	store := newMockPendingStore()
+	logger, buf := newCapturingLogger()
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "rehy-dm-fail", TaskID: "T-DM", Stage: "pre_merge",
+		Title: "Sent to DM before upgrade", Approvers: []string{"99999"},
+		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	handler := NewTelegramHandler(client, "group-chat", 7).WithStore(store)
+	handler.log = logger
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("rehydrate must not fail on resend error: %v", err)
+	}
+
+	// Telegram recovers; the decision must not edit a message in the wrong chat.
+	client.mu.Lock()
+	client.sendError = nil
+	client.mu.Unlock()
+	handler.HandleCallback(context.Background(), "cb1", "approve:rehy-dm-fail", "99999", "approver")
+
+	if edited := client.getEditedMessages(); len(edited) != 0 {
+		t.Errorf("expected no edit without a tracked message, got %+v", edited)
+	}
+	sent := client.getSentMessages()
+	if len(sent) != 1 || sent[0].ChatID != "group-chat" || sent[0].ThreadID != 7 {
+		t.Errorf("expected fallback decision card in group-chat topic 7, got %+v", sent)
+	}
+	if !strings.Contains(buf.String(), "failed to resend rehydrated approval prompt") {
+		t.Errorf("expected resend-failure warning, got: %s", buf.String())
+	}
+}
+
 // --- PruneExpired tests (GH-3825) ---
 
 func TestTelegramHandler_PruneExpired_EditsMessageAndRemoves(t *testing.T) {
@@ -2560,7 +2597,7 @@ func TestTelegramHandler_HandleCallback_EditFailure_FallsBackToNewMessage(t *tes
 // merge-completion follow-up to the same chat the approval card was sent to.
 func TestTelegramHandler_NotifyMerged_SendsFollowUpInSameChat(t *testing.T) {
 	client := &mockTelegramClient{}
-	handler := NewTelegramHandler(client, "chat123", 0)
+	handler := NewTelegramHandler(client, "", 0)
 
 	req := &Request{
 		ID: "req-merged", TaskID: "GH-1", Stage: StagePreMerge, Title: "Test",
@@ -2678,14 +2715,14 @@ func TestTelegramHandlerMessageThreadID(t *testing.T) {
 			wantThreadID:    12,
 		},
 		{
-			name:            "topic dropped for an approver override",
+			name:            "topic kept despite a valid approver (channel-first)",
 			messageThreadID: 12,
 			approvers:       []string{"99999"},
-			wantChatID:      "99999",
-			wantThreadID:    0,
+			wantChatID:      "configured-chat",
+			wantThreadID:    12,
 		},
 		{
-			name:            "invalid approver falls back to chat and keeps the topic",
+			name:            "invalid approver ignored, chat and topic kept",
 			messageThreadID: 12,
 			approvers:       []string{"#slack-channel"},
 			wantChatID:      "configured-chat",
