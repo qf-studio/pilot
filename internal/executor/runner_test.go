@@ -3680,6 +3680,48 @@ func TestNavigatorAutoInit_HonoursProjectNavigatorFlag(t *testing.T) {
 			}
 		}
 	})
+
+	// GH-5745: a lookup that matches only the registered clone path (as
+	// FindProjectByPath does) lets the auto-init gate pass, so the runner call
+	// site of maybeInitNavigator -> maybeBootstrapNavigator is exercised.
+	t.Run("worktree execution path with exact-match lookup", func(t *testing.T) {
+		const branch = "pilot/GH-5745-autoinit"
+		cloneDir, _ := setupFreshnessRepo(t)
+
+		var execPath string
+		backend := &ctxRespectingBackend{
+			run: func(_ context.Context, _ int, opts ExecuteOptions) (*BackendResult, error) {
+				execPath = opts.ProjectPath
+				return &BackendResult{Success: true, Output: "done"}, nil
+			},
+		}
+		runner := newGH4964Runner(backend)
+		runner.config.UseWorktree = true
+		runner.config.Navigator = &NavigatorConfig{AutoInit: true, Bootstrap: "auto"}
+		var lookedUp []string
+		runner.SetNavigatorEnabledLookup(func(p string) bool {
+			lookedUp = append(lookedUp, p)
+			return p == cloneDir
+		})
+		task := newGH4964Task("GH-5745", branch, cloneDir)
+		task.CreatePR = false
+
+		if _, err := runner.Execute(context.Background(), task); err != nil {
+			t.Fatalf("Execute() error: %v", err)
+		}
+		if execPath == "" || execPath == cloneDir {
+			t.Fatalf("backend did not run in an isolated worktree (path %q)", execPath)
+		}
+		// auto-init gate + maybeBootstrapNavigator lookup
+		if len(lookedUp) < 2 {
+			t.Fatalf("lookups = %v, want at least 2 (auto-init gate and bootstrap)", lookedUp)
+		}
+		for _, k := range lookedUp {
+			if k != cloneDir {
+				t.Errorf("lookup keyed on %q, want clone path %q", k, cloneDir)
+			}
+		}
+	})
 }
 
 func TestLocalModeRunsQualityGates(t *testing.T) {

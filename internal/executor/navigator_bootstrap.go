@@ -355,13 +355,15 @@ func readmeSectionBody(text, header string) (string, bool) {
 	return rest, true
 }
 
-// maybeBootstrapNavigator runs the bootstrap once per execution path before the
+// maybeBootstrapNavigator runs the bootstrap once per project path before the
 // first task when navigator.bootstrap is auto and the README still carries a
 // placeholder section. Failures degrade gracefully: the task continues.
 //
 // GH-5739: the `navigator: false` lookup is keyed on projectPath (the clone the
 // config registers), never executionPath — under worktree isolation the latter
-// matches no project and the gate would be inert.
+// matches no project and the gate would be inert. The once-per-process attempt
+// guard is keyed the same way: worktree paths are unique per task, so keying
+// on executionPath would re-run a paid session on every task of the project.
 func (r *Runner) maybeBootstrapNavigator(ctx context.Context, executionPath, projectPath string) {
 	if r.config == nil || r.config.Navigator.BootstrapMode() != NavigatorBootstrapAuto {
 		return
@@ -378,7 +380,7 @@ func (r *Runner) maybeBootstrapNavigator(ctx context.Context, executionPath, pro
 		return
 	}
 	// A failed or partial run must not retry on every task of this daemon.
-	if _, loaded := r.navBootstrapAttempted.LoadOrStore(executionPath, struct{}{}); loaded {
+	if _, loaded := r.navBootstrapAttempted.LoadOrStore(projectPath, struct{}{}); loaded {
 		return
 	}
 	res, err := r.ExecuteNavigatorBootstrap(ctx, executionPath)

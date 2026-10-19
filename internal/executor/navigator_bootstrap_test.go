@@ -418,6 +418,26 @@ func TestNavigatorBootstrap_AutoRetriesOnlyOncePerProcess(t *testing.T) {
 	}
 }
 
+func TestNavigatorBootstrap_AttemptGuardKeyedOnProjectPath(t *testing.T) {
+	// GH-5745: worktree paths are unique per task, so the once-per-process
+	// guard must be keyed on the project (clone) path.
+	cloneDir := t.TempDir()
+	execA := fixtureClone(t)
+	execB := fixtureClone(t)
+	b := &bootstrapFakeBackend{} // never fills the README
+	r := newBootstrapRunner(b, "auto")
+
+	r.maybeBootstrapNavigator(context.Background(), execA, cloneDir)
+	r.maybeBootstrapNavigator(context.Background(), execB, cloneDir)
+
+	if n := b.callCount(); n != 1 {
+		t.Errorf("bootstrap calls = %d, want 1 for two worktrees of one project", n)
+	}
+	if got := b.calls[0].ProjectPath; got != execA {
+		t.Errorf("session ran in %q, want first execution path %q", got, execA)
+	}
+}
+
 func TestNavigatorBootstrap_ManualAndOffDoNothingAutomatically(t *testing.T) {
 	for _, mode := range []string{"", "manual", "off", "bogus"} {
 		dir := fixtureClone(t)
