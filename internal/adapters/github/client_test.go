@@ -4219,29 +4219,22 @@ func TestListIssueEvents_ParsesLabeledAndReopenedEvents(t *testing.T) {
 }
 
 func TestListBranches(t *testing.T) {
-	var pages []string
+	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
 		if r.Method != http.MethodGet {
 			t.Errorf("expected GET, got %s", r.Method)
 		}
 		if r.URL.Path != "/repos/owner/repo/git/matching-refs/heads/pilot/" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		page := r.URL.Query().Get("page")
-		pages = append(pages, page)
+		// The real endpoint ignores per_page/page and returns the full list.
 		var refs []map[string]any
-		switch page {
-		case "1":
-			for i := 0; i < 100; i++ {
-				refs = append(refs, map[string]any{"ref": fmt.Sprintf("refs/heads/pilot/GH-%d", i), "object": map[string]string{"sha": fmt.Sprintf("sha%d", i)}})
-			}
-		case "2":
-			refs = append(refs,
-				map[string]any{"ref": "refs/heads/pilot/GH-100", "object": map[string]string{"sha": "sha100"}},
-				// a server ignoring the prefix must not widen the result
-				map[string]any{"ref": "refs/heads/feature/other", "object": map[string]string{"sha": "shaX"}},
-			)
+		for i := 0; i < 120; i++ {
+			refs = append(refs, map[string]any{"ref": fmt.Sprintf("refs/heads/pilot/GH-%d", i), "object": map[string]string{"sha": fmt.Sprintf("sha%d", i)}})
 		}
+		// a server ignoring the prefix must not widen the result
+		refs = append(refs, map[string]any{"ref": "refs/heads/feature/other", "object": map[string]string{"sha": "shaX"}})
 		_ = json.NewEncoder(w).Encode(refs)
 	}))
 	defer server.Close()
@@ -4251,14 +4244,31 @@ func TestListBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListBranches() error = %v", err)
 	}
-	if len(got) != 101 {
-		t.Fatalf("len = %d, want 101", len(got))
+	if len(got) != 120 {
+		t.Fatalf("len = %d, want 120", len(got))
 	}
-	if got[0] != (BranchRef{Name: "pilot/GH-0", SHA: "sha0"}) || got[100] != (BranchRef{Name: "pilot/GH-100", SHA: "sha100"}) {
-		t.Errorf("unexpected refs: first=%+v last=%+v", got[0], got[100])
+	if got[0] != (BranchRef{Name: "pilot/GH-0", SHA: "sha0"}) || got[119] != (BranchRef{Name: "pilot/GH-119", SHA: "sha119"}) {
+		t.Errorf("unexpected refs: first=%+v last=%+v", got[0], got[119])
 	}
-	if len(pages) != 2 {
-		t.Errorf("requested pages %v, want 2 pages", pages)
+	if requests != 1 {
+		t.Errorf("requests = %d, want 1", requests)
+	}
+}
+
+func TestListBranches_DedupesRepeatedRefs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ref := map[string]any{"ref": "refs/heads/pilot/GH-1", "object": map[string]string{"sha": "sha1"}}
+		_ = json.NewEncoder(w).Encode([]map[string]any{ref, ref})
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	got, err := client.ListBranches(context.Background(), "owner", "repo", "pilot/")
+	if err != nil {
+		t.Fatalf("ListBranches() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("len = %d, want 1", len(got))
 	}
 }
 

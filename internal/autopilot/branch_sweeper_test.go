@@ -18,7 +18,8 @@ import (
 )
 
 // fakeBranchGitHub is a minimal GitHub for the stale-branch sweep: prefix
-// listing, PR lists, branch tip dates and ref deletion, with pagination.
+// listing (unpaginated, like the real endpoint), PR lists (paginated), branch
+// tip dates and ref deletion.
 type fakeBranchGitHub struct {
 	mu           sync.Mutex
 	branches     []string
@@ -27,6 +28,9 @@ type fakeBranchGitHub struct {
 	deleteStatus map[string]int // branch -> forced status for DELETE
 	deleted      []string
 	requests     int
+	branchGets   map[string]int // branch -> GET /branches/{name} count
+	deleteCalls  map[string]int // branch -> DELETE attempts
+	matchingReqs int            // GET git/matching-refs requests
 }
 
 func (f *fakeBranchGitHub) page(r *http.Request, n int) (int, int) {
@@ -57,6 +61,7 @@ func (f *fakeBranchGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
 	case r.Method == http.MethodGet && strings.HasPrefix(p, base+"/git/matching-refs/heads/"):
+		f.matchingReqs++
 		prefix := strings.TrimPrefix(p, base+"/git/matching-refs/heads/")
 		var matched []map[string]any
 		for _, b := range f.branches {
@@ -64,8 +69,9 @@ func (f *fakeBranchGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				matched = append(matched, map[string]any{"ref": "refs/heads/" + b, "object": map[string]string{"sha": "sha-" + b}})
 			}
 		}
-		s, e := f.page(r, len(matched))
-		_ = writeJSON(w, matched[s:e])
+		// The real matching-refs endpoint ignores per_page/page and always
+		// returns the full list (verified live 2026-10-20), so no paging here.
+		_ = writeJSON(w, matched)
 	case r.Method == http.MethodGet && p == base+"/pulls":
 		prs := f.open
 		if r.URL.Query().Get("state") == "closed" {
@@ -75,6 +81,10 @@ func (f *fakeBranchGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = writeJSON(w, prs[s:e])
 	case r.Method == http.MethodGet && strings.HasPrefix(p, base+"/branches/"):
 		name := strings.TrimPrefix(p, base+"/branches/")
+		if f.branchGets == nil {
+			f.branchGets = map[string]int{}
+		}
+		f.branchGets[name]++
 		date, ok := f.tipDate[name]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
@@ -83,6 +93,10 @@ func (f *fakeBranchGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"name":%q,"commit":{"sha":"x","commit":{"committer":{"date":%q}}}}`, name, date.UTC().Format(time.RFC3339))
 	case r.Method == http.MethodDelete && strings.HasPrefix(p, base+"/git/refs/heads/"):
 		name := strings.TrimPrefix(p, base+"/git/refs/heads/")
+		if f.deleteCalls == nil {
+			f.deleteCalls = map[string]int{}
+		}
+		f.deleteCalls[name]++
 		if st := f.deleteStatus[name]; st != 0 {
 			w.WriteHeader(st)
 			return
@@ -242,7 +256,50 @@ func TestSweepStaleBranches_PaginatesAllBranches(t *testing.T) {
 	c := newSweepController(t, f, true)
 	c.sweepStaleBranches(context.Background())
 	if got := len(f.deletedSorted()); got != 150 {
-		t.Errorf("deleted %d of 150 branches across 2 pages", got)
+		t.Errorf("deleted %d of 150 branches (closed-PR list spans two pages)", got)
+	}
+}
+
+// TestSweepStaleBranches_UnpaginatedRefList_EvaluatesEachBranchOnce pins GH-5777:
+// matching-refs ignores per_page/page, so with 100+ refs the sweeper must list
+// once and process every branch exactly once. 120 refs: 100 old no-PR (deletable),
+// 20 young no-PR (kept).
+func TestSweepStaleBranches_UnpaginatedRefList_EvaluatesEachBranchOnce(t *testing.T) {
+	old := time.Now().Add(-5 * 24 * time.Hour)
+	young := time.Now().Add(-30 * time.Minute)
+	f := &fakeBranchGitHub{tipDate: map[string]time.Time{}}
+	for i := 0; i < 120; i++ {
+		name := fmt.Sprintf("pilot/GH-%d", 3000+i)
+		f.branches = append(f.branches, name)
+		if i < 100 {
+			f.tipDate[name] = old
+		} else {
+			f.tipDate[name] = young
+		}
+	}
+	c := newSweepController(t, f, true)
+	c.sweepStaleBranches(context.Background())
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.matchingReqs != 1 {
+		t.Errorf("matching-refs requests = %d, want 1", f.matchingReqs)
+	}
+	for _, name := range f.branches {
+		if n := f.branchGets[name]; n != 1 {
+			t.Errorf("%s evaluated %d times, want 1", name, n)
+		}
+	}
+	for name, n := range f.deleteCalls {
+		if n != 1 {
+			t.Errorf("%s delete attempted %d times, want 1", name, n)
+		}
+	}
+	if len(f.deleted) != 100 {
+		t.Errorf("deleted = %d, want 100 unique deletable branches", len(f.deleted))
+	}
+	if got := c.metrics.Snapshot().StaleBranchesDeleted; got != 100 {
+		t.Errorf("StaleBranchesDeleted metric = %d, want 100", got)
 	}
 }
 

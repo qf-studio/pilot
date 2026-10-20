@@ -757,35 +757,40 @@ func (c *Client) GetBranch(ctx context.Context, owner, repo, branch string) (*Br
 }
 
 // ListBranches returns every branch whose name starts with prefix, via
-// GET /repos/{o}/{r}/git/matching-refs/heads/{prefix} (paginated at 100 per
-// page, capped at 50 pages like ListPullRequests).
+// GET /repos/{o}/{r}/git/matching-refs/heads/{prefix}.
+//
+// Decision: a single request, no page loop. The matching-refs endpoint ignores
+// per_page and page and returns the full list every time (verified live
+// 2026-10-20: per_page=1 and page=2 both return all refs, no Link header), so
+// paging would re-fetch the identical list up to the cap and multiply every
+// branch. Names are de-duplicated anyway so a repeated entry can never be
+// processed twice.
 func (c *Client) ListBranches(ctx context.Context, owner, repo, prefix string) ([]BranchRef, error) {
-	const perPage = 100
-	const maxPages = 50
+	path := fmt.Sprintf("/repos/%s/%s/git/matching-refs/heads/%s", owner, repo, prefix)
+	var batch []struct {
+		Ref    string `json:"ref"`
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &batch); err != nil {
+		return nil, err
+	}
 
-	var all []BranchRef
-	for page := 1; page <= maxPages; page++ {
-		path := fmt.Sprintf("/repos/%s/%s/git/matching-refs/heads/%s?per_page=%d&page=%d", owner, repo, prefix, perPage, page)
-		var batch []struct {
-			Ref    string `json:"ref"`
-			Object struct {
-				SHA string `json:"sha"`
-			} `json:"object"`
+	seen := make(map[string]struct{}, len(batch))
+	all := make([]BranchRef, 0, len(batch))
+	for _, r := range batch {
+		name := strings.TrimPrefix(r.Ref, "refs/heads/")
+		// matching-refs is a prefix match on the ref; re-check so a
+		// server that ignores the prefix can never widen the result.
+		if !strings.HasPrefix(name, prefix) {
+			continue
 		}
-		if err := c.doRequest(ctx, http.MethodGet, path, nil, &batch); err != nil {
-			return nil, err
+		if _, dup := seen[name]; dup {
+			continue
 		}
-		for _, r := range batch {
-			name := strings.TrimPrefix(r.Ref, "refs/heads/")
-			// matching-refs is a prefix match on the ref; re-check so a
-			// server that ignores the prefix can never widen the result.
-			if strings.HasPrefix(name, prefix) {
-				all = append(all, BranchRef{Name: name, SHA: r.Object.SHA})
-			}
-		}
-		if len(batch) < perPage {
-			break
-		}
+		seen[name] = struct{}{}
+		all = append(all, BranchRef{Name: name, SHA: r.Object.SHA})
 	}
 	return all, nil
 }
