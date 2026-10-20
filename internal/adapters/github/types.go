@@ -392,6 +392,25 @@ type Branch struct {
 type BranchCommit struct {
 	SHA string `json:"sha"`
 	URL string `json:"url"`
+	// Detail carries the git commit metadata nested under commit.commit in the
+	// GET /branches/{branch} response; Committer.Date is the tip's age signal.
+	Detail struct {
+		Committer struct {
+			Date time.Time `json:"date"`
+		} `json:"committer"`
+	} `json:"commit"`
+}
+
+// CommitDate returns the tip commit's committer date, or the zero time when
+// the API response did not include it.
+func (b *Branch) CommitDate() time.Time {
+	return b.Commit.Detail.Committer.Date
+}
+
+// BranchRef is a branch name and its tip SHA, as returned by ListBranches.
+type BranchRef struct {
+	Name string
+	SHA  string
 }
 
 // SHA returns the commit SHA for the branch

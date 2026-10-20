@@ -982,6 +982,8 @@ Examples:
 							// studio-sdk client doesn't yet — wire it so CI-failure excerpts
 							// resolve to the actual failing step instead of a whole-job tail.
 							gwBoardOpts = append(gwBoardOpts, autopilot.WithStepLogClient(ghClient))
+							// GH-5770: same in-tree client lists pilot/* branches for the opt-in stale-branch sweep.
+							gwBoardOpts = append(gwBoardOpts, autopilot.WithBranchSweepClient(ghClient))
 							// GH-4454: match the polling-path pilot-label wiring so the
 							// lane-starvation reconciler searches the same trigger label
 							// the webhook/legacy poller watches for.
@@ -2442,6 +2444,8 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// studio-sdk client doesn't yet — wire it so CI-failure excerpts
 			// resolve to the actual failing step instead of a whole-job tail.
 			autopilotSharedOpts = append(autopilotSharedOpts, autopilot.WithStepLogClient(ghClient))
+			// GH-5770: same in-tree client lists pilot/* branches for the opt-in stale-branch sweep.
+			autopilotSharedOpts = append(autopilotSharedOpts, autopilot.WithBranchSweepClient(ghClient))
 			// GH-4391: every controller shares the one process-wide rate-limit
 			// budget tracker installed above — the GitHub primary rate limit is
 			// pooled per authenticated user across every client/controller, so

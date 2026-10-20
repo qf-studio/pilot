@@ -4217,3 +4217,59 @@ func TestListIssueEvents_ParsesLabeledAndReopenedEvents(t *testing.T) {
 		t.Errorf("unexpected request path: %s", receivedPath)
 	}
 }
+
+func TestListBranches(t *testing.T) {
+	var pages []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/repos/owner/repo/git/matching-refs/heads/pilot/" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		var refs []map[string]any
+		switch page {
+		case "1":
+			for i := 0; i < 100; i++ {
+				refs = append(refs, map[string]any{"ref": fmt.Sprintf("refs/heads/pilot/GH-%d", i), "object": map[string]string{"sha": fmt.Sprintf("sha%d", i)}})
+			}
+		case "2":
+			refs = append(refs,
+				map[string]any{"ref": "refs/heads/pilot/GH-100", "object": map[string]string{"sha": "sha100"}},
+				// a server ignoring the prefix must not widen the result
+				map[string]any{"ref": "refs/heads/feature/other", "object": map[string]string{"sha": "shaX"}},
+			)
+		}
+		_ = json.NewEncoder(w).Encode(refs)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	got, err := client.ListBranches(context.Background(), "owner", "repo", "pilot/")
+	if err != nil {
+		t.Fatalf("ListBranches() error = %v", err)
+	}
+	if len(got) != 101 {
+		t.Fatalf("len = %d, want 101", len(got))
+	}
+	if got[0] != (BranchRef{Name: "pilot/GH-0", SHA: "sha0"}) || got[100] != (BranchRef{Name: "pilot/GH-100", SHA: "sha100"}) {
+		t.Errorf("unexpected refs: first=%+v last=%+v", got[0], got[100])
+	}
+	if len(pages) != 2 {
+		t.Errorf("requested pages %v, want 2 pages", pages)
+	}
+}
+
+func TestListBranches_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	if _, err := client.ListBranches(context.Background(), "owner", "repo", "pilot/"); err == nil {
+		t.Error("expected error on 500")
+	}
+}

@@ -151,6 +151,7 @@ func (a *AggregateMetrics) Snapshot() MetricsSnapshot {
 		// GH-5657: pass timeouts sum; the pass gauge, like the tick gauge, is the
 		// stalest controller's.
 		agg.EpicParentPassTimeouts += s.EpicParentPassTimeouts
+		agg.StaleBranchesDeleted += s.StaleBranchesDeleted // GH-5770
 		if !s.LastEpicParentPassAt.IsZero() && (agg.LastEpicParentPassAt.IsZero() || s.LastEpicParentPassAt.Before(agg.LastEpicParentPassAt)) {
 			agg.LastEpicParentPassAt = s.LastEpicParentPassAt
 		}

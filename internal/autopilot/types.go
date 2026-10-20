@@ -131,6 +131,12 @@ type Config struct {
 	// (GH-5759). Default false: turning on new Telegram traffic for every
 	// existing user on upgrade would be a behavior change.
 	LifecycleNotifications bool `yaml:"lifecycle_notifications"`
+	// StaleBranchSweep opts in to the periodic sweep that deletes orphaned
+	// pilot/* remote branches (no open PR references them). GH-5770.
+	StaleBranchSweep bool `yaml:"stale_branch_sweep"`
+	// StaleBranchMinAge is how old a branch with NO PR must be before the sweep
+	// deletes it (guards a run that pushed but has not yet opened its PR). Default 24h.
+	StaleBranchMinAge time.Duration `yaml:"stale_branch_min_age"`
 
 	// CI Monitoring
 	// CIWaitTimeout is the maximum time to wait for CI to complete.
@@ -718,6 +724,8 @@ func DefaultConfig() *Config {
 		Release:                   nil, // Disabled by default
 		MergedPRScanWindow:        30 * time.Minute,
 		StartupMergedPRScanWindow: 72 * time.Hour, // GH-4391: down from the previous hardcoded 720h
+		StaleBranchSweep:          false,          // GH-5770: opt-in
+		StaleBranchMinAge:         24 * time.Hour,
 		StageTimeout:              DefaultStageTimeout,
 		RateLimitFloorPct:         ghbudget.DefaultFloorPct,
 		ScanStaggerInterval:       3 * time.Second,

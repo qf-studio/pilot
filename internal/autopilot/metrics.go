@@ -110,6 +110,10 @@ type Metrics struct {
 	// per-pass deadline (Config.StageTimeout) — GH-5657. Exported as
 	// autopilot_epic_parent_pass_timeouts_total.
 	EpicParentPassTimeouts int64
+	// StaleBranchesDeleted counts orphaned pilot/* remote branches removed by
+	// the stale-branch sweep — GH-5770. Exported as
+	// autopilot_stale_branches_deleted_total.
+	StaleBranchesDeleted int64
 	// LastEpicParentPassAt is when the epic-parent reconciler pass last finished.
 	// Deliberately separate from LastTickAt: the pass runs off the PR-processing
 	// loop, so it must never mask a stuck processAllPRs — GH-5657.
@@ -450,6 +454,13 @@ func (m *Metrics) RecordEpicParentPassTimeout() {
 	m.EpicParentPassTimeouts++
 }
 
+// RecordStaleBranchesDeleted adds n to the stale-branch sweep counter — GH-5770.
+func (m *Metrics) RecordStaleBranchesDeleted(n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.StaleBranchesDeleted += int64(n)
+}
+
 // RecordEpicParentPass stamps the epic-parent pass completion gauge — GH-5657.
 // Not RecordTick: see LastEpicParentPassAt.
 func (m *Metrics) RecordEpicParentPass(at time.Time) {
@@ -721,6 +732,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		StagePanics:                   copyStringIntMap(m.StagePanics),
 		LastTickAt:                    m.LastTickAt,
 		EpicParentPassTimeouts:        m.EpicParentPassTimeouts,
+		StaleBranchesDeleted:          m.StaleBranchesDeleted,
 		LastEpicParentPassAt:          m.LastEpicParentPassAt,
 		ApprovalSubmitFailures:        m.ApprovalSubmitFailures,
 		TokensConsumed:                copyTokenKeyMap(m.TokensConsumed),
@@ -817,6 +829,7 @@ type MetricsSnapshot struct {
 	StagePanics               map[string]int64 // GH-5547: stage → panics recovered from stage handlers
 	LastTickAt                time.Time        // GH-5541: last PR-loop progress; zero before the first tick
 	EpicParentPassTimeouts    int64            // GH-5657: epic-parent reconciler passes that hit the pass deadline
+	StaleBranchesDeleted      int64            // GH-5770: orphaned pilot/* branches deleted by the stale-branch sweep
 	LastEpicParentPassAt      time.Time        // GH-5657: last epic-parent pass completion; zero before the first pass
 	TokensConsumed            map[tokenKey]int64
 	ExecutionCostUSD          map[string]float64

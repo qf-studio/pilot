@@ -277,6 +277,12 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	writeType(w, "autopilot_epic_parent_pass_timeouts_total", "counter")
 	writeCounter(w, "autopilot_epic_parent_pass_timeouts_total", snap.EpicParentPassTimeouts)
 
+	// autopilot_stale_branches_deleted_total (GH-5770): orphaned pilot/* remote
+	// branches deleted by the opt-in stale-branch sweep.
+	writeHelp(w, "autopilot_stale_branches_deleted_total", "Total orphaned pilot/* remote branches deleted by the stale-branch sweep (orchestrator.autopilot.stale_branch_sweep)")
+	writeType(w, "autopilot_stale_branches_deleted_total", "counter")
+	writeCounter(w, "autopilot_stale_branches_deleted_total", snap.StaleBranchesDeleted)
+
 	// autopilot_last_epic_parent_pass_timestamp_seconds (GH-5657): unix time the
 	// epic-parent reconciler pass last finished. Omitted until the first pass.
 	writeHelp(w, "autopilot_last_epic_parent_pass_timestamp_seconds", "Unix timestamp of the autopilot epic-parent reconciler pass's last completion; stalest controller when several run")

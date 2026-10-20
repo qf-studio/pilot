@@ -493,7 +493,9 @@ func WithPlatformBreaker(b *PlatformBreaker) ControllerOption {
 type Controller struct {
 	config              *Config
 	ghClient            *github.Client
-	labeler             IssueLabeler // TASK-441 L6: narrow label-lifecycle seam over ghClient (AddLabels/RemoveLabel only)
+	branchSweepClient   BranchSweepClient // GH-5770: optional, see WithBranchSweepClient
+	branchSweepRunning  atomic.Bool       // GH-5770: drops an overlapping stale-branch sweep
+	labeler             IssueLabeler      // TASK-441 L6: narrow label-lifecycle seam over ghClient (AddLabels/RemoveLabel only)
 	approvalMgr         *approval.Manager
 	ciMonitor           *CIMonitor
 	ciFailureClassifier *ciFailureClassifier // TASK-507: nil = regex only (default)
@@ -9898,6 +9900,19 @@ func (c *Controller) Run(ctx context.Context) error {
 	epicParentTicker := time.NewTicker(basePollInterval)
 	defer epicParentTicker.Stop()
 
+	// GH-5770: opt-in stale pilot/* branch sweep. A nil channel never fires, so
+	// the select case is inert when disabled. Run starts after the startup
+	// merged-PR catch-up scan, so the boot sweep below runs after it.
+	var staleBranchC <-chan time.Time
+	if c.config.StaleBranchSweep && c.branchSweepClient == nil {
+		c.log.Warn("stale_branch_sweep is enabled but no branch-sweep client is wired — sweep stays off")
+	} else if c.config.StaleBranchSweep {
+		staleBranchTicker := time.NewTicker(c.staleBranchSweepInterval())
+		defer staleBranchTicker.Stop()
+		staleBranchC = staleBranchTicker.C
+		go c.sweepStaleBranches(ctx)
+	}
+
 	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
@@ -9912,6 +9927,8 @@ func (c *Controller) Run(ctx context.Context) error {
 			if err := c.ScanRecentlyMergedPRs(ctx); err != nil {
 				c.log.Warn("periodic merged PR scan failed", "error", err)
 			}
+		case <-staleBranchC:
+			go c.sweepStaleBranches(ctx)
 		case <-epicParentTicker.C:
 			// GH-5657: the reconcilers run off the loop. Run inline, one slow
 			// GitHub call here starved processAllPRs for 57 minutes.

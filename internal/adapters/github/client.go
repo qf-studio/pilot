@@ -756,6 +756,40 @@ func (c *Client) GetBranch(ctx context.Context, owner, repo, branch string) (*Br
 	return &result, nil
 }
 
+// ListBranches returns every branch whose name starts with prefix, via
+// GET /repos/{o}/{r}/git/matching-refs/heads/{prefix} (paginated at 100 per
+// page, capped at 50 pages like ListPullRequests).
+func (c *Client) ListBranches(ctx context.Context, owner, repo, prefix string) ([]BranchRef, error) {
+	const perPage = 100
+	const maxPages = 50
+
+	var all []BranchRef
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/repos/%s/%s/git/matching-refs/heads/%s?per_page=%d&page=%d", owner, repo, prefix, perPage, page)
+		var batch []struct {
+			Ref    string `json:"ref"`
+			Object struct {
+				SHA string `json:"sha"`
+			} `json:"object"`
+		}
+		if err := c.doRequest(ctx, http.MethodGet, path, nil, &batch); err != nil {
+			return nil, err
+		}
+		for _, r := range batch {
+			name := strings.TrimPrefix(r.Ref, "refs/heads/")
+			// matching-refs is a prefix match on the ref; re-check so a
+			// server that ignores the prefix can never widen the result.
+			if strings.HasPrefix(name, prefix) {
+				all = append(all, BranchRef{Name: name, SHA: r.Object.SHA})
+			}
+		}
+		if len(batch) < perPage {
+			break
+		}
+	}
+	return all, nil
+}
+
 // ListPullRequests lists pull requests for a repository.
 // state can be "open", "closed", or "all".
 // Results are paginated at 100 per page (GitHub default is 30). A safety cap
