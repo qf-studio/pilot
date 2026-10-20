@@ -10027,8 +10027,9 @@ func (c *Controller) runEpicParentPass(ctx context.Context) {
 
 	// Deadline watcher: logs at expiry even when a reconciler ignores ctx and
 	// never returns. A normal finish cancels passCtx with context.Canceled,
-	// which this ignores.
-	stopWatch := context.AfterFunc(passCtx, func() {
+	// which this ignores. recordTimeout is once-only because both the watcher
+	// and the pass-exit defer below may call it.
+	recordTimeout := sync.OnceFunc(func() {
 		if passCtx.Err() != context.DeadlineExceeded || ctx.Err() != nil {
 			return
 		}
@@ -10039,13 +10040,22 @@ func (c *Controller) runEpicParentPass(ctx context.Context) {
 		)
 		c.metrics.RecordEpicParentPassTimeout()
 	})
+	stopWatch := context.AfterFunc(passCtx, recordTimeout)
 
 	// Deferred in this order so they run: recover, clear guard, stop watcher,
 	// cancel. The guard is cleared BEFORE the context is cancelled (GH-5554's
 	// ordering in processPRWithDeadline): a cancel-first order lets the watcher
 	// race a finished pass into a false timeout.
 	defer cancel()
-	defer stopWatch()
+	defer func() {
+		// GH-5784: a reconciler that honors the cancelled ctx returns within
+		// microseconds of the deadline, before the AfterFunc goroutine has
+		// started; stopWatch() would then win and the timeout would go unlogged
+		// and uncounted. Record it here — recordTimeout is a no-op if the
+		// watcher already did, or if the pass did not hit its deadline.
+		recordTimeout()
+		stopWatch()
+	}()
 	defer func() {
 		c.epicParentMu.Lock()
 		c.epicParentInflight = false

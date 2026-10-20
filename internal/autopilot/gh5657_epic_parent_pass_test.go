@@ -181,6 +181,32 @@ func TestEpicParentPass_DeadlineLogsAndCounts(t *testing.T) {
 	}
 }
 
+// TestEpicParentPass_DeadlineCountedWhenReconcilerHonorsCtx pins GH-5784: a
+// reconciler that returns the instant its ctx is cancelled must not let the
+// pass-exit path beat the deadline watcher — every such pass counts exactly one
+// timeout.
+func TestEpicParentPass_DeadlineCountedWhenReconcilerHonorsCtx(t *testing.T) {
+	const passes = 50
+	c := stageDeadlineFixture(t, time.Millisecond)
+	c.log = slog.New(slog.NewTextHandler(&syncBuffer{}, nil))
+	c.epicParentStepsFn = func() []epicParentStep {
+		return []epicParentStep{{"ctxHonoringReconciler", func(ctx context.Context) { <-ctx.Done() }}}
+	}
+
+	for i := 0; i < passes; i++ {
+		c.runEpicParentPass(context.Background())
+	}
+
+	// The watcher goroutine may still be in flight for the last pass.
+	if !eventually(2*time.Second, func() bool { return c.Metrics().Snapshot().EpicParentPassTimeouts >= passes }) {
+		t.Fatalf("EpicParentPassTimeouts = %d, want %d", c.Metrics().Snapshot().EpicParentPassTimeouts, passes)
+	}
+	time.Sleep(20 * time.Millisecond) // a duplicate count would land here
+	if got := c.Metrics().Snapshot().EpicParentPassTimeouts; got != passes {
+		t.Fatalf("EpicParentPassTimeouts = %d, want exactly %d", got, passes)
+	}
+}
+
 // TestEpicParentPass_CleanPassStampsPassLivenessNotTick pins the metrics_alerter
 // scope: a finished pass stamps its own gauge and never RecordTick, so a stuck
 // processAllPRs still trips tickStaleness; a clean pass counts no timeout.
