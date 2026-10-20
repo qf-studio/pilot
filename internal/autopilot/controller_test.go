@@ -12421,3 +12421,89 @@ func TestSelfHealForPR_ParentGate(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleCIFailed_UnlistedCheckFailure_ReachesClassifier (GH-5776): with
+// the inherited global allowlist [test, lint], a failed check outside it
+// ("Check Wire-Contract Tests") fails the gate (GH-5468). Its log must reach
+// the classifier — the PR must not be parked on "zero gathered evidence".
+func TestHandleCIFailed_UnlistedCheckFailure_ReachesClassifier(t *testing.T) {
+	issueCreated := false
+	prClosed := false
+	var labelsAdded []string
+
+	const codeLog = `Run scripts/check-wire-contract.sh
+internal/fleet/wire.go:42:6: wire contract drift: field TenantID missing from fleet payload (contract)
+##[error]Process completed with exit code 1.`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/unlisted1/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 3,
+				CheckRuns: []github.CheckRun{
+					{ID: 300, Name: "test", Status: "completed", Conclusion: "success"},
+					{ID: 301, Name: "lint", Status: "completed", Conclusion: "success"},
+					{ID: 302, Name: "Check Wire-Contract Tests", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, resp))
+		case r.URL.Path == "/repos/owner/repo/actions/jobs/302/logs":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(codeLog))
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issueCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, github.Issue{Number: 960}))
+		case r.URL.Path == "/repos/owner/repo/pulls/417" && r.Method == http.MethodPatch:
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
+		case strings.Contains(r.URL.Path, "/labels") && r.Method == http.MethodPost:
+			var body map[string][]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			labelsAdded = append(labelsAdded, body["labels"]...)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.Label{})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.RequiredChecks = []string{"test", "lint"}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+
+	prState := &PRState{
+		PRNumber: 417,
+		HeadSHA:  "unlisted1",
+		Stage:    StageCIFailed,
+	}
+
+	if err := c.handleCIFailed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIFailed returned unexpected error: %v", err)
+	}
+
+	if prState.Error == "CI failure with zero gathered evidence" {
+		t.Errorf("PR held on zero gathered evidence although the unlisted failed check had a log (GH-5776)")
+	}
+	for _, l := range labelsAdded {
+		if l == labelNeedsHuman {
+			t.Errorf("unexpected %s label: the failure was classifiable", labelNeedsHuman)
+		}
+	}
+	if !issueCreated {
+		t.Error("expected a fix issue for a genuine code failure in an unlisted check")
+	}
+	if !prClosed {
+		t.Error("expected the PR to be closed for a genuine code failure in an unlisted check")
+	}
+	if got := c.metrics.Snapshot().CIRuns["unknown_evidence"]; got != 0 {
+		t.Errorf("CIRuns[unknown_evidence] = %d, want 0", got)
+	}
+}

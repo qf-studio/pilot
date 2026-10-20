@@ -397,7 +397,7 @@ func (m *CIMonitor) failedUnlistedChecks(checkRuns *github.CheckRunsResponse, re
 		if _, listed := requiredStatus[run.Name]; listed {
 			continue
 		}
-		if m.matchesExclude(run.Name) {
+		if !m.failureInScope(run.Name) {
 			continue
 		}
 		if run.Status != github.CheckRunCompleted {
@@ -912,7 +912,8 @@ func (m *CIMonitor) GetCIStatus(ctx context.Context, sha string) (CIStatus, erro
 
 // GetFailedChecks returns names of failed checks for a SHA. It applies the
 // same scoping as checkStatus (GH-4307): with a required-checks allowlist,
-// only failures among those names are reported; otherwise, in auto mode,
+// failures among those names plus unlisted failures that fail the gate
+// (GH-5468/GH-5776) are reported; otherwise, in auto mode,
 // Exclude-matched checks (e.g. an always-on scheduled canary) are dropped so
 // fix-issue bodies don't attribute an unrelated failure to this SHA's CI.
 func (m *CIMonitor) GetFailedChecks(ctx context.Context, sha string) ([]string, error) {
@@ -926,7 +927,7 @@ func (m *CIMonitor) GetFailedChecks(ctx context.Context, sha string) ([]string, 
 		if !isCIFailureConclusion(run.Conclusion) {
 			continue
 		}
-		if !m.isScopedCheck(run.Name) {
+		if !m.failureInScope(run.Name) {
 			continue
 		}
 		failed = append(failed, run.Name)
@@ -934,9 +935,36 @@ func (m *CIMonitor) GetFailedChecks(ctx context.Context, sha string) ([]string, 
 	return failed, nil
 }
 
-// isScopedCheck reports whether a check name is in scope for CI status/failure
-// attribution: within the required-checks allowlist when one is configured,
-// otherwise not matching an auto-mode Exclude pattern.
+// failureInScope reports whether a failed check run of this name is allowed
+// to fail the CI gate — and therefore must also be visible to the failure
+// evidence collectors (GetFailedChecks, GetFailedCheckLogsByCheck,
+// GetFailedCheckExcerpts). It is the single scope shared by the gate decision
+// (checkRequiredChecks / failedUnlistedChecks) and those collectors, so the
+// two cannot drift (GH-5776: GH-5468 widened attribution to unlisted checks
+// but the collectors still filtered by the allowlist, leaving a gate failure
+// with zero evidence and the PR parked for a human).
+//
+//   - listed in the required-checks allowlist: in scope.
+//   - allowlist configured, name unlisted: in scope unless matched by
+//     ci_checks.exclude (GH-5468).
+//   - no allowlist: in scope unless an auto-mode Exclude pattern matches.
+func (m *CIMonitor) failureInScope(name string) bool {
+	if len(m.requiredChecks) > 0 {
+		for _, required := range m.requiredChecks {
+			if required == name {
+				return true
+			}
+		}
+		return !m.matchesExclude(name)
+	}
+	return m.isScopedCheck(name)
+}
+
+// isScopedCheck reports whether a check name is in scope for CI status
+// attribution of passing/waited-on checks: within the required-checks
+// allowlist when one is configured, otherwise not matching an auto-mode
+// Exclude pattern. Failure collectors use failureInScope instead, which also
+// admits unlisted failures (GH-5776).
 func (m *CIMonitor) isScopedCheck(name string) bool {
 	if len(m.requiredChecks) > 0 {
 		for _, required := range m.requiredChecks {
@@ -1025,7 +1053,7 @@ func (m *CIMonitor) GetFailedCheckLogsByCheck(ctx context.Context, sha string) [
 		if !isCIFailureConclusion(run.Conclusion) {
 			continue
 		}
-		if !m.isScopedCheck(run.Name) {
+		if !m.failureInScope(run.Name) {
 			continue
 		}
 
@@ -1085,7 +1113,7 @@ func (m *CIMonitor) GetFailedCheckExcerpts(ctx context.Context, sha string) stri
 		if !isCIFailureConclusion(run.Conclusion) {
 			continue
 		}
-		if !m.isScopedCheck(run.Name) {
+		if !m.failureInScope(run.Name) {
 			continue
 		}
 		excerpts = append(excerpts, m.buildFailingStepExcerpt(ctx, run))

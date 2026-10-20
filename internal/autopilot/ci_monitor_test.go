@@ -1902,7 +1902,9 @@ func TestCIMonitor_GetFailedCheckLogsByCheck(t *testing.T) {
 		}
 	})
 
-	t.Run("respects scoping (excludes out-of-scope failed checks)", func(t *testing.T) {
+	// GH-5776: an unlisted failed check no longer falls out of scope (it fails
+	// the gate per GH-5468); only ci_checks.exclude matches stay out.
+	t.Run("respects scoping (excludes ci_checks.exclude-matched failed checks)", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/repos/owner/repo/commits/abc123/check-runs":
@@ -1927,12 +1929,13 @@ func TestCIMonitor_GetFailedCheckLogsByCheck(t *testing.T) {
 		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 		cfg := DefaultConfig()
 		cfg.RequiredChecks = []string{"lint"}
+		cfg.CIChecks = &CIChecksConfig{Mode: "auto", Exclude: []string{"unrelated-check"}}
 		monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
 
 		results := monitor.GetFailedCheckLogsByCheck(context.Background(), "abc123")
 
 		if len(results) != 1 {
-			t.Fatalf("len(results) = %d, want 1 (unrelated-check out of scope)", len(results))
+			t.Fatalf("len(results) = %d, want 1 (excluded unrelated-check out of scope)", len(results))
 		}
 		if results[0].CheckName != "lint" {
 			t.Errorf("CheckName = %q, want lint", results[0].CheckName)
@@ -2440,4 +2443,126 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestCIMonitor_FailureInScope pins the single scope shared by the gate
+// decision and the three failure collectors (GH-5776): a check whose failure
+// may fail the gate must also be visible to GetFailedChecks /
+// GetFailedCheckLogsByCheck / GetFailedCheckExcerpts.
+func TestCIMonitor_FailureInScope(t *testing.T) {
+	const unlisted = "Check Wire-Contract Tests"
+
+	tests := []struct {
+		name       string
+		cfgMut     func(*Config)
+		run        github.CheckRun
+		wantScope  bool
+		wantStatus CIStatus
+	}{
+		{
+			name:       "listed failed",
+			cfgMut:     func(c *Config) { c.RequiredChecks = []string{"test", "lint"} },
+			run:        github.CheckRun{ID: 1, Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+			wantScope:  true,
+			wantStatus: CIFailure,
+		},
+		{
+			name:       "unlisted failed (GH-5468 case)",
+			cfgMut:     func(c *Config) { c.RequiredChecks = []string{"test", "lint"} },
+			run:        github.CheckRun{ID: 2, Name: unlisted, Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+			wantScope:  true,
+			wantStatus: CIFailure,
+		},
+		{
+			name: "excluded failed with allowlist",
+			cfgMut: func(c *Config) {
+				c.RequiredChecks = []string{"test", "lint"}
+				c.CIChecks = &CIChecksConfig{Mode: "auto", Exclude: []string{"epic-lifecycle / run"}}
+			},
+			run:        github.CheckRun{ID: 3, Name: "epic-lifecycle / run", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+			wantScope:  false,
+			wantStatus: CISuccess,
+		},
+		{
+			name: "excluded failed in auto mode without allowlist",
+			cfgMut: func(c *Config) {
+				c.CIChecks = &CIChecksConfig{Mode: "auto", Exclude: []string{"epic-lifecycle / run"}}
+			},
+			run:        github.CheckRun{ID: 4, Name: "epic-lifecycle / run", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+			wantScope:  false,
+			wantStatus: CISuccess,
+		},
+		{
+			name:       "listed success",
+			cfgMut:     func(c *Config) { c.RequiredChecks = []string{"test", "lint"} },
+			run:        github.CheckRun{ID: 5, Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+			wantScope:  true,
+			wantStatus: CISuccess,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runs := []github.CheckRun{tt.run}
+			// Keep the allowlisted checks green so only tt.run decides the gate.
+			for _, name := range []string{"test", "lint"} {
+				if name != tt.run.Name {
+					runs = append(runs, github.CheckRun{ID: 90, Name: name, Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess})
+				}
+			}
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/logs") {
+					_, _ = w.Write([]byte("script printed the exact cause"))
+					return
+				}
+				_ = json.NewEncoder(w).Encode(github.CheckRunsResponse{TotalCount: len(runs), CheckRuns: runs})
+			}))
+			defer server.Close()
+
+			cfg := DefaultConfig()
+			cfg.CIPollInterval = 10 * time.Millisecond
+			cfg.CIWaitTimeout = time.Second
+			tt.cfgMut(cfg)
+			monitor := NewCIMonitor(github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL), "owner", "repo", cfg)
+
+			if got := monitor.failureInScope(tt.run.Name); got != tt.wantScope {
+				t.Errorf("failureInScope(%q) = %v, want %v", tt.run.Name, got, tt.wantScope)
+			}
+
+			status, err := monitor.GetCIStatus(context.Background(), "sha")
+			if err != nil {
+				t.Fatalf("GetCIStatus: %v", err)
+			}
+			if status != tt.wantStatus {
+				t.Errorf("gate status = %s, want %s", status, tt.wantStatus)
+			}
+
+			failing := isCIFailureConclusion(tt.run.Conclusion)
+			wantCollected := tt.wantScope && failing
+
+			failed, err := monitor.GetFailedChecks(context.Background(), "sha")
+			if err != nil {
+				t.Fatalf("GetFailedChecks: %v", err)
+			}
+			if got := len(failed) == 1 && failed[0] == tt.run.Name; got != wantCollected {
+				t.Errorf("GetFailedChecks = %v, collected=%v want %v", failed, got, wantCollected)
+			}
+
+			logs := monitor.GetFailedCheckLogsByCheck(context.Background(), "sha")
+			if got := len(logs) == 1 && logs[0].CheckName == tt.run.Name && logs[0].Logs != ""; got != wantCollected {
+				t.Errorf("GetFailedCheckLogsByCheck = %+v, collected=%v want %v", logs, got, wantCollected)
+			}
+
+			excerpts := monitor.GetFailedCheckExcerpts(context.Background(), "sha")
+			if got := strings.Contains(excerpts, tt.run.Name); got != wantCollected {
+				t.Errorf("GetFailedCheckExcerpts contains %q = %v, want %v (body %q)", tt.run.Name, got, wantCollected, excerpts)
+			}
+
+			// The gate and the collectors must agree: a gate failure always has evidence.
+			if tt.wantStatus == CIFailure && len(failed) == 0 {
+				t.Error("gate failed but GetFailedChecks is empty — zero-evidence drift (GH-5776)")
+			}
+		})
+	}
 }
