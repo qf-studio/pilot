@@ -406,8 +406,10 @@ type TaskDisplay struct {
 	Duration    string
 	IssueURL    string
 	PRURL       string
-	ProjectPath string // Resolved project directory (GH-2167)
-	ProjectName string // Short project name for git graph title (GH-2167)
+	ProjectPath string    // Resolved project directory (GH-2167)
+	ProjectName string    // Short project name for git graph title (GH-2167)
+	StartedAt   time.Time // Zero when unknown
+	CompletedAt time.Time // Zero when unknown or still active
 }
 
 // TokenUsage tracks token consumption
@@ -2147,21 +2149,45 @@ func (m Model) renderTasks() string {
 	if len(m.tasks) == 0 {
 		content.WriteString("  No tasks in queue")
 	} else {
-		sorted := m.sortedTasks()
-		idW := queueIDColumnWidth(sorted)
+		// GH-5783: grouped by project, capped at 3 projects x 3 tickets. The
+		// zoom view keeps the flat uncapped sortedTasks() list.
+		groups, hidden := groupQueueTasks(m.tasks, time.Now())
 
-		queueIdx := 0 // position counter for queued items' "#N" label
-		for i, task := range sorted {
-			if i > 0 {
-				content.WriteString("\n")
-			}
-			offset := 0
-			if task.Status == QueueStatusQueued {
-				offset = queueIdx
-				queueIdx++
-			}
-			content.WriteString(m.renderTask(task, i == m.selectedTask, offset, iw, idW))
+		var visible []TaskDisplay
+		for _, g := range groups {
+			visible = append(visible, g.Tasks...)
 		}
+		idW := queueIDColumnWidth(visible)
+
+		// Queue position labels follow queue order across all projects.
+		queuePos := make(map[string]int)
+		for _, t := range m.tasks {
+			if t.Status == QueueStatusQueued {
+				if _, ok := queuePos[t.ID]; !ok {
+					queuePos[t.ID] = len(queuePos)
+				}
+			}
+		}
+		// m.selectedTask indexes the unsorted m.tasks; match by ID.
+		selectedID := ""
+		if m.selectedTask >= 0 && m.selectedTask < len(m.tasks) {
+			selectedID = m.tasks[m.selectedTask].ID
+		}
+
+		var lines []string
+		for gi, g := range groups {
+			if gi > 0 {
+				lines = append(lines, "")
+			}
+			lines = append(lines, renderQueueGroupHeader(g, iw))
+			for _, task := range g.Tasks {
+				lines = append(lines, m.renderTask(task, selectedID != "" && task.ID == selectedID, queuePos[task.ID], iw, idW))
+			}
+		}
+		if hidden > 0 {
+			lines = append(lines, "", queueMoreProjectsLine(hidden))
+		}
+		content.WriteString(strings.Join(lines, "\n"))
 	}
 
 	// Legend in the top border (grom style): ┤ ● 2 running  ● gh  ● tg  ○ 6 idle ├
@@ -2185,7 +2211,10 @@ func (m Model) renderTasks() string {
 	if m.focus == panelQueue {
 		chrome = focusChrome
 	}
-	return renderPanelStyled("queue", info, content.String(), m.effectivePanelTotalWidth(), chrome)
+	if len(m.tasks) == 0 {
+		return renderPanelStyled("queue", info, content.String(), m.effectivePanelTotalWidth(), chrome)
+	}
+	return renderPanelStyledTopPad("queue", info, content.String(), m.effectivePanelTotalWidth(), chrome)
 }
 
 // sortedTasks returns m.tasks sorted the same way renderTasks displays them
@@ -2357,12 +2386,12 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int, iw i
 	const barWidth = 16
 	var progressBar string
 	switch task.Status {
-	case QueueStatusDone:
-		progressBar = segmentMeter(1, 1, barWidth, gromTheme.Success)
+	case QueueStatusDone, QueueStatusFailed, QueueStatusNoOp:
+		// GH-5783: a full or frozen bar carries no information on a finished
+		// row; show "<run time> · <time ago>" instead.
+		progressBar = dimStyle.Render(padOrTruncate(queueFinishedSlot(task), barWidth))
 	case QueueStatusRunning:
 		progressBar = segmentMeter(task.Progress, 100, barWidth, gromTheme.Accent)
-	case QueueStatusFailed:
-		progressBar = segmentMeter(task.Progress, 100, barWidth, gromTheme.Error)
 	default: // queued, pending — no known progress yet
 		progressBar = meterTrack.Render(strings.Repeat("■", barWidth))
 	}

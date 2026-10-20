@@ -53,6 +53,15 @@ func renderPanelStyled(title, info, content string, tw int, ps render.PanelStyle
 	return render.PanelInfo(strings.ToLower(title), info, padded, tw, h, ps)
 }
 
+// renderPanelStyledTopPad is renderPanelStyled with a blank line above the
+// content only — no blank line below it. The grouped QUEUE panel (GH-5783)
+// uses it so its worst case is 1 + 3×4 + 2 + 2 = 17 inner lines.
+func renderPanelStyledTopPad(title, info, content string, tw int, ps render.PanelStyle) string {
+	padded := "\n" + content
+	h := strings.Count(padded, "\n") + 3 // inner lines + top/bottom border
+	return render.PanelInfo(strings.ToLower(title), info, padded, tw, h, ps)
+}
+
 // statCardHeight: border + value + detail + 2 braille rows + border.
 const statCardHeight = 6
 

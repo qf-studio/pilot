@@ -2910,10 +2910,23 @@ func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDi
 			status = dashboard.QueueStatusPending
 		}
 
-		var duration string
+		var startedAt, completedAt time.Time
 		if state.StartedAt != nil {
-			elapsed := time.Since(*state.StartedAt)
-			duration = elapsed.Round(time.Second).String()
+			startedAt = *state.StartedAt
+		}
+		if state.CompletedAt != nil {
+			completedAt = *state.CompletedAt
+		}
+
+		// Running tasks show elapsed time; finished tasks show their run time
+		// (CompletedAt − StartedAt) so it stops growing once the task ends.
+		var duration string
+		if !startedAt.IsZero() {
+			end := time.Now()
+			if !completedAt.IsZero() && status != dashboard.QueueStatusRunning {
+				end = completedAt
+			}
+			duration = end.Sub(startedAt).Round(time.Second).String()
 		}
 
 		displays = append(displays, dashboard.TaskDisplay{
@@ -2927,6 +2940,8 @@ func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDi
 			PRURL:       state.PRUrl,
 			ProjectPath: state.ProjectPath,
 			ProjectName: state.ProjectName,
+			StartedAt:   startedAt,
+			CompletedAt: completedAt,
 		})
 	}
 	return displays

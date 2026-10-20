@@ -444,3 +444,33 @@ func TestConvertTaskStatesToDisplay_FieldMapping(t *testing.T) {
 		t.Errorf("ProjectName = %q, want %q", d.ProjectName, want.ProjectName)
 	}
 }
+
+// GH-5783: finished tasks carry StartedAt/CompletedAt and a Duration that is
+// their run time, not the time since start.
+func TestConvertTaskStatesToDisplay_Timestamps(t *testing.T) {
+	started := time.Now().Add(-3 * time.Hour)
+	completed := started.Add(14 * time.Minute)
+	states := []*executor.TaskState{
+		{ID: "GH-1", Status: executor.StatusCompleted, StartedAt: &started, CompletedAt: &completed},
+		{ID: "GH-2", Status: executor.StatusRunning, StartedAt: &started},
+		{ID: "GH-3", Status: executor.StatusQueued},
+	}
+
+	got := convertTaskStatesToDisplay(states)
+
+	if !got[0].StartedAt.Equal(started) || !got[0].CompletedAt.Equal(completed) {
+		t.Errorf("done timestamps = %v / %v, want %v / %v", got[0].StartedAt, got[0].CompletedAt, started, completed)
+	}
+	if got[0].Duration != "14m0s" {
+		t.Errorf("done Duration = %q, want run time 14m0s", got[0].Duration)
+	}
+	if !got[1].StartedAt.Equal(started) || !got[1].CompletedAt.IsZero() {
+		t.Errorf("running timestamps = %v / %v", got[1].StartedAt, got[1].CompletedAt)
+	}
+	if got[1].Duration == "" || got[1].Duration == "14m0s" {
+		t.Errorf("running Duration = %q, want elapsed time since start", got[1].Duration)
+	}
+	if !got[2].StartedAt.IsZero() || !got[2].CompletedAt.IsZero() || got[2].Duration != "" {
+		t.Errorf("queued should have zero timestamps and empty Duration: %+v", got[2])
+	}
+}

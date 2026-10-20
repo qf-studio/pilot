@@ -33,8 +33,10 @@ func TestFullDashboardRender_WidthInvariants(t *testing.T) {
 		TaskHistory:  []int{2, 5, 3, 8, 6, 9, 7},
 	}
 	m.tasks = []TaskDisplay{
-		{ID: "GH-3993", Title: "Release trains: scheduled cycles", Status: "running", Progress: 62},
-		{ID: "GH-3994", Title: "Honor require_ci at hijack", Status: "queued"},
+		{ID: "GH-3993", Title: "Release trains: scheduled cycles", Status: "running", Progress: 62, Phase: "Implementing", ProjectName: "pilot", StartedAt: time.Now().Add(-3 * time.Minute)},
+		{ID: "GH-3994", Title: "Honor require_ci at hijack", Status: "queued", ProjectName: "pilot"},
+		{ID: "GH-3990", Title: "Done in another project", Status: "done", PRURL: "https://github.com/o/r/pull/3991", ProjectName: "console", StartedAt: time.Now().Add(-54 * time.Minute), CompletedAt: time.Now().Add(-40 * time.Minute)},
+		{ID: "GH-3980", Title: "Failed in a third project", Status: "failed", Phase: "ci_failed", ProjectName: "docs", CompletedAt: time.Now().Add(-10 * time.Hour)},
 	}
 	m.completedTasks = []CompletedTask{
 		{ID: "GH-4018", Title: "Aggregated scope notes + LLM What's New", Status: "success", CompletedAt: time.Now().Add(-40 * time.Minute), PeakRSSMB: 2048, Stage: StageInfo{Reached: 7, Label: "released", Known: true}},

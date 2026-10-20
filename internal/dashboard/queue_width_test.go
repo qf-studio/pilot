@@ -3,6 +3,7 @@ package dashboard
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -79,10 +80,13 @@ func TestRenderTask_NarrowRegressionPin(t *testing.T) {
 		Status:   QueueStatusDone,
 		Progress: 42,
 		PRURL:    "https://github.com/o/r/pull/42",
+		// GH-5783: finished rows show "<run time> · <time ago>" in the bar slot.
+		StartedAt:   time.Now().Add(-54 * time.Minute),
+		CompletedAt: time.Now().Add(-40 * time.Minute),
 	}
 
 	row := m.renderTask(task, false, 0, 65, queueIDColumnWidth([]TaskDisplay{task}))
-	const want = "  ✓ done    GH-1234 a very long title...  ■■■■■■■■■■■■■■■■   #42"
+	const want = "  ✓ done    GH-1234 a very long title...  14m · 40m ago      #42"
 	if row != want {
 		t.Errorf("narrow (iw=65) rendering changed:\ngot:  %q\nwant: %q", row, want)
 	}
@@ -104,6 +108,13 @@ func TestRenderTask_BarColumnsAligned(t *testing.T) {
 			if strings.ContainsAny(row, "[]") {
 				t.Errorf("iw=%d status=%s: bracket bar found in %q", iw, status, row)
 			}
+			if status == QueueStatusDone || status == QueueStatusFailed {
+				// GH-5783: finished rows swap the bar for run time + age.
+				if strings.Contains(row, "■") || !strings.Contains(row, "–") {
+					t.Errorf("iw=%d status=%s: want finished-row slot without meter in %q", iw, status, row)
+				}
+				continue
+			}
 			if n := strings.Count(row, "■"); n != 16 {
 				t.Errorf("iw=%d status=%s: meter cell count = %d, want 16", iw, status, n)
 			}
@@ -119,7 +130,8 @@ func TestRenderTask_BarColumnsAligned(t *testing.T) {
 func TestRenderTasks_MixedIDColumnAlignment(t *testing.T) {
 	m := NewModel("test")
 	tasks := []TaskDisplay{
-		{ID: "GH-11", Title: "Short ID task", Status: "done", Progress: 100, PRURL: "https://github.com/o/r/pull/11"},
+		{ID: "GH-11", Title: "Short ID task", Status: "done", Progress: 100, PRURL: "https://github.com/o/r/pull/11",
+			StartedAt: time.Now().Add(-54 * time.Minute), CompletedAt: time.Now().Add(-40 * time.Minute)},
 		{ID: "GH-4328", Title: "Epic parent task", Status: "running", Progress: 50},
 		{ID: "GH-4328-1", Title: "Sub-issue task", Status: "queued"},
 	}
@@ -136,6 +148,9 @@ func TestRenderTasks_MixedIDColumnAlignment(t *testing.T) {
 			}
 
 			start := strings.IndexRune(row, '■')
+			if task.Status == QueueStatusDone {
+				start = strings.Index(row, "14m · 40m ago") // finished-row slot (GH-5783)
+			}
 			if start < 0 {
 				t.Fatalf("iw=%d id=%s: no progress-bar glyph found in row %q", iw, task.ID, row)
 			}
