@@ -1,8 +1,10 @@
 package autopilot
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -246,7 +248,7 @@ func TestSweepStaleBranches_FlagOffMakesNoAPICalls(t *testing.T) {
 	}
 }
 
-func TestSweepStaleBranches_PaginatesAllBranches(t *testing.T) {
+func TestSweepStaleBranches_ClosedPRListAcrossPages(t *testing.T) {
 	f := &fakeBranchGitHub{}
 	for i := 0; i < 150; i++ {
 		name := fmt.Sprintf("pilot/GH-%d", 1000+i)
@@ -257,6 +259,28 @@ func TestSweepStaleBranches_PaginatesAllBranches(t *testing.T) {
 	c.sweepStaleBranches(context.Background())
 	if got := len(f.deletedSorted()); got != 150 {
 		t.Errorf("deleted %d of 150 branches (closed-PR list spans two pages)", got)
+	}
+}
+
+// TestSweepStaleBranches_LogsCarryRepo pins GH-5781: with one sweep per project
+// the summary and per-branch lines must be attributable to a repo.
+func TestSweepStaleBranches_LogsCarryRepo(t *testing.T) {
+	f := &fakeBranchGitHub{branches: []string{"pilot/GH-1"}, closed: []*github.PullRequest{closedPR(1, "pilot/GH-1")}}
+	c := newSweepController(t, f, true)
+	var buf bytes.Buffer
+	c.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	c.sweepStaleBranches(context.Background())
+
+	var sawSummary, sawBranch bool
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if !strings.Contains(line, "repo=owner/repo") {
+			t.Errorf("sweep log line missing repo=owner/repo: %s", line)
+		}
+		sawSummary = sawSummary || strings.Contains(line, "stale branch sweep: scanned=")
+		sawBranch = sawBranch || strings.Contains(line, "deleted orphaned branch")
+	}
+	if !sawSummary || !sawBranch {
+		t.Errorf("expected summary and per-branch lines, got:\n%s", buf.String())
 	}
 }
 

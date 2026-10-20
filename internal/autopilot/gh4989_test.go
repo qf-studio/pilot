@@ -133,6 +133,36 @@ func TestRecoverMissedTrainTick_LogsOneLinePerVerdict(t *testing.T) {
 			t.Errorf("expected exactly one \"recovering missed train\" WARN when recovery actually fires, got:\n%s", got)
 		}
 	})
+
+	t.Run("recovery fires on an empty train: WARN followed by one Info skip line with the repo", func(t *testing.T) {
+		server := scheduleTickServer(t, "v1.0.0", nil, nil) // compare returns 0 commits
+		defer server.Close()
+
+		c, logs := newScheduleControllerWithLogCapture(t, server.URL, "0 21 * * FRI")
+		// Info level, as the daemon runs: the outcome must be visible without Debug.
+		c.log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		rel := c.resolvedRelease()
+		rel.ScopeLookback = 7 * 24 * time.Hour
+
+		c.recoverMissedTrainTick(context.Background(), rel, schedule, loc)
+
+		got := logs.String()
+		warnAt := strings.Index(got, "recovering missed train")
+		skipAt := strings.Index(got, "empty train, skipping")
+		if warnAt < 0 || skipAt < 0 || skipAt < warnAt {
+			t.Fatalf("expected the WARN followed by the empty-train skip line, got:\n%s", got)
+		}
+		if n := strings.Count(got, "empty train, skipping"); n != 1 {
+			t.Errorf("expected exactly one empty-train skip line, got %d:\n%s", n, got)
+		}
+		for _, line := range strings.Split(got, "\n") {
+			if strings.Contains(line, "empty train, skipping") {
+				if !strings.Contains(line, "level=INFO") || !strings.Contains(line, "repo=owner/repo") {
+					t.Errorf("skip line must be Info and carry repo=owner/repo, got: %s", line)
+				}
+			}
+		}
+	})
 }
 
 // newScheduleControllerWithLogCapture is newScheduleController plus a

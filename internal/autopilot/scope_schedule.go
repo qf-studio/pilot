@@ -326,7 +326,8 @@ func (c *Controller) scheduleReleaseTick(ctx context.Context, scheduledAt time.T
 			return releaseTickFailed, err
 		}
 		if len(memberPRs) == 0 {
-			c.log.Debug("scheduleReleaseTick: no merged PRs yet, skipping first release",
+			c.log.Info("scheduleReleaseTick: no merged PRs yet, skipping first release",
+				"repo", c.repoKey(),
 				"scheduled_at", scheduledAt.Format(time.RFC3339))
 			return releaseTickSkipped, nil
 		}
@@ -350,8 +351,8 @@ func (c *Controller) scheduleReleaseTick(ctx context.Context, scheduledAt time.T
 			return releaseTickFailed, cmpErr
 		}
 		if len(commits) == 0 {
-			c.log.Debug("scheduleReleaseTick: empty train, skipping",
-				"last_tag", lastTag, "scheduled_at", scheduledAt.Format(time.RFC3339))
+			c.log.Info("scheduleReleaseTick: empty train, skipping",
+				"repo", c.repoKey(), "last_tag", lastTag, "scheduled_at", scheduledAt.Format(time.RFC3339))
 			return releaseTickSkipped, nil
 		}
 

@@ -97,18 +97,18 @@ func (c *Controller) sweepStaleBranches(ctx context.Context) {
 
 	branches, err := c.branchSweepClient.ListBranches(ctx, c.owner, c.repo, staleBranchPrefix)
 	if err != nil {
-		c.log.Warn("stale branch sweep: failed to list branches", "error", err)
+		c.log.Warn("stale branch sweep: failed to list branches", "repo", c.repoKey(), "error", err)
 		return
 	}
 	openPRs, err := c.ghClient.ListPullRequests(ctx, c.owner, c.repo, "open")
 	if err != nil {
 		// Fail-closed: without the open set we cannot tell orphans from live work.
-		c.log.Warn("stale branch sweep: failed to list open PRs, skipping sweep", "error", err)
+		c.log.Warn("stale branch sweep: failed to list open PRs, skipping sweep", "repo", c.repoKey(), "error", err)
 		return
 	}
 	closedPRs, err := c.ghClient.ListPullRequests(ctx, c.owner, c.repo, "closed")
 	if err != nil {
-		c.log.Warn("stale branch sweep: failed to list closed PRs, skipping sweep", "error", err)
+		c.log.Warn("stale branch sweep: failed to list closed PRs, skipping sweep", "repo", c.repoKey(), "error", err)
 		return
 	}
 
@@ -141,7 +141,7 @@ func (c *Controller) sweepStaleBranches(ctx context.Context) {
 		scanned++
 		if openHeads[b.Name] || tracked[b.Name] || live[strings.TrimPrefix(b.Name, staleBranchPrefix)] {
 			skippedOpen++
-			c.log.Debug("stale branch sweep: skipping branch with open/tracked PR or live execution", "branch", b.Name)
+			c.log.Debug("stale branch sweep: skipping branch with open/tracked PR or live execution", "repo", c.repoKey(), "branch", b.Name)
 			continue
 		}
 
@@ -149,7 +149,7 @@ func (c *Controller) sweepStaleBranches(ctx context.Context) {
 		if !hasPR {
 			br, gerr := c.branchSweepClient.GetBranch(ctx, c.owner, c.repo, b.Name)
 			if gerr != nil {
-				c.log.Warn("stale branch sweep: failed to read branch tip, skipping", "branch", b.Name, "error", gerr)
+				c.log.Warn("stale branch sweep: failed to read branch tip, skipping", "repo", c.repoKey(), "branch", b.Name, "error", gerr)
 				errs++
 				continue
 			}
@@ -163,11 +163,11 @@ func (c *Controller) sweepStaleBranches(ctx context.Context) {
 		ok, derr := c.safeDeleteBranch(ctx, b.Name, prNumber)
 		switch {
 		case derr != nil:
-			c.log.Warn("stale branch sweep: failed to delete branch", "branch", b.Name, "pr", prNumber, "error", derr)
+			c.log.Warn("stale branch sweep: failed to delete branch", "repo", c.repoKey(), "branch", b.Name, "pr", prNumber, "error", derr)
 			errs++
 		case ok:
 			deleted++
-			c.log.Info("stale branch sweep: deleted orphaned branch", "branch", b.Name, "pr", prNumber)
+			c.log.Info("stale branch sweep: deleted orphaned branch", "repo", c.repoKey(), "branch", b.Name, "pr", prNumber)
 		default:
 			// Held by safeDeleteBranch (base of an open PR) or its check failed closed.
 			skippedOpen++
@@ -176,5 +176,5 @@ func (c *Controller) sweepStaleBranches(ctx context.Context) {
 
 	c.metrics.RecordStaleBranchesDeleted(deleted)
 	c.log.Info(fmt.Sprintf("stale branch sweep: scanned=%d deleted=%d skipped_open=%d skipped_young=%d errors=%d",
-		scanned, deleted, skippedOpen, skippedYoung, errs))
+		scanned, deleted, skippedOpen, skippedYoung, errs), "repo", c.repoKey())
 }

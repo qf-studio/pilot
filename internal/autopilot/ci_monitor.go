@@ -1031,8 +1031,9 @@ type FailedCheckLog struct {
 }
 
 // GetFailedCheckLogsByCheck fetches raw job logs for each failed, in-scope
-// check run individually, scoped by isScopedCheck (same scoping as
-// GetFailedChecks, GH-4307), keeping each check's log (and job ID) separate
+// check run individually, scoped by failureInScope (one predicate shared with
+// the CI gate and GetFailedChecks, GH-5776 — see its doc comment for the scope
+// rules), keeping each check's log (and job ID) separate
 // instead of concatenating them into one blob, so callers (GH-4533) can
 // classify each failure independently.
 //
