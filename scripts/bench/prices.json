@@ -1,0 +1,9 @@
+{
+  "source": "claude-api skill model table (2026-10); verify against the pricing page at run time",
+  "as_of": "2026-10-21",
+  "unit": "USD per million tokens",
+  "models": {
+    "claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.20, "cache_write": 5.0},
+    "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_read": 0.20, "cache_write": 2.5}
+  }
+}

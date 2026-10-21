@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-mocks check-destructive check-graph gate check-integration test-prepush-fastpath auto-fix test-short test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard watch-git-config
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-mocks check-destructive check-graph test-bench bench-bootstrap-report gate check-integration test-prepush-fastpath auto-fix test-short test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard watch-git-config
 
 # Variables
 BINARY_NAME=pilot
@@ -56,8 +56,16 @@ deps:
 	go mod tidy
 
 # Run tests
-test:
+test: test-bench
 	go test -v -race ./...
+
+# Bootstrap cost harness tests: offline, fixture-driven (TASK-581)
+test-bench:
+	python3 -I scripts/bench/bootstrap_report_test.py
+
+# Markdown cost table over the latest scripts/bench/results/*.jsonl (TASK-581)
+bench-bootstrap-report:
+	@python3 -I scripts/bench/bootstrap_report.py report --results-dir scripts/bench/results $(if $(BENCH_CLONES),--clones $(BENCH_CLONES))
 
 # Run tests with coverage
 test-coverage:

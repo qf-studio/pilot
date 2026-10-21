@@ -127,3 +127,6 @@ deploy/grafana/*.bak
 .agent/.nav-config.local.json
 .agent/onboarding/
 .stream/
+
+# Bootstrap cost harness results (TASK-581): operator-run output, pasted into .agent/system/bench/ by hand
+scripts/bench/results/
