@@ -1423,6 +1423,10 @@ type PRState struct {
 	// HoldRedriveCount is the lifetime count of redriveHeldPR revivals, capped
 	// at maxHoldRedrives. Never reset. Persisted.
 	HoldRedriveCount int
+	// GreenRedriveSHA is the head SHA redriveSizeGuardHoldOnGreen (GH-5801)
+	// last revived a size-guard hold on; it makes that revive one-shot per SHA.
+	// In-memory only.
+	GreenRedriveSHA string
 	// PostMergeInfraRerunCount is the post-merge analog of InfraRerunCount
 	// (GH-4813): how many times handlePostMergeCI has auto-retried this
 	// carrier's failed jobs after classifying a post-merge CI failure as a CI
@@ -1544,6 +1548,7 @@ func (ps *PRState) snapshot() *PRState {
 		HoldHeadSHA:                  ps.HoldHeadSHA,
 		HoldLabels:                   ps.HoldLabels,
 		HoldRedriveCount:             ps.HoldRedriveCount,
+		GreenRedriveSHA:              ps.GreenRedriveSHA,
 		PostMergeInfraRerunCount:     ps.PostMergeInfraRerunCount,
 		PostMergeInfraRerunSHA:       ps.PostMergeInfraRerunSHA,
 		ReleaseBackfillAbandoned:     ps.ReleaseBackfillAbandoned,

@@ -4294,7 +4294,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 					// branch intact.
 					comment := fmt.Sprintf("CI fix size guard fired: PR has %d production additions, over limit %d%s (likely cascade contamination). No fix issue will be created. %s",
 						production, c.config.MaxCIFixPRSize, excludedAdditionsSuffix(bookkeeping, test), ciFailedChecksSummary(failedChecks))
-					c.escalateAndHold(ctx, prState, "CI fix size guard fired", []string{labelNeedsHuman}, comment, true)
+					c.escalateAndHold(ctx, prState, sizeGuardHoldReason, []string{labelNeedsHuman}, comment, true)
 					c.metrics.RecordPRFailed()
 					c.metrics.RecordPRFailedClass(failureClass)
 					c.recordCIFailVerdict(failureClass)
@@ -8610,26 +8610,7 @@ func (c *Controller) redriveHeldPR(ctx context.Context, prState *PRState, ghPR *
 	prState.Error = ""
 	prState.TerminalLabel = ""
 
-	// GH-5391/GH-5099: mirror the exhaustion-outranks-close-supersedes-hold
-	// guard used at the external-close label site — an issue already parked at
-	// pilot-failed-retry-exhausted has a spent retry budget, a stronger signal
-	// than this hold, so a branch push must not silently strip its labels.
-	removeLabels := []string{labelNeedsHuman}
-	for _, l := range strings.Split(holdLabels, ",") {
-		if l = strings.TrimSpace(l); l != "" && !slices.Contains(removeLabels, l) {
-			removeLabels = append(removeLabels, l)
-		}
-	}
-	if prState.IssueNumber > 0 {
-		if issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber); err != nil {
-			c.log.Warn("redriveHeldPR: failed to fetch issue, leaving hold labels unchanged", "pr", prState.PRNumber, "issue", prState.IssueNumber, "error", err)
-			removeLabels = nil
-		} else if github.HasLabel(issue, github.LabelFailedRetryExhausted) {
-			c.log.Info("redriveHeldPR: pilot-failed-retry ladder already exhausted, leaving hold labels standing", "pr", prState.PRNumber, "issue", prState.IssueNumber)
-			removeLabels = nil
-		}
-	}
-	c.mutateIssueLabels(ctx, prState.IssueNumber, nil, removeLabels)
+	c.releaseHoldLabels(ctx, prState, holdLabels, "redriveHeldPR")
 
 	c.log.Info("redriveHeldPR: branch updated on held PR, re-entering pipeline",
 		"pr", prState.PRNumber, "issue", prState.IssueNumber,
@@ -8645,6 +8626,87 @@ func (c *Controller) redriveHeldPR(ctx context.Context, prState *PRState, ghPR *
 		if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); err != nil {
 			c.log.Warn("redriveHeldPR: failed to post PR comment", "pr", prState.PRNumber, "error", err)
 		}
+	}
+}
+
+// releaseHoldLabels removes pilot-needs-human plus the hold's own labels from
+// the linked issue on behalf of a hold redrive (caller names the log lines).
+//
+// GH-5391/GH-5099: mirrors the exhaustion-outranks-close-supersedes-hold
+// guard used at the external-close label site — an issue already parked at
+// pilot-failed-retry-exhausted has a spent retry budget, a stronger signal
+// than the hold, so a redrive must not silently strip its labels.
+func (c *Controller) releaseHoldLabels(ctx context.Context, prState *PRState, holdLabels, caller string) {
+	removeLabels := []string{labelNeedsHuman}
+	for _, l := range strings.Split(holdLabels, ",") {
+		if l = strings.TrimSpace(l); l != "" && !slices.Contains(removeLabels, l) {
+			removeLabels = append(removeLabels, l)
+		}
+	}
+	if prState.IssueNumber > 0 {
+		if issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber); err != nil {
+			c.log.Warn(caller+": failed to fetch issue, leaving hold labels unchanged", "pr", prState.PRNumber, "issue", prState.IssueNumber, "error", err)
+			removeLabels = nil
+		} else if github.HasLabel(issue, github.LabelFailedRetryExhausted) {
+			c.log.Info(caller+": pilot-failed-retry ladder already exhausted, leaving hold labels standing", "pr", prState.PRNumber, "issue", prState.IssueNumber)
+			removeLabels = nil
+		}
+	}
+	c.mutateIssueLabels(ctx, prState.IssueNumber, nil, removeLabels)
+}
+
+// sizeGuardHoldReason is the escalateAndHold reason recorded when the CI-fix
+// size guard parks a PR; redriveSizeGuardHoldOnGreen keys on it (GH-5801).
+const sizeGuardHoldReason = "CI fix size guard fired"
+
+// redriveSizeGuardHoldOnGreen is GH-5801: a PR parked by the CI-fix size guard
+// whose CI has since gone green on the SAME head SHA (a flaky test rerun —
+// console PR#426, 2026-10-22) is revived to StageWaitingCI; the next tick
+// re-reads the now-green status and carries it down the CI-passed path.
+// redriveHeldPR only fires on a new head, so this is the same-SHA leg.
+//
+// Holds with any other reason are untouched. One-shot per head SHA:
+// GreenRedriveSHA records the SHA revived, so a second red on it re-parks via
+// the size guard and stays parked; a new head is redriveHeldPR's business and
+// re-arms this. Attempt counters (CIFixIterations, HoldRedriveCount, ...) are
+// preserved. Decision: GreenRedriveSHA is in-memory — a daemon restart can
+// grant one extra revive, and only after a rerun went green again.
+func (c *Controller) redriveSizeGuardHoldOnGreen(ctx context.Context, prState *PRState, ghPR *github.PullRequest) {
+	if ghPR == nil || prState.Stage != StageFailed || !prState.HoldActive || prState.Error != sizeGuardHoldReason {
+		return
+	}
+	if ghPR.State == "closed" || ghPR.Merged || prState.PostMergeSHA != "" || c.ciMonitor == nil {
+		return
+	}
+	sha := ghPR.Head.SHA
+	if sha == "" || sha != prState.HoldHeadSHA || sha == prState.GreenRedriveSHA {
+		return
+	}
+	status, err := c.ciMonitor.CheckCI(ctx, sha)
+	if err != nil || status != CISuccess {
+		return
+	}
+
+	reason := prState.Error
+	holdLabels := prState.HoldLabels
+	prState.GreenRedriveSHA = sha
+	prState.HoldActive = false
+	prState.HoldHeadSHA = ""
+	prState.HoldLabels = ""
+	prState.HeadSHA = sha
+	prState.Stage = StageWaitingCI
+	prState.CIWaitStartedAt = time.Now()
+	prState.Error = ""
+	prState.TerminalLabel = ""
+
+	c.releaseHoldLabels(ctx, prState, holdLabels, "redriveSizeGuardHoldOnGreen")
+
+	c.log.Info("redriveSizeGuardHoldOnGreen: CI green on held head, resuming",
+		"pr", prState.PRNumber, "sha", ShortSHA(sha), "reason", reason)
+
+	comment := fmt.Sprintf("CI green on %s after rerun; resuming", ShortSHA(sha))
+	if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); err != nil {
+		c.log.Warn("redriveSizeGuardHoldOnGreen: failed to post PR comment", "pr", prState.PRNumber, "error", err)
 	}
 }
 
@@ -10418,6 +10480,10 @@ func (c *Controller) processOnePR(ctx context.Context, snap *PRState) (stopTick 
 	// held in exactly that state. Must also run before ProcessPR for
 	// the same reason as reAdoptHeldRebasePR above.
 	c.redriveHeldPR(ctx, pr, ghPR)
+
+	// GH-5801: same-SHA leg — revive a size-guard hold whose CI went green
+	// on the held head (flaky rerun). Also before ProcessPR.
+	c.redriveSizeGuardHoldOnGreen(ctx, pr, ghPR)
 
 	// Detect changes_requested reviews in polling mode (webhook mode uses OnReviewRequested).
 	// GH-5327: reviewTriggerEligible replaces the old two-stage exclusion with
