@@ -38,7 +38,17 @@ func newFixtureRepo(t *testing.T) string {
 	local := filepath.Join(root, "local")
 
 	runFixtureGit(t, root, "init", "--bare", "-b", "main", bare)
+	// Decision: disable auto-gc/maintenance on both repos. `git push` makes
+	// the receiving bare repo (and commits in the clone/worktrees) spawn a
+	// detached `gc --auto` / `maintenance run --auto` that can still be
+	// writing into origin.git when t.TempDir() cleanup runs, failing the test
+	// with "unlinkat .../origin.git: directory not empty" (GH-5826).
+	runFixtureGit(t, bare, "config", "receive.autogc", "false")
+	runFixtureGit(t, bare, "config", "gc.auto", "0")
+	runFixtureGit(t, bare, "config", "maintenance.auto", "false")
 	runFixtureGit(t, root, "clone", bare, local)
+	runFixtureGit(t, local, "config", "gc.auto", "0")
+	runFixtureGit(t, local, "config", "maintenance.auto", "false")
 	runFixtureGit(t, local, "config", "user.email", "test@example.com")
 	runFixtureGit(t, local, "config", "user.name", "Test")
 
