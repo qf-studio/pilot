@@ -237,7 +237,7 @@ func TestParseStreamEvent(t *testing.T) {
 			name:          "system init",
 			json:          `{"type":"system","subtype":"init","session_id":"abc"}`,
 			wantProgress:  true,
-			expectedPhase: "🚀 Started",
+			expectedPhase: "Started",
 		},
 		{
 			name:          "tool use Write triggers Implementing phase",
@@ -1442,8 +1442,8 @@ func TestParseNavigatorPatternsStagnation(t *testing.T) {
 	state := &progressState{phase: "Starting"}
 	runner.parseNavigatorPatterns("TASK-1", "STAGNATION DETECTED - retrying", state)
 
-	if lastPhase != "⚠️ Stalled" {
-		t.Errorf("phase = %q, want ⚠️ Stalled", lastPhase)
+	if lastPhase != "Stalled" {
+		t.Errorf("phase = %q, want Stalled", lastPhase)
 	}
 }
 
@@ -1624,7 +1624,7 @@ func TestProcessBackendEvent(t *testing.T) {
 				Type:    EventTypeInit,
 				Message: "Backend initialized",
 			},
-			expectedPhase: "🚀 Started",
+			expectedPhase: "Started",
 			expectedMsg:   "Backend initialized",
 		},
 		{

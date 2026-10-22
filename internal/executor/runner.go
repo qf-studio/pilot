@@ -8011,7 +8011,7 @@ func (r *Runner) parseStreamEvent(taskID, line string, state *progressState) (st
 	switch event.Type {
 	case "system":
 		if event.Subtype == "init" {
-			r.reportProgress(taskID, "🚀 Started", 5, "Claude Code initialized")
+			r.reportProgress(taskID, "Started", 5, "Claude Code initialized")
 		}
 
 	case "assistant":
@@ -8121,7 +8121,7 @@ func (r *Runner) processBackendEvent(taskID string, event BackendEvent, state *p
 		if event.SessionID != "" {
 			state.sessionID = event.SessionID
 		}
-		r.reportProgress(taskID, "🚀 Started", 5, event.Message)
+		r.reportProgress(taskID, "Started", 5, event.Message)
 
 	case EventTypeText:
 		// Parse Navigator-specific patterns from text
@@ -8228,7 +8228,7 @@ func (r *Runner) parseNavigatorPatterns(taskID, text string, state *progressStat
 
 	// Stagnation detection
 	if strings.Contains(text, "STAGNATION DETECTED") {
-		r.reportProgress(taskID, "⚠️ Stalled", 0, "Navigator detected stagnation")
+		r.reportProgress(taskID, "Stalled", 0, "Navigator detected stagnation")
 		return
 	}
 }
@@ -8346,7 +8346,7 @@ func (r *Runner) handleStructuredSignals(taskID string, signals []PilotSignal, s
 			r.reportProgress(taskID, "Finishing", 95, signal.Message)
 
 		case SignalTypeStagnation:
-			r.reportProgress(taskID, "⚠️ Stalled", 0, "Navigator detected stagnation")
+			r.reportProgress(taskID, "Stalled", 0, "Navigator detected stagnation")
 		}
 
 		// Check for exit signal from any signal type
