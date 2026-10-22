@@ -173,17 +173,33 @@ func (g *Generator) Generate(period BriefPeriod) (*Brief, error) {
 	return brief, nil
 }
 
-// GenerateDaily creates a brief for the previous 24 hours
+// GenerateDaily creates a brief for the period since the previous daily brief
+// was sent, ending now (GH-5813).
 func (g *Generator) GenerateDaily() (*Brief, error) {
+	return g.GenerateDailyEnding(time.Now())
+}
+
+// GenerateDailyEnding creates the daily brief for [previous daily brief sent,
+// end], or [end - 24h, end] when none was sent. The period ends at the run
+// time rather than a fixed hour, so a run completed between two slots lands in
+// the next brief whatever the schedule is. Times are in the configured timezone.
+func (g *Generator) GenerateDailyEnding(end time.Time) (*Brief, error) {
 	loc, err := time.LoadLocation(g.config.Timezone)
 	if err != nil {
 		loc = time.UTC
 	}
+	end = end.In(loc)
 
-	now := time.Now().In(loc)
-	// Brief covers yesterday 9 AM to today 9 AM (or configured time)
-	end := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, loc)
 	start := end.Add(-24 * time.Hour)
+	last, err := g.store.GetLastBriefSentAny(string(KindDaily))
+	if err != nil {
+		return nil, err
+	}
+	// A record at or after end (clock skew, manual re-run in the same instant)
+	// would give an empty or inverted window, so it keeps the 24h fallback.
+	if last != nil && last.SentAt.Before(end) {
+		start = last.SentAt.In(loc)
+	}
 
 	return g.Generate(BriefPeriod{Start: start, End: end})
 }

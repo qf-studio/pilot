@@ -5943,6 +5943,29 @@ func (s *Store) GetLogsByExecutionID(executionID string, limit int) ([]*LogEntry
 	return entries, nil
 }
 
+// GetLastBriefSentAny returns the most recent brief record of briefType on any
+// channel, or nil when none has been sent. The daily brief's period starts at
+// this time (GH-5813).
+func (s *Store) GetLastBriefSentAny(briefType string) (*BriefRecord, error) {
+	row := s.db.QueryRow(`
+		SELECT id, sent_at, channel, brief_type, COALESCE(recipient, '')
+		FROM brief_history
+		WHERE brief_type = ?
+		ORDER BY sent_at DESC
+		LIMIT 1
+	`, briefType)
+
+	var record BriefRecord
+	err := row.Scan(&record.ID, &record.SentAt, &record.Channel, &record.BriefType, &record.Recipient)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
 // GetLastBriefSent returns the most recent brief record for a given channel
 // and brief type. Returns nil if no matching brief has been sent.
 //
