@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-mocks check-destructive check-graph test-bench bench-bootstrap-report gate check-integration test-prepush-fastpath auto-fix test-short test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard watch-git-config
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-mocks check-destructive check-graph test-bench bench-bootstrap-report pentest gate check-integration test-prepush-fastpath auto-fix test-short test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard watch-git-config
 
 # Variables
 BINARY_NAME=pilot
@@ -66,6 +66,13 @@ test-bench:
 # Markdown cost table over the latest scripts/bench/results/*.jsonl (TASK-581)
 bench-bootstrap-report:
 	@python3 -I scripts/bench/bootstrap_report.py report --results-dir scripts/bench/results $(if $(BENCH_CLONES),--clones $(BENCH_CLONES))
+
+# Hostile-ticket pen-test harness (GH-5793): runs prompt-injected issue bodies
+# through the real executor with a live backend and writes tests/pentest/out/<ts>/report.md.
+# Needs a real key and network, so it is skipped when CI is set (PENTEST_FORCE=1 overrides).
+# PENTEST_ARGS passes flags through, e.g. PENTEST_ARGS="-config ~/.pilot/config.yaml -only 01-".
+pentest:
+	go run ./tests/pentest/cmd/pentest $(PENTEST_ARGS)
 
 # Run tests with coverage
 test-coverage:
@@ -308,6 +315,7 @@ help:
 	@echo "  make check-secrets  Check for secret patterns in tests"
 	@echo "  make check-mocks    Check for argument-discarding mocks (Backend.Execute, QualityChecker.Check)"
 	@echo "  make check-destructive  Check for destructive-call-gate bypasses"
+	@echo "  make pentest        Run the hostile-ticket pen-test harness (live backend; skipped in CI)"
 	@echo "  make check-graph    Check knowledge-graph drift (graph.json vs disk)"
 	@echo "  make check-integration  Check for orphan code"
 	@echo "  make test-prepush-fastpath  Test the pre-push docs-only fast-path classifier"

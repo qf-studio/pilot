@@ -130,3 +130,6 @@ deploy/grafana/*.bak
 
 # Bootstrap cost harness results (TASK-581): operator-run output, pasted into .agent/system/bench/ by hand
 scripts/bench/results/
+
+# Pen-test harness output (may contain leaked values if the harness finds a defect)
+/tests/pentest/out/

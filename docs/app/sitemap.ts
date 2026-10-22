@@ -83,6 +83,7 @@ const ROUTES = [
   '/guides/custom-providers',
   '/guides/tunnel-setup',
   '/guides/troubleshooting',
+  '/guides/pen-test',
   '/community',
 ]
 
