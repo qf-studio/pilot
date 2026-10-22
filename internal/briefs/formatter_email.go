@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html"
 	"strings"
+	"time"
 )
 
 // EmailFormatter formats briefs as HTML email
@@ -169,7 +170,12 @@ func (f *EmailFormatter) FormatStructured(b *StructuredBrief) (string, error) {
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
 `)
 	fmt.Fprintf(&sb, "<h1>%s</h1>\n", briefTitle(b.Kind))
-	fmt.Fprintf(&sb, "<p style=\"color: #64748b;\">%s</p>\n", b.GeneratedAt.Format("Monday, January 2, 2006"))
+	loc := structuredLocation(b)
+	fmt.Fprintf(&sb, "<p style=\"color: #64748b;\">%s</p>\n", b.GeneratedAt.In(loc).Format("Monday, January 2, 2006"))
+	if !b.PeriodStart.IsZero() && !b.PeriodEnd.IsZero() {
+		fmt.Fprintf(&sb, "<p style=\"color: #64748b;\">%s – %s</p>\n",
+			b.PeriodStart.In(loc).Format("Jan 2, 15:04"), b.PeriodEnd.In(loc).Format("Jan 2, 15:04 MST"))
+	}
 	writeWeeklyProofHTML(&sb, b.Weekly)
 
 	// Shipped
@@ -233,7 +239,18 @@ func (f *EmailFormatter) FormatStructured(b *StructuredBrief) (string, error) {
 
 // SubjectStructured returns the email subject line for a structured brief.
 func (f *EmailFormatter) SubjectStructured(b *StructuredBrief) string {
-	return fmt.Sprintf("%s — %s", briefTitle(b.Kind), b.GeneratedAt.Format("Jan 2, 2006"))
+	return fmt.Sprintf("%s — %s", briefTitle(b.Kind), b.GeneratedAt.In(structuredLocation(b)).Format("Jan 2, 2006"))
+}
+
+// structuredLocation is the zone the brief's timestamps are shown in: its
+// Timezone, else the zone the timestamp already carries (GH-5814).
+func structuredLocation(b *StructuredBrief) *time.Location {
+	if b.Timezone != "" {
+		if loc, err := time.LoadLocation(b.Timezone); err == nil {
+			return loc
+		}
+	}
+	return b.GeneratedAt.Location()
 }
 
 // writeWeeklyProofHTML renders the weekly proof numbers and the biggest

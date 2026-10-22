@@ -118,7 +118,10 @@ const StructuredBriefSchema = 1
 type StructuredBrief struct {
 	Schema int `json:"schema"`
 	// Kind is "daily" or "weekly" (GH-5792).
-	Kind         BriefKind    `json:"kind"`
+	Kind BriefKind `json:"kind"`
+	// Timezone is the IANA name of the zone the timestamps below are
+	// rendered in: daily_brief.timezone, else the box zone (GH-5814).
+	Timezone     string       `json:"timezone"`
 	GeneratedAt  time.Time    `json:"generated_at"`
 	PeriodStart  time.Time    `json:"period_start"`
 	PeriodEnd    time.Time    `json:"period_end"`

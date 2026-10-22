@@ -2,6 +2,7 @@ package briefs
 
 import (
 	"encoding/json"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -41,6 +42,7 @@ func BuildStructured(now time.Time, period BriefPeriod, execs []*memory.Executio
 	b := &StructuredBrief{
 		Schema:       StructuredBriefSchema,
 		Kind:         KindDaily,
+		Timezone:     zoneName(now.Location()),
 		GeneratedAt:  now,
 		PeriodStart:  period.Start,
 		PeriodEnd:    period.End,
@@ -117,6 +119,33 @@ func BuildStructured(now time.Time, period BriefPeriod, execs []*memory.Executio
 		b.Pool = &PoolUsage{PercentUsed: *poolPercent}
 	}
 	return b
+}
+
+// zoneName is the IANA name of loc. time.Local reports "Local", so the box
+// zone is resolved from TZ, else the zone abbreviation ("UTC" on a UTC box).
+func zoneName(loc *time.Location) string {
+	name := loc.String()
+	if name != "Local" {
+		return name
+	}
+	if tz := os.Getenv("TZ"); tz != "" {
+		if _, err := time.LoadLocation(tz); err == nil {
+			return tz
+		}
+	}
+	abbr, _ := time.Now().In(loc).Zone()
+	return abbr
+}
+
+// briefLocation is the zone a brief is rendered in: the configured IANA
+// timezone when valid, else the box zone (GH-5814).
+func briefLocation(name string) *time.Location {
+	if name != "" {
+		if loc, err := time.LoadLocation(name); err == nil {
+			return loc
+		}
+	}
+	return time.Local
 }
 
 // MarshalPayload returns the console JSON payload.

@@ -219,6 +219,61 @@ func TestStructuredBrief_JSONRoundTrip(t *testing.T) {
 	if generic["schema"] != float64(1) {
 		t.Errorf("schema = %v, want 1", generic["schema"])
 	}
+	if generic["timezone"] != "UTC" || back.Timezone != "UTC" {
+		t.Errorf("timezone = %v / %q, want UTC", generic["timezone"], back.Timezone)
+	}
+}
+
+// With daily_brief.timezone Europe/Berlin the payload names the zone, its
+// timestamps carry the Berlin offset and the email date line and period
+// bounds are rendered in Berlin time (GH-5814).
+func TestStructuredBrief_TimezoneBerlin(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	config := DefaultBriefConfig()
+	config.Timezone = "Europe/Berlin"
+	g := NewGenerator(store, config)
+
+	// 23:30 UTC on Oct 22 is already Oct 23, 01:30 in Berlin (CEST, +02:00).
+	end := time.Date(2026, 10, 22, 23, 30, 0, 0, time.UTC)
+	sb, err := g.GenerateStructured(BriefPeriod{Start: end.Add(-24 * time.Hour), End: end})
+	if err != nil {
+		t.Fatalf("GenerateStructured: %v", err)
+	}
+	if sb.Timezone != "Europe/Berlin" {
+		t.Errorf("timezone = %q, want Europe/Berlin", sb.Timezone)
+	}
+	if sb.Schema != 1 {
+		t.Errorf("schema = %d, want 1", sb.Schema)
+	}
+	if !sb.PeriodEnd.Equal(end) {
+		t.Errorf("period end instant changed: %v", sb.PeriodEnd)
+	}
+	raw := mustJSON(t, sb)
+	if !strings.Contains(raw, `"timezone":"Europe/Berlin"`) || !strings.Contains(raw, `"period_end":"2026-10-23T01:30:00+02:00"`) {
+		t.Errorf("payload not in Berlin time: %s", raw)
+	}
+
+	out, err := NewEmailFormatter().FormatStructured(sb)
+	if err != nil {
+		t.Fatalf("FormatStructured: %v", err)
+	}
+	if !strings.Contains(out, "Friday, October 23, 2026") {
+		t.Errorf("email date line not in Berlin time:\n%s", out)
+	}
+	if !strings.Contains(out, "Oct 22, 01:30 – Oct 23, 01:30 CEST") {
+		t.Errorf("email period not in Berlin time:\n%s", out)
+	}
+
+	// The formatter honors the payload's zone even when the timestamps
+	// carry another offset.
+	utc := *sb
+	utc.GeneratedAt, utc.PeriodStart, utc.PeriodEnd = sb.GeneratedAt.UTC(), sb.PeriodStart.UTC(), sb.PeriodEnd.UTC()
+	out, _ = NewEmailFormatter().FormatStructured(&utc)
+	if !strings.Contains(out, "Oct 23, 01:30 CEST") {
+		t.Errorf("email ignored Timezone field:\n%s", out)
+	}
 }
 
 func TestEmailFormatter_FormatStructured(t *testing.T) {

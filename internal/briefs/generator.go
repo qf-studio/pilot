@@ -353,5 +353,8 @@ func (g *Generator) GenerateStructured(period BriefPeriod) (*StructuredBrief, er
 		}
 	}
 
-	return BuildStructured(now, period, execs, reviews, poolPercent), nil
+	// Render every timestamp in the tenant's zone (GH-5814).
+	loc := briefLocation(g.config.Timezone)
+	period = BriefPeriod{Start: period.Start.In(loc), End: period.End.In(loc)}
+	return BuildStructured(now.In(loc), period, execs, reviews, poolPercent), nil
 }
