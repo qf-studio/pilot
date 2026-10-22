@@ -369,6 +369,7 @@ func (a *autopilotProviderAdapter) GetActivePRs() []*gateway.AutopilotPRState {
 			CIStatus:   string(pr.CIStatus),
 			Error:      pr.Error,
 			BranchName: pr.BranchName,
+			CreatedAt:  pr.CreatedAt,
 		})
 	}
 	return result

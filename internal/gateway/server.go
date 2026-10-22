@@ -49,6 +49,8 @@ type AutopilotPRState struct {
 	CIStatus   string
 	Error      string
 	BranchName string
+	// CreatedAt is when the PR entered the autopilot pipeline; zero if unknown.
+	CreatedAt time.Time
 }
 
 // AutopilotProvider exposes autopilot state to the gateway API.
@@ -268,7 +270,9 @@ func (s *Server) Start(ctx context.Context) error {
 	apiMux.HandleFunc("GET /api/v1/executions/daily-cap", s.handleDailyCap)    // GH-5809
 	apiMux.HandleFunc("GET /api/v1/briefs/latest", s.handleBriefsLatest)       // GH-5791
 	apiMux.HandleFunc("GET /api/v1/briefs", s.handleBriefs)                    // GH-5791
+	apiMux.HandleFunc("GET /api/v1/executions/{id}", s.handleExecutionRead)    // GH-5790
 	apiMux.HandleFunc("GET /api/v1/executions/{id}/events", s.handleExecutionEvents)
+	apiMux.HandleFunc("GET /api/v1/tasks/{taskId}", s.handleTaskRead) // GH-5790
 	apiMux.HandleFunc("GET /api/v1/tasks/{taskId}/events", s.handleTaskEvents)
 
 	// GH-5003 / TASK-466 read leg: docs routes are always-on, unlike chat
