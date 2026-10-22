@@ -2630,6 +2630,29 @@ func (s *Store) GetUsageSince(since time.Time, projectPath string) (rows []Usage
 	return all, hasMore || execMore || chatMore, nil
 }
 
+// CountDistinctTasksInWindow returns how many distinct task ids have at least
+// one execution row created in [start, end) (canary excluded). The store is the
+// org scope: there is no per-org column, one ledger belongs to one org.
+//
+// Decision: the window is an instant range, not a calendar day. The caller
+// derives start/end from its configured location (a Europe/Berlin day is 23 or
+// 25 hours long across a DST change), so this method never does zone math.
+// Counting DISTINCT task_id means retry generations of one task count once.
+// Chat turns live in chat_turns, not executions, so they are excluded by
+// construction. created_at is UTC offset-less text, so both bounds bind in UTC
+// (GH-5308).
+func (s *Store) CountDistinctTasksInWindow(start, end time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRow(`
+		SELECT COUNT(DISTINCT task_id) FROM executions
+		WHERE created_at >= ? AND created_at < ? AND COALESCE(is_canary, 0) = 0
+	`, start.UTC(), end.UTC()).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count distinct tasks in window: %w", err)
+	}
+	return n, nil
+}
+
 // GetActiveExecutions retrieves all executions with status "running".
 func (s *Store) GetActiveExecutions() ([]*Execution, error) {
 	rows, err := s.db.Query(`
