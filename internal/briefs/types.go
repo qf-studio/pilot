@@ -89,3 +89,61 @@ type DeliveryResult struct {
 	SentAt    time.Time
 	MessageID string // Platform-specific message ID
 }
+
+// StructuredBriefSchema is the version stamped on every StructuredBrief
+// payload. Bump it on any breaking change to the JSON shape (GH-5791).
+const StructuredBriefSchema = 1
+
+// StructuredBrief is the one brief object the console stores and shows and
+// the email rendering is built from (GH-5791). Section order is part of the
+// contract: shipped, review_needed, pool, failed — the struct field order
+// below is the JSON key order.
+type StructuredBrief struct {
+	Schema       int          `json:"schema"`
+	GeneratedAt  time.Time    `json:"generated_at"`
+	PeriodStart  time.Time    `json:"period_start"`
+	PeriodEnd    time.Time    `json:"period_end"`
+	Shipped      []ShippedRun `json:"shipped"`
+	ReviewNeeded []ReviewItem `json:"review_needed"`
+	// Pool is nil (JSON null) when the daemon does not know the allowance.
+	Pool   *PoolUsage  `json:"pool"`
+	Failed []FailedRun `json:"failed"`
+}
+
+// ShippedRun is one delivered run. It folds in the receipts digest line:
+// CostUSD is set only when the execution ran on the tenant's own key and is
+// omitted on the platform key (and when the key source is unknown).
+type ShippedRun struct {
+	IssueRef     string   `json:"issue_ref"`
+	Title        string   `json:"title"`
+	PRURL        string   `json:"pr_url,omitempty"`
+	DurationMs   int64    `json:"duration_ms"`
+	LinesAdded   int      `json:"lines_added"`
+	LinesRemoved int      `json:"lines_removed"`
+	KeySource    string   `json:"key_source"`
+	CostUSD      *float64 `json:"cost_usd,omitempty"`
+}
+
+// ReviewItem is something waiting on a human, with a one-line reason.
+type ReviewItem struct {
+	IssueRef string `json:"issue_ref"`
+	Title    string `json:"title"`
+	PRURL    string `json:"pr_url,omitempty"`
+	Reason   string `json:"reason"`
+	// WaitingSince is when the item started waiting; Overdue is true when
+	// that was more than 24h before the brief was generated.
+	WaitingSince time.Time `json:"waiting_since"`
+	Overdue      bool      `json:"overdue"`
+}
+
+// PoolUsage is how much of the included allowance has been used.
+type PoolUsage struct {
+	PercentUsed float64 `json:"percent_used"`
+}
+
+// FailedRun is a run that failed and was not later delivered.
+type FailedRun struct {
+	IssueRef     string `json:"issue_ref"`
+	FailureClass string `json:"failure_class"`
+	Retryable    bool   `json:"retryable"`
+}

@@ -338,8 +338,14 @@ func formatReceiptLine(exec *memory.Execution) string {
 		status = " ✗ failed"
 	}
 
-	return fmt.Sprintf("%s%s · +%d −%d · %s · $%.2f",
-		ref, status, exec.LinesAdded, exec.LinesRemoved, formatDuration(exec.DurationMs), exec.EstimatedCostUSD)
+	line := fmt.Sprintf("%s%s · +%d −%d · %s",
+		ref, status, exec.LinesAdded, exec.LinesRemoved, formatDuration(exec.DurationMs))
+	// GH-5791: a platform-key run is covered by the included allowance, so
+	// its cost never appears.
+	if exec.KeySource != memory.KeySourcePlatform {
+		line += fmt.Sprintf(" · $%.2f", exec.EstimatedCostUSD)
+	}
+	return line
 }
 
 // receiptsTotals sums the diff size and cost across every row for the day
@@ -357,7 +363,15 @@ func receiptsTotals(rows []*memory.Execution) (linesAdded, linesRemoved int, cos
 // "3 runs · +140 −42 · $6.30".
 func formatReceiptsTotal(rows []*memory.Execution) string {
 	linesAdded, linesRemoved, costUSD := receiptsTotals(rows)
-	return fmt.Sprintf("%d runs · +%d −%d · $%.2f", len(rows), linesAdded, linesRemoved, costUSD)
+	total := fmt.Sprintf("%d runs · +%d −%d", len(rows), linesAdded, linesRemoved)
+	// GH-5791: omit the cost total when any row ran on the platform key — a
+	// partial sum would misstate spend.
+	for _, exec := range rows {
+		if exec.KeySource == memory.KeySourcePlatform {
+			return total
+		}
+	}
+	return total + fmt.Sprintf(" · $%.2f", costUSD)
 }
 
 // maxReceiptsDigestLen caps the per-run list so the digest stays comfortably

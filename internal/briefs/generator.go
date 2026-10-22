@@ -1,6 +1,7 @@
 package briefs
 
 import (
+	"strings"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
@@ -10,6 +11,17 @@ import (
 type Generator struct {
 	store  *memory.Store
 	config *BriefConfig
+	pool   PoolSource
+}
+
+// PoolSource reports the percent of the included allowance used, and false
+// when the daemon does not know it (GH-5791).
+type PoolSource func() (percent float64, ok bool)
+
+// SetPoolSource wires the allowance reader for the structured brief's pool
+// section. Without one, the section is null.
+func (g *Generator) SetPoolSource(p PoolSource) {
+	g.pool = p
 }
 
 // NewGenerator creates a new brief generator
@@ -224,4 +236,56 @@ func estimateProgress(exec *memory.Execution) int {
 		progress = 10
 	}
 	return progress
+}
+
+// GenerateStructured builds the StructuredBrief for the period: terminal
+// executions (shipped / failed), pending approvals (review_needed) and the
+// pool usage when a PoolSource is wired (GH-5791).
+func (g *Generator) GenerateStructured(period BriefPeriod) (*StructuredBrief, error) {
+	execs, err := g.store.GetExecutionsForReceipts(memory.BriefQuery{
+		Start:    period.Start,
+		End:      period.End,
+		Projects: g.config.Filters.Projects,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	pending, err := g.store.LoadPendingApprovals()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	var reviews []ReviewInput
+	for _, p := range pending {
+		if p.ExpiresAt.Before(now) {
+			continue // expired, not yet pruned
+		}
+		in := ReviewInput{
+			IssueRef:     strings.TrimPrefix(p.TaskID, "GH-"),
+			Title:        p.Title,
+			Reason:       p.Description,
+			WaitingSince: p.CreatedAt,
+		}
+		if strings.HasPrefix(p.TaskID, "GH-") {
+			in.IssueRef = "#" + in.IssueRef
+		}
+		if in.Reason == "" {
+			in.Reason = "Awaiting approval: " + p.Stage
+		}
+		// The execution join is best-effort (see Store.SetApprovalRequestID).
+		if exec, err := g.store.GetExecutionByApprovalRequestID(p.ID); err == nil && exec != nil {
+			in.PRURL = exec.PRUrl
+		}
+		reviews = append(reviews, in)
+	}
+
+	var poolPercent *float64
+	if g.pool != nil {
+		if pct, ok := g.pool(); ok {
+			poolPercent = &pct
+		}
+	}
+
+	return BuildStructured(now, period, execs, reviews, poolPercent), nil
 }

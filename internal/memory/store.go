@@ -278,6 +278,14 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_brief_history_sent_at ON brief_history(sent_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_brief_history_channel ON brief_history(channel)`,
+		// Structured brief payloads for the console (GH-5791)
+		`CREATE TABLE IF NOT EXISTS brief_payloads (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			generated_at DATETIME NOT NULL,
+			schema_version INTEGER NOT NULL,
+			payload TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_brief_payloads_generated_at ON brief_payloads(generated_at)`,
 		// Execution logs table (GH-1586)
 		`CREATE TABLE IF NOT EXISTS execution_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,

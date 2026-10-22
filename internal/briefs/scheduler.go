@@ -179,6 +179,8 @@ func (s *Scheduler) runBriefWithResults(ctx context.Context) ([]DeliveryResult, 
 		"upcoming", len(brief.Upcoming),
 	)
 
+	s.storeStructured(brief.Period)
+
 	results := s.delivery.DeliverAll(ctx, brief)
 
 	// Record successful deliveries to store
@@ -198,6 +200,32 @@ func (s *Scheduler) runBriefWithResults(ctx context.Context) ([]DeliveryResult, 
 	}
 
 	return results, nil
+}
+
+// storeStructured builds the console's structured brief for the period and
+// persists its JSON payload so GET /api/v1/briefs can serve it (GH-5791).
+// Best-effort: a failure is logged and never blocks channel delivery.
+func (s *Scheduler) storeStructured(period BriefPeriod) {
+	if s.store == nil {
+		return
+	}
+	sb, err := s.generator.GenerateStructured(period)
+	if err != nil {
+		s.logger.Warn("failed to build structured brief", "error", err)
+		return
+	}
+	payload, err := sb.MarshalPayload()
+	if err != nil {
+		s.logger.Warn("failed to marshal structured brief", "error", err)
+		return
+	}
+	if err := s.store.SaveBriefPayload(&memory.BriefPayload{
+		GeneratedAt: sb.GeneratedAt,
+		Schema:      sb.Schema,
+		Payload:     payload,
+	}); err != nil {
+		s.logger.Warn("failed to store structured brief", "error", err)
+	}
 }
 
 // maybeCatchUp checks if a scheduled brief was missed and fires one if needed.
