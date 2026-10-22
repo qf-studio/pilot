@@ -1490,6 +1490,9 @@ Examples:
 			if cfg.Dashboard != nil {
 				p.Gateway().SetDashboardStatsWindowDays(cfg.Dashboard.StatsWindowDays)
 			}
+			if cfg.Executor != nil {
+				p.Gateway().SetDailyTicketCap(cfg.Executor.DailyTicketCap, cfg.Executor.DailyTicketCapTimezone)
+			}
 
 			// GH-1633: Wire git graph fetcher to gateway so /api/v1/gitgraph returns live git data
 			p.Gateway().SetGitGraphFetcher(func(path string, limit int) interface{} {
@@ -2982,6 +2985,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		gwServer.SetDashboardProjectPath(projectPath)
 		if cfg.Dashboard != nil {
 			gwServer.SetDashboardStatsWindowDays(cfg.Dashboard.StatsWindowDays)
+		}
+		if cfg.Executor != nil {
+			gwServer.SetDailyTicketCap(cfg.Executor.DailyTicketCap, cfg.Executor.DailyTicketCapTimezone)
 		}
 		gwServer.SetGitGraphFetcher(func(path string, limit int) interface{} {
 			return dashboard.FetchGitGraph(path, limit)

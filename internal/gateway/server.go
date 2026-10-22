@@ -109,8 +109,11 @@ type Server struct {
 	autopilotProvider        AutopilotProvider
 	adapterHealthSource      AdapterHealthSource
 	dashboardStore           DashboardStore
-	dashboardProjectPath     string // Project path filter for dashboard metrics/queue/history APIs ("" = all projects)
-	dashboardStatsWindowDays int    // GH-4735: rolling window (days) for windowed cost/success stats; 0 = use default
+	dashboardProjectPath     string           // Project path filter for dashboard metrics/queue/history APIs ("" = all projects)
+	dashboardStatsWindowDays int              // GH-4735: rolling window (days) for windowed cost/success stats; 0 = use default
+	dailyTicketCap           int              // GH-5809: executor.daily_ticket_cap; 0 = unlimited
+	dailyTicketCapTimezone   string           // GH-5809: executor.daily_ticket_cap_timezone; "" = UTC
+	nowFn                    func() time.Time // test seam for the daily-cap endpoint; nil = time.Now
 	logStreamStore           LogStreamStore
 	gitGraphPath             string                    // Project path for git graph API (defaults to ".")
 	gitGraphFetcher          GitGraphFetcher           // Injected to avoid import cycle with internal/dashboard
@@ -262,6 +265,7 @@ func (s *Server) Start(ctx context.Context) error {
 	apiMux.HandleFunc("GET /api/v1/approvals", s.handleApprovals)
 	apiMux.HandleFunc("POST /api/v1/approvals/{requestId}/decision", s.handleApprovalDecision)
 	apiMux.HandleFunc("GET /api/v1/executions/usage", s.handleExecutionsUsage) // GH-5676
+	apiMux.HandleFunc("GET /api/v1/executions/daily-cap", s.handleDailyCap)    // GH-5809
 	apiMux.HandleFunc("GET /api/v1/briefs/latest", s.handleBriefsLatest)       // GH-5791
 	apiMux.HandleFunc("GET /api/v1/briefs", s.handleBriefs)                    // GH-5791
 	apiMux.HandleFunc("GET /api/v1/executions/{id}/events", s.handleExecutionEvents)

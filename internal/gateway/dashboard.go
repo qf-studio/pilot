@@ -57,6 +57,13 @@ type ChatUsageStore interface {
 	GetChatDailySince(since time.Time, projectPath string) ([]memory.ChatDay, error)
 }
 
+// DailyTicketCountStore is the optional daily-ticket-cap read surface
+// (GH-5809), asserted on the dashboard store like ChatUsageStore.
+// *memory.Store implements it.
+type DailyTicketCountStore interface {
+	CountDistinctTasksInWindow(start, end time.Time) (int, error)
+}
+
 // chatDailyDays is the length of the chatDaily series.
 const chatDailyDays = 30
 
@@ -87,6 +94,16 @@ func (s *Server) SetDashboardStatsWindowDays(days int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dashboardStatsWindowDays = days
+}
+
+// SetDailyTicketCap configures the standing daily-cap endpoint (GH-5809) from
+// executor.daily_ticket_cap and executor.daily_ticket_cap_timezone. A cap of 0
+// means unlimited; an empty timezone means UTC.
+func (s *Server) SetDailyTicketCap(dailyCap int, timezone string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dailyTicketCap = dailyCap
+	s.dailyTicketCapTimezone = timezone
 }
 
 // --- JSON response types (mirrors desktop/types.go) ---
@@ -629,6 +646,77 @@ func (s *Server) handleExecutionsUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	if n := len(resp.Executions); n > 0 { // rows are oldest first
 		resp.NextSince = resp.Executions[n-1].CompletedAt
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// dailyCapResponse is the body of GET /api/v1/executions/daily-cap (GH-5809).
+type dailyCapResponse struct {
+	Cap             int     `json:"cap"`
+	Timezone        string  `json:"timezone"`
+	DispatchedToday int     `json:"dispatched_today"`
+	Reached         bool    `json:"reached"`
+	ResumesAt       *string `json:"resumes_at"` // RFC3339 next org-local midnight; null when cap is 0
+}
+
+// handleDailyCap serves GET /api/v1/executions/daily-cap: the configured daily
+// ticket cap, how many distinct tickets were dispatched in the current
+// org-local day, and when the cap lifts (GH-5809). Same auth as
+// /api/v1/executions/usage (registered on the protected apiMux).
+func (s *Server) handleDailyCap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.RLock()
+	store := s.dashboardStore
+	capN := s.dailyTicketCap
+	tzName := s.dailyTicketCapTimezone
+	nowFn := s.nowFn
+	s.mu.RUnlock()
+
+	if store == nil {
+		http.Error(w, "dashboard store not configured", http.StatusServiceUnavailable)
+		return
+	}
+	counter, ok := store.(DailyTicketCountStore)
+	if !ok {
+		http.Error(w, "daily ticket count not supported by store", http.StatusServiceUnavailable)
+		return
+	}
+
+	if tzName == "" {
+		tzName = "UTC"
+	}
+	loc, err := time.LoadLocation(tzName)
+	if err != nil {
+		http.Error(w, "invalid daily ticket cap timezone", http.StatusInternalServerError)
+		return
+	}
+	now := time.Now()
+	if nowFn != nil {
+		now = nowFn()
+	}
+	now = now.In(loc)
+	// Decision: build the day bounds with time.Date in the org zone so a DST
+	// change yields a 23/25-hour day; the store counts over the instant range.
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	end := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc)
+
+	count, err := counter.CountDistinctTasksInWindow(start, end)
+	if err != nil {
+		http.Error(w, "failed to count daily tickets", http.StatusInternalServerError)
+		return
+	}
+
+	resp := dailyCapResponse{Cap: capN, Timezone: tzName, DispatchedToday: count}
+	if capN > 0 && count >= capN {
+		resp.Reached = true
+		resumes := end.Format(time.RFC3339)
+		resp.ResumesAt = &resumes
 	}
 
 	w.Header().Set("Content-Type", "application/json")
