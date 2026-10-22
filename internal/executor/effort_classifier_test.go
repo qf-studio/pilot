@@ -3,8 +3,10 @@ package executor
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -382,6 +384,77 @@ func TestEffortClassifier_APIKey401DoesNotDisableDirectMode(t *testing.T) {
 	}
 	if classifier.directModeDisabled.Load() {
 		t.Error("directModeDisabled should not latch for a non-OAuth token 401")
+	}
+}
+
+// infoCounter is a slog handler that counts Info-level records by message.
+type infoCounter struct {
+	mu    sync.Mutex
+	count map[string]int
+}
+
+func (h *infoCounter) Enabled(context.Context, slog.Level) bool { return true }
+func (h *infoCounter) Handle(_ context.Context, r slog.Record) error {
+	if r.Level == slog.LevelInfo {
+		h.mu.Lock()
+		h.count[r.Message]++
+		h.mu.Unlock()
+	}
+	return nil
+}
+func (h *infoCounter) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *infoCounter) WithGroup(string) slog.Handler      { return h }
+
+func TestEffortClassifier_429DirectModeLatch(t *testing.T) {
+	tests := []struct {
+		name         string
+		token        string
+		wantDisabled bool
+		wantAPIHits  int32
+		wantInfoLogs int
+	}{
+		{"OAuth token 429 disables direct mode", "sk-ant-oat01-test-oauth-token", true, 1, 1},
+		{"API key 429 falls back for that call only", "sk-ant-api03-test-key", false, 2, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var apiHits int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&apiHits, 1)
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"message":"Error"}`))
+			}))
+			defer srv.Close()
+
+			var subprocessHits int32
+			runner := func(ctx context.Context, args ...string) ([]byte, error) {
+				atomic.AddInt32(&subprocessHits, 1)
+				return []byte(`{"effort":"low","reason":"n/a"}`), nil
+			}
+			classifier := newTestEffortClassifier(t, srv.URL, tt.token, runner)
+			counter := &infoCounter{count: map[string]int{}}
+			classifier.log = slog.New(counter)
+
+			for _, id := range []string{"GH-800", "GH-801"} {
+				task := &Task{ID: id, Title: "t", Description: "d"}
+				if result := classifier.Classify(context.Background(), task); result != "low" {
+					t.Fatalf("expected subprocess fallback result 'low', got %q", result)
+				}
+			}
+
+			if got := atomic.LoadInt32(&apiHits); got != tt.wantAPIHits {
+				t.Errorf("API hits = %d, want %d", got, tt.wantAPIHits)
+			}
+			if got := atomic.LoadInt32(&subprocessHits); got != 2 {
+				t.Errorf("subprocess hits = %d, want 2", got)
+			}
+			if got := classifier.directModeDisabled.Load(); got != tt.wantDisabled {
+				t.Errorf("directModeDisabled = %v, want %v", got, tt.wantDisabled)
+			}
+			if got := counter.count["direct classifier disabled: token not usable for direct mode"]; got != tt.wantInfoLogs {
+				t.Errorf("disable Info lines = %d, want %d", got, tt.wantInfoLogs)
+			}
+		})
 	}
 }
 

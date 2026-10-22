@@ -157,12 +157,18 @@ func (c *EffortClassifier) Classify(ctx context.Context, task *Task) string {
 		result, err = c.classifyViaAPI(ctx, task)
 		if err != nil {
 			var statusErr *anthropicAPIStatusError
-			if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized && isAnthropicOAuthToken(c.apiKey) {
+			if errors.As(err, &statusErr) && isAnthropicOAuthToken(c.apiKey) &&
+				(statusErr.StatusCode == http.StatusUnauthorized || statusErr.StatusCode == http.StatusTooManyRequests) {
 				// GH-5344: an OAuth token that the Messages API rejects once
 				// will reject every subsequent call too — stop paying for a
 				// failing round trip per task.
+				// GH-5802: the API answers an OAuth token with a permanent 429
+				// (body {"message":"Error"}, no retry-after) — same condition as
+				// 401. A 429 on a real API key is a genuine rate limit and only
+				// falls back for this call.
 				if c.directModeDisabled.CompareAndSwap(false, true) {
-					c.log.Info("direct classifier disabled: token rejected")
+					c.log.Info("direct classifier disabled: token not usable for direct mode",
+						slog.Int("status", statusErr.StatusCode))
 				}
 			}
 			c.log.Warn("Direct API classification failed, trying subprocess",
