@@ -262,7 +262,9 @@ func (s *Server) Start(ctx context.Context) error {
 	apiMux.HandleFunc("GET /api/v1/approvals", s.handleApprovals)
 	apiMux.HandleFunc("POST /api/v1/approvals/{requestId}/decision", s.handleApprovalDecision)
 	apiMux.HandleFunc("GET /api/v1/executions/usage", s.handleExecutionsUsage) // GH-5676
+	apiMux.HandleFunc("GET /api/v1/executions/{id}", s.handleExecution)        // GH-5790
 	apiMux.HandleFunc("GET /api/v1/executions/{id}/events", s.handleExecutionEvents)
+	apiMux.HandleFunc("GET /api/v1/tasks/{taskId}", s.handleTask) // GH-5790
 	apiMux.HandleFunc("GET /api/v1/tasks/{taskId}/events", s.handleTaskEvents)
 
 	// GH-5003 / TASK-466 read leg: docs routes are always-on, unlike chat
