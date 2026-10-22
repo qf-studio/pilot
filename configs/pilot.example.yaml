@@ -624,6 +624,13 @@ executor:
                                # When enabled with flag, skips branches and PRs, pushes directly to main
                                # Intended for users who rely on manual QA instead of code review
 
+  # Daily ticket cap (GH-5806): max tickets Pilot starts per calendar day.
+  # 0 = unlimited (default). The day boundary follows daily_ticket_cap_timezone.
+  # daily_ticket_cap: 0
+  # IANA zone name that defines the calendar day for the cap (default: UTC).
+  # Examples: "UTC", "Europe/Berlin". "Local" and unknown names fail at load.
+  # daily_ticket_cap_timezone: "UTC"
+
   # Non-Anthropic provider routing (GH-2287, GH-2371)
   # Configure once here — Pilot injects ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL
   # into the Claude Code subprocess env, so ~/.claude/settings.json does not

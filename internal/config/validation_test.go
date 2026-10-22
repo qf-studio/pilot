@@ -1167,3 +1167,84 @@ func TestConfig_Validate_ApproversByChannel(t *testing.T) {
 		})
 	}
 }
+
+func TestConfig_Validate_DailyTicketCap(t *testing.T) {
+	tests := []struct {
+		name      string
+		cap       int
+		tz        string
+		wantErr   bool
+		errSubstr string
+	}{
+		{name: "defaults (unlimited, empty tz)", cap: 0, tz: ""},
+		{name: "UTC", cap: 5, tz: "UTC"},
+		{name: "Europe/Berlin", cap: 10, tz: "Europe/Berlin"},
+		{name: "Local rejected", cap: 5, tz: "Local", wantErr: true, errSubstr: "daily_ticket_cap_timezone"},
+		{name: "local lowercase rejected", cap: 5, tz: "local", wantErr: true, errSubstr: "daily_ticket_cap_timezone"},
+		{name: "unknown rejected", cap: 5, tz: "Mars/Olympus_Mons", wantErr: true, errSubstr: "daily_ticket_cap_timezone"},
+		{name: "negative cap rejected", cap: -1, tz: "UTC", wantErr: true, errSubstr: "daily_ticket_cap"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Executor = &executor.BackendConfig{
+				DailyTicketCap:         tt.cap,
+				DailyTicketCapTimezone: tt.tz,
+			}
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.errSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoad_DailyTicketCap(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		path := t.TempDir() + "/config.yaml"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	t.Run("defaults", func(t *testing.T) {
+		cfg, err := Load(write(t, "version: \"1.0\"\n"))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Executor.DailyTicketCap != 0 || cfg.Executor.DailyTicketCapTimezone != "UTC" {
+			t.Errorf("got cap=%d tz=%q, want 0/UTC", cfg.Executor.DailyTicketCap, cfg.Executor.DailyTicketCapTimezone)
+		}
+	})
+
+	t.Run("Berlin parsed", func(t *testing.T) {
+		cfg, err := Load(write(t, "executor:\n  daily_ticket_cap: 7\n  daily_ticket_cap_timezone: Europe/Berlin\n"))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Executor.DailyTicketCap != 7 || cfg.Executor.DailyTicketCapTimezone != "Europe/Berlin" {
+			t.Errorf("got cap=%d tz=%q", cfg.Executor.DailyTicketCap, cfg.Executor.DailyTicketCapTimezone)
+		}
+	})
+
+	for _, tz := range []string{"Local", "Not/AZone"} {
+		t.Run("rejected "+tz, func(t *testing.T) {
+			_, err := Load(write(t, "executor:\n  daily_ticket_cap_timezone: "+tz+"\n"))
+			if err == nil || !strings.Contains(err.Error(), "daily_ticket_cap_timezone") {
+				t.Fatalf("expected error naming daily_ticket_cap_timezone, got %v", err)
+			}
+		})
+	}
+}

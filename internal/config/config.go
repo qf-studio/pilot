@@ -1254,6 +1254,22 @@ func validateReleaseTriggerFields(pathPrefix, trigger, schedule, timezone string
 	return nil
 }
 
+// validateDailyTicketCapTimezone checks executor.daily_ticket_cap_timezone.
+// Empty means UTC. "Local" is rejected even though time.LoadLocation accepts
+// it: the cap's day boundary must not depend on the host's timezone.
+func validateDailyTicketCapTimezone(name string) error {
+	if name == "" {
+		return nil
+	}
+	if strings.EqualFold(name, "local") {
+		return fmt.Errorf("invalid executor.daily_ticket_cap_timezone: %q (use an explicit IANA name such as \"UTC\" or \"Europe/Berlin\")", name)
+	}
+	if _, err := time.LoadLocation(name); err != nil {
+		return fmt.Errorf("invalid executor.daily_ticket_cap_timezone: %q (%w)", name, err)
+	}
+	return nil
+}
+
 // Validate checks the configuration for errors and returns an error if invalid.
 // It validates required fields, port ranges, authentication settings, and routing config.
 func (c *Config) Validate() error {
@@ -1280,6 +1296,16 @@ func (c *Config) Validate() error {
 			if !validEffortLevels[normalized] {
 				return fmt.Errorf("invalid effort_routing.%s: %q (must be low, medium, high, or max)", name, value)
 			}
+		}
+	}
+
+	// GH-5806: daily ticket cap — negative caps and unusable timezones fail at load.
+	if c.Executor != nil {
+		if c.Executor.DailyTicketCap < 0 {
+			return fmt.Errorf("invalid executor.daily_ticket_cap: %d (must be >= 0; 0 = unlimited)", c.Executor.DailyTicketCap)
+		}
+		if err := validateDailyTicketCapTimezone(c.Executor.DailyTicketCapTimezone); err != nil {
+			return err
 		}
 	}
 

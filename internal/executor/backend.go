@@ -461,6 +461,17 @@ type BackendConfig struct {
 	// Planning gets Opus while execution stays on Sonnet for cost savings.
 	Planning *PlanningConfig `yaml:"planning,omitempty"`
 
+	// DailyTicketCap limits how many tickets Pilot starts per calendar day
+	// (GH-5806). 0 means unlimited (default). The day boundary is computed in
+	// DailyTicketCapTimezone.
+	DailyTicketCap int `yaml:"daily_ticket_cap,omitempty"`
+
+	// DailyTicketCapTimezone is the IANA zone name (e.g. "Europe/Berlin")
+	// defining the calendar day for DailyTicketCap. Empty means UTC. "Local"
+	// is rejected by config validation so the day boundary never depends on
+	// the host's timezone.
+	DailyTicketCapTimezone string `yaml:"daily_ticket_cap_timezone,omitempty"`
+
 	// UseWorktree enables git worktree isolation for execution.
 	// When true, Pilot creates a temporary worktree for each task, allowing
 	// execution even when the user has uncommitted changes in their working directory.
@@ -1222,12 +1233,14 @@ func DefaultBackendConfig() *BackendConfig {
 	prePushLint := true
 	acceptanceEvidenceEnabled := true
 	return &BackendConfig{
-		Type:               "claude-code",
-		AutoCreatePR:       &autoCreatePR,
-		DetectEphemeral:    &detectEphemeral,
-		PrePushLint:        &prePushLint,
-		AcceptanceEvidence: &AcceptanceEvidenceConfig{Enabled: &acceptanceEvidenceEnabled},
-		PlanningTimeout:    2 * time.Minute,
+		Type:                   "claude-code",
+		AutoCreatePR:           &autoCreatePR,
+		DetectEphemeral:        &detectEphemeral,
+		PrePushLint:            &prePushLint,
+		AcceptanceEvidence:     &AcceptanceEvidenceConfig{Enabled: &acceptanceEvidenceEnabled},
+		PlanningTimeout:        2 * time.Minute,
+		DailyTicketCap:         0,
+		DailyTicketCapTimezone: "UTC",
 		ClaudeCode: &ClaudeCodeConfig{
 			Command:      "claude",
 			AllowedTools: DefaultAllowedToolsExecution(),
