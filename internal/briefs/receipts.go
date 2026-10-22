@@ -340,9 +340,11 @@ func formatReceiptLine(exec *memory.Execution) string {
 
 	line := fmt.Sprintf("%s%s · +%d −%d · %s",
 		ref, status, exec.LinesAdded, exec.LinesRemoved, formatDuration(exec.DurationMs))
-	// GH-5791: a platform-key run is covered by the included allowance, so
-	// its cost never appears.
-	if exec.KeySource != memory.KeySourcePlatform {
+	// Decision: fail closed (GH-5812). Cost appears only for a run known to
+	// be on the operator's own key; platform and unknown (a box that never
+	// wrote PILOT_ANTHROPIC_KEY_SOURCE) both stay dollar-free, matching
+	// structured.go.
+	if memory.NormalizeKeySource(exec.KeySource) == memory.KeySourceOwn {
 		line += fmt.Sprintf(" · $%.2f", exec.EstimatedCostUSD)
 	}
 	return line
@@ -364,10 +366,10 @@ func receiptsTotals(rows []*memory.Execution) (linesAdded, linesRemoved int, cos
 func formatReceiptsTotal(rows []*memory.Execution) string {
 	linesAdded, linesRemoved, costUSD := receiptsTotals(rows)
 	total := fmt.Sprintf("%d runs · +%d −%d", len(rows), linesAdded, linesRemoved)
-	// GH-5791: omit the cost total when any row ran on the platform key — a
-	// partial sum would misstate spend.
+	// GH-5812: omit the cost total when any row is not provably own-key — a
+	// partial sum would misstate spend, and unknown fails closed.
 	for _, exec := range rows {
-		if exec.KeySource == memory.KeySourcePlatform {
+		if memory.NormalizeKeySource(exec.KeySource) != memory.KeySourceOwn {
 			return total
 		}
 	}

@@ -246,20 +246,43 @@ func TestEmailFormatter_FormatStructured(t *testing.T) {
 	}
 }
 
-func TestFormatReceiptLine_PlatformKeyOmitsCost(t *testing.T) {
+func TestFormatReceiptLine_CostOnlyForOwnKey(t *testing.T) {
+	tests := []struct {
+		name      string
+		keySource string
+		wantCost  bool
+	}{
+		{"own shows cost", "own", true},
+		{"platform omits cost", "platform", false},
+		{"unknown omits cost", "unknown", false},
+		{"empty omits cost", "", false},
+		{"free text omits cost", "something-else", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := completedExec("1", tt.keySource, 2.75)
+			if got := formatReceiptLine(exec); strings.Contains(got, "$") != tt.wantCost {
+				t.Errorf("line = %q, wantCost %v", got, tt.wantCost)
+			}
+			if got := formatReceiptsTotal([]*memory.Execution{exec}); strings.Contains(got, "$2.75") != tt.wantCost {
+				t.Errorf("total = %q, wantCost %v", got, tt.wantCost)
+			}
+		})
+	}
+}
+
+func TestFormatReceiptsTotal_MixedSetHasNoTotal(t *testing.T) {
 	own := completedExec("1", "own", 2.75)
-	platform := completedExec("2", "platform", 2.75)
-	if got := formatReceiptLine(own); !strings.HasSuffix(got, "$2.75") {
-		t.Errorf("own line = %q, want cost", got)
+	for _, other := range []string{"platform", "unknown", ""} {
+		t.Run("own+"+other, func(t *testing.T) {
+			rows := []*memory.Execution{own, completedExec("2", other, 2.75)}
+			if got := formatReceiptsTotal(rows); strings.Contains(got, "$") {
+				t.Errorf("mixed total = %q, want no cost", got)
+			}
+		})
 	}
-	if got := formatReceiptLine(platform); strings.Contains(got, "$") {
-		t.Errorf("platform line = %q, want no cost", got)
-	}
-	if got := formatReceiptsTotal([]*memory.Execution{own, platform}); strings.Contains(got, "$") {
-		t.Errorf("mixed total = %q, want no cost", got)
-	}
-	if got := formatReceiptsTotal([]*memory.Execution{own}); !strings.Contains(got, "$2.75") {
-		t.Errorf("own total = %q, want cost", got)
+	if got := formatReceiptsTotal([]*memory.Execution{own, completedExec("3", "own", 1)}); !strings.Contains(got, "$3.75") {
+		t.Errorf("all-own total = %q, want $3.75", got)
 	}
 }
 

@@ -64,7 +64,7 @@ func TestFormatReceiptLine(t *testing.T) {
 			name: "completed run has no failed marker",
 			exec: &memory.Execution{
 				TaskID: "GH-5214", TaskSourceAdapter: "github", Status: "completed",
-				LinesAdded: 88, LinesRemoved: 15, DurationMs: 14 * 60 * 1000, EstimatedCostUSD: 2.75,
+				LinesAdded: 88, LinesRemoved: 15, DurationMs: 14 * 60 * 1000, KeySource: "own", EstimatedCostUSD: 2.75,
 			},
 			wantSubstr: []string{"#5214", "+88 −15", "14m", "$2.75"},
 			notWant:    "failed",
@@ -73,7 +73,7 @@ func TestFormatReceiptLine(t *testing.T) {
 			name: "failed run is marked",
 			exec: &memory.Execution{
 				TaskID: "GH-5215", TaskSourceAdapter: "github", Status: "failed",
-				LinesAdded: 3, LinesRemoved: 1, DurationMs: 30 * 1000, EstimatedCostUSD: 0.42,
+				LinesAdded: 3, LinesRemoved: 1, DurationMs: 30 * 1000, KeySource: "own", EstimatedCostUSD: 0.42,
 			},
 			wantSubstr: []string{"#5215", "✗ failed", "+3 −1", "30s", "$0.42"},
 		},
@@ -81,7 +81,7 @@ func TestFormatReceiptLine(t *testing.T) {
 			name: "dynamic title text is markdown-escaped",
 			exec: &memory.Execution{
 				TaskID: "local-1", TaskSourceAdapter: "linear", TaskTitle: "fix_the_bug [urgent]", Status: "completed",
-				LinesAdded: 1, LinesRemoved: 1, DurationMs: 1000, EstimatedCostUSD: 0.01,
+				LinesAdded: 1, LinesRemoved: 1, DurationMs: 1000, KeySource: "own", EstimatedCostUSD: 0.01,
 			},
 			wantSubstr: []string{`fix\_the\_bug \[urgent]`},
 		},
@@ -116,8 +116,8 @@ func TestFormatReceiptsTotal(t *testing.T) {
 		{
 			name: "sums across completed and failed rows",
 			rows: []*memory.Execution{
-				{Status: "completed", LinesAdded: 88, LinesRemoved: 15, EstimatedCostUSD: 2.75},
-				{Status: "failed", LinesAdded: 3, LinesRemoved: 1, EstimatedCostUSD: 0.42},
+				{Status: "completed", LinesAdded: 88, LinesRemoved: 15, KeySource: "own", EstimatedCostUSD: 2.75},
+				{Status: "failed", LinesAdded: 3, LinesRemoved: 1, KeySource: "own", EstimatedCostUSD: 0.42},
 			},
 			want: "2 runs · +91 −16 · $3.17",
 		},
@@ -134,8 +134,8 @@ func TestFormatReceiptsTotal(t *testing.T) {
 
 func TestFormatReceiptsDigest(t *testing.T) {
 	rows := []*memory.Execution{
-		{TaskID: "GH-5214", TaskSourceAdapter: "github", Status: "completed", LinesAdded: 88, LinesRemoved: 15, DurationMs: 14 * 60 * 1000, EstimatedCostUSD: 2.75},
-		{TaskID: "GH-5215", TaskSourceAdapter: "github", Status: "failed", LinesAdded: 3, LinesRemoved: 1, DurationMs: 30 * 1000, EstimatedCostUSD: 0.42},
+		{TaskID: "GH-5214", TaskSourceAdapter: "github", Status: "completed", LinesAdded: 88, LinesRemoved: 15, DurationMs: 14 * 60 * 1000, KeySource: "own", EstimatedCostUSD: 2.75},
+		{TaskID: "GH-5215", TaskSourceAdapter: "github", Status: "failed", LinesAdded: 3, LinesRemoved: 1, DurationMs: 30 * 1000, KeySource: "own", EstimatedCostUSD: 0.42},
 	}
 	day := time.Date(2026, 8, 29, 18, 0, 0, 0, time.UTC)
 
@@ -158,7 +158,7 @@ func TestFormatReceiptsDigest_TruncatesLongList(t *testing.T) {
 		rows = append(rows, &memory.Execution{
 			TaskID: fmt.Sprintf("GH-%d", 5000+i), TaskSourceAdapter: "github",
 			Status: "completed", LinesAdded: 10, LinesRemoved: 2,
-			DurationMs: 60000, EstimatedCostUSD: 1.00,
+			DurationMs: 60000, KeySource: "own", EstimatedCostUSD: 1.00,
 		})
 	}
 	day := time.Date(2026, 8, 29, 18, 0, 0, 0, time.UTC)

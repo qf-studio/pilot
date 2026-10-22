@@ -328,6 +328,11 @@ orchestrator:
   # one line per terminal execution that day — issue ref, diff size,
   # duration, dollar cost — plus a day total. Independent schedule from any
   # daily_brief block; an empty day sends nothing.
+  # Cost is fail-closed (GH-5812): a line shows "$" only when the run recorded
+  # key_source "own", and the day total drops its "$" if any row is not own.
+  # Self-hosted operators using their own Anthropic key must set
+  # PILOT_ANTHROPIC_KEY_SOURCE=own in the daemon environment to keep cost
+  # lines in the digest; unset records "unknown", which is treated like platform.
   receipts_digest:
     enabled: false
     schedule: "0 18 * * *"     # 6 PM daily (cron syntax)
