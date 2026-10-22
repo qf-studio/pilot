@@ -172,3 +172,75 @@ func TestLifetimeCounterBaselines_CostByKeySource(t *testing.T) {
 		t.Errorf("CostByModel[m1] = %v, want 15 (unchanged total)", got)
 	}
 }
+
+func TestCountDistinctTasksInWindow(t *testing.T) {
+	s, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	loc, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+	// Berlin spring-forward 2026-03-29: that local day is 23h long
+	// (UTC 2026-03-28T23:00Z .. 2026-03-29T22:00Z).
+	start := time.Date(2026, 3, 29, 0, 0, 0, 0, loc)
+	end := time.Date(2026, 3, 30, 0, 0, 0, 0, loc)
+	if got := end.Sub(start); got != 23*time.Hour {
+		t.Fatalf("test premise: DST day = %v, want 23h", got)
+	}
+
+	save := func(id, task string, at time.Time, canary bool) {
+		t.Helper()
+		if err := s.SaveExecution(&Execution{
+			ID: id, TaskID: task, ProjectPath: "/p", Status: "completed", CreatedAt: at, IsCanary: canary,
+		}); err != nil {
+			t.Fatalf("SaveExecution(%s): %v", id, err)
+		}
+	}
+
+	// Two generations of GH-1 count once.
+	save("gen0", "GH-1", start.Add(time.Hour), false)
+	save("gen1", "GH-1", start.Add(2*time.Hour), false)
+	save("other", "GH-2", start.Add(3*time.Hour), false)
+	// Inclusive start, exclusive end.
+	save("at-start", "GH-3", start, false)
+	save("at-end", "GH-4", end, false)
+	// 23:30 Berlin on the 29th is inside the DST day.
+	save("late", "GH-5", end.Add(-30*time.Minute), false)
+	save("just-before", "GH-6", start.Add(-time.Minute), false)
+	// start+23h30m is past the DST day's end (a naive start+24h window would include it).
+	save("naive-24h", "GH-7", start.Add(23*time.Hour+30*time.Minute), false)
+	save("canary", "GH-8", start.Add(time.Hour), true)
+
+	// Chat turns are a separate table and never count.
+	done := start.Add(time.Hour)
+	if err := s.SaveChatTurn(chatRow("chat-1", "/p", "platform", 0.1, 1, 1, done)); err != nil {
+		t.Fatalf("SaveChatTurn: %v", err)
+	}
+
+	got, err := s.CountDistinctTasksInWindow(start, end)
+	if err != nil {
+		t.Fatalf("CountDistinctTasksInWindow: %v", err)
+	}
+	// GH-1, GH-2, GH-3, GH-5 (GH-4 at end, GH-6 before, GH-7 after, GH-8 canary excluded).
+	if got != 4 {
+		t.Errorf("distinct tasks = %d, want 4", got)
+	}
+
+	// The day after the transition holds GH-4 and GH-7 only.
+	next, err := s.CountDistinctTasksInWindow(end, time.Date(2026, 3, 31, 0, 0, 0, 0, loc))
+	if err != nil {
+		t.Fatalf("next day: %v", err)
+	}
+	if next != 2 {
+		t.Errorf("next-day distinct tasks = %d, want 2", next)
+	}
+
+	empty, err := s.CountDistinctTasksInWindow(end.AddDate(1, 0, 0), end.AddDate(1, 0, 1))
+	if err != nil || empty != 0 {
+		t.Errorf("empty window = %d, %v, want 0, nil", empty, err)
+	}
+}
