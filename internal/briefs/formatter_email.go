@@ -22,7 +22,9 @@ func (f *EmailFormatter) Format(brief *Brief) (string, error) {
 <html>
 <head>
 <meta charset="UTF-8">
-<style>
+`)
+	fmt.Fprintf(&sb, "<meta name=\"pilot-brief-kind\" content=\"%s\">\n", kindOrDaily(brief.Kind))
+	sb.WriteString(`<style>
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
 h1 { color: #1a1a2e; border-bottom: 2px solid #6366f1; padding-bottom: 10px; }
 h2 { color: #4a4a68; margin-top: 24px; }
@@ -47,8 +49,9 @@ h2 { color: #4a4a68; margin-top: 24px; }
 `)
 
 	// Header
-	sb.WriteString("<h1>📊 Pilot Daily Brief</h1>\n")
+	fmt.Fprintf(&sb, "<h1>📊 %s</h1>\n", briefTitle(brief.Kind))
 	fmt.Fprintf(&sb, "<p style=\"color: #64748b;\">%s</p>\n", brief.GeneratedAt.Format("Monday, January 2, 2006"))
+	writeWeeklyProofHTML(&sb, brief.Weekly)
 
 	// Completed
 	sb.WriteString("<div class=\"section\">\n")
@@ -146,7 +149,7 @@ This brief was generated automatically by Pilot.
 
 // Subject returns the email subject line
 func (f *EmailFormatter) Subject(brief *Brief) string {
-	return fmt.Sprintf("Pilot Daily Brief — %s", brief.GeneratedAt.Format("Jan 2, 2006"))
+	return fmt.Sprintf("%s — %s", briefTitle(brief.Kind), brief.GeneratedAt.Format("Jan 2, 2006"))
 }
 
 // FormatStructured renders a StructuredBrief as HTML email with the same
@@ -160,11 +163,14 @@ func (f *EmailFormatter) FormatStructured(b *StructuredBrief) (string, error) {
 <html>
 <head>
 <meta charset="UTF-8">
-</head>
+`)
+	fmt.Fprintf(&sb, "<meta name=\"pilot-brief-kind\" content=\"%s\">\n", kindOrDaily(b.Kind))
+	sb.WriteString(`</head>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
 `)
-	sb.WriteString("<h1>Pilot Daily Brief</h1>\n")
+	fmt.Fprintf(&sb, "<h1>%s</h1>\n", briefTitle(b.Kind))
 	fmt.Fprintf(&sb, "<p style=\"color: #64748b;\">%s</p>\n", b.GeneratedAt.Format("Monday, January 2, 2006"))
+	writeWeeklyProofHTML(&sb, b.Weekly)
 
 	// Shipped
 	fmt.Fprintf(&sb, "<h2>Shipped (%d)</h2>\n", len(b.Shipped))
@@ -227,5 +233,26 @@ func (f *EmailFormatter) FormatStructured(b *StructuredBrief) (string, error) {
 
 // SubjectStructured returns the email subject line for a structured brief.
 func (f *EmailFormatter) SubjectStructured(b *StructuredBrief) string {
-	return fmt.Sprintf("Pilot Daily Brief — %s", b.GeneratedAt.Format("Jan 2, 2006"))
+	return fmt.Sprintf("%s — %s", briefTitle(b.Kind), b.GeneratedAt.Format("Jan 2, 2006"))
+}
+
+// writeWeeklyProofHTML renders the weekly proof numbers and the biggest
+// shipped runs. It writes nothing for a daily brief (w == nil).
+func writeWeeklyProofHTML(sb *strings.Builder, w *WeeklyProof) {
+	if w == nil {
+		return
+	}
+	fmt.Fprintf(sb, "<h2>Last 7 days</h2>\n<p><strong>%d</strong> tickets shipped · <strong>%.0f</strong> min median time to PR · <strong>%d</strong> PRs merged</p>\n",
+		w.TicketsShipped, w.MedianTimeToPRMinutes, w.MergedCount)
+	if len(w.TopShipped) == 0 {
+		return
+	}
+	sb.WriteString("<h3>Biggest shipped</h3>\n")
+	for _, r := range w.TopShipped {
+		fmt.Fprintf(sb, "<p><strong>%s</strong> %s", html.EscapeString(r.IssueRef), html.EscapeString(r.Title))
+		if r.PRURL != "" {
+			fmt.Fprintf(sb, " — <a href=\"%s\">PR</a>", html.EscapeString(r.PRURL))
+		}
+		fmt.Fprintf(sb, "<br>+%d −%d</p>\n", r.LinesAdded, r.LinesRemoved)
+	}
 }

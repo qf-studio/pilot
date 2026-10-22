@@ -23,8 +23,12 @@ func NewPlainTextFormatter() *PlainTextFormatter {
 func (f *PlainTextFormatter) Format(brief *Brief) (string, error) {
 	var sb strings.Builder
 
-	fmt.Fprintf(&sb, "PILOT DAILY BRIEF — %s\n", brief.GeneratedAt.Format("Jan 2, 2006"))
-	sb.WriteString(strings.Repeat("=", 50) + "\n\n")
+	fmt.Fprintf(&sb, "%s — %s\n", strings.ToUpper(briefTitle(brief.Kind)), brief.GeneratedAt.Format("Jan 2, 2006"))
+	sb.WriteString(strings.Repeat("=", 50) + "\n")
+	if brief.Weekly != nil {
+		sb.WriteString("LAST 7 DAYS: " + brief.Weekly.Summary() + "\n")
+	}
+	sb.WriteString("\n")
 
 	// Completed
 	fmt.Fprintf(&sb, "COMPLETED (%d)\n", len(brief.Completed))

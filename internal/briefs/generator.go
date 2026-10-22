@@ -86,6 +86,7 @@ func (g *Generator) Generate(period BriefPeriod) (*Brief, error) {
 	}
 
 	brief := &Brief{
+		Kind:        KindDaily,
 		GeneratedAt: time.Now(),
 		Period:      period,
 		Completed:   []TaskSummary{},
@@ -187,6 +188,56 @@ func (g *Generator) GenerateDaily() (*Brief, error) {
 	return g.Generate(BriefPeriod{Start: start, End: end})
 }
 
+// GenerateWeeklyEnding creates the weekly brief for the 7 days ending at end:
+// the daily sections plus the weekly proof numbers (GH-5792).
+func (g *Generator) GenerateWeeklyEnding(end time.Time) (*Brief, error) {
+	period := BriefPeriod{Start: end.Add(-7 * 24 * time.Hour), End: end}
+	brief, err := g.Generate(period)
+	if err != nil {
+		return nil, err
+	}
+	proof, err := g.weeklyProof(period, nil)
+	if err != nil {
+		return nil, err
+	}
+	brief.Kind = KindWeekly
+	brief.Weekly = proof
+	return brief, nil
+}
+
+// weeklyProof reads the window's ledger and computes the proof numbers. When
+// shipped is nil the shipped runs are built from the same executions.
+func (g *Generator) weeklyProof(period BriefPeriod, shipped []ShippedRun) (*WeeklyProof, error) {
+	in, err := g.store.GetWeeklyProofInputs(memory.BriefQuery{
+		Start:    period.Start,
+		End:      period.End,
+		Projects: g.config.Filters.Projects,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if shipped == nil {
+		shipped = BuildStructured(time.Now(), period, in.Shipped, nil, nil).Shipped
+	}
+	return BuildWeeklyProof(in, shipped), nil
+}
+
+// GenerateWeeklyStructured builds the console brief for a weekly period:
+// the structured sections stamped kind=weekly with the proof numbers.
+func (g *Generator) GenerateWeeklyStructured(period BriefPeriod) (*StructuredBrief, error) {
+	sb, err := g.GenerateStructured(period)
+	if err != nil {
+		return nil, err
+	}
+	proof, err := g.weeklyProof(period, sb.Shipped)
+	if err != nil {
+		return nil, err
+	}
+	sb.Kind = KindWeekly
+	sb.Weekly = proof
+	return sb, nil
+}
+
 // GenerateWeekly creates a brief for the previous week
 func (g *Generator) GenerateWeekly() (*Brief, error) {
 	loc, err := time.LoadLocation(g.config.Timezone)
@@ -202,9 +253,8 @@ func (g *Generator) GenerateWeekly() (*Brief, error) {
 	}
 	daysToMonday := weekday - 1
 	end := time.Date(now.Year(), now.Month(), now.Day()-daysToMonday, 9, 0, 0, 0, loc)
-	start := end.Add(-7 * 24 * time.Hour)
 
-	return g.Generate(BriefPeriod{Start: start, End: end})
+	return g.GenerateWeeklyEnding(end)
 }
 
 // convertMetrics converts database metrics to brief metrics

@@ -40,6 +40,7 @@ type ReviewInput struct {
 func BuildStructured(now time.Time, period BriefPeriod, execs []*memory.Execution, reviews []ReviewInput, poolPercent *float64) *StructuredBrief {
 	b := &StructuredBrief{
 		Schema:       StructuredBriefSchema,
+		Kind:         KindDaily,
 		GeneratedAt:  now,
 		PeriodStart:  period.Start,
 		PeriodEnd:    period.End,

@@ -2,8 +2,22 @@ package briefs
 
 import "time"
 
-// Brief represents a daily summary brief
+// BriefKind says which cadence a brief belongs to. It is the `kind` marker on
+// the console payload and the email (GH-5792).
+type BriefKind string
+
+// Brief kinds.
+const (
+	KindDaily  BriefKind = "daily"
+	KindWeekly BriefKind = "weekly"
+)
+
+// Brief represents a daily or weekly summary brief
 type Brief struct {
+	// Kind is KindWeekly for the Monday brief; empty is treated as daily.
+	Kind BriefKind
+	// Weekly carries the proof numbers; set only when Kind is KindWeekly.
+	Weekly      *WeeklyProof
 	GeneratedAt time.Time
 	Period      BriefPeriod
 	Completed   []TaskSummary
@@ -54,12 +68,15 @@ type BriefMetrics struct {
 
 // BriefConfig holds configuration for brief generation
 type BriefConfig struct {
-	Enabled  bool            `yaml:"enabled"`
-	Schedule string          `yaml:"schedule"` // Cron syntax: "0 9 * * 1-5"
-	Timezone string          `yaml:"timezone"`
-	Channels []ChannelConfig `yaml:"channels"`
-	Content  ContentConfig   `yaml:"content"`
-	Filters  FilterConfig    `yaml:"filters"`
+	Enabled  bool   `yaml:"enabled"`
+	Schedule string `yaml:"schedule"` // Cron syntax: "0 9 * * 1-5"
+	Timezone string `yaml:"timezone"`
+	// WeeklyDay is the weekday the weekly brief fires, at the schedule's
+	// hour and minute. Empty means monday (GH-5792).
+	WeeklyDay string          `yaml:"weekly_day"`
+	Channels  []ChannelConfig `yaml:"channels"`
+	Content   ContentConfig   `yaml:"content"`
+	Filters   FilterConfig    `yaml:"filters"`
 }
 
 // ChannelConfig defines a delivery channel
@@ -99,7 +116,9 @@ const StructuredBriefSchema = 1
 // contract: shipped, review_needed, pool, failed — the struct field order
 // below is the JSON key order.
 type StructuredBrief struct {
-	Schema       int          `json:"schema"`
+	Schema int `json:"schema"`
+	// Kind is "daily" or "weekly" (GH-5792).
+	Kind         BriefKind    `json:"kind"`
 	GeneratedAt  time.Time    `json:"generated_at"`
 	PeriodStart  time.Time    `json:"period_start"`
 	PeriodEnd    time.Time    `json:"period_end"`
@@ -108,6 +127,18 @@ type StructuredBrief struct {
 	// Pool is nil (JSON null) when the daemon does not know the allowance.
 	Pool   *PoolUsage  `json:"pool"`
 	Failed []FailedRun `json:"failed"`
+	// Weekly is present only on weekly briefs (GH-5792).
+	Weekly *WeeklyProof `json:"weekly,omitempty"`
+}
+
+// WeeklyProof is the weekly brief's three proof numbers plus the biggest
+// shipped runs (GH-5792). An empty week is all zeros and an empty TopShipped,
+// never an error.
+type WeeklyProof struct {
+	TicketsShipped        int          `json:"tickets_shipped"`
+	MedianTimeToPRMinutes float64      `json:"median_time_to_pr_minutes"`
+	MergedCount           int          `json:"merged_count"`
+	TopShipped            []ShippedRun `json:"top_shipped"`
 }
 
 // ShippedRun is one delivered run. It folds in the receipts digest line:

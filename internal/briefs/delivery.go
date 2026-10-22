@@ -279,10 +279,21 @@ func (d *DeliveryService) formatTelegramBrief(brief *Brief) string {
 	var text string
 
 	// Header
-	text = fmt.Sprintf("☀️ *Daily Brief - %s*\n\n", brief.GeneratedAt.Format("Jan 2, 2006"))
+	if brief.Kind == KindWeekly {
+		text = fmt.Sprintf("☀️ *Weekly Brief - %s*\n\n", brief.GeneratedAt.Format("Jan 2, 2006"))
+		if brief.Weekly != nil {
+			text += "🏁 " + brief.Weekly.Summary() + "\n\n"
+		}
+	} else {
+		text = fmt.Sprintf("☀️ *Daily Brief - %s*\n\n", brief.GeneratedAt.Format("Jan 2, 2006"))
+	}
 
 	// Metrics
-	text += "📊 *Yesterday's Progress*\n"
+	progressLabel := "Yesterday's Progress"
+	if brief.Kind == KindWeekly {
+		progressLabel = "Last 7 Days"
+	}
+	text += "📊 *" + progressLabel + "*\n"
 	text += "━━━━━━━━━━━━━━━━━━━━━\n"
 	text += fmt.Sprintf("✅ %d tasks completed\n", brief.Metrics.CompletedCount)
 	text += fmt.Sprintf("⏱ %s avg duration\n", formatDuration(brief.Metrics.AvgDurationMs))

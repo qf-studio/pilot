@@ -1209,6 +1209,32 @@ func TestConfig_Validate_DailyTicketCap(t *testing.T) {
 	}
 }
 
+func TestConfig_Validate_WeeklyBriefDay(t *testing.T) {
+	tests := []struct {
+		day     string
+		wantErr bool
+	}{
+		{day: ""},
+		{day: "monday"},
+		{day: "Friday"},
+		{day: "someday", wantErr: true},
+		{day: "1", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.day, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Orchestrator = &OrchestratorConfig{MaxConcurrent: 1, DailyBrief: &DailyBriefConfig{WeeklyDay: tt.day}}
+			err := cfg.Validate()
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "weekly_day") {
+				t.Errorf("error %q does not name weekly_day", err.Error())
+			}
+		})
+	}
+}
+
 func TestLoad_DailyTicketCap(t *testing.T) {
 	write := func(t *testing.T, body string) string {
 		t.Helper()

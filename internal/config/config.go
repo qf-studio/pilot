@@ -210,13 +210,16 @@ func DefaultExecutionConfig() *ExecutionConfig {
 // DailyBriefConfig holds settings for automated daily summary reports
 // including schedule, delivery channels, and content filters.
 type DailyBriefConfig struct {
-	Enabled  bool                 `yaml:"enabled"`
-	Schedule string               `yaml:"schedule"` // Cron syntax: "0 9 * * 1-5"
-	Time     string               `yaml:"time"`     // Deprecated: use schedule
-	Timezone string               `yaml:"timezone"`
-	Channels []BriefChannelConfig `yaml:"channels"`
-	Content  BriefContentConfig   `yaml:"content"`
-	Filters  BriefFilterConfig    `yaml:"filters"`
+	Enabled  bool   `yaml:"enabled"`
+	Schedule string `yaml:"schedule"` // Cron syntax: "0 9 * * 1-5"
+	Time     string `yaml:"time"`     // Deprecated: use schedule
+	Timezone string `yaml:"timezone"`
+	// WeeklyDay is the weekday the weekly brief is sent, at the schedule's
+	// hour and minute in Timezone (GH-5792). Default: monday.
+	WeeklyDay string               `yaml:"weekly_day"`
+	Channels  []BriefChannelConfig `yaml:"channels"`
+	Content   BriefContentConfig   `yaml:"content"`
+	Filters   BriefFilterConfig    `yaml:"filters"`
 }
 
 // ReceiptsDigestConfig holds settings for the daily receipts digest (GH-5257):
@@ -686,10 +689,11 @@ func DefaultConfig() *Config {
 			Model:         executor.DefaultSonnetModel,
 			MaxConcurrent: 2,
 			DailyBrief: &DailyBriefConfig{
-				Enabled:  false,
-				Schedule: "0 9 * * 1-5", // 9 AM weekdays
-				Timezone: "America/New_York",
-				Channels: []BriefChannelConfig{},
+				Enabled:   false,
+				Schedule:  "0 9 * * 1-5", // 9 AM weekdays
+				Timezone:  "America/New_York",
+				WeeklyDay: "monday",
+				Channels:  []BriefChannelConfig{},
 				Content: BriefContentConfig{
 					IncludeMetrics:     true,
 					IncludeErrors:      true,
@@ -1270,6 +1274,16 @@ func validateDailyTicketCapTimezone(name string) error {
 	return nil
 }
 
+// validateWeeklyDay checks orchestrator.daily_brief.weekly_day: empty or a
+// weekday name.
+func validateWeeklyDay(day string) error {
+	switch strings.ToLower(strings.TrimSpace(day)) {
+	case "", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday":
+		return nil
+	}
+	return fmt.Errorf("invalid orchestrator.daily_brief.weekly_day: %q (use a weekday name such as \"monday\")", day)
+}
+
 // Validate checks the configuration for errors and returns an error if invalid.
 // It validates required fields, port ranges, authentication settings, and routing config.
 func (c *Config) Validate() error {
@@ -1305,6 +1319,12 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid executor.daily_ticket_cap: %d (must be >= 0; 0 = unlimited)", c.Executor.DailyTicketCap)
 		}
 		if err := validateDailyTicketCapTimezone(c.Executor.DailyTicketCapTimezone); err != nil {
+			return err
+		}
+	}
+
+	if c.Orchestrator != nil && c.Orchestrator.DailyBrief != nil {
+		if err := validateWeeklyDay(c.Orchestrator.DailyBrief.WeeklyDay); err != nil {
 			return err
 		}
 	}

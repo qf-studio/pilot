@@ -1710,9 +1710,10 @@ Examples:
 
 			// Convert config to briefs.BriefConfig
 			briefsConfig := &briefs.BriefConfig{
-				Enabled:  briefCfg.Enabled,
-				Schedule: briefCfg.Schedule,
-				Timezone: briefCfg.Timezone,
+				Enabled:   briefCfg.Enabled,
+				Schedule:  briefCfg.Schedule,
+				Timezone:  briefCfg.Timezone,
+				WeeklyDay: briefCfg.WeeklyDay,
 				Content: briefs.ContentConfig{
 					IncludeMetrics:     briefCfg.Content.IncludeMetrics,
 					IncludeErrors:      briefCfg.Content.IncludeErrors,

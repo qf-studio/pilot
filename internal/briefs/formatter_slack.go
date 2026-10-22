@@ -18,7 +18,11 @@ func (f *SlackFormatter) Format(brief *Brief) (string, error) {
 	var sb strings.Builder
 
 	// Header
-	fmt.Fprintf(&sb, ":bar_chart: *Pilot Daily Brief* — %s\n\n", brief.GeneratedAt.Format("Jan 2, 2006"))
+	fmt.Fprintf(&sb, ":bar_chart: *%s* — %s\n", briefTitle(brief.Kind), brief.GeneratedAt.Format("Jan 2, 2006"))
+	if brief.Weekly != nil {
+		fmt.Fprintf(&sb, "*Last 7 days:* %s\n", brief.Weekly.Summary())
+	}
+	sb.WriteString("\n")
 
 	// Completed
 	fmt.Fprintf(&sb, "*:white_check_mark: Completed (%d)*\n", len(brief.Completed))
@@ -94,10 +98,19 @@ func (f *SlackFormatter) SlackBlocks(brief *Brief) []map[string]interface{} {
 		"type": "header",
 		"text": map[string]interface{}{
 			"type":  "plain_text",
-			"text":  fmt.Sprintf("Pilot Daily Brief — %s", brief.GeneratedAt.Format("Jan 2, 2006")),
+			"text":  fmt.Sprintf("%s — %s", briefTitle(brief.Kind), brief.GeneratedAt.Format("Jan 2, 2006")),
 			"emoji": true,
 		},
 	})
+	if brief.Weekly != nil {
+		blocks = append(blocks, map[string]interface{}{
+			"type": "section",
+			"text": map[string]interface{}{
+				"type": "mrkdwn",
+				"text": "*Last 7 days:* " + brief.Weekly.Summary(),
+			},
+		})
+	}
 
 	// Completed section
 	completedText := fmt.Sprintf(":white_check_mark: *Completed (%d)*\n", len(brief.Completed))

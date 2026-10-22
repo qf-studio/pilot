@@ -310,7 +310,7 @@
 | Feature | Status | Package | CLI Command | Config Key | Notes |
 |---------|--------|---------|-------------|------------|-------|
 | Daily briefs | ✅ | briefs | `pilot brief` | `orchestrator.daily_brief` | Scheduled |
-| Weekly briefs | ✅ | briefs | `pilot brief --weekly` | - | Manual trigger |
+| Weekly briefs | ✅ | briefs | `pilot brief --weekly` | `orchestrator.daily_brief.weekly_day` | GH-5792: scheduled on `weekly_day` (default monday) at the daily-brief hour/timezone; proof numbers `tickets_shipped`, `median_time_to_pr_minutes`, `merged_count` (merged from the `execution_events` ledger, since autopilot deletes finished PR state rows) + top 3 shipped runs by diff; console payload and email carry `kind: weekly`; catch-up only after a prior weekly send |
 | Slack delivery | ✅ | briefs | - | `orchestrator.daily_brief.channels` | - |
 | Metrics summary | ✅ | briefs | - | `orchestrator.daily_brief.content.include_metrics` | - |
 | Receipts digest | ✅ | briefs | - | `orchestrator.receipts_digest` | GH-5257: end-of-day Telegram-only per-execution cost lines (issue ref, diff size, duration, $cost) + day total. Own schedule/scheduler (`ReceiptsScheduler`), default 18:00 America/New_York; empty day sends nothing. Fixed `GetLastBriefSent` to filter by `brief_type` so it can't cross-contaminate catch-up with `daily_brief` on a shared channel |

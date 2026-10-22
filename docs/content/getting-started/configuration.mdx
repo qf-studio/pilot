@@ -1158,6 +1158,7 @@ orchestrator:
     enabled: false
     schedule: "0 9 * * 1-5"              # cron: 9 AM weekdays
     timezone: "America/New_York"
+    weekly_day: monday                   # weekly brief day, same hour as schedule
     channels:
       - type: slack
         channel: "#dev-updates"
@@ -1180,6 +1181,7 @@ orchestrator:
 | `daily_brief.enabled` | bool | `false` | Enable daily summary |
 | `daily_brief.schedule` | string | `"0 9 * * 1-5"` | Cron schedule (5-field cron syntax) |
 | `daily_brief.timezone` | string | `"America/New_York"` | IANA timezone for schedule |
+| `daily_brief.weekly_day` | string | `"monday"` | Weekday the weekly brief (tickets shipped, median time to PR, merged count for the last 7 days) is sent, at the schedule's hour in `timezone` |
 | `daily_brief.channels[].type` | string | — | Delivery channel: `slack`, `telegram`, `email` |
 | `daily_brief.channels[].channel` | string | — | Channel name or ID (e.g. `#dev-updates`) |
 | `daily_brief.channels[].recipients` | []string | — | Email recipients (for email type) |
