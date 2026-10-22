@@ -1421,6 +1421,30 @@ const dispatcherStallRepickCap = 8
 // avoids inventing a third arbitrary threshold.
 const dispatcherInfraRepickCap = 8
 
+// dispatcherNoProgressRepickCap is the lower ceiling on consecutive re-picks
+// whose runs ended in a "no progress" outcome — a `declined` row, or a
+// `no_op` row whose error carries the ghost-SHA guard's "no new commit
+// produced" (GH-5800). Neither is terminal-done for HasTerminalCompletion
+// (only an error-free no_op is), so the generic policy kept retrying them up
+// to dispatcherRepickHardCap with a full executor session per attempt, each
+// one re-reading the same issue body to find nothing to change (site#15: five
+// runs in 40 minutes on an issue whose body did not match the page). A bare
+// retry reproduces the outcome — only a rescoped body changes it — so the
+// third pick stalls the task instead. Counted together (declined then a
+// no-commit no_op is two) and from the claim history rather than
+// consecutiveDrops, so unrelated earlier failures neither trip this early nor
+// hide it. Not terminal-done outright: a label cycle after the body is fixed
+// must still re-arm the task (GH-5139/GH-5212), and an empty-error no_op keeps
+// its existing "nothing to change is done" behaviour. Set to 2 per the issue:
+// one repeat distinguishes a flaky miss from a mis-specified body.
+const dispatcherNoProgressRepickCap = 2
+
+// noNewCommitErrorMarker is the ghost-SHA guard's error text (runner.go) that
+// distinguishes a no-commit no_op row, which counts toward
+// dispatcherNoProgressRepickCap, from a genuine error-free no_op, which does
+// not.
+const noNewCommitErrorMarker = "no new commit produced"
+
 // repickBackoffKey namespaces backoff state by project path + task ID,
 // matching cmd/pilot's repickBackoffKey — task_id alone is not unique across
 // projects (GH-4276).
@@ -1592,7 +1616,52 @@ const consecutiveIdenticalFailureThreshold = 2
 const (
 	deterministicFailureReasonPrefix   = "deterministic failure (will not retry): "
 	identicalFailureStreakReasonPrefix = "consecutive identical failures (will not retry): "
+	noProgressRepickReasonPrefix       = "no-progress repick cap reached (will not retry): "
 )
+
+// isNoProgressOutcome reports whether exec ended in an outcome that counts
+// toward dispatcherNoProgressRepickCap: status "declined", or status "no_op"
+// with the ghost-SHA guard's "no new commit produced" error (GH-5800). An
+// error-free no_op is deliberately excluded — it is terminal-done.
+func isNoProgressOutcome(exec *memory.Execution) bool {
+	switch exec.Status {
+	case string(ExecStatusDeclined):
+		return true
+	case string(ExecStatusNoOp):
+		return strings.Contains(strings.ToLower(exec.Error), noNewCommitErrorMarker)
+	}
+	return false
+}
+
+// consecutiveNoProgressOutcomes counts the most recent executions for
+// (taskID, projectPath) — newest-first via ListExecutionsForTask, the same
+// scan shape consecutiveEnvClassFailures uses — that are consecutive
+// isNoProgressOutcome rows. The scan stops at the first row that isn't one,
+// so any other outcome (including the "failed" row a label-cycle re-arm
+// demotes a stalled row to) resets the count with no separate bookkeeping.
+// Returns the count and the newest row's outcome label for the operator
+// comment. GH-5800. Errors are treated as "no streak" (0), the safe default.
+func (d *Dispatcher) consecutiveNoProgressOutcomes(taskID, projectPath string) (int, string) {
+	execs, err := d.store.ListExecutionsForTask(taskID, projectPath)
+	if err != nil {
+		return 0, ""
+	}
+	count := 0
+	label := ""
+	for _, exec := range execs {
+		if !isNoProgressOutcome(exec) {
+			break
+		}
+		if count == 0 {
+			label = exec.Status
+			if exec.Status == string(ExecStatusNoOp) {
+				label = "no_op (" + noNewCommitErrorMarker + ")"
+			}
+		}
+		count++
+	}
+	return count, label
+}
 
 // priorClaimWasDeterministicFailure reports whether (taskID, projectPath)'s
 // currently claimed execution — the one nextRetryGeneration just examined to
@@ -1673,7 +1742,8 @@ func (d *Dispatcher) priorClaimWasEscalatedForOperatorAttention(taskID, projectP
 		return false, ""
 	}
 	if strings.HasPrefix(exec.Error, deterministicFailureReasonPrefix) ||
-		strings.HasPrefix(exec.Error, identicalFailureStreakReasonPrefix) {
+		strings.HasPrefix(exec.Error, identicalFailureStreakReasonPrefix) ||
+		strings.HasPrefix(exec.Error, noProgressRepickReasonPrefix) {
 		return true, exec.Error
 	}
 	return false, ""
@@ -1915,6 +1985,16 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 	// dispatcherRepickHardCap.
 	if isDeterministic, errStr := d.priorClaimWasDeterministicFailure(task.ID, task.ProjectPath); isDeterministic {
 		d.escalateDeterministicFailure(task, gen, errStr)
+		return "", nil
+	}
+
+	// GH-5800: a declined or no-commit no_op prior claim is not terminal-done,
+	// so it would otherwise ride the generic backoff all the way to
+	// dispatcherRepickHardCap, one full executor session per attempt. The
+	// same issue body reproduces the same "nothing to change" outcome, so
+	// stall at the lower dispatcherNoProgressRepickCap and ask for a rescope.
+	if n, outcome := d.consecutiveNoProgressOutcomes(task.ID, task.ProjectPath); n >= dispatcherNoProgressRepickCap {
+		d.stallTaskAfterNoProgressCap(task, gen, n, outcome)
 		return "", nil
 	}
 
@@ -2247,6 +2327,28 @@ func (d *Dispatcher) stallTaskAfterInfraCap(task *Task, gen, infraDrops int) {
 		"reason":      "infra_repick_cap_stalled",
 		"infra_drops": fmt.Sprintf("%d", infraDrops),
 		"infra_cap":   fmt.Sprintf("%d", dispatcherInfraRepickCap),
+	})
+}
+
+// stallTaskAfterNoProgressCap marks the task's claimed execution "stalled" and
+// raises an alert once dispatcherNoProgressRepickCap consecutive declined /
+// no-commit no_op runs have been exhausted (GH-5800) — the same
+// escalate-and-hold path (and pilot-blocked label) the other repick caps take.
+// The reason names the outcome and says the issue body needs a rescope, which
+// surfaceStalledIssue posts verbatim; it carries noProgressRepickReasonPrefix
+// so priorClaimWasEscalatedForOperatorAttention keeps the task pinned here on
+// later poll ticks instead of letting the "stalled" hold marker fall into the
+// stall carve-out.
+func (d *Dispatcher) stallTaskAfterNoProgressCap(task *Task, gen, runs int, outcome string) {
+	reason := fmt.Sprintf(
+		"%s%d consecutive runs ended without a change (latest outcome: %s, cap=%d) — re-running the same issue body will not produce one; the issue body needs a rescope before it is re-armed",
+		noProgressRepickReasonPrefix, runs, outcome, dispatcherNoProgressRepickCap,
+	)
+	d.escalateStalledTask(task, gen, runs, reason, map[string]string{
+		"reason":             "no_progress_repick_cap_stalled",
+		"no_progress_runs":   fmt.Sprintf("%d", runs),
+		"no_progress_cap":    fmt.Sprintf("%d", dispatcherNoProgressRepickCap),
+		"latest_run_outcome": outcome,
 	})
 }
 
