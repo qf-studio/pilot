@@ -1319,6 +1319,15 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 		return "", fmt.Errorf("task %s: %w", task.ID, ErrTaskAlreadyActive)
 	}
 
+	// GH-5808: decline a task the org has no daily ticket budget left for
+	// before any decomposition, claim or repick-backoff bookkeeping runs. The
+	// task is left exactly where it is — no label change, no issue comment, no
+	// ledger row — and the poller re-offers it on its normal cadence; the
+	// check passes again once the org-local day rolls over.
+	if capErr := d.HoldAtDailyTicketCap(task); capErr != nil {
+		return "", capErr
+	}
+
 	// Try decomposition if decomposer is configured
 	if d.decomposer != nil {
 		if TaskOptsOutOfDecomposition(task) {
@@ -2643,6 +2652,9 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 	// 0 forever.
 	parentExecID, err := d.beginWithGenerationRetry(parent, ExecStatusDecomposed)
 	if err != nil {
+		if _, held := asDailyTicketCapError(err); held {
+			return "", d.heldAtDailyTicketCap(parent, err)
+		}
 		return "", fmt.Errorf("failed to save decomposed parent: %w", err)
 	}
 	if parentExecID == "" {
@@ -2707,6 +2719,9 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 	// 0 forever — this is the poller's primary re-pick path.
 	execID, err := d.beginWithGenerationRetry(task, ExecStatusQueued)
 	if err != nil {
+		if _, held := asDailyTicketCapError(err); held {
+			return "", d.heldAtDailyTicketCap(task, err)
+		}
 		return "", fmt.Errorf("failed to save execution: %w", err)
 	}
 	if execID == "" {
@@ -2759,6 +2774,39 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 	d.ensureWorker(task.ProjectPath)
 
 	return execID, nil
+}
+
+// HoldAtDailyTicketCap reports whether task would be held at the daily ticket
+// cap right now (GH-5808) without queueing or writing anything. A non-nil
+// result errors.Is ErrDailyTicketCapReached and ErrDispatchGated and carries
+// the resume instant (errors.As *DailyTicketCapError); the hold is logged and
+// alerted once per task / org per day. Pollers call it before any label,
+// comment or monitor side effect so a held task costs nothing and is simply
+// offered again on the next poll.
+func (d *Dispatcher) HoldAtDailyTicketCap(task *Task) error {
+	if err := NewExecutionLifecycle(d.store).CheckDailyTicketCap(task); err != nil {
+		return d.heldAtDailyTicketCap(task, err)
+	}
+	return nil
+}
+
+// heldAtDailyTicketCap records a daily-ticket-cap hold (one Info log per task
+// per day, one daily_ticket_cap_hit alert per org per day) and returns err
+// unchanged so callers see ErrDailyTicketCapReached / ErrDispatchGated and the
+// resume instant. It deliberately does nothing else: a held task is not
+// failed, stalled, escalated or backed off, and no label or comment is written
+// to its issue (GH-5808).
+func (d *Dispatcher) heldAtDailyTicketCap(task *Task, err error) error {
+	capErr, ok := asDailyTicketCapError(err)
+	if !ok {
+		return err
+	}
+	var emit func(AlertEvent)
+	if d.runner != nil {
+		emit = d.runner.EmitAlertEvent
+	}
+	reportDailyTicketCapHold(d.log, emit, task, capErr)
+	return err
 }
 
 // queueBlockInfo reports whether the project's worker is currently busy

@@ -256,6 +256,18 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 		}
 	}
 
+	// GH-5808: daily ticket cap. Decline before any monitor, alert or dashboard
+	// side effect: the task stays where it is (no failure, no label change, no
+	// comment) and is offered again by the adapter's normal poll; the check
+	// passes once the org-local day rolls over. The error wraps
+	// ErrDispatchGated, so every adapter wrapper already reads it as a
+	// non-failure. QueueTask re-checks authoritatively below.
+	if deps.Dispatcher != nil {
+		if capErr := deps.Dispatcher.HoldAtDailyTicketCap(task); capErr != nil {
+			return &HandlerResult{Success: false, BranchName: task.Branch, Error: capErr}, nil
+		}
+	}
+
 	// 1. Register with monitor
 	if deps.Monitor != nil {
 		deps.Monitor.Register(taskID, title, info.URL)
@@ -340,7 +352,12 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	if deps.Dispatcher != nil {
 		execID, qErr := deps.Dispatcher.QueueTask(ctx, task)
 		if qErr != nil {
-			if errors.Is(qErr, executor.ErrTaskAlreadyActive) {
+			if errors.Is(qErr, executor.ErrDailyTicketCapReached) {
+				// GH-5808: lost the cap race to a concurrent Begin after the
+				// pre-check above passed. Not a failure — leave the task for
+				// the next poll, exactly like the pre-check path.
+				gatedDrop = true
+			} else if errors.Is(qErr, executor.ErrTaskAlreadyActive) {
 				// GH-4008: race between the pre-check above and QueueTask's own
 				// guard — expected dedup, not a failure. Downgrade to Debug so
 				// it never surfaces as an ERROR to callers (e.g. the SDK poller

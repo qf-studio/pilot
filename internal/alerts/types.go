@@ -134,6 +134,11 @@ const (
 	// operator instead of it retrying silently forever (PR#5214 review
 	// note 1).
 	AlertTypeEnvClassFailureStreak AlertType = "env_class_failure_streak"
+
+	// AlertTypeDailyTicketCapHit (GH-5808): ExecutionLifecycle.Begin held a
+	// task because the org already started executor.daily_ticket_cap tickets
+	// in its current calendar day. The executor emits it once per org per day.
+	AlertTypeDailyTicketCapHit AlertType = "daily_ticket_cap_hit"
 )
 
 // HandlerEmittedAlertTypes lists every AlertType whose handler
@@ -157,6 +162,7 @@ var HandlerEmittedAlertTypes = []AlertType{
 	AlertTypeFinishTripwireFailureStreak,
 	AlertTypePushRetryExhaustedFailureStreak,
 	AlertTypeEnvClassFailureStreak,
+	AlertTypeDailyTicketCapHit,
 }
 
 // CoverageGaps returns the subset of HandlerEmittedAlertTypes that cfg has
@@ -683,6 +689,21 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    30 * time.Minute,
 			Description: "Alert when a task accumulates N+ consecutive env-class (credential/environment) failures without any attempt reaching the model backend",
+		},
+		// Daily ticket cap (GH-5808): the executor dedupes to one event per org
+		// per org-local day (the day is part of the message), so the rule
+		// needs no cooldown (a per-rule cooldown cannot tell two days apart)
+		// and no Condition. Severity is Info: the hold is the plan working as
+		// designed, not a fault.
+		{
+			Name:        "daily_ticket_cap_hit",
+			Type:        AlertTypeDailyTicketCapHit,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityInfo,
+			Channels:    []string{},
+			Cooldown:    0,
+			Description: "Alert once per day when new tickets are held because executor.daily_ticket_cap was reached",
 		},
 		// GH-5498: emitted by the executor's HeartbeatCallback right before it
 		// kills a Claude subprocess that produced no stream events for longer

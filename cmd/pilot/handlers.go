@@ -986,6 +986,18 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: skipReasonNeedsHuman}, nil
 	}
 
+	// GH-5808: daily ticket cap, checked before the issue fetch, spec guard and
+	// pilot-in-progress label/comment writes below so a held issue is left
+	// exactly as it is — no label change, no comment. Success=false with no PR
+	// makes the SDK poller unmark the issue, so it is offered again on its next
+	// poll and is admitted once the org-local day rolls over; the dispatcher
+	// logs the hold once per task per day.
+	if dispatcher != nil {
+		if capErr := dispatcher.HoldAtDailyTicketCap(&executor.Task{ID: taskID, Title: title, ProjectPath: projectPath}); capErr != nil {
+			return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: skipReasonDailyTicketCap, Error: capErr}, nil
+		}
+	}
+
 	taskDesc := fmt.Sprintf("GitHub Issue %s: %s\n\n%s", taskID, title, ev.Body)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
@@ -1320,6 +1332,10 @@ const labelPilotNeedsHumanSDK = "pilot-needs-human"
 // const stands in until (if ever) the field survives the studio-sdk bridge
 // (GH-5072 nit fold-in).
 const skipReasonNeedsHuman = "needs_human"
+
+// skipReasonDailyTicketCap is the sdkcore.IssueResult.SkipReason for a task
+// held at executor.daily_ticket_cap (GH-5808); host-only like skipReasonNeedsHuman.
+const skipReasonDailyTicketCap = "daily_ticket_cap"
 
 // githubEventHasNeedsHumanLabel reports whether labels carries
 // pilot-needs-human (GH-5056). See handleGithubIssueEventSDK's call site

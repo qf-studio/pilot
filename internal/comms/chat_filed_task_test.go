@@ -34,6 +34,10 @@ func TestChatFiledTask_BaseBranchFromProjectConfig(t *testing.T) {
 			if task.BaseBranch != tt.want {
 				t.Errorf("BaseBranch = %q, want %q", task.BaseBranch, tt.want)
 			}
+			// GH-5808: chat-filed work is not a ticket for the daily cap.
+			if !task.IsChat {
+				t.Error("chat-filed task must carry IsChat so Begin neither holds nor counts it")
+			}
 		})
 	}
 

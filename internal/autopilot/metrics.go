@@ -158,6 +158,10 @@ type Metrics struct {
 	QueueDepth       int // issues with `pilot` label, no `pilot-in-progress`
 	FailedQueueDepth int // issues with `pilot-failed`
 
+	// DailyTicketCapDispatchedToday is how many distinct tickets this org has
+	// started in its current cap day (GH-5808).
+	DailyTicketCapDispatchedToday int
+
 	// PlatformBreakerOpen reports whether the shared cross-PR
 	// platform-outage breaker was open as of the most recent Observe call
 	// this controller made (GH-4791). Process-wide state mirrored per
@@ -597,6 +601,13 @@ func (m *Metrics) SetQueueDepth(depth int) {
 	m.QueueDepth = depth
 }
 
+// SetDailyTicketCapDispatchedToday updates the dispatched-today gauge (GH-5808).
+func (m *Metrics) SetDailyTicketCapDispatchedToday(n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.DailyTicketCapDispatchedToday = n
+}
+
 // SetFailedQueueDepth updates the failed queue depth gauge.
 func (m *Metrics) SetFailedQueueDepth(depth int) {
 	m.mu.Lock()
@@ -747,6 +758,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		ActivePRsByStage:              copyStageIntMap(m.ActivePRsByStage),
 		QueueDepth:                    m.QueueDepth,
 		FailedQueueDepth:              m.FailedQueueDepth,
+		DailyTicketCapDispatchedToday: m.DailyTicketCapDispatchedToday,
 		UnsourcedLabeledIssues:        copyStringIntMap(m.UnsourcedLabeledIssues),
 		IssuesShipped:                 m.IssuesShipped,
 		IssuesAttempted:               m.IssuesAttempted,
@@ -852,6 +864,10 @@ type MetricsSnapshot struct {
 	TotalActivePRs   int
 	QueueDepth       int
 	FailedQueueDepth int
+
+	// DailyTicketCapDispatchedToday (GH-5808): distinct tickets started in the
+	// org's current cap day.
+	DailyTicketCapDispatchedToday int
 
 	// PlatformBreakerOpen reports whether the shared cross-PR
 	// platform-outage breaker was open as of this controller's most recent

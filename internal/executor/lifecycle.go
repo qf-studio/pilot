@@ -169,6 +169,15 @@ func (l *ExecutionLifecycle) SetAlertProcessor(processor AlertEventProcessor) {
 // the FK-787 class this chokepoint exists to prevent. Callers must check
 // errors.Is(err, ErrClaimLost) and treat it as "already claimed — abort
 // before backend invocation, log, no error state" (TASK-407/GH-4349).
+//
+// GH-5808: when executor.daily_ticket_cap is set and the org-local day already
+// holds that many distinct task ids, Begin returns ("", *DailyTicketCapError)
+// — errors.Is ErrDailyTicketCapReached and ErrDispatchGated — and writes
+// nothing: no claim, no row, task.ExecutionID untouched. A task id already
+// counted today (a generation+1 retry), chat-filed tasks (task.IsChat) and
+// decomposed subtasks (they belong to their parent's ticket) pass.
+// Callers must treat it like ErrClaimLost's sibling: abort before the backend,
+// leave the task where it is, and try again after the error's ResumesAt.
 func (l *ExecutionLifecycle) Begin(task *Task, initial Status, generation ...int) (string, error) {
 	gen := 0
 	if len(generation) > 0 {
@@ -180,6 +189,18 @@ func (l *ExecutionLifecycle) Begin(task *Task, initial Status, generation ...int
 	if l.store == nil {
 		task.ExecutionID = execID
 		return execID, nil
+	}
+
+	// GH-5808: hold at the daily ticket cap before anything is written. The
+	// admit mutex spans check and save so concurrent Begins cannot both pass
+	// at cap-1; with no cap there is nothing to serialize.
+	policy := currentDailyTicketCapPolicy()
+	if policy.cap > 0 && !task.notATicket() {
+		dailyTicketCapAdmitMu.Lock()
+		defer dailyTicketCapAdmitMu.Unlock()
+		if err := checkDailyTicketCap(l.store, policy, task); err != nil {
+			return "", err
+		}
 	}
 
 	claimed, err := l.store.ClaimExecution(task.ID, task.ProjectPath, gen, execID)
@@ -208,6 +229,12 @@ func (l *ExecutionLifecycle) Begin(task *Task, initial Status, generation ...int
 		TaskLabels:        task.Labels,
 		IsCanary:          task.IsCanary,
 		KeySource:         KeySourceFromEnv(), // GH-5676
+		NotTicket:         task.notATicket(),  // GH-5808
+	}
+	if policy.now != nil {
+		// An injected cap clock decides which org-local day the row lands in,
+		// the same way it decided the hold above.
+		exec.CreatedAt = policy.now()
 	}
 	if err := l.store.SaveExecution(exec); err != nil {
 		return execID, fmt.Errorf("failed to save execution: %w", err)

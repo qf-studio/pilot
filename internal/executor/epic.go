@@ -1984,7 +1984,7 @@ func (r *Runner) getSubIssuePRState(ctx context.Context, projectPath string, prN
 // renders its per-state counts in, so the summary text is deterministic despite
 // being built from a map.
 var childTerminalStateOrder = []string{
-	"completed", "no_op", "skipped", "superseded", "declined", "rate_limited", "stalled", "infra", "failed",
+	"completed", "no_op", "skipped", "held", "superseded", "declined", "rate_limited", "stalled", "infra", "failed",
 }
 
 // summarizeChildTerminalStates classifies a decomposed parent from its
@@ -2987,6 +2987,17 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		// through the same shared repick_backoff store beginWithGenerationRetry
 		// uses instead of re-implementing a second, driftable copy.
 		subExecID, err := NewExecutionLifecycle(r.logStore).Begin(subTask, ExecStatusRunning)
+
+		// GH-5808: the daily ticket cap holds sub-issues like any other ticket.
+		// A held child is neither run nor failed: its issue stays open and
+		// pilot-labeled, so the poller dispatches it through the same Begin
+		// once the org-local day rolls over, and the parent epic carries on
+		// with the remaining children (each of which is held the same way).
+		if capErr, held := asDailyTicketCapError(err); held {
+			reportDailyTicketCapHold(r.log, r.EmitAlertEvent, subTask, capErr)
+			childStates = append(childStates, "held")
+			continue
+		}
 
 		var result *ExecutionResult
 		if errors.Is(err, ErrClaimLost) {

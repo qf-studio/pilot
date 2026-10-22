@@ -4582,3 +4582,86 @@ func TestAlertResolutionDisabled(t *testing.T) {
 		t.Fatalf("dispatched %d alerts, want 1 (resolution disabled)", got)
 	}
 }
+
+// TestHandleDailyTicketCapHit covers the GH-5808 daily_ticket_cap_hit rule: the
+// executor emits one event per org per day, so the engine only has to turn it
+// into an alert whose message embeds the day (not rely on a cooldown) and
+// stay silent when no enabled rule matches.
+func TestHandleDailyTicketCapHit(t *testing.T) {
+	newEvent := func(day string) Event {
+		return Event{
+			Type: EventTypeDailyTicketCapHit,
+			Metadata: map[string]string{
+				"day":              day,
+				"daily_ticket_cap": "15",
+				"dispatched_today": "15",
+				"resumes_at":       "2026-10-23T00:00:00+02:00",
+			},
+			Timestamp: time.Now(),
+		}
+	}
+	newEngine := func(enabled bool) (*Engine, *mockChannel, context.CancelFunc) {
+		config := &AlertConfig{
+			Enabled:  true,
+			Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+			Rules: []AlertRule{{
+				Name:     "daily_ticket_cap_hit",
+				Type:     AlertTypeDailyTicketCapHit,
+				Enabled:  enabled,
+				Severity: SeverityInfo,
+				Channels: []string{"test-channel"},
+			}},
+		}
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		engine := NewEngine(config, WithDispatcher(dispatcher))
+		ctx, cancel := context.WithCancel(context.Background())
+		_ = engine.Start(ctx)
+		return engine, mockCh, cancel
+	}
+
+	t.Run("message embeds the day and counts", func(t *testing.T) {
+		engine, mockCh, cancel := newEngine(true)
+		defer cancel()
+
+		engine.ProcessEvent(newEvent("2026-10-22"))
+
+		waitForAlerts(t, mockCh, 1, 2*time.Second)
+		got := mockCh.getAlerts()[0]
+		if got.Type != AlertTypeDailyTicketCapHit {
+			t.Errorf("alert type = %s, want %s", got.Type, AlertTypeDailyTicketCapHit)
+		}
+		for _, want := range []string{"2026-10-22", "15 of 15", "2026-10-23T00:00:00+02:00"} {
+			if !strings.Contains(got.Message, want) {
+				t.Errorf("message %q missing %q", got.Message, want)
+			}
+		}
+	})
+
+	t.Run("a different day is a different message", func(t *testing.T) {
+		engine, mockCh, cancel := newEngine(true)
+		defer cancel()
+
+		engine.ProcessEvent(newEvent("2026-10-22"))
+		engine.ProcessEvent(newEvent("2026-10-23"))
+
+		waitForAlerts(t, mockCh, 2, 2*time.Second)
+		got := mockCh.getAlerts()
+		if got[0].Message == got[1].Message {
+			t.Errorf("two days produced the same message %q", got[0].Message)
+		}
+	})
+
+	t.Run("disabled rule does not fire", func(t *testing.T) {
+		engine, mockCh, cancel := newEngine(false)
+		defer cancel()
+
+		engine.ProcessEvent(newEvent("2026-10-22"))
+		engine.flushForTest()
+
+		if n := len(mockCh.getAlerts()); n != 0 {
+			t.Errorf("got %d alerts, want 0 (rule disabled)", n)
+		}
+	})
+}

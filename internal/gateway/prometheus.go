@@ -397,6 +397,13 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	writeType(w, "pilot_failed_queue_depth", "gauge")
 	writeGauge(w, "pilot_failed_queue_depth", float64(snap.FailedQueueDepth))
 
+	// pilot_daily_ticket_cap_dispatched_today (GH-5808): distinct tickets this
+	// org started in its current executor.daily_ticket_cap_timezone day — the
+	// numerator the cap holds against.
+	writeHelp(w, "pilot_daily_ticket_cap_dispatched_today", "Distinct tickets started in the current org-local day (the count executor.daily_ticket_cap holds against)")
+	writeType(w, "pilot_daily_ticket_cap_dispatched_today", "gauge")
+	writeGauge(w, "pilot_daily_ticket_cap_dispatched_today", float64(snap.DailyTicketCapDispatchedToday))
+
 	// pilot_poller_unsourced_labeled_issues (GH-4488)
 	writeHelp(w, "pilot_poller_unsourced_labeled_issues", "Open issues carrying the dispatch label that project board sourcing is not covering (absent from the board, or in a status other than source_status), by repo — nonzero means a board-sourced repo is silently ignoring labeled work")
 	writeType(w, "pilot_poller_unsourced_labeled_issues", "gauge")

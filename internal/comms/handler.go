@@ -839,6 +839,7 @@ func (h *Handler) buildChatTask(contextID, taskID, description string, createPR 
 		MemberID:    h.resolveMemberID(contextID),
 		ImagePath:   imagePath,
 		IsCanary:    h.isCanaryProject(projectPath),
+		IsChat:      true, // GH-5808: chat work is not a ticket for the daily cap
 	}
 }
 

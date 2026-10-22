@@ -410,6 +410,10 @@ func (s *Store) migrate() error {
 		// throughput metrics, the metrics hydrator, and dashboard history
 		// without touching the ledger itself.
 		`ALTER TABLE executions ADD COLUMN is_canary BOOLEAN DEFAULT FALSE`,
+		// GH-5808: chat-filed executions and decomposed subtasks are not
+		// tickets; the daily ticket cap count (CountDistinctTasksInWindow)
+		// excludes them.
+		`ALTER TABLE executions ADD COLUMN not_ticket BOOLEAN DEFAULT FALSE`,
 		// TASK-407/GH-4349: the atomic dispatch-admission claim. A row here
 		// means one caller has already won the right to begin execution for
 		// (task_id, project_path, generation); every other Begin caller for
@@ -763,6 +767,11 @@ type Execution struct {
 	// metrics, the metrics hydrator, and dashboard history; the ledger row
 	// itself is written identically regardless of this flag.
 	IsCanary bool
+	// NotTicket marks an execution that is not a ticket for the daily ticket
+	// cap: a chat-filed task, or a decomposed subtask that belongs to its
+	// parent's ticket (GH-5808). Excluded from CountDistinctTasksInWindow.
+	// Write side only — nothing reads it back into an Execution.
+	NotTicket bool
 }
 
 // SaveExecution saves an execution record to the database.
@@ -806,15 +815,15 @@ func (s *Store) SaveExecution(exec *Execution) error {
 				task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose,
 				task_source_adapter, task_source_issue_id, task_labels,
 				approval_request_id, effort_level, complexity_level, is_canary,
-				key_source, reported_cost_usd)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				key_source, reported_cost_usd, not_ticket)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, createdAt, completedAt,
 			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.TokensCacheRead, exec.TokensCacheWrite,
 			exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
 			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose,
 			exec.TaskSourceAdapter, exec.TaskSourceIssueID, labelsJSON,
 			exec.ApprovalRequestID, exec.EffortLevel, exec.ComplexityLevel, exec.IsCanary,
-			NormalizeKeySource(exec.KeySource), exec.ReportedCostUSD)
+			NormalizeKeySource(exec.KeySource), exec.ReportedCostUSD, exec.NotTicket)
 		return err
 	})
 }
@@ -2631,26 +2640,59 @@ func (s *Store) GetUsageSince(since time.Time, projectPath string) (rows []Usage
 }
 
 // CountDistinctTasksInWindow returns how many distinct task ids have at least
-// one execution row created in [start, end) (canary excluded). The store is the
-// org scope: there is no per-org column, one ledger belongs to one org.
+// one execution row created in [start, end) (canary, chat-filed and
+// decomposed-subtask rows excluded). The store is the org scope: there is no per-org column, one ledger
+// belongs to one org.
 //
 // Decision: the window is an instant range, not a calendar day. The caller
 // derives start/end from its configured location (a Europe/Berlin day is 23 or
 // 25 hours long across a DST change), so this method never does zone math.
 // Counting DISTINCT task_id means retry generations of one task count once.
 // Chat turns live in chat_turns, not executions, so they are excluded by
-// construction. created_at is UTC offset-less text, so both bounds bind in UTC
-// (GH-5308).
+// construction; chat-filed tasks and decomposed subtasks do get an executions row and
+// are excluded by not_ticket (GH-5808). created_at is UTC offset-less text, so both bounds bind in
+// UTC (GH-5308).
 func (s *Store) CountDistinctTasksInWindow(start, end time.Time) (int, error) {
 	var n int
 	err := s.db.QueryRow(`
 		SELECT COUNT(DISTINCT task_id) FROM executions
-		WHERE created_at >= ? AND created_at < ? AND COALESCE(is_canary, 0) = 0
+		WHERE created_at >= ? AND created_at < ? AND COALESCE(is_canary, 0) = 0 AND COALESCE(not_ticket, 0) = 0
 	`, start.UTC(), end.UTC()).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("failed to count distinct tasks in window: %w", err)
 	}
 	return n, nil
+}
+
+// HasCountedTaskInWindow reports whether taskID already has a countable
+// execution row (same filters as CountDistinctTasksInWindow) created in
+// [start, end) — i.e. whether it is already part of that window's ticket count
+// (GH-5808). A retry or repick of such a task adds nothing to the count.
+func (s *Store) HasCountedTaskInWindow(taskID string, start, end time.Time) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM executions
+		WHERE task_id = ? AND created_at >= ? AND created_at < ?
+		  AND COALESCE(is_canary, 0) = 0 AND COALESCE(not_ticket, 0) = 0
+	`, taskID, start.UTC(), end.UTC()).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("failed to look up task in window: %w", err)
+	}
+	return n > 0, nil
+}
+
+// LocalDayWindow returns the [start, end) instants of the calendar day in loc
+// that contains now. end is the next local midnight, so the window is 23 or 25
+// hours long across a DST change. Shared by the Begin hold, the gauge refresh
+// and the standing endpoint so they all agree on which day they are counting.
+func LocalDayWindow(now time.Time, loc *time.Location) (start, end time.Time) {
+	if loc == nil {
+		loc = time.UTC
+	}
+	y, m, d := now.In(loc).Date()
+	start = time.Date(y, m, d, 0, 0, 0, 0, loc)
+	end = time.Date(y, m, d+1, 0, 0, 0, 0, loc)
+	return start, end
 }
 
 // GetActiveExecutions retrieves all executions with status "running".

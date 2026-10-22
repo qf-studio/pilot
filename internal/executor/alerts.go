@@ -105,6 +105,13 @@ const (
 	// envClassFailureStreakThreshold, purely additive to the existing
 	// retry behavior.
 	AlertEventTypeEnvClassFailureStreak AlertEventType = "env_class_failure_streak"
+
+	// AlertEventTypeDailyTicketCapHit (GH-5808) mirrors
+	// alerts.EventTypeDailyTicketCapHit ("daily_ticket_cap_hit") byte-for-byte.
+	// Emitted once per org per org-local day the first time Begin holds a task
+	// at executor.daily_ticket_cap; Metadata carries day, daily_ticket_cap,
+	// dispatched_today and resumes_at.
+	AlertEventTypeDailyTicketCapHit AlertEventType = "daily_ticket_cap_hit"
 )
 
 // SelfReviewDeadManTrackerName is the alerts.DeadManTracker registration

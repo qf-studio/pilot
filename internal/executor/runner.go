@@ -824,6 +824,12 @@ type Task struct {
 	// code will be written; it skips both the GH-363 build/test auto-enable
 	// and any explicitly configured quality checker.
 	SkipQualityGates bool
+	// IsChat marks a task filed from a chat message (Telegram/Slack request
+	// run through ExecutionLifecycle.Begin in internal/comms/handler.go).
+	// Chat work is not a ticket: Begin neither holds it at the daily ticket
+	// cap nor counts it toward that cap (GH-5808). Chat has its own cap
+	// (adapters.chat.daily_turn_cap).
+	IsChat bool
 }
 
 // LogExecutionID returns the ID that runner-side writes (execution_logs.execution_id,
@@ -1412,6 +1418,13 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 	// every listed name is still scrubbed (GH-5302).
 	if config.ClaudeCode != nil {
 		SetModelEnvPassthrough(config.ClaudeCode.EnvPassthrough)
+	}
+
+	// GH-5808: same single-choke-point reasoning as the env_passthrough wiring
+	// above — ExecutionLifecycle.Begin reads the daily ticket cap from
+	// package state, so the config must be installed wherever a runner is built.
+	if err := SetDailyTicketCap(config.DailyTicketCap, config.DailyTicketCapTimezone); err != nil {
+		slog.Warn("invalid executor.daily_ticket_cap_timezone", slog.Any("error", err))
 	}
 
 	backend, err := NewBackend(config)

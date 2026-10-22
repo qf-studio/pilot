@@ -219,6 +219,14 @@ const (
 	// consecutive_failures, and credential_signature.
 	EventTypeEnvClassFailureStreak EventType = "env_class_failure_streak"
 
+	// Daily ticket cap events (GH-5808): fired by the executor (Dispatcher and
+	// the epic sub-issue loop) the first time ExecutionLifecycle.Begin holds a
+	// task at executor.daily_ticket_cap, once per org per org-local day. The
+	// string must equal executor.AlertEventTypeDailyTicketCapHit because
+	// EngineAdapter casts the executor string straight to EventType. Metadata
+	// carries day, daily_ticket_cap, dispatched_today and resumes_at.
+	EventTypeDailyTicketCapHit EventType = "daily_ticket_cap_hit"
+
 	// Heartbeat timeout events (GH-5498): fired by the executor's
 	// HeartbeatCallback (Runner.heartbeatTimeoutCallback) just before the
 	// Claude subprocess is killed for producing no stream events for longer
@@ -731,6 +739,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleIntentJudgeFailureStreak(ctx, event)
 	case EventTypeEnvClassFailureStreak:
 		e.handleEnvClassFailureStreak(ctx, event)
+	case EventTypeDailyTicketCapHit:
+		e.handleDailyTicketCapHit(ctx, event)
 	case EventTypeHeartbeatTimeout:
 		e.handleHeartbeatTimeout(ctx, event)
 	case EventTypeTaskTimeout:
@@ -1166,6 +1176,31 @@ func (e *Engine) handleEnvClassFailureStreak(ctx context.Context, event Event) {
 		e.logger.Warn("env-class failure streak event has no matching rule — alert dropped silently",
 			slog.String("task_id", event.TaskID),
 			slog.String("consecutive_failures", event.Metadata["consecutive_failures"]))
+	}
+}
+
+// handleDailyTicketCapHit fires AlertTypeDailyTicketCapHit rules when the
+// executor holds a task at the daily ticket cap (GH-5808). The executor already
+// deduped to one event per org per day, so no Condition-based counting or
+// cooldown applies. The day is embedded in the message so duplicate
+// suppression (which keys on the message) never merges two days' alerts.
+func (e *Engine) handleDailyTicketCapHit(ctx context.Context, event Event) {
+	matched := false
+	for _, rule := range e.config.Rules {
+		if rule.Type != AlertTypeDailyTicketCapHit {
+			continue
+		}
+		matched = true
+		if rule.Enabled && e.shouldFire(rule) {
+			message := fmt.Sprintf("Daily ticket cap reached for %s: %s of %s tickets started — new tickets are held until %s",
+				event.Metadata["day"], event.Metadata["dispatched_today"], event.Metadata["daily_ticket_cap"], event.Metadata["resumes_at"])
+			alert := e.createAlert(rule, event, message)
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+	if !matched {
+		e.logger.Warn("daily ticket cap event has no matching rule — alert dropped silently",
+			slog.String("day", event.Metadata["day"]))
 	}
 }
 

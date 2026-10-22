@@ -2051,9 +2051,19 @@ func startQueueDepthRefresh(ctx context.Context, store *memory.Store, metrics *a
 	if store == nil || metrics == nil {
 		return
 	}
-	if err := autopilot.RefreshQueueDepth(store, metrics); err != nil {
-		logging.WithComponent("start").Warn("failed to refresh queue depth gauge", slog.Any("error", err))
+	refresh := func() {
+		if err := autopilot.RefreshQueueDepth(store, metrics); err != nil {
+			logging.WithComponent("start").Warn("failed to refresh queue depth gauge", slog.Any("error", err))
+		}
+		// GH-5808: pilot_daily_ticket_cap_dispatched_today rides the same loop —
+		// it is a ledger-derived queue-adjacent gauge and needs the same
+		// headless-daemon liveness. Counted in the cap's own timezone.
+		_, loc := executor.DailyTicketCapLocation()
+		if err := autopilot.RefreshDailyTicketCapDispatchedToday(store, metrics, loc, time.Now()); err != nil {
+			logging.WithComponent("start").Warn("failed to refresh daily ticket cap gauge", slog.Any("error", err))
+		}
 	}
+	refresh()
 	logging.SafeGo("queue-depth-refresh", func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -2062,9 +2072,7 @@ func startQueueDepthRefresh(ctx context.Context, store *memory.Store, metrics *a
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := autopilot.RefreshQueueDepth(store, metrics); err != nil {
-					logging.WithComponent("start").Warn("failed to refresh queue depth gauge", slog.Any("error", err))
-				}
+				refresh()
 			}
 		}
 	})

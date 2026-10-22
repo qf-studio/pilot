@@ -1092,6 +1092,13 @@ func recordCLITaskStart(store *memory.Store, task *executor.Task) (execID string
 // here means that prints as one clean stderr line, not a wrapped chain or a
 // stack trace.
 func claimLostCLIError(taskID string, saveErr error) error {
+	// GH-5808: the daily ticket cap holds a CLI run like any other dispatch.
+	// Starting it anyway would run a ticket the org has no budget for.
+	var capErr *executor.DailyTicketCapError
+	if errors.As(saveErr, &capErr) {
+		return fmt.Errorf("daily ticket cap reached: %d of %d tickets already started on %s; %s can start again at %s",
+			capErr.Dispatched, capErr.Cap, capErr.Day, taskID, capErr.ResumesAt.Format(time.RFC3339))
+	}
 	if !errors.Is(saveErr, executor.ErrClaimLost) {
 		return nil
 	}
