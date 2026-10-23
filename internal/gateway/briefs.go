@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/qf-studio/pilot/internal/briefs"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -20,6 +21,18 @@ const (
 	defaultBriefsLimit = 10
 	maxBriefsLimit     = 100
 )
+
+// parseBriefKind reads the optional ?kind= filter. Empty means no filter;
+// anything outside the allowed set writes a 400 and reports ok=false.
+func parseBriefKind(w http.ResponseWriter, r *http.Request) (kind string, ok bool) {
+	kind = r.URL.Query().Get("kind")
+	switch kind {
+	case "", string(briefs.KindDaily), string(briefs.KindWeekly):
+		return kind, true
+	}
+	http.Error(w, "kind must be one of: daily, weekly", http.StatusBadRequest)
+	return "", false
+}
 
 func (s *Server) briefPayloadStore(w http.ResponseWriter) BriefPayloadStore {
 	s.mu.RLock()
@@ -39,13 +52,18 @@ func (s *Server) briefPayloadStore(w http.ResponseWriter) BriefPayloadStore {
 }
 
 // handleBriefsLatest serves GET /api/v1/briefs/latest: the newest structured
-// brief payload verbatim, or 404 when none has been generated yet.
+// brief payload verbatim, or 404 when none has been generated yet. An
+// optional ?kind=daily|weekly restricts it to that cadence.
 func (s *Server) handleBriefsLatest(w http.ResponseWriter, r *http.Request) {
+	kind, ok := parseBriefKind(w, r)
+	if !ok {
+		return
+	}
 	bs := s.briefPayloadStore(w)
 	if bs == nil {
 		return
 	}
-	rows, err := bs.ListBriefPayloads(1, "")
+	rows, err := bs.ListBriefPayloads(1, kind)
 	if err != nil {
 		http.Error(w, "failed to fetch briefs", http.StatusInternalServerError)
 		return
@@ -59,7 +77,8 @@ func (s *Server) handleBriefsLatest(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBriefs serves GET /api/v1/briefs?limit=N: up to N stored briefs,
-// newest first, as {"briefs": [...]}. limit defaults to 10, max 100.
+// newest first, as {"briefs": [...]}. limit defaults to 10, max 100. An
+// optional ?kind=daily|weekly restricts the list to that cadence.
 func (s *Server) handleBriefs(w http.ResponseWriter, r *http.Request) {
 	limit := defaultBriefsLimit
 	if raw := r.URL.Query().Get("limit"); raw != "" {
@@ -71,11 +90,16 @@ func (s *Server) handleBriefs(w http.ResponseWriter, r *http.Request) {
 		limit = min(n, maxBriefsLimit)
 	}
 
+	kind, ok := parseBriefKind(w, r)
+	if !ok {
+		return
+	}
+
 	bs := s.briefPayloadStore(w)
 	if bs == nil {
 		return
 	}
-	rows, err := bs.ListBriefPayloads(limit, "")
+	rows, err := bs.ListBriefPayloads(limit, kind)
 	if err != nil {
 		http.Error(w, "failed to fetch briefs", http.StatusInternalServerError)
 		return
