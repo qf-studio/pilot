@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -140,10 +141,13 @@ func (m *Monitor) Hydrate(taskID, title, issueURL string, status TaskStatus, sta
 		IssueURL: issueURL,
 		Status:   status,
 	}
+	// Decision: StartedAt is kept whenever the row has one, whatever its
+	// status — a re-queued row keeps its original start, and reconcile needs
+	// it to compute a real run time once the task finishes (GH-5844).
+	state.StartedAt = startedAt
 	switch status {
 	case StatusRunning:
 		state.Phase = "Running"
-		state.StartedAt = startedAt
 	default:
 		state.Phase = "Queued"
 	}
@@ -173,6 +177,12 @@ func (m *Monitor) HydrateFromStore(store *memory.Store) error {
 			title = t.TaskID
 		}
 		m.Hydrate(t.TaskID, title, t.IssueURL, status, t.StartedAt)
+		if t.ProjectPath != "" {
+			// Same derivation as cmd/pilot/handler_common.go: without it the
+			// dashboard groups hydrated rows under "(no project)" and
+			// ReconcileWithStore falls back to cross-project lookups.
+			m.SetProjectInfo(t.TaskID, t.ProjectPath, filepath.Base(t.ProjectPath))
+		}
 	}
 	return nil
 }
@@ -253,13 +263,30 @@ func (m *Monitor) ReconcileWithStore(store *memory.Store) error {
 			continue
 		}
 
+		// Read the row so the card carries the real start/completion times
+		// and PR instead of the reconcile tick time (GH-5844). A lookup
+		// failure degrades to the tick-time fallback.
+		exec, _ := store.GetLatestExecutionByTaskID(c.id, c.projectPath)
+
 		m.mu.Lock()
 		if state, ok := m.tasks[c.id]; ok {
 			switch state.Status {
 			case StatusRunning, StatusQueued, StatusPending:
 				now := time.Now()
+				completedAt := &now
+				if exec != nil {
+					if exec.StartedAt != nil {
+						state.StartedAt = exec.StartedAt
+					}
+					if exec.CompletedAt != nil {
+						completedAt = exec.CompletedAt
+					}
+					if exec.PRUrl != "" {
+						state.PRUrl = exec.PRUrl
+					}
+				}
 				state.Status = newStatus
-				state.CompletedAt = &now
+				state.CompletedAt = completedAt
 				state.Phase = string(newStatus)
 				if newStatus == StatusCompleted {
 					state.Progress = 100

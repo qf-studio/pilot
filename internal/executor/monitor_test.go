@@ -917,9 +917,9 @@ func TestMonitorHydrateFromStore(t *testing.T) {
 	defer cleanup()
 
 	execs := []*memory.Execution{
-		{ID: "e1", TaskID: "GH-10", ProjectPath: "/p", Status: "queued", TaskTitle: "Queued task", TaskSourceIssueID: "10"},
-		{ID: "e2", TaskID: "GH-11", ProjectPath: "/p", Status: "running", TaskTitle: "Running task", TaskSourceIssueID: "11"},
-		{ID: "e3", TaskID: "GH-12", ProjectPath: "/p", Status: "completed", TaskTitle: "Done task"},
+		{ID: "e1", TaskID: "GH-10", ProjectPath: "/work/p", Status: "queued", TaskTitle: "Queued task", TaskSourceIssueID: "10"},
+		{ID: "e2", TaskID: "GH-11", ProjectPath: "/work/p", Status: "running", TaskTitle: "Running task", TaskSourceIssueID: "11"},
+		{ID: "e3", TaskID: "GH-12", ProjectPath: "/work/p", Status: "completed", TaskTitle: "Done task"},
 	}
 	for _, e := range execs {
 		if err := store.SaveExecution(e); err != nil {
@@ -947,6 +947,9 @@ func TestMonitorHydrateFromStore(t *testing.T) {
 	if queued.Status != StatusQueued || queued.Title != "Queued task" {
 		t.Errorf("Unexpected GH-10 state: %+v", queued)
 	}
+	if queued.ProjectPath != "/work/p" || queued.ProjectName != "p" {
+		t.Errorf("GH-10 project = (%q, %q), want (/work/p, p)", queued.ProjectPath, queued.ProjectName)
+	}
 
 	running, ok := m.Get("GH-11")
 	if !ok {
@@ -957,6 +960,9 @@ func TestMonitorHydrateFromStore(t *testing.T) {
 	}
 	if running.StartedAt == nil {
 		t.Error("Expected GH-11 StartedAt to be set")
+	}
+	if running.ProjectPath != "/work/p" || running.ProjectName != "p" {
+		t.Errorf("GH-11 project = (%q, %q), want (/work/p, p)", running.ProjectPath, running.ProjectName)
 	}
 
 	if _, ok := m.Get("GH-12"); ok {
@@ -1259,5 +1265,53 @@ func TestTerminalMonitorStatus(t *testing.T) {
 				t.Errorf("terminalMonitorStatus(%q) = (%q, %v), want (%q, %v)", tt.dbStatus, got, terminal, tt.want, tt.terminal)
 			}
 		})
+	}
+}
+
+// GH-5844: when reconcile flips a hydrated non-terminal card to terminal it
+// must take StartedAt/CompletedAt/PRUrl from the executions row, not stamp
+// the reconcile tick time, so the dashboard shows the real run time.
+func TestMonitorReconcileWithStore_CopiesTimesAndPRFromRow(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	started := time.Now().Add(-3 * time.Hour).UTC().Truncate(time.Second)
+	completed := started.Add(26 * time.Minute)
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "e1", TaskID: "GH-30", ProjectPath: "/work/p", Status: "queued", TaskTitle: "t",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	m := NewMonitor()
+	if err := m.HydrateFromStore(store); err != nil {
+		t.Fatalf("HydrateFromStore: %v", err)
+	}
+	if st, _ := m.Get("GH-30"); st == nil || st.StartedAt != nil {
+		t.Fatalf("hydrated queued row should have nil StartedAt, got %+v", st)
+	}
+
+	if _, err := store.DB().Exec(
+		`UPDATE executions SET status = 'completed', started_at = ?, completed_at = ?, pr_url = ? WHERE id = ?`,
+		started, completed, "https://example.com/pr/9", "e1",
+	); err != nil {
+		t.Fatalf("update row: %v", err)
+	}
+
+	if err := m.ReconcileWithStore(store); err != nil {
+		t.Fatalf("ReconcileWithStore: %v", err)
+	}
+	st, _ := m.Get("GH-30")
+	if st.Status != StatusCompleted {
+		t.Fatalf("status = %s, want completed", st.Status)
+	}
+	if st.StartedAt == nil || !st.StartedAt.Equal(started) {
+		t.Errorf("StartedAt = %v, want %v", st.StartedAt, started)
+	}
+	if st.CompletedAt == nil || !st.CompletedAt.Equal(completed) {
+		t.Errorf("CompletedAt = %v, want %v", st.CompletedAt, completed)
+	}
+	if st.PRUrl != "https://example.com/pr/9" {
+		t.Errorf("PRUrl = %q", st.PRUrl)
 	}
 }

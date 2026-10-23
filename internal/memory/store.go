@@ -3819,11 +3819,15 @@ func (s *Store) GetQueuedProjectPaths() ([]string, error) {
 // just enough to reconstruct executor.Monitor state after a daemon restart
 // (GH-4246). See GetTasksForMonitorHydration.
 type HydrationTask struct {
-	TaskID    string
-	Status    string // "queued" | "pending" | "running"
-	Title     string
-	IssueURL  string
-	StartedAt *time.Time
+	TaskID   string
+	Status   string // "queued" | "pending" | "running"
+	Title    string
+	IssueURL string
+	// ProjectPath is the row's project_path ("" when unset); hydrated cards
+	// need it so the dashboard groups them under their project and
+	// reconcile lookups stay project-scoped.
+	ProjectPath string
+	StartedAt   *time.Time
 }
 
 // GetTasksForMonitorHydration returns queued/pending/running executions
@@ -3834,7 +3838,7 @@ type HydrationTask struct {
 // hydration that rebuilds the monitor from persisted state (GH-4246).
 func (s *Store) GetTasksForMonitorHydration() ([]*HydrationTask, error) {
 	rows, err := s.db.Query(`
-		SELECT task_id, status, COALESCE(task_title, ''), COALESCE(task_source_issue_id, ''), started_at
+		SELECT task_id, status, COALESCE(task_title, ''), COALESCE(task_source_issue_id, ''), COALESCE(project_path, ''), started_at
 		FROM executions
 		WHERE status IN ('queued', 'pending', 'running')
 		ORDER BY created_at ASC
@@ -3848,7 +3852,7 @@ func (s *Store) GetTasksForMonitorHydration() ([]*HydrationTask, error) {
 	for rows.Next() {
 		var t HydrationTask
 		var startedAt sql.NullTime
-		if err := rows.Scan(&t.TaskID, &t.Status, &t.Title, &t.IssueURL, &startedAt); err != nil {
+		if err := rows.Scan(&t.TaskID, &t.Status, &t.Title, &t.IssueURL, &t.ProjectPath, &startedAt); err != nil {
 			return nil, err
 		}
 		if startedAt.Valid {

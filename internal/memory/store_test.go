@@ -1830,6 +1830,9 @@ func TestGetTasksForMonitorHydration(t *testing.T) {
 	if running.StartedAt == nil {
 		t.Error("Running task should carry a non-nil StartedAt")
 	}
+	if running.ProjectPath != "/p" {
+		t.Errorf("Running task ProjectPath = %q, want /p", running.ProjectPath)
+	}
 	queued, ok := byID["GH-1"]
 	if !ok {
 		t.Fatal("Queued task GH-1 missing from hydration set")

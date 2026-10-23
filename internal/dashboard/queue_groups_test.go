@@ -74,6 +74,13 @@ func TestGroupQueueTasks_Order(t *testing.T) {
 			wantGroups: []string{"(no project):GH-1,GH-2"},
 		},
 		{
+			name: "hydrated task with a project path is not (no project)",
+			tasks: []TaskDisplay{
+				{ID: "GH-1", ProjectPath: "/work/pilot", ProjectName: "pilot", Status: QueueStatusQueued},
+			},
+			wantGroups: []string{"pilot:GH-1"},
+		},
+		{
 			name: "empty name falls back to path base; key falls back to name",
 			tasks: []TaskDisplay{
 				{ID: "GH-1", ProjectPath: "/work/widgets", Status: QueueStatusQueued},
@@ -233,7 +240,7 @@ func TestRenderTasks_FinishedAndRunningRows(t *testing.T) {
 		{ID: "GH-2", Title: "running one", Status: QueueStatusRunning, Progress: 12, Phase: "Implementing", ProjectName: "p", StartedAt: now.Add(-3 * time.Minute)},
 	}
 	out := m.renderTasks()
-	for _, want := range []string{"14m · 40m ago", "#419", "12%", "■", "implementing · 3m"} {
+	for _, want := range []string{"14m      40m ago", "#419", "12%", "■", "implementing · 3m"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q:\n%s", want, out)
 		}
@@ -323,4 +330,56 @@ func TestRenderTasks_LineWidthsAcrossPanelWidths(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestQueueFinishedSlot(t *testing.T) {
+	now := time.Now()
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	tests := []struct {
+		name string
+		task TaskDisplay
+		want string
+	}{
+		{
+			name: "both known",
+			task: TaskDisplay{StartedAt: ago(20*time.Hour + 26*time.Minute), CompletedAt: ago(20 * time.Hour)},
+			want: "26m      20h ago",
+		},
+		{
+			name: "run time unknown",
+			task: TaskDisplay{CompletedAt: ago(19 * time.Hour)},
+			want: "–        19h ago",
+		},
+		{
+			name: "both unknown",
+			task: TaskDisplay{},
+			want: "–               ",
+		},
+		{
+			name: "hours and minutes",
+			task: TaskDisplay{StartedAt: ago(20*time.Hour + 62*time.Minute), CompletedAt: ago(20 * time.Hour)},
+			want: "1h2m     20h ago",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := queueFinishedSlot(tc.task)
+			if got != tc.want {
+				t.Errorf("queueFinishedSlot = %q, want %q", got, tc.want)
+			}
+			if w := lipgloss.Width(got); w != 16 {
+				t.Errorf("width = %d, want 16 (%q)", w, got)
+			}
+		})
+	}
+
+	// "Run time known, time ago unknown" cannot occur: queueRunTime needs
+	// CompletedAt, so a known run time always comes with a known time ago.
+	t.Run("time-ago column aligned regardless of run time", func(t *testing.T) {
+		a := queueFinishedSlot(TaskDisplay{StartedAt: ago(time.Hour), CompletedAt: ago(30 * time.Minute)})
+		b := queueFinishedSlot(TaskDisplay{CompletedAt: ago(30 * time.Minute)})
+		if !strings.HasSuffix(a, "30m ago") || !strings.HasSuffix(b, "30m ago") || lipgloss.Width(a) != lipgloss.Width(b) {
+			t.Errorf("misaligned: %q vs %q", a, b)
+		}
+	})
 }

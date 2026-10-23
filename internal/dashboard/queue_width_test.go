@@ -80,13 +80,13 @@ func TestRenderTask_NarrowRegressionPin(t *testing.T) {
 		Status:   QueueStatusDone,
 		Progress: 42,
 		PRURL:    "https://github.com/o/r/pull/42",
-		// GH-5783: finished rows show "<run time> · <time ago>" in the bar slot.
+		// GH-5783: finished rows show "<run time> <time ago>" columns in the bar slot.
 		StartedAt:   time.Now().Add(-54 * time.Minute),
 		CompletedAt: time.Now().Add(-40 * time.Minute),
 	}
 
 	row := m.renderTask(task, false, 0, 65, queueIDColumnWidth([]TaskDisplay{task}))
-	const want = "  ✓ done    GH-1234 a very long title...  14m · 40m ago      #42"
+	const want = "  ✓ done    GH-1234 a very long title...  14m      40m ago   #42"
 	if row != want {
 		t.Errorf("narrow (iw=65) rendering changed:\ngot:  %q\nwant: %q", row, want)
 	}
@@ -149,7 +149,7 @@ func TestRenderTasks_MixedIDColumnAlignment(t *testing.T) {
 
 			start := strings.IndexRune(row, '■')
 			if task.Status == QueueStatusDone {
-				start = strings.Index(row, "14m · 40m ago") // finished-row slot (GH-5783)
+				start = strings.Index(row, "14m      40m ago") // finished-row slot (GH-5783)
 			}
 			if start < 0 {
 				t.Fatalf("iw=%d id=%s: no progress-bar glyph found in row %q", iw, task.ID, row)

@@ -249,20 +249,34 @@ func renderQueueGroupHeader(g queueGroup, iw int) string {
 	return line
 }
 
-// queueFinishedSlot is the 16-column text that replaces the progress bar on
-// finished rows: "<run time> · <time ago>", with missing parts dropped.
+// Finished-slot sub-columns inside the 16-cell progress-bar slot:
+// run time (left-aligned) + 1 gap + time ago (right-aligned).
+const (
+	queueRunTimeW = 7
+	queueAgoW     = 8
+)
+
+// queueFinishedSlot is the 16-cell text that replaces the progress bar on
+// finished rows: a left-aligned run-time column and a right-aligned time-ago
+// column, so time-ago lines up across rows whether or not a run time is
+// known. An unknown part renders as "–"; both unknown is a single "–".
 func queueFinishedSlot(t TaskDisplay) string {
-	var parts []string
+	run, ago := "", ""
 	if d, ok := queueRunTime(t); ok {
-		parts = append(parts, formatDurationShort(d))
+		run = formatDurationShort(d)
 	}
 	if !t.CompletedAt.IsZero() {
-		parts = append(parts, formatTimeAgo(t.CompletedAt))
+		ago = formatTimeAgo(t.CompletedAt)
 	}
-	if len(parts) == 0 {
-		return "–"
+	if run == "" && ago == "" {
+		return padOrTruncate("–", queueRunTimeW+1+queueAgoW)
 	}
-	return strings.Join(parts, " · ")
+	if run == "" {
+		run = "–"
+	}
+	// A known run time implies a known CompletedAt (see queueRunTime), so ago
+	// is only ever empty when run is too — handled above.
+	return padOrTruncate(run, queueRunTimeW) + " " + fmt.Sprintf("%*s", queueAgoW, truncateVisual(ago, queueAgoW))
 }
 
 // queueMoreProjectsLine is the "+N projects" overflow line.
