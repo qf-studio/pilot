@@ -280,29 +280,8 @@ func (s *Scheduler) storeStructured(period BriefPeriod, kind BriefKind) {
 	if s.store == nil {
 		return
 	}
-	var sb *StructuredBrief
-	var err error
-	if kind == KindWeekly {
-		sb, err = s.generator.GenerateWeeklyStructured(period)
-	} else {
-		sb, err = s.generator.GenerateStructured(period)
-	}
-	if err != nil {
-		s.logger.Warn("failed to build structured brief", "error", err)
-		return
-	}
-	payload, err := sb.MarshalPayload()
-	if err != nil {
-		s.logger.Warn("failed to marshal structured brief", "error", err)
-		return
-	}
-	if err := s.store.SaveBriefPayload(&memory.BriefPayload{
-		GeneratedAt: sb.GeneratedAt,
-		Schema:      sb.Schema,
-		Kind:        string(sb.Kind),
-		Payload:     payload,
-	}); err != nil {
-		s.logger.Warn("failed to store structured brief", "error", err)
+	if err := s.generator.StoreStructured(period, kind); err != nil {
+		s.logger.Warn("failed to store structured brief", "kind", string(kind), "error", err)
 	}
 }
 

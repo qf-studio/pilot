@@ -154,10 +154,16 @@ func TestGeneratorGenerateWeekly(t *testing.T) {
 		t.Fatal("expected brief, got nil")
 	}
 
-	// Period should be 7 days
+	// Period should be the 7 days ending now, like the scheduled weekly brief
 	duration := brief.Period.End.Sub(brief.Period.Start)
 	if duration != 7*24*time.Hour {
 		t.Errorf("expected 168h (7 day) period, got %v", duration)
+	}
+	if d := time.Since(brief.Period.End); d < 0 || d > time.Minute {
+		t.Errorf("expected period to end now, ended %v ago", d)
+	}
+	if brief.Kind != KindWeekly || brief.Weekly == nil {
+		t.Errorf("kind = %q weekly = %v, want weekly with proof", brief.Kind, brief.Weekly)
 	}
 }
 
@@ -451,10 +457,13 @@ func TestGeneratorGenerateWeeklyOnDifferentDays(t *testing.T) {
 		t.Fatalf("failed to generate weekly brief: %v", err)
 	}
 
-	// Period should be exactly 7 days
+	// The window ends now whatever the weekday, not at the last Monday 09:00
 	duration := brief.Period.End.Sub(brief.Period.Start)
 	if duration != 7*24*time.Hour {
 		t.Errorf("expected 7 day period, got %v", duration)
+	}
+	if d := time.Since(brief.Period.End); d < 0 || d > time.Minute {
+		t.Errorf("expected period to end now, ended %v ago", d)
 	}
 }
 

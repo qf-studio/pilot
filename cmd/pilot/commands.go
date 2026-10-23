@@ -1658,6 +1658,23 @@ Examples:
 	return cmd
 }
 
+// generateManualBrief generates the on-demand brief for `pilot brief`. A
+// weekly brief ends now, like the scheduled one, and its structured payload is
+// stored so the console sees manual runs too. Storing is best-effort.
+func generateManualBrief(generator *briefs.Generator, weekly bool) (*briefs.Brief, error) {
+	if !weekly {
+		return generator.GenerateDaily()
+	}
+	brief, err := generator.GenerateWeekly()
+	if err != nil {
+		return nil, err
+	}
+	if err := generator.StoreStructured(brief.Period, brief.Kind); err != nil {
+		slog.Warn("failed to store weekly brief", "error", err)
+	}
+	return brief, nil
+}
+
 func newBriefCmd() *cobra.Command {
 	var now bool
 	var weekly bool
@@ -1741,12 +1758,7 @@ Examples:
 				fmt.Println("Generating Brief")
 				fmt.Println("───────────────────────────────────────")
 
-				var brief *briefs.Brief
-				if weekly {
-					brief, err = generator.GenerateWeekly()
-				} else {
-					brief, err = generator.GenerateDaily()
-				}
+				brief, err := generateManualBrief(generator, weekly)
 				if err != nil {
 					return fmt.Errorf("failed to generate brief: %w", err)
 				}

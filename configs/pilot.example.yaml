@@ -324,6 +324,26 @@ orchestrator:
     # timeout is unaffected. Default: 15m.
     finalize_timeout: 15m
 
+  # Daily brief: a scheduled summary of the last day's runs, delivered to the
+  # channels below. A weekly brief (tickets shipped, median time to PR, merged
+  # count for the last 7 days) is sent on weekly_day at the schedule's hour
+  # and minute in timezone. Both are also stored for the console; run
+  # `pilot brief --now` or `pilot brief --weekly` to generate one on demand.
+  daily_brief:
+    enabled: false
+    schedule: "0 9 * * 1-5"    # 9 AM weekdays (cron syntax)
+    timezone: "America/New_York"
+    weekly_day: monday         # Weekday of the weekly brief; default: monday
+    channels:
+      - type: slack
+        channel: "#dev-briefs"
+    content:
+      include_metrics: true
+      include_errors: true
+      max_items_per_section: 10
+    filters:
+      projects: []             # Empty = all projects
+
   # Daily receipts digest (GH-5257): an end-of-day Telegram-only summary,
   # one line per terminal execution that day — issue ref, diff size,
   # duration, dollar cost — plus a day total. Independent schedule from any

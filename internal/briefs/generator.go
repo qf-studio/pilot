@@ -1,6 +1,7 @@
 package briefs
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -254,23 +255,43 @@ func (g *Generator) GenerateWeeklyStructured(period BriefPeriod) (*StructuredBri
 	return sb, nil
 }
 
-// GenerateWeekly creates a brief for the previous week
+// GenerateWeekly creates the weekly brief for the 7 days ending now, the same
+// window the scheduled weekly brief uses at fire time.
 func (g *Generator) GenerateWeekly() (*Brief, error) {
-	loc, err := time.LoadLocation(g.config.Timezone)
+	return g.GenerateWeeklyEnding(time.Now())
+}
+
+// StoreStructured builds the console's structured brief for the period and
+// persists its JSON payload so GET /api/v1/briefs can serve it (GH-5791).
+// Weekly briefs carry kind=weekly and the proof numbers (GH-5792). It is a
+// no-op without a store.
+func (g *Generator) StoreStructured(period BriefPeriod, kind BriefKind) error {
+	if g.store == nil {
+		return nil
+	}
+	var sb *StructuredBrief
+	var err error
+	if kind == KindWeekly {
+		sb, err = g.GenerateWeeklyStructured(period)
+	} else {
+		sb, err = g.GenerateStructured(period)
+	}
 	if err != nil {
-		loc = time.UTC
+		return fmt.Errorf("build structured brief: %w", err)
 	}
-
-	now := time.Now().In(loc)
-	// Find last Monday
-	weekday := int(now.Weekday())
-	if weekday == 0 {
-		weekday = 7 // Sunday
+	payload, err := sb.MarshalPayload()
+	if err != nil {
+		return fmt.Errorf("marshal structured brief: %w", err)
 	}
-	daysToMonday := weekday - 1
-	end := time.Date(now.Year(), now.Month(), now.Day()-daysToMonday, 9, 0, 0, 0, loc)
-
-	return g.GenerateWeeklyEnding(end)
+	if err := g.store.SaveBriefPayload(&memory.BriefPayload{
+		GeneratedAt: sb.GeneratedAt,
+		Schema:      sb.Schema,
+		Kind:        string(sb.Kind),
+		Payload:     payload,
+	}); err != nil {
+		return fmt.Errorf("store structured brief: %w", err)
+	}
+	return nil
 }
 
 // convertMetrics converts database metrics to brief metrics
