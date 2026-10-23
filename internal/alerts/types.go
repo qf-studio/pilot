@@ -134,6 +134,11 @@ const (
 	// operator instead of it retrying silently forever (PR#5214 review
 	// note 1).
 	AlertTypeEnvClassFailureStreak AlertType = "env_class_failure_streak"
+
+	// AlertTypeDailyTicketCapHit (GH-5808): executor.daily_ticket_cap was
+	// reached and ExecutionLifecycle.Begin started holding new tickets until
+	// the next org-local midnight. Emitted once per org per org-local day.
+	AlertTypeDailyTicketCapHit AlertType = "daily_ticket_cap_hit"
 )
 
 // HandlerEmittedAlertTypes lists every AlertType whose handler
@@ -157,6 +162,7 @@ var HandlerEmittedAlertTypes = []AlertType{
 	AlertTypeFinishTripwireFailureStreak,
 	AlertTypePushRetryExhaustedFailureStreak,
 	AlertTypeEnvClassFailureStreak,
+	AlertTypeDailyTicketCapHit,
 }
 
 // CoverageGaps returns the subset of HandlerEmittedAlertTypes that cfg has
@@ -683,6 +689,21 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    30 * time.Minute,
 			Description: "Alert when a task accumulates N+ consecutive env-class (credential/environment) failures without any attempt reaching the model backend",
+		},
+		// Daily ticket cap hit (GH-5808): the executor emits this once per org
+		// per org-local day, the first time Begin holds a ticket. Cooldown is
+		// per rule, not per day, so it is left at zero and the day is embedded
+		// in the alert message instead — SuppressDuplicates then dedupes a
+		// repeat within the day while tomorrow's message differs.
+		{
+			Name:        "daily_ticket_cap_hit",
+			Type:        AlertTypeDailyTicketCapHit,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityInfo,
+			Channels:    []string{},
+			Cooldown:    0,
+			Description: "Alert when the daily ticket cap (executor.daily_ticket_cap) is reached and new tickets are held until the next org-local day",
 		},
 		// GH-5498: emitted by the executor's HeartbeatCallback right before it
 		// kills a Claude subprocess that produced no stream events for longer

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -372,6 +373,22 @@ func (s *Server) SetMetricsSource(source MetricsSource) {
 	}
 	if s.chatSource != nil {
 		s.prometheusExporter.SetChatSource(s.chatSource)
+	}
+	s.prometheusExporter.SetDailyCapDispatched(s.dailyCapDispatchedToday)
+}
+
+// dailyCapDispatchedToday backs pilot_daily_ticket_cap_dispatched_today
+// (GH-5808). It takes the read lock, so it must be called from a scrape, not
+// from a path already holding s.mu.
+func (s *Server) dailyCapDispatchedToday() (n int, ok bool, err error) {
+	win, status, msg := s.dailyTicketUsage()
+	switch status {
+	case 0:
+		return win.count, true, nil
+	case http.StatusServiceUnavailable: // no store wired: the gauge is simply off
+		return 0, false, nil
+	default:
+		return 0, false, errors.New(msg)
 	}
 }
 

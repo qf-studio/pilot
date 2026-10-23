@@ -671,30 +671,58 @@ func (s *Server) handleDailyCap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	win, status, msg := s.dailyTicketUsage()
+	if status != 0 {
+		http.Error(w, msg, status)
+		return
+	}
+	capN, count := win.cap, win.count
+
+	resp := dailyCapResponse{Cap: capN, Timezone: win.timezone, DispatchedToday: count}
+	if capN > 0 && count >= capN {
+		resp.Reached = true
+		resumes := win.end.Format(time.RFC3339)
+		resp.ResumesAt = &resumes
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// dailyTicketWindow is the current org-local day's ticket usage.
+type dailyTicketWindow struct {
+	cap      int
+	timezone string
+	count    int       // distinct tickets dispatched in [start, end)
+	end      time.Time // next org-local midnight
+}
+
+// dailyTicketUsage resolves the configured org-local day and counts the
+// distinct tickets dispatched in it. A non-zero status is the HTTP error the
+// caller should answer with (msg is its body). Shared by the standing endpoint
+// and the pilot_daily_ticket_cap_dispatched_today gauge (GH-5808).
+func (s *Server) dailyTicketUsage() (win dailyTicketWindow, status int, msg string) {
 	s.mu.RLock()
 	store := s.dashboardStore
-	capN := s.dailyTicketCap
-	tzName := s.dailyTicketCapTimezone
+	win.cap = s.dailyTicketCap
+	win.timezone = s.dailyTicketCapTimezone
 	nowFn := s.nowFn
 	s.mu.RUnlock()
 
 	if store == nil {
-		http.Error(w, "dashboard store not configured", http.StatusServiceUnavailable)
-		return
+		return win, http.StatusServiceUnavailable, "dashboard store not configured"
 	}
 	counter, ok := store.(DailyTicketCountStore)
 	if !ok {
-		http.Error(w, "daily ticket count not supported by store", http.StatusServiceUnavailable)
-		return
+		return win, http.StatusServiceUnavailable, "daily ticket count not supported by store"
 	}
 
-	if tzName == "" {
-		tzName = "UTC"
+	if win.timezone == "" {
+		win.timezone = "UTC"
 	}
-	loc, err := time.LoadLocation(tzName)
+	loc, err := time.LoadLocation(win.timezone)
 	if err != nil {
-		http.Error(w, "invalid daily ticket cap timezone", http.StatusInternalServerError)
-		return
+		return win, http.StatusInternalServerError, "invalid daily ticket cap timezone"
 	}
 	now := time.Now()
 	if nowFn != nil {
@@ -704,21 +732,11 @@ func (s *Server) handleDailyCap(w http.ResponseWriter, r *http.Request) {
 	// Decision: build the day bounds with time.Date in the org zone so a DST
 	// change yields a 23/25-hour day; the store counts over the instant range.
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-	end := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc)
+	win.end = time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc)
 
-	count, err := counter.CountDistinctTasksInWindow(start, end)
+	win.count, err = counter.CountDistinctTasksInWindow(start, win.end)
 	if err != nil {
-		http.Error(w, "failed to count daily tickets", http.StatusInternalServerError)
-		return
+		return win, http.StatusInternalServerError, "failed to count daily tickets"
 	}
-
-	resp := dailyCapResponse{Cap: capN, Timezone: tzName, DispatchedToday: count}
-	if capN > 0 && count >= capN {
-		resp.Reached = true
-		resumes := end.Format(time.RFC3339)
-		resp.ResumesAt = &resumes
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	return win, 0, ""
 }

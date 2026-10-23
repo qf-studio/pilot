@@ -85,6 +85,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypePushRetryExhaustedFailureStreak: {"push_retry_exhausted_failure_streak", true},
 		// Env-class failure streak (GH-5217)
 		AlertTypeEnvClassFailureStreak: {"env_class_failure_streak", true},
+		// Daily ticket cap hit (GH-5808)
+		AlertTypeDailyTicketCapHit: {"daily_ticket_cap_hit", true},
 		// Executor heartbeat timeout (GH-5498)
 		AlertTypeHeartbeatTimeout: {"heartbeat_timeout", true},
 		// Task timeout and watchdog kill (GH-5500)

@@ -2630,27 +2630,52 @@ func (s *Store) GetUsageSince(since time.Time, projectPath string) (rows []Usage
 	return all, hasMore || execMore || chatMore, nil
 }
 
+// TaskSourceAdapterChat is the executions.task_source_adapter value of a task
+// filed from a chat surface (internal/comms). Chat-filed tasks are not tickets
+// and do not count toward the daily ticket cap (GH-5808).
+const TaskSourceAdapterChat = "chat"
+
 // CountDistinctTasksInWindow returns how many distinct task ids have at least
-// one execution row created in [start, end) (canary excluded). The store is the
-// org scope: there is no per-org column, one ledger belongs to one org.
+// one execution row created in [start, end) (canary and chat-filed rows
+// excluded). The store is the org scope: there is no per-org column, one
+// ledger belongs to one org.
 //
 // Decision: the window is an instant range, not a calendar day. The caller
 // derives start/end from its configured location (a Europe/Berlin day is 23 or
 // 25 hours long across a DST change), so this method never does zone math.
 // Counting DISTINCT task_id means retry generations of one task count once.
-// Chat turns live in chat_turns, not executions, so they are excluded by
-// construction. created_at is UTC offset-less text, so both bounds bind in UTC
-// (GH-5308).
+// Web chat turns live in chat_turns, not executions, so they are excluded by
+// construction; chat-filed tasks do write executions rows and are excluded by
+// their task_source_adapter (GH-5808). created_at is UTC offset-less text, so
+// both bounds bind in UTC (GH-5308).
 func (s *Store) CountDistinctTasksInWindow(start, end time.Time) (int, error) {
 	var n int
 	err := s.db.QueryRow(`
 		SELECT COUNT(DISTINCT task_id) FROM executions
 		WHERE created_at >= ? AND created_at < ? AND COALESCE(is_canary, 0) = 0
-	`, start.UTC(), end.UTC()).Scan(&n)
+		  AND COALESCE(task_source_adapter, '') <> ?
+	`, start.UTC(), end.UTC(), TaskSourceAdapterChat).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("failed to count distinct tasks in window: %w", err)
 	}
 	return n, nil
+}
+
+// TaskHasExecutionInWindow reports whether taskID already has an execution row
+// created in [start, end) — i.e. it was already counted by
+// CountDistinctTasksInWindow for that window, so a retry generation of it is
+// not a new ticket (GH-5808). Unlike the count it does not exclude canary or
+// chat rows: the caller only asks about a task it is about to count.
+func (s *Store) TaskHasExecutionInWindow(taskID string, start, end time.Time) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`
+		SELECT COUNT(1) FROM executions
+		WHERE task_id = ? AND created_at >= ? AND created_at < ?
+	`, taskID, start.UTC(), end.UTC()).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("failed to check task execution in window: %w", err)
+	}
+	return n > 0, nil
 }
 
 // GetActiveExecutions retrieves all executions with status "running".

@@ -331,6 +331,9 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	// side effects in steps 7-9, which intentionally treat this path as
 	// "nothing to wait for" rather than a failure.
 	var gatedDrop bool
+	// capHold carries the daily-ticket-cap hold (GH-5808) so the final
+	// HandlerResult wraps it (and, through it, executor.ErrDispatchGated).
+	var capHold error
 	// terminalByDesign marks an execution that finished superseded/canceled
 	// (GH-4794) — set below once WaitForExecution returns a terminal row —
 	// so steps 8/10 can suppress the false failure report/alert without
@@ -347,6 +350,17 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 				// logs "Failed to process issue" on any non-nil handler error).
 				logging.WithComponent("dispatch").Debug("Task already queued or running (race), skipping dispatch",
 					slog.String("task_id", taskID), slog.Any("error", qErr))
+			} else if errors.Is(qErr, executor.ErrDailyTicketCapReached) {
+				// GH-5808: the daily ticket cap holds this task. Not a failure
+				// and not a duplicate drop: nothing was claimed, so no
+				// failure alert, no repick-backoff growth (a held task is
+				// re-offered every tick and must not walk toward the repick
+				// hard cap), no label, no comment. The gate already logged the
+				// hold once for the day.
+				logging.WithComponent("dispatch").Debug("daily ticket cap holds task, leaving it for the next poll after the cap lifts",
+					slog.String("task_id", taskID), slog.Any("hold", qErr))
+				capHold = qErr
+				gatedDrop = true
 			} else {
 				execErr = fmt.Errorf("failed to queue task: %w", qErr)
 			}
@@ -468,6 +482,9 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 		// GH-4469: distinguish "dropped a duplicate/terminal pickup" from a
 		// genuine execution failure for anything that inspects HandlerResult.
 		hrErr = executor.ErrDispatchGated
+		if capHold != nil {
+			hrErr = capHold
+		}
 	}
 	hr := &HandlerResult{
 		Success:          execErr == nil && result != nil && result.Success,

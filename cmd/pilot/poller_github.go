@@ -689,6 +689,7 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 			repoOwner:    repoOwner,
 			repoName:     repoName,
 			triggerLabel: pilotLabel,
+			capGate:      deps.Runner.DailyCapGate(), // GH-5808: nil-safe, nil = no cap
 		}
 		pollerDeps.ExecutionChecker = execChecker
 	}

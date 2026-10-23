@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -156,4 +157,61 @@ func TestDailyCapEndpoint_Errors(t *testing.T) {
 	if w.status != http.StatusMethodNotAllowed {
 		t.Errorf("POST: status = %d, want 405", w.status)
 	}
+}
+
+// TestPrometheusExporter_DailyTicketCapDispatchedToday: the gauge sits next to
+// the queue metrics and counts distinct tickets in the org-local day, whichever
+// of SetDashboardStore / SetMetricsSource ran first (GH-5808).
+func TestPrometheusExporter_DailyTicketCapDispatchedToday(t *testing.T) {
+	now := time.Date(2026, 10, 22, 20, 0, 0, 0, time.UTC)
+	store := seedDailyCapStore(t, map[string]time.Time{
+		"GH-1": time.Date(2026, 10, 22, 8, 0, 0, 0, time.UTC),
+		"GH-2": time.Date(2026, 10, 21, 23, 30, 0, 0, time.UTC), // Berlin day Oct 22
+		"GH-3": time.Date(2026, 10, 21, 21, 59, 0, 0, time.UTC), // Berlin day Oct 21
+	})
+
+	scrape := func(s *Server) string {
+		w := httptest.NewRecorder()
+		s.handleMetrics(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d", w.Code)
+		}
+		return w.Body.String()
+	}
+
+	t.Run("counts the org-local day", func(t *testing.T) {
+		s := newTestServerWithDashboard(store)
+		s.SetDailyTicketCap(15, "Europe/Berlin")
+		s.nowFn = func() time.Time { return now }
+		s.SetMetricsSource(&mockMetricsSource{})
+		body := scrape(s)
+		for _, want := range []string{
+			"# TYPE pilot_daily_ticket_cap_dispatched_today gauge",
+			"pilot_daily_ticket_cap_dispatched_today 2\n",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("metrics missing %q:\n%s", want, body)
+			}
+		}
+		if q, g := strings.Index(body, "pilot_queue_depth"), strings.Index(body, "pilot_daily_ticket_cap_dispatched_today"); q < 0 || g < q {
+			t.Errorf("gauge should follow the queue metrics (queue at %d, gauge at %d)", q, g)
+		}
+	})
+
+	t.Run("reported even with cap 0", func(t *testing.T) {
+		s := newTestServerWithDashboard(store)
+		s.nowFn = func() time.Time { return now }
+		s.SetMetricsSource(&mockMetricsSource{})
+		if body := scrape(s); !strings.Contains(body, "pilot_daily_ticket_cap_dispatched_today 1\n") {
+			t.Errorf("want the UTC-day count 1 with no cap configured:\n%s", body)
+		}
+	})
+
+	t.Run("absent without a store", func(t *testing.T) {
+		s := NewServer(&Config{Host: "127.0.0.1", Port: 0})
+		s.SetMetricsSource(&mockMetricsSource{})
+		if body := scrape(s); strings.Contains(body, "pilot_daily_ticket_cap_dispatched_today") {
+			t.Errorf("gauge emitted with no dashboard store:\n%s", body)
+		}
+	})
 }

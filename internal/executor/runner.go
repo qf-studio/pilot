@@ -1329,6 +1329,12 @@ type Runner struct {
 	// basePresenceClassifier optionally filters the dispatch base-presence
 	// gate's extracted path spans (TASK-506). nil means regex only.
 	basePresenceClassifier BasePresenceClassifier
+
+	// dailyCapGate is built once from config.DailyTicketCap (GH-5808) and
+	// shared by every ExecutionLifecycle the dispatcher and epic loop create,
+	// so the once-per-day log/alert state is process-wide. See DailyCapGate.
+	dailyCapGate *DailyCapGate
+	dailyCapOnce sync.Once
 }
 
 // SetRepoAllowlist injects the allowlist used by the sub-issue creation
@@ -1666,6 +1672,24 @@ func (r *Runner) CloseWorktreePool() {
 // The processor interface is satisfied by alerts.Engine.
 func (r *Runner) SetAlertProcessor(processor AlertEventProcessor) {
 	r.alertProcessor = processor
+}
+
+// DailyCapGate returns the gate for executor.daily_ticket_cap, or nil when no
+// cap is configured (or the receiver is nil) — a nil gate never holds. Callers
+// that begin tickets wire it into their ExecutionLifecycle (GH-5808).
+func (r *Runner) DailyCapGate() *DailyCapGate {
+	if r == nil {
+		return nil
+	}
+	r.dailyCapOnce.Do(func() {
+		if r.config == nil || r.config.DailyTicketCap <= 0 {
+			return
+		}
+		g := NewDailyCapGate(r.config.DailyTicketCap, r.config.DailyTicketCapTimezone)
+		g.alerts = r.AlertProcessor
+		r.dailyCapGate = g
+	})
+	return r.dailyCapGate
 }
 
 // AlertProcessor returns the runner's configured alert processor (nil if
@@ -3659,6 +3683,9 @@ func (r *Runner) resumeDecomposedParent(ctx context.Context, task *Task, executi
 		slog.Int("open_count", len(open)),
 	)
 	childStates, childMetrics, execErr := r.executeSubIssuesTracked(recoverCtx, task, open, executionPath, task.ProjectPath)
+	if held, ok := epicHeldResult(task, execErr, nil, start); ok {
+		return held, nil
+	}
 	if execErr != nil {
 		execErrMsg := fmt.Sprintf("sub-issue execution failed: %v", execErr)
 		r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, truncateForLog(execErrMsg, 200))
@@ -4338,6 +4365,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				// GH-3938: childMetrics carries the real tokens/files/cost every child
 				// actually burned, rolled up onto the epic-parent's own result below.
 				childStates, childMetrics, err := r.executeSubIssuesTracked(epicCtx, task, issues, executionPath, task.ProjectPath)
+				if held, ok := epicHeldResult(task, err, plan, start); ok {
+					return held, nil
+				}
 				if err != nil {
 					execErr := fmt.Sprintf("sub-issue execution failed: %v", err)
 					r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, truncateForLog(execErr, 200))

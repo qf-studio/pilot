@@ -1319,6 +1319,16 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 		return "", fmt.Errorf("task %s: %w", task.ID, ErrTaskAlreadyActive)
 	}
 
+	// GH-5808: hold a ticket the daily cap would refuse before spending a
+	// decomposition pass on it. Begin enforces the same check authoritatively;
+	// this is only the early exit. The task is left exactly as it is — nothing
+	// written, no row, no label or comment (the dispatcher touches neither) —
+	// and the poller re-offers it on its normal tick, which succeeds once the
+	// org-local day rolls over (hold.ResumesAt).
+	if hold := d.runner.DailyCapGate().Check(d.store, task); hold != nil {
+		return "", hold
+	}
+
 	// Try decomposition if decomposer is configured
 	if d.decomposer != nil {
 		if TaskOptsOutOfDecomposition(task) {
@@ -1881,11 +1891,15 @@ func (d *Dispatcher) nextRetryGeneration(taskID, projectPath string) (generation
 // surfaces.
 func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (string, error) {
 	lifecycle := NewExecutionLifecycle(d.store)
+	lifecycle.SetDailyCapGate(d.runner.DailyCapGate())
 	execID, err := lifecycle.Begin(task, initial)
 	if err == nil {
 		return execID, nil
 	}
 	if !errors.Is(err, ErrClaimLost) {
+		// GH-5808: a daily-cap hold lands here too. Begin returns it before
+		// claiming anything, so none of the retry accounting below (backoff,
+		// consecutive drops, hard cap) runs for a held task.
 		return "", err
 	}
 
@@ -2745,6 +2759,9 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 	// 0 forever.
 	parentExecID, err := d.beginWithGenerationRetry(parent, ExecStatusDecomposed)
 	if err != nil {
+		if errors.Is(err, ErrDailyTicketCapReached) {
+			return "", err // GH-5808: held, not a failed save
+		}
 		return "", fmt.Errorf("failed to save decomposed parent: %w", err)
 	}
 	if parentExecID == "" {
@@ -2809,6 +2826,9 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 	// 0 forever — this is the poller's primary re-pick path.
 	execID, err := d.beginWithGenerationRetry(task, ExecStatusQueued)
 	if err != nil {
+		if errors.Is(err, ErrDailyTicketCapReached) {
+			return "", err // GH-5808: held, not a failed save
+		}
 		return "", fmt.Errorf("failed to save execution: %w", err)
 	}
 	if execID == "" {

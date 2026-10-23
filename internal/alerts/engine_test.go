@@ -4582,3 +4582,86 @@ func TestAlertResolutionDisabled(t *testing.T) {
 		t.Fatalf("dispatched %d alerts, want 1 (resolution disabled)", got)
 	}
 }
+
+// TestHandleDailyTicketCapHit covers GH-5808: the executor's daily cap gate
+// emits daily_ticket_cap_hit once per org-local day. The rule cooldown is per
+// rule, so the day rides in the message: the same day dedupes, the next day
+// fires even with no cooldown.
+func TestHandleDailyTicketCapHit(t *testing.T) {
+	newEvent := func(day string) Event {
+		return Event{
+			Type:   EventTypeDailyTicketCapHit,
+			TaskID: "GH-16",
+			Metadata: map[string]string{
+				"day": day, "cap": "15", "dispatched": "15", "resumes_at": "2026-10-23T00:00:00+02:00",
+			},
+			Timestamp: time.Now(),
+		}
+	}
+	newEngine := func(rules []AlertRule) (*Engine, *mockChannel) {
+		config := &AlertConfig{
+			Enabled:  true,
+			Defaults: DefaultConfig().Defaults,
+			Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+			Rules:    rules,
+		}
+		mockCh := newMockChannel("test-channel", "webhook")
+		dispatcher := NewDispatcher(config)
+		dispatcher.RegisterChannel(mockCh)
+		return NewEngine(config, WithDispatcher(dispatcher)), mockCh
+	}
+	rule := AlertRule{
+		Name: "daily_ticket_cap_hit", Type: AlertTypeDailyTicketCapHit, Enabled: true,
+		Severity: SeverityInfo, Channels: []string{"test-channel"},
+	}
+
+	t.Run("fires with the day, cap and resume time in the message", func(t *testing.T) {
+		engine, ch := newEngine([]AlertRule{rule})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("2026-10-22"))
+		waitForAlerts(t, ch, 1, 2*time.Second)
+		got := ch.getAlerts()
+		if len(got) != 1 || got[0].Type != AlertTypeDailyTicketCapHit {
+			t.Fatalf("alerts = %+v, want one daily_ticket_cap_hit", got)
+		}
+		for _, want := range []string{"2026-10-22", "15 of 15", "2026-10-23T00:00:00+02:00"} {
+			if !strings.Contains(got[0].Message, want) {
+				t.Errorf("message %q missing %q", got[0].Message, want)
+			}
+		}
+	})
+
+	t.Run("same day dedupes, next day fires", func(t *testing.T) {
+		engine, ch := newEngine([]AlertRule{rule})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("2026-10-22"))
+		engine.ProcessEvent(newEvent("2026-10-22"))
+		engine.ProcessEvent(newEvent("2026-10-23"))
+		waitForAlerts(t, ch, 2, 2*time.Second)
+		time.Sleep(50 * time.Millisecond)
+		if got := len(ch.getAlerts()); got != 2 {
+			t.Errorf("alerts = %d, want 2 (one per distinct day)", got)
+		}
+	})
+
+	t.Run("disabled rule drops the event", func(t *testing.T) {
+		off := rule
+		off.Enabled = false
+		engine, ch := newEngine([]AlertRule{off})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_ = engine.Start(ctx)
+
+		engine.ProcessEvent(newEvent("2026-10-22"))
+		time.Sleep(100 * time.Millisecond)
+		if got := len(ch.getAlerts()); got != 0 {
+			t.Errorf("alerts = %d, want 0", got)
+		}
+	})
+}

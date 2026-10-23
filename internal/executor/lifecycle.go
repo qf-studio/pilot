@@ -122,6 +122,13 @@ type ExecutionLifecycle struct {
 	// violations, it just has nowhere to forward DeadManTracker counts (see
 	// runFinishTripwireSweep/emitTripwireResult in finish_tripwires.go).
 	alertProcessor AlertEventProcessor
+
+	// capGate holds new tickets once executor.daily_ticket_cap is reached
+	// (GH-5808). nil — the default, and what self-hosted installs with no cap
+	// get — never holds. Callers that dispatch tickets (the dispatcher, the
+	// epic sub-issue loop) wire it from Runner.DailyCapGate via
+	// SetDailyCapGate; the chat and CLI paths leave it unset.
+	capGate *DailyCapGate
 }
 
 // NewExecutionLifecycle wraps store. A nil store makes every method a no-op
@@ -143,6 +150,12 @@ func NewExecutionLifecycle(store *memory.Store) *ExecutionLifecycle {
 // hook treats a nil processor the same as "no alerts engine configured".
 func (l *ExecutionLifecycle) SetAlertProcessor(processor AlertEventProcessor) {
 	l.alertProcessor = processor
+}
+
+// SetDailyCapGate wires the daily ticket cap into Begin (GH-5808). A nil gate
+// disables the hold.
+func (l *ExecutionLifecycle) SetDailyCapGate(g *DailyCapGate) {
+	l.capGate = g
 }
 
 // Begin claims (task.ID, task.ProjectPath, generation) and, on winning,
@@ -169,6 +182,15 @@ func (l *ExecutionLifecycle) SetAlertProcessor(processor AlertEventProcessor) {
 // the FK-787 class this chokepoint exists to prevent. Callers must check
 // errors.Is(err, ErrClaimLost) and treat it as "already claimed — abort
 // before backend invocation, log, no error state" (TASK-407/GH-4349).
+//
+// GH-5808: when a daily cap gate is wired and today's cap is already reached,
+// Begin returns ("", *DailyTicketCapHold) — errors.Is(err,
+// ErrDailyTicketCapReached) and errors.Is(err, ErrDispatchGated) — before
+// claiming anything: no execution_claims row, no executions row, no
+// task.ExecutionID. The task was declined, not failed; callers leave it where
+// it is and re-offer it after hold.ResumesAt. See DailyCapGate.Check for what
+// is never held (cap 0, retries of an already-counted task, chat-filed and
+// canary tasks).
 func (l *ExecutionLifecycle) Begin(task *Task, initial Status, generation ...int) (string, error) {
 	gen := 0
 	if len(generation) > 0 {
@@ -180,6 +202,10 @@ func (l *ExecutionLifecycle) Begin(task *Task, initial Status, generation ...int
 	if l.store == nil {
 		task.ExecutionID = execID
 		return execID, nil
+	}
+
+	if hold := l.capGate.Check(l.store, task); hold != nil {
+		return "", hold
 	}
 
 	claimed, err := l.store.ClaimExecution(task.ID, task.ProjectPath, gen, execID)

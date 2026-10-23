@@ -2986,7 +2986,25 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		// If this loop ever grows its own generation+1 retry, it must route
 		// through the same shared repick_backoff store beginWithGenerationRetry
 		// uses instead of re-implementing a second, driftable copy.
-		subExecID, err := NewExecutionLifecycle(r.logStore).Begin(subTask, ExecStatusRunning)
+		subLifecycle := NewExecutionLifecycle(r.logStore)
+		subLifecycle.SetDailyCapGate(r.DailyCapGate())
+		subExecID, err := subLifecycle.Begin(subTask, ExecStatusRunning)
+
+		// GH-5808: the daily ticket cap holds this sub-issue (and, the cap
+		// being reached, every one after it). Begin wrote nothing. Stop the
+		// sequential run instead of failing the parent: each child was created
+		// with the pilot label, so the poller dispatches it on its own once the
+		// cap lifts — see epicHeldResult for how the parent run ends.
+		var capHold *DailyTicketCapHold
+		if errors.As(err, &capHold) {
+			r.log.Info("sub-issue held by the daily ticket cap — leaving it and the remaining sub-issues to the poller",
+				"parent_id", parent.ID,
+				"sub_issue", issueRef,
+				"task_id", taskID,
+				"resumes_at", capHold.ResumesAt,
+			)
+			return childStates, metrics, fmt.Errorf("sub-issue %s: %w", issueRef, capHold)
+		}
 
 		var result *ExecutionResult
 		if errors.Is(err, ErrClaimLost) {

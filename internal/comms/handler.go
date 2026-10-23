@@ -839,6 +839,9 @@ func (h *Handler) buildChatTask(contextID, taskID, description string, createPR 
 		MemberID:    h.resolveMemberID(contextID),
 		ImagePath:   imagePath,
 		IsCanary:    h.isCanaryProject(projectPath),
+		// GH-5808: a chat-filed task is not a ticket; the daily ticket cap
+		// neither counts nor holds it.
+		SourceAdapter: executor.TaskSourceAdapterChat,
 	}
 }
 

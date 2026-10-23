@@ -4537,6 +4537,12 @@ type terminalCompletionChecker struct {
 	repoOwner    string
 	repoName     string
 	triggerLabel string
+
+	// capGate, when set, makes the checker report a task as held while the
+	// daily ticket cap (GH-5808) would refuse it, so the poller skips it before
+	// any label, comment, judge run or claim — and re-offers it on every tick
+	// until the org-local day rolls over. nil (no cap configured) never holds.
+	capGate *executor.DailyCapGate
 }
 
 // HasCompletedExecutionReason implements sdkCore.ExecutionCheckerV2
@@ -4578,8 +4584,18 @@ func (c terminalCompletionChecker) HasCompletedExecutionReason(taskID, projectPa
 	}
 
 	done, err := executor.HasTerminalCompletion(c.store, taskID, projectPath)
-	if err != nil || !done {
+	if err != nil {
 		return done, "", err
+	}
+	if !done {
+		// GH-5808: the daily ticket cap. Only a task that is not already done
+		// can be held, and Check only holds one with no row in today's window,
+		// so an already-counted retry still passes. Like the backoff above it
+		// reports "skip", not "completed": the reason string says which.
+		if hold := c.capGate.Check(c.store, &executor.Task{ID: taskID, ProjectPath: projectPath}); hold != nil {
+			return true, "daily ticket cap reached, resumes " + hold.ResumesAt.Format(time.RFC3339), nil
+		}
+		return false, "", nil
 	}
 
 	// GH-5139/GH-5249/GH-5414: `done` may be a genuine completed/no_op row

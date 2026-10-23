@@ -73,9 +73,13 @@ type PrometheusExporter struct {
 	evalSource    EvalMetricsSource // GH-4922: optional, set via SetEvalMetricsSource
 	pollerSource  PollerUpSource    // GH-5588: optional, set via SetPollerSource
 	chatSource    ChatMetricsSource // GH-5677: optional, set via SetChatSource
-	panicCtr      *goPanicCounter
-	version       string // GH-4864: running process's compiled-in version, set via SetBuildInfo
-	commit        string // GH-4864: VCS commit parsed from version, set via SetBuildInfo
+	// dailyCapDispatched reports distinct tickets dispatched in the current
+	// org-local day (GH-5808); nil leaves the gauge off. Set via
+	// SetDailyCapDispatched.
+	dailyCapDispatched func() (n int, ok bool, err error)
+	panicCtr           *goPanicCounter
+	version            string // GH-4864: running process's compiled-in version, set via SetBuildInfo
+	commit             string // GH-4864: VCS commit parsed from version, set via SetBuildInfo
 }
 
 // MetricsSource provides metrics data for the exporter.
@@ -122,6 +126,12 @@ func (e *PrometheusExporter) SetEvalSource(s EvalMetricsSource) {
 // SetChatSource wires the chat turn totals into the exporter (GH-5677).
 func (e *PrometheusExporter) SetChatSource(s ChatMetricsSource) {
 	e.chatSource = s
+}
+
+// SetDailyCapDispatched wires the count behind
+// pilot_daily_ticket_cap_dispatched_today (GH-5808).
+func (e *PrometheusExporter) SetDailyCapDispatched(fn func() (n int, ok bool, err error)) {
+	e.dailyCapDispatched = fn
 }
 
 // SetPollerSource wires per-adapter poller up/down state into the exporter (GH-5588).
@@ -396,6 +406,21 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	writeHelp(w, "pilot_failed_queue_depth", "Number of failed issues in queue")
 	writeType(w, "pilot_failed_queue_depth", "gauge")
 	writeGauge(w, "pilot_failed_queue_depth", float64(snap.FailedQueueDepth))
+
+	// pilot_daily_ticket_cap_dispatched_today (GH-5808): distinct tickets
+	// dispatched in the current org-local day (executor.daily_ticket_cap_timezone),
+	// the numerator of the daily ticket cap. Read from the executions table at
+	// scrape time, so it survives a daemon restart.
+	if e.dailyCapDispatched != nil {
+		n, ok, err := e.dailyCapDispatched()
+		if err != nil {
+			logging.WithComponent("gateway").Warn("failed to read daily ticket count for /metrics", slog.Any("error", err))
+		} else if ok {
+			writeHelp(w, "pilot_daily_ticket_cap_dispatched_today", "Distinct tickets dispatched in the current org-local day (the numerator of executor.daily_ticket_cap)")
+			writeType(w, "pilot_daily_ticket_cap_dispatched_today", "gauge")
+			writeGauge(w, "pilot_daily_ticket_cap_dispatched_today", float64(n))
+		}
+	}
 
 	// pilot_poller_unsourced_labeled_issues (GH-4488)
 	writeHelp(w, "pilot_poller_unsourced_labeled_issues", "Open issues carrying the dispatch label that project board sourcing is not covering (absent from the board, or in a status other than source_status), by repo — nonzero means a board-sourced repo is silently ignoring labeled work")

@@ -1,6 +1,10 @@
 package comms
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/qf-studio/pilot/internal/executor"
+)
 
 // TestChatFiledTask_BaseBranchFromProjectConfig covers GH-5695: a chat-filed
 // task takes its base branch from the project config (branch_from, else
@@ -43,4 +47,14 @@ func TestChatFiledTask_BaseBranchFromProjectConfig(t *testing.T) {
 			t.Errorf("BaseBranch = %q, want empty", task.BaseBranch)
 		}
 	})
+}
+
+// TestBuildChatTask_MarkedAsChat: a chat-filed task carries the chat source
+// adapter so the daily ticket cap neither counts nor holds it (GH-5808).
+func TestBuildChatTask_MarkedAsChat(t *testing.T) {
+	h := NewHandler(&HandlerConfig{Messenger: &handlerMock{}, ProjectPath: "/work/proj", TaskIDPrefix: "TEST"})
+	task := h.buildChatTask("ctx", "TEST-1", "do a thing", false, "")
+	if task.SourceAdapter != executor.TaskSourceAdapterChat {
+		t.Errorf("SourceAdapter = %q, want %q", task.SourceAdapter, executor.TaskSourceAdapterChat)
+	}
 }

@@ -244,3 +244,58 @@ func TestCountDistinctTasksInWindow(t *testing.T) {
 		t.Errorf("empty window = %d, %v, want 0, nil", empty, err)
 	}
 }
+
+func TestCountDistinctTasksInWindow_ExcludesChatFiledTasks(t *testing.T) {
+	s, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	start := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 0, 1)
+	for _, e := range []*Execution{
+		{ID: "t", TaskID: "GH-1", ProjectPath: "/p", Status: "completed", CreatedAt: start.Add(time.Hour)},
+		{ID: "c", TaskID: "TG-1", ProjectPath: "/p", Status: "completed", CreatedAt: start.Add(time.Hour), TaskSourceAdapter: TaskSourceAdapterChat},
+	} {
+		if err := s.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution(%s): %v", e.ID, err)
+		}
+	}
+	if got, err := s.CountDistinctTasksInWindow(start, end); err != nil || got != 1 {
+		t.Errorf("count = %d, %v, want 1 (chat-filed task excluded)", got, err)
+	}
+}
+
+func TestTaskHasExecutionInWindow(t *testing.T) {
+	s, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	start := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 0, 1)
+	if err := s.SaveExecution(&Execution{ID: "a", TaskID: "GH-1", ProjectPath: "/p", Status: "failed", CreatedAt: start.Add(time.Hour)}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	tests := []struct {
+		name       string
+		task       string
+		start, end time.Time
+		want       bool
+	}{
+		{"inside window", "GH-1", start, end, true},
+		{"other task", "GH-2", start, end, false},
+		{"previous day", "GH-1", start.AddDate(0, 0, -1), start, false},
+		{"exclusive end", "GH-1", start.Add(-time.Hour), start.Add(time.Hour), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := s.TaskHasExecutionInWindow(tt.task, tt.start, tt.end)
+			if err != nil || got != tt.want {
+				t.Errorf("TaskHasExecutionInWindow = %v, %v, want %v", got, err, tt.want)
+			}
+		})
+	}
+}
