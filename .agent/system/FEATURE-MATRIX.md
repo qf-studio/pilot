@@ -316,6 +316,8 @@
 | Receipts digest | ✅ | briefs | - | `orchestrator.receipts_digest` | GH-5257: end-of-day Telegram-only per-execution cost lines (issue ref, diff size, duration, $cost) + day total. Own schedule/scheduler (`ReceiptsScheduler`), default 18:00 America/New_York; empty day sends nothing. Fixed `GetLastBriefSent` to filter by `brief_type` so it can't cross-contaminate catch-up with `daily_brief` on a shared channel |
 | Structured brief | ✅ | briefs, gateway | - | GH-5791: one `StructuredBrief` (schema 1; sections shipped, review_needed, pool, failed) stored per daily run in `brief_payloads`; served by `GET /api/v1/briefs/latest` and `GET /api/v1/briefs?limit=N`; email rendering via `EmailFormatter.FormatStructured`. Cost line only on `key_source=own` (receipts digest also hides it on `platform`) |
 
+> **Monday behaviour (current):** the brief scheduler runs the daily and weekly briefs as separate cron entries, so when `weekly_day` is `monday` (the default) a Monday produces **two separate messages** — the daily brief and the weekly brief. A single combined Monday message is a later decision, not current behaviour.
+
 ## Cost Controls
 
 | Feature | Status | Package | CLI Command | Config Key | Notes |
