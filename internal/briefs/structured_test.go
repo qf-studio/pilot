@@ -374,7 +374,7 @@ func TestGenerator_GenerateStructuredAndSchedulerStores(t *testing.T) {
 	s := &Scheduler{generator: g, store: store, logger: nil}
 	s.logger = defaultTestLogger()
 	s.storeStructured(period, KindDaily)
-	rows, err := store.ListBriefPayloads(5)
+	rows, err := store.ListBriefPayloads(5, "")
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("stored payloads = %d, err %v", len(rows), err)
 	}

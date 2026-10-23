@@ -13,7 +13,7 @@ import (
 // without brief storage keep satisfying DashboardStore. *memory.Store
 // implements it.
 type BriefPayloadStore interface {
-	ListBriefPayloads(limit int) ([]*memory.BriefPayload, error)
+	ListBriefPayloads(limit int, kind string) ([]*memory.BriefPayload, error)
 }
 
 const (
@@ -45,7 +45,7 @@ func (s *Server) handleBriefsLatest(w http.ResponseWriter, r *http.Request) {
 	if bs == nil {
 		return
 	}
-	rows, err := bs.ListBriefPayloads(1)
+	rows, err := bs.ListBriefPayloads(1, "")
 	if err != nil {
 		http.Error(w, "failed to fetch briefs", http.StatusInternalServerError)
 		return
@@ -75,7 +75,7 @@ func (s *Server) handleBriefs(w http.ResponseWriter, r *http.Request) {
 	if bs == nil {
 		return
 	}
-	rows, err := bs.ListBriefPayloads(limit)
+	rows, err := bs.ListBriefPayloads(limit, "")
 	if err != nil {
 		http.Error(w, "failed to fetch briefs", http.StatusInternalServerError)
 		return

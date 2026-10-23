@@ -286,6 +286,9 @@ func (s *Store) migrate() error {
 			payload TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_brief_payloads_generated_at ON brief_payloads(generated_at)`,
+		// GH-5839: cadence marker so weekly and daily briefs can be listed apart.
+		// Rows stored before this column existed read back as 'daily'.
+		`ALTER TABLE brief_payloads ADD COLUMN kind TEXT NOT NULL DEFAULT 'daily'`,
 		// Execution logs table (GH-1586)
 		`CREATE TABLE IF NOT EXISTS execution_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -267,9 +267,12 @@ func TestSchedulerRunWeeklyNow_StoresWeeklyPayload(t *testing.T) {
 	if _, err := s.RunWeeklyNow(context.Background()); err != nil {
 		t.Fatalf("RunWeeklyNow: %v", err)
 	}
-	rows, err := store.ListBriefPayloads(1)
+	rows, err := store.ListBriefPayloads(1, "")
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("payloads = %d, err %v", len(rows), err)
+	}
+	if rows[0].Kind != "weekly" {
+		t.Errorf("stored row Kind = %q, want weekly", rows[0].Kind)
 	}
 	var got struct {
 		Kind   string `json:"kind"`

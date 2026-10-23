@@ -299,6 +299,7 @@ func (s *Scheduler) storeStructured(period BriefPeriod, kind BriefKind) {
 	if err := s.store.SaveBriefPayload(&memory.BriefPayload{
 		GeneratedAt: sb.GeneratedAt,
 		Schema:      sb.Schema,
+		Kind:        string(sb.Kind),
 		Payload:     payload,
 	}); err != nil {
 		s.logger.Warn("failed to store structured brief", "error", err)

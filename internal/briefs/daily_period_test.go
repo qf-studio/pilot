@@ -53,7 +53,7 @@ func TestGenerateDailyEnding_IncludesRunCompletedBeforeRunTime(t *testing.T) {
 
 	s := &Scheduler{generator: g, store: store, logger: defaultTestLogger()}
 	s.storeStructured(brief.Period, brief.Kind)
-	rows, err := store.ListBriefPayloads(5)
+	rows, err := store.ListBriefPayloads(5, "")
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("stored payloads = %d, err %v", len(rows), err)
 	}
