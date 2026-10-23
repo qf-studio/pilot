@@ -8674,6 +8674,7 @@ func isValidSHA(s string) bool {
 
 // modelPricing returns (inputPrice, outputPrice) in USD per 1M tokens for the given model.
 // Pricing source: https://platform.claude.com/docs/en/about-claude/pricing
+// (checked 2026-10-23, GH-5821).
 func modelPricing(model string) (inputPrice, outputPrice float64) {
 	// Model pricing in USD per 1M tokens
 	const (
@@ -8692,6 +8693,13 @@ func modelPricing(model string) (inputPrice, outputPrice float64) {
 		// Claude 5 Fable/Mythos
 		fableInputPrice  = 10.00
 		fableOutputPrice = 50.00
+		// Claude 5.5 generation (GH-5821)
+		opus55InputPrice   = 4.00
+		opus55OutputPrice  = 20.00
+		sonnet5InputPrice  = 2.00 // Sonnet 5 and Sonnet 5.5
+		sonnet5OutputPrice = 10.00
+		haiku55InputPrice  = 0.10 // up to 100K prompt; $0.50/$2.50 beyond is not modelled
+		haiku55OutputPrice = 0.50
 	)
 
 	modelLower := strings.ToLower(model)
@@ -8701,6 +8709,9 @@ func modelPricing(model string) (inputPrice, outputPrice float64) {
 		// below and silently fall through to the Sonnet default, a 3.3x
 		// underestimate.
 		return fableInputPrice, fableOutputPrice
+	case strings.Contains(modelLower, "opus-5-5"):
+		// Claude Opus 5.5 ($4/$20) — must precede the generic opus-5 case.
+		return opus55InputPrice, opus55OutputPrice
 	case strings.Contains(modelLower, "opus-5"):
 		// Claude Opus 5 ($5/$25). This already lands correctly via the
 		// generic "opus" case below, but is made explicit — ahead of the
@@ -8708,17 +8719,18 @@ func modelPricing(model string) (inputPrice, outputPrice float64) {
 		// reprice it.
 		return opusInputPrice, opusOutputPrice
 	case strings.Contains(modelLower, "sonnet-5"):
-		// Claude Sonnet 5 ($3/$15) — same as the standard default today.
-		// Kept explicit (rather than relying on fallthrough to default) so a
-		// future default change can't silently reprice it. Do NOT encode the
-		// 2026-08-31 intro pricing here.
-		return sonnetInputPrice, sonnetOutputPrice
+		// Claude Sonnet 5 and Sonnet 5.5 ($2/$10). Matches "sonnet-5-5" too,
+		// which lists the same rate as Sonnet 5.
+		return sonnet5InputPrice, sonnet5OutputPrice
 	case strings.Contains(modelLower, "opus-4-1") || strings.Contains(modelLower, "opus-4-0") || model == "claude-opus-4":
 		// Legacy Opus 4.1/4.0
 		return opus41InputPrice, opus41OutputPrice
 	case strings.Contains(modelLower, "opus"):
 		// Opus 4.6/4.5 ($5/$25)
 		return opusInputPrice, opusOutputPrice
+	case strings.Contains(modelLower, "haiku-5-5"):
+		// Claude Haiku 5.5 — must precede the generic haiku (4.5) case.
+		return haiku55InputPrice, haiku55OutputPrice
 	case strings.Contains(modelLower, "haiku"):
 		return haikuInputPrice, haikuOutputPrice
 	case strings.Contains(modelLower, "qwen"):
@@ -8742,16 +8754,38 @@ func estimateCost(inputTokens, outputTokens int64, model string) float64 {
 	return estimateCostWithCache(inputTokens, outputTokens, 0, 0, model)
 }
 
+// modelCacheReadPrice returns the USD per 1M tokens charged for cache reads
+// (GH-5821). inputPrice is the model's input rate from modelPricing and is the
+// base for the default 10% rate. Opus 5.5, Sonnet 5.5 and Sonnet 5 list
+// $0.20/MTok (5% of Opus 5.5's input rate, 10% of Sonnet's); Fable 5.1 lists
+// $0.25/MTok. Source: https://platform.claude.com/docs/en/about-claude/pricing
+// (checked 2026-10-23).
+func modelCacheReadPrice(model string, inputPrice float64) float64 {
+	modelLower := strings.ToLower(model)
+	switch {
+	case strings.Contains(modelLower, "fable-5-1"):
+		return 0.25
+	case strings.Contains(modelLower, "opus-5-5"), strings.Contains(modelLower, "sonnet-5"):
+		return 0.20
+	default:
+		return inputPrice * 0.10
+	}
+}
+
 // estimateCostWithCache calculates estimated cost with cache-aware pricing (GH-2164).
-// Cache creation tokens cost 125% of input price, cache read tokens cost 10%.
-// Pricing source: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#pricing
+// Cache creation tokens cost 125% of input price; cache read tokens use the
+// per-model rate from modelCacheReadPrice. No per-model cache-write value was
+// given for GH-5821, so the 125% (5-minute TTL) multiplier from
+// https://platform.claude.com/docs/en/build-with-claude/prompt-caching#pricing
+// applies to every model.
 func estimateCostWithCache(input, output, cacheCreation, cacheRead int64, model string) float64 {
 	inputPrice, outputPrice := modelPricing(model)
+	cacheReadPrice := modelCacheReadPrice(model, inputPrice)
 
 	inputCost := float64(input) * inputPrice / 1_000_000
 	outputCost := float64(output) * outputPrice / 1_000_000
 	cacheCreateCost := float64(cacheCreation) * (inputPrice * 1.25) / 1_000_000
-	cacheReadCost := float64(cacheRead) * (inputPrice * 0.10) / 1_000_000
+	cacheReadCost := float64(cacheRead) * cacheReadPrice / 1_000_000
 	return inputCost + outputCost + cacheCreateCost + cacheReadCost
 }
 

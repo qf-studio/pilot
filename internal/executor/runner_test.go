@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -965,8 +966,11 @@ func TestModelPricing(t *testing.T) {
 		wantInputPrice  float64
 		wantOutputPrice float64
 	}{
-		{"sonnet-5", "claude-sonnet-5", 3.00, 15.00},
+		{"sonnet-5", "claude-sonnet-5", 2.00, 10.00},
+		{"sonnet-5-5", "claude-sonnet-5-5", 2.00, 10.00},
 		{"opus-5", "claude-opus-5", 5.00, 25.00},
+		{"opus-5-5", "claude-opus-5-5", 4.00, 20.00},
+		{"haiku-5-5", "claude-haiku-5-5", 0.10, 0.50},
 		{"fable-5", "claude-fable-5", 10.00, 50.00},
 		{"mythos-5", "claude-mythos-5", 10.00, 50.00},
 		{"haiku", "claude-haiku-4-5", 1.00, 5.00},
@@ -982,6 +986,35 @@ func TestModelPricing(t *testing.T) {
 			}
 			if outputPrice != tt.wantOutputPrice {
 				t.Errorf("modelPricing(%q) outputPrice = %f, want %f", tt.model, outputPrice, tt.wantOutputPrice)
+			}
+		})
+	}
+}
+
+// TestEstimateCostCacheReadRate pins the per-model cache-read rate (GH-5821):
+// 1M cache-read tokens cost the model's listed cache-read price, not a flat
+// 10% of input.
+func TestEstimateCostCacheReadRate(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		want  float64
+	}{
+		{"opus-5-5 lists $0.20 (5% of input)", "claude-opus-5-5", 0.20},
+		{"sonnet-5-5 lists $0.20", "claude-sonnet-5-5", 0.20},
+		{"sonnet-5 lists $0.20", "claude-sonnet-5", 0.20},
+		{"fable-5-1 lists $0.25", "claude-fable-5-1", 0.25},
+		{"sonnet-4-6 stays 10% of input", "claude-sonnet-4-6", 0.30},
+		{"opus-5 stays 10% of input", "claude-opus-5", 0.50},
+		{"opus-4-6 stays 10% of input", "claude-opus-4-6", 0.50},
+		{"fable-5 stays 10% of input", "claude-fable-5", 1.00},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := estimateCostWithCache(0, 0, 0, 1_000_000, tt.model)
+			if math.Abs(got-tt.want) > 1e-9 {
+				t.Errorf("estimateCostWithCache(1M cache read, %q) = %f, want %f", tt.model, got, tt.want)
 			}
 		})
 	}
