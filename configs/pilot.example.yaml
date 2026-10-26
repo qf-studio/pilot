@@ -613,7 +613,8 @@ orchestrator:
       # Model for the review. Empty uses the executor's configured model
       # (executor.default_model).
       model: ""
-      # Max reviews per UTC day (its own counter). Default 20.
+      # Max reviews per UTC day (its own counter), shared by every project the
+      # daemon runs — daemon-wide, not per project. Default 20.
       daily_cap: 20
       # Bound on one review. Default 5m.
       timeout: 5m

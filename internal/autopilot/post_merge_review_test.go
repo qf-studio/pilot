@@ -1,11 +1,13 @@
 package autopilot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -536,4 +538,102 @@ func TestLedgerVerdict(t *testing.T) {
 			t.Errorf("ledgerVerdict(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+// GH-5873: one autopilot controller runs per project, so the daily cap has to
+// be one budget shared by all of them, not one per controller.
+func TestPostMergeReview_SharedDailyCapAcrossControllers(t *testing.T) {
+	_, gh := newPMRGitHub(t)
+	reviewer := &pmrFakeReviewer{review: &executor.PostMergeReview{Verdict: executor.PostMergeApprove}}
+	c1 := newPMRController(t, gh, reviewer, true)
+	c2 := newPMRController(t, gh, reviewer, true)
+
+	var logs lockedBuffer
+	for _, c := range []*Controller{c1, c2} {
+		c.log = slog.New(slog.NewTextHandler(&logs, nil))
+	}
+	budget := NewPostMergeReviewBudget(2)
+	c1.SetPostMergeReviewBudget(budget)
+	c2.SetPostMergeReviewBudget(budget)
+
+	ctx := context.Background()
+	states := []*PRState{mergedPRState(301, 10), mergedPRState(302, 10), mergedPRState(303, 10), mergedPRState(304, 10)}
+	for i, c := range []*Controller{c1, c2, c1, c2} {
+		if err := c.handleMerged(ctx, states[i]); err != nil {
+			t.Fatalf("handleMerged PR %d: %v", states[i].PRNumber, err)
+		}
+	}
+	c1.waitPostMergeReviews()
+	c2.waitPostMergeReviews()
+
+	if got := reviewer.callCount(); got != 2 {
+		t.Fatalf("reviews run = %d, want 2 across both controllers", got)
+	}
+	if states[2].PostMergeReviewPosted || states[3].PostMergeReviewPosted {
+		t.Error("PRs over the shared cap must not be marked reviewed")
+	}
+	if got := strings.Count(logs.String(), "daily cap reached"); got != 1 {
+		t.Errorf("cap-reached line logged %d times, want 1", got)
+	}
+}
+
+func TestPostMergeReview_BudgetFallbackIsPerController(t *testing.T) {
+	_, gh := newPMRGitHub(t)
+	c := newPMRController(t, gh, &pmrFakeReviewer{}, true)
+	if c.PostMergeReviewBudget() == nil || c.PostMergeReviewBudget() != c.PostMergeReviewBudget() {
+		t.Fatal("unwired controller must lazily build one stable budget")
+	}
+	shared := NewPostMergeReviewBudget(3)
+	c.SetPostMergeReviewBudget(shared)
+	if c.PostMergeReviewBudget() != shared {
+		t.Fatal("SetPostMergeReviewBudget did not install the shared budget")
+	}
+}
+
+func TestCreatePostMergeReviewIssue_LabelsAndPlainLocations(t *testing.T) {
+	mock, gh := newPMRGitHub(t)
+	cfg := DefaultConfig()
+	fl := NewFeedbackLoop(gh, "owner", "repo", cfg)
+	fl.issueLabels = []string{"pilot", postMergeReviewLabel} // overlap must not duplicate
+	review := requestChangesReview()
+	review.Defects[0].Evidence = "see `internal/server/handler.go` in the other repo"
+
+	if _, err := fl.CreatePostMergeReviewIssue(context.Background(), 42, "https://github.com/owner/repo/pull/42", 10, review); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	in := mock.issues[0]
+	counts := map[string]int{}
+	for _, l := range in.Labels {
+		counts[l]++
+	}
+	for _, want := range []string{"pilot", postMergeReviewLabel, postMergeReviewNoDecomposeLabel} {
+		if counts[want] != 1 {
+			t.Errorf("label %q appears %d times in %v, want exactly once", want, counts[want], in.Labels)
+		}
+	}
+	defects := in.Body[strings.Index(in.Body, "## Defects"):strings.Index(in.Body, "## Reviewer Notes")]
+	if strings.Contains(defects, "`") {
+		t.Errorf("defects section contains a backtick:\n%s", defects)
+	}
+	if !strings.Contains(defects, "- at internal/foo/client.go:42 — ") {
+		t.Errorf("location not rendered as plain text:\n%s", defects)
+	}
+}
+
+// lockedBuffer is a bytes.Buffer safe for concurrent slog writes.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

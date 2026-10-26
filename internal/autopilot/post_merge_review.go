@@ -30,6 +30,11 @@ const (
 	// postMergeReviewLabel marks follow-up issues filed by the reviewer.
 	postMergeReviewLabel = "post-merge-review"
 
+	// postMergeReviewNoDecomposeLabel keeps the executor's epic detection from
+	// splitting the follow-up issue into sub-issues: its four H2 sections plus
+	// the defect list pass the 200-word threshold (GH-5527 class).
+	postMergeReviewNoDecomposeLabel = "no-decompose"
+
 	// postMergeReviewGatherTimeout bounds the GitHub and git calls that gather
 	// a review's inputs; the model call has its own timeout (reviewer config).
 	postMergeReviewGatherTimeout = 2 * time.Minute
@@ -65,6 +70,15 @@ type postMergeReviewBudget struct {
 	capLogged bool
 }
 
+// PostMergeReviewBudget is the exported name of the review budget so the
+// daemon wiring can build one and share it across controllers.
+type PostMergeReviewBudget = postMergeReviewBudget
+
+// NewPostMergeReviewBudget returns a budget allowing cap reviews per UTC day.
+func NewPostMergeReviewBudget(cap int) *PostMergeReviewBudget {
+	return &postMergeReviewBudget{cap: cap}
+}
+
 // acquire takes one review from today's budget. ok is false when the budget is
 // spent; firstDenial is true only for the first denial of the day so the
 // caller logs "cap reached" once rather than once per skipped PR.
@@ -95,6 +109,21 @@ func (c *Controller) SetPostMergeReviewer(r PostMergeReviewer) {
 	defer c.mu.Unlock()
 	c.postMergeReviewer = r
 }
+
+// SetPostMergeReviewBudget installs a review budget shared with other
+// controllers. One autopilot controller runs per project, so a per-controller
+// budget would make the real daily bound N times the configured cap; the
+// daemon builds one budget and hands it to every controller. Nil keeps the
+// lazy per-controller fallback of postMergeBudget.
+func (c *Controller) SetPostMergeReviewBudget(b *PostMergeReviewBudget) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.postMergeReviewBudget = b
+}
+
+// PostMergeReviewBudget returns the controller's review budget (the shared one
+// when wired, else its lazily built own).
+func (c *Controller) PostMergeReviewBudget() *PostMergeReviewBudget { return c.postMergeBudget() }
 
 // waitPostMergeReviews blocks until every started review goroutine finishes.
 func (c *Controller) waitPostMergeReviews() { c.postMergeReviewWG.Wait() }
@@ -167,8 +196,9 @@ func (c *Controller) maybeStartPostMergeReview(ctx context.Context, prState *PRS
 	}()
 }
 
-// postMergeBudget returns the controller's review budget, creating it from the
-// configured daily cap on first use.
+// postMergeBudget returns the controller's review budget: the one installed by
+// SetPostMergeReviewBudget, else one created from the configured daily cap on
+// first use (tests, gateway mode with a single controller).
 func (c *Controller) postMergeBudget() *postMergeReviewBudget {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -324,7 +354,18 @@ func sanitizePostMergeField(s string, max int) string {
 	return s
 }
 
+// plainPostMergeField is sanitizePostMergeField without backticks.
+func plainPostMergeField(s string, max int) string {
+	return strings.ReplaceAll(sanitizePostMergeField(s, max), "`", "")
+}
+
 // formatPostMergeDefects renders the defect list as markdown bullets.
+//
+// Decision: locations are plain text ("at internal/foo/bar.go:42") and
+// backticks are stripped from every field. The list lands in a `pilot` issue,
+// and the executor's base-presence gate holds an issue whose backticked path
+// is not on the task repo's default branch (SOP Rule 3b) — the checklist asks
+// the model to name counterpart files that may live in another repository.
 func formatPostMergeDefects(defects []executor.PostMergeDefect) string {
 	var sb strings.Builder
 	for i, d := range defects {
@@ -332,8 +373,8 @@ func formatPostMergeDefects(defects []executor.PostMergeDefect) string {
 			fmt.Fprintf(&sb, "- … %d more defects omitted\n", len(defects)-maxPostMergeDefects)
 			break
 		}
-		fmt.Fprintf(&sb, "- `%s` — %s", sanitizePostMergeField(d.Location, 200), sanitizePostMergeField(d.Claim, maxPostMergeFieldChars))
-		if ev := sanitizePostMergeField(d.Evidence, maxPostMergeFieldChars); ev != "" {
+		fmt.Fprintf(&sb, "- at %s — %s", plainPostMergeField(d.Location, 200), plainPostMergeField(d.Claim, maxPostMergeFieldChars))
+		if ev := plainPostMergeField(d.Evidence, maxPostMergeFieldChars); ev != "" {
 			fmt.Fprintf(&sb, "\n  Evidence: %s", ev)
 		}
 		sb.WriteString("\n")

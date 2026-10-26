@@ -41,3 +41,18 @@ func TestBuildPostMergeReviewer(t *testing.T) {
 		})
 	}
 }
+
+// GH-5873: one controller runs per project; wiring must hand them all the same
+// daily budget so daily_cap is daemon-wide.
+func TestPostMergeReviewer_SharedBudgetAcrossControllers(t *testing.T) {
+	cfg := postMergeReviewCfg(true, "sh")
+	cfg.Orchestrator.Autopilot.PostMergeReview.DailyCap = 2
+
+	c1 := autopilot.NewController(autopilot.DefaultConfig(), nil, nil, "o", "r1")
+	c2 := autopilot.NewController(autopilot.DefaultConfig(), nil, nil, "o", "r2")
+	wirePostMergeReviewer(cfg, slog.Default(), c1, c2)
+
+	if c1.PostMergeReviewBudget() != c2.PostMergeReviewBudget() {
+		t.Fatal("controllers got separate budgets; daily_cap would multiply by project count")
+	}
+}

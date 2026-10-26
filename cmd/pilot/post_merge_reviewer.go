@@ -41,16 +41,20 @@ func buildPostMergeReviewer(cfg *config.Config, log *slog.Logger) *executor.Post
 }
 
 // wirePostMergeReviewer installs the post-merge reviewer on every controller
-// and logs one startup line. With the knob off it is silent.
+// along with a single shared daily budget, and logs one startup line. With the knob off it is silent.
 func wirePostMergeReviewer(cfg *config.Config, log *slog.Logger, controllers ...*autopilot.Controller) {
 	r := buildPostMergeReviewer(cfg, log)
 	if r == nil {
 		return
 	}
+	pmr := cfg.Orchestrator.Autopilot.PostMergeReview
+	// One budget for the whole daemon: a controller runs per project, so a
+	// budget per controller would multiply daily_cap by the project count.
+	budget := autopilot.NewPostMergeReviewBudget(pmr.EffectiveDailyCap())
 	for _, c := range controllers {
 		c.SetPostMergeReviewer(r)
+		c.SetPostMergeReviewBudget(budget)
 	}
-	pmr := cfg.Orchestrator.Autopilot.PostMergeReview
 	log.Info("autopilot post-merge reviewer enabled",
 		slog.Int("daily_cap", pmr.EffectiveDailyCap()),
 		slog.String("model", pmr.Model),

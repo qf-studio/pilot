@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -452,7 +453,8 @@ func postMergeReviewIssueTitle(prNumber int) string {
 
 // CreatePostMergeReviewIssue files the follow-up issue for a REQUEST-CHANGES
 // post-merge review (GH-5861) and returns its number. It carries the
-// configured issue labels plus post-merge-review. An open issue with the same
+// configured issue labels plus post-merge-review and no-decompose
+// (each added once). An open issue with the same
 // title already existing (a repeat for the same PR) is reused, not duplicated.
 // The merged PR itself is never touched.
 func (f *FeedbackLoop) CreatePostMergeReviewIssue(ctx context.Context, prNumber int, prURL string, issueNumber int, review *executor.PostMergeReview) (int, error) {
@@ -484,14 +486,10 @@ func (f *FeedbackLoop) CreatePostMergeReviewIssue(ctx context.Context, prNumber 
 	fmt.Fprintf(&sb, "- PR #%d: %s\n- Issue #%d\n", prNumber, prURL, issueNumber)
 
 	labels := append([]string(nil), f.issueLabels...)
-	hasLabel := false
-	for _, l := range labels {
-		if l == postMergeReviewLabel {
-			hasLabel = true
+	for _, extra := range []string{postMergeReviewLabel, postMergeReviewNoDecomposeLabel} {
+		if !slices.Contains(labels, extra) {
+			labels = append(labels, extra)
 		}
-	}
-	if !hasLabel {
-		labels = append(labels, postMergeReviewLabel)
 	}
 
 	issue, err := ghissue.CreatePilotIssue(ctx, f.ghClient, ghissue.AllowAllIssueRepos(), f.owner, f.repo, title, sb.String(), labels)
