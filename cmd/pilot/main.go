@@ -1031,6 +1031,8 @@ Examples:
 							approvalMgr.WithStateWriter(gwAutopilotController)
 							// GH-5759: opt-in PR lifecycle notices over Telegram.
 							wireLifecycleNotifier(cfg, logging.WithComponent("autopilot"), gwAutopilotController)
+							// GH-5861: opt-in post-merge reviewer.
+							wirePostMergeReviewer(cfg, logging.WithComponent("autopilot"), gwAutopilotController)
 							// GH-3992: wire the LLM release summary generator — nil (graceful
 							// no-op) when ANTHROPIC_API_KEY is unset, matching
 							// NewReleaseSummaryGenerator's documented degradation.
@@ -2653,6 +2655,8 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		// GH-5759: opt-in PR lifecycle notices over Telegram, on the default
 		// controller and every per-project controller.
 		wireLifecycleNotifier(cfg, logging.WithComponent("autopilot"), allControllers...)
+		// GH-5861: opt-in post-merge reviewer on every controller.
+		wirePostMergeReviewer(cfg, logging.WithComponent("autopilot"), allControllers...)
 		approvalMgr.WithStateWriter(autopilot.NewMultiControllerStateWriter(allControllers...))
 	}
 

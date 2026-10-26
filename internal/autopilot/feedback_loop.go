@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/ghissue"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/text"
@@ -433,6 +434,71 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 		"failure", failureType,
 	)
 
+	return issue.Number, nil
+}
+
+// postMergeReviewIssueTitle is the title of the follow-up issue for a
+// REQUEST-CHANGES post-merge review of prNumber.
+//
+// Decision: ghissue.CreatePilotIssue rejects titles that do not match
+// conventional-commits, and an issue Pilot cannot validate is parked as
+// pilot-blocked (GH-2402). The type prefix therefore has to lead, so the PR
+// number leads the scope instead: "fix(#5861): ...". The number keeps the
+// title unique per PR, which is what the exact-title dedup in
+// findExistingFixIssue needs.
+func postMergeReviewIssueTitle(prNumber int) string {
+	return fmt.Sprintf("fix(#%d): address defects found by post-merge review", prNumber)
+}
+
+// CreatePostMergeReviewIssue files the follow-up issue for a REQUEST-CHANGES
+// post-merge review (GH-5861) and returns its number. It carries the
+// configured issue labels plus post-merge-review. An open issue with the same
+// title already existing (a repeat for the same PR) is reused, not duplicated.
+// The merged PR itself is never touched.
+func (f *FeedbackLoop) CreatePostMergeReviewIssue(ctx context.Context, prNumber int, prURL string, issueNumber int, review *executor.PostMergeReview) (int, error) {
+	title := postMergeReviewIssueTitle(prNumber)
+
+	if existing, found, err := f.findExistingFixIssue(ctx, title); err != nil {
+		f.log.Warn("existing post-merge review issue search failed, proceeding with creation",
+			"pr", prNumber, "error", err)
+	} else if found {
+		f.log.Info("post-merge review issue already open, suppressing duplicate",
+			"issue", existing, "pr", prNumber)
+		return existing, nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## Context\n\n")
+	fmt.Fprintf(&sb, "A post-merge review of PR #%d (%s), which implemented issue #%d, returned REQUEST-CHANGES. The PR is already merged; fix the defects below on a new PR.\n\n", prNumber, prURL, issueNumber)
+	sb.WriteString("## Defects\n\n")
+	sb.WriteString(formatPostMergeDefects(review.Defects))
+	if notes := sanitizePostMergeField(review.Notes, maxPostMergeNotesChars); notes != "" {
+		sb.WriteString("\n## Reviewer Notes\n\n")
+		sb.WriteString(notes)
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n## Acceptance Criteria\n\n")
+	sb.WriteString("- [ ] Each defect above is fixed, or shown to be a false positive with evidence in the PR body\n")
+	sb.WriteString("- [ ] Tests for each fixed defect exercise the real adapter or counterpart, not a mock of it\n")
+	sb.WriteString("\n## Refs\n\n")
+	fmt.Fprintf(&sb, "- PR #%d: %s\n- Issue #%d\n", prNumber, prURL, issueNumber)
+
+	labels := append([]string(nil), f.issueLabels...)
+	hasLabel := false
+	for _, l := range labels {
+		if l == postMergeReviewLabel {
+			hasLabel = true
+		}
+	}
+	if !hasLabel {
+		labels = append(labels, postMergeReviewLabel)
+	}
+
+	issue, err := ghissue.CreatePilotIssue(ctx, f.ghClient, ghissue.AllowAllIssueRepos(), f.owner, f.repo, title, sb.String(), labels)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create issue: %w", err)
+	}
+	f.log.Info("created post-merge review issue", "issue", issue.Number, "pr", prNumber)
 	return issue.Number, nil
 }
 

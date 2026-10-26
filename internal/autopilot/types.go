@@ -293,6 +293,48 @@ type Config struct {
 	// touches production source. nil (the DefaultConfig default) means the gate
 	// is off — enable per-project once canaried.
 	TestEvidence *TestEvidenceConfig `yaml:"test_evidence"`
+
+	// PostMergeReview configures the GH-5861 post-merge reviewer: after a Pilot
+	// PR merges, a model pass reviews the merged diff against the issue and
+	// posts a verdict on the PR. nil (the DefaultConfig default) disables it.
+	PostMergeReview *PostMergeReviewConfig `yaml:"post_merge_review"`
+}
+
+// DefaultPostMergeReviewDailyCap is the post-merge review budget per UTC day
+// when PostMergeReviewConfig.DailyCap is unset (GH-5861).
+const DefaultPostMergeReviewDailyCap = 20
+
+// PostMergeReviewConfig configures the post-merge reviewer (GH-5861). Autopilot
+// merges on green CI; manual post-merge reviews on 2026-10-22 found 3
+// REQUEST-CHANGES and 26 follow-ups across 10 merges, mostly PRs binding to
+// wire fields their counterpart never sends while unit tests mocked the
+// adapter. The review is an input to human review of tier-1 merges, never a
+// substitute, and never re-opens or reverts the merged PR.
+type PostMergeReviewConfig struct {
+	// Enabled turns the reviewer on. Default off.
+	Enabled bool `yaml:"enabled"`
+	// Model is the model the review runs on. Empty uses the executor's
+	// configured model.
+	Model string `yaml:"model"`
+	// DailyCap is the maximum number of reviews per UTC day. It is its own
+	// counter: reviews never count against executor.daily_ticket_cap. Zero
+	// uses DefaultPostMergeReviewDailyCap; negative is rejected by validation.
+	DailyCap int `yaml:"daily_cap"`
+	// Timeout bounds one review. Zero uses the reviewer default (5m).
+	Timeout time.Duration `yaml:"timeout"`
+}
+
+// PostMergeReviewEnabled reports whether the post-merge reviewer is on.
+func (c *Config) PostMergeReviewEnabled() bool {
+	return c != nil && c.PostMergeReview != nil && c.PostMergeReview.Enabled
+}
+
+// EffectiveDailyCap returns DailyCap, or DefaultPostMergeReviewDailyCap when unset.
+func (p *PostMergeReviewConfig) EffectiveDailyCap() int {
+	if p == nil || p.DailyCap <= 0 {
+		return DefaultPostMergeReviewDailyCap
+	}
+	return p.DailyCap
 }
 
 // TestEvidenceConfig configures the test-evidence escalate-only gate at the
@@ -1349,6 +1391,12 @@ type PRState struct {
 	// this PR. Same attempt-once, persisted-immediately semantics as
 	// JiraDoneNotified (GH-4999). Persisted.
 	LinearDoneNotified bool
+	// PostMergeReviewPosted is true once the GH-5861 post-merge reviewer has
+	// been started for this PR. Set (and persisted) before the review goroutine
+	// launches, so a re-entry into handleMerged or a daemon restart cannot run
+	// a second review for the same PR; the review is attempt-once like the
+	// Jira/Linear done legs. Persisted.
+	PostMergeReviewPosted bool
 	// InfraRerunCount tracks how many times handleCIFailed has auto-retried
 	// this PR's failed jobs after classifying the failure as a CI
 	// infrastructure outage rather than a code failure (GH-4533). Scoped to
@@ -1535,6 +1583,7 @@ func (ps *PRState) snapshot() *PRState {
 		MergeFollowupPosted:          ps.MergeFollowupPosted,
 		JiraDoneNotified:             ps.JiraDoneNotified,
 		LinearDoneNotified:           ps.LinearDoneNotified,
+		PostMergeReviewPosted:        ps.PostMergeReviewPosted,
 		InfraRerunCount:              ps.InfraRerunCount,
 		InfraRerunSHA:                ps.InfraRerunSHA,
 		RebaseHoldActive:             ps.RebaseHoldActive,

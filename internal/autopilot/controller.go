@@ -515,6 +515,14 @@ type Controller struct {
 	reviewStatus        string // GH-3260: board column for PR-created (In Progress → Review)
 	inProgressStatus    string // GH-3260: reserved for symmetry; not yet emitted
 
+	// GH-5861: post-merge reviewer (nil = off), its own daily budget, an
+	// optional merged-diff override for tests, and the WaitGroup tracking
+	// in-flight review goroutines.
+	postMergeReviewer     PostMergeReviewer
+	postMergeReviewBudget *postMergeReviewBudget
+	postMergeDiff         func(ctx context.Context, mergeSHA string) (string, error)
+	postMergeReviewWG     sync.WaitGroup
+
 	// boardSource is the GH-4488 poll-cycle audit source: when non-nil (wired
 	// via WithProjectBoardSource, only when project_board.source_enabled is
 	// true), reconcileUnsourcedBoardIssues cross-checks open pilot-labeled
@@ -6202,6 +6210,11 @@ func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 
 	// GH-2086: Close parent issue when all sub-issues are done.
 	c.maybeCloseParentIssue(ctx, prState)
+
+	// GH-5861: post-merge review of the merged diff against the issue. Runs in
+	// a goroutine, guarded by the persisted PostMergeReviewPosted flag, and
+	// must stay ahead of the SkipPostMergeCI branch, whose paths removePR.
+	c.maybeStartPostMergeReview(ctx, prState)
 
 	if c.config.ResolvedEnvOrDefault().SkipPostMergeCI {
 		// Fast path: skip post-merge CI, check if we should release immediately

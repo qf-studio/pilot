@@ -1369,6 +1369,16 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("orchestrator.autopilot: %w", err)
 			}
 
+			// GH-5861: post-merge reviewer knobs.
+			if pmr := c.Orchestrator.Autopilot.PostMergeReview; pmr != nil {
+				if pmr.DailyCap < 0 {
+					return fmt.Errorf("orchestrator.autopilot.post_merge_review.daily_cap must be >= 0 (0 uses the default of %d), got %d", autopilot.DefaultPostMergeReviewDailyCap, pmr.DailyCap)
+				}
+				if pmr.Timeout < 0 {
+					return fmt.Errorf("orchestrator.autopilot.post_merge_review.timeout must be >= 0, got %s", pmr.Timeout)
+				}
+			}
+
 			if release := c.Orchestrator.Autopilot.Release; release != nil {
 				if !validReleasePublishValues[release.Publish] {
 					return fmt.Errorf("orchestrator.autopilot.release.publish must be \"workflow\", \"api\", or \"tag_only\", got %q", release.Publish)

@@ -247,6 +247,9 @@ func (s *StateStore) migrate() error {
 		// (notifyLinearDone), mirroring jira_done_notified above. Must also be
 		// added to migratePRStateRepoScoping's rebuild lists.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN linear_done_notified INTEGER NOT NULL DEFAULT 0`,
+		// GH-5861: attempt-once guard for the post-merge reviewer. Must also be
+		// added to migratePRStateRepoScoping's rebuild lists.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN post_merge_review_posted INTEGER NOT NULL DEFAULT 0`,
 		// GH-5647: backfill rows held by the pre-GH-5643 size guard into the
 		// generic hold fields (redriveHeldPR reads only those). Idempotent:
 		// the hold_active = 0 guard makes a second run a no-op and keeps the
@@ -543,6 +546,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			hold_labels TEXT NOT NULL DEFAULT '',
 			hold_redrive_count INTEGER NOT NULL DEFAULT 0,
 			linear_done_notified INTEGER NOT NULL DEFAULT 0,
+			post_merge_review_posted INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (repo, pr_number)
 		)
 	`); err != nil {
@@ -563,7 +567,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
-			linear_done_notified
+			linear_done_notified, post_merge_review_posted
 		)
 		SELECT
 			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
@@ -579,7 +583,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
-			linear_done_notified
+			linear_done_notified, post_merge_review_posted
 		FROM autopilot_pr_state
 	`); err != nil {
 		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
@@ -730,8 +734,8 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
-			linear_done_notified
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			linear_done_notified, post_merge_review_posted
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -775,7 +779,8 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			hold_head_sha = excluded.hold_head_sha,
 			hold_labels = excluded.hold_labels,
 			hold_redrive_count = excluded.hold_redrive_count,
-			linear_done_notified = excluded.linear_done_notified
+			linear_done_notified = excluded.linear_done_notified,
+			post_merge_review_posted = excluded.post_merge_review_posted
 	`,
 		pr.PRNumber, repo, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
@@ -791,7 +796,7 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 		pr.ReleaseBackfillAbandoned, pr.JiraDoneNotified, pr.SelfClosedFixIssue,
 		pr.SizeGuardHoldActive, pr.SizeGuardHoldHeadSHA,
 		pr.HoldActive, pr.HoldHeadSHA, pr.HoldLabels, pr.HoldRedriveCount,
-		pr.LinearDoneNotified,
+		pr.LinearDoneNotified, pr.PostMergeReviewPosted,
 	)
 	return err
 }
@@ -813,7 +818,7 @@ func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
-			linear_done_notified
+			linear_done_notified, post_merge_review_posted
 		FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?
 	`, repo, prNumber)
 
@@ -844,7 +849,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
-			linear_done_notified
+			linear_done_notified, post_merge_review_posted
 		FROM autopilot_pr_state WHERE repo = ?
 	`, repo)
 	if err != nil {
@@ -872,7 +877,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			&pr.ReleaseBackfillAbandoned, &pr.JiraDoneNotified, &pr.SelfClosedFixIssue,
 			&pr.SizeGuardHoldActive, &pr.SizeGuardHoldHeadSHA,
 			&pr.HoldActive, &pr.HoldHeadSHA, &pr.HoldLabels, &pr.HoldRedriveCount,
-			&pr.LinearDoneNotified,
+			&pr.LinearDoneNotified, &pr.PostMergeReviewPosted,
 		); err != nil {
 			return nil, err
 		}
@@ -1134,7 +1139,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.ReleaseBackfillAbandoned, &pr.JiraDoneNotified, &pr.SelfClosedFixIssue,
 		&pr.SizeGuardHoldActive, &pr.SizeGuardHoldHeadSHA,
 		&pr.HoldActive, &pr.HoldHeadSHA, &pr.HoldLabels, &pr.HoldRedriveCount,
-		&pr.LinearDoneNotified,
+		&pr.LinearDoneNotified, &pr.PostMergeReviewPosted,
 	)
 	if err != nil {
 		return nil, err

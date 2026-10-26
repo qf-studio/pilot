@@ -107,6 +107,10 @@ func TestPrometheusExporter_WritePrometheus(t *testing.T) {
 					LabelCleanups: map[string]int64{
 						"pilot-in-progress": 8,
 					},
+					PostMergeReviewVerdicts: map[string]int64{
+						"APPROVE":         9,
+						"REQUEST-CHANGES": 2,
+					},
 					IntentJudgeFailures: map[string]int64{
 						"context_deadline": 6,
 						"external_sigkill": 1,
@@ -140,6 +144,11 @@ func TestPrometheusExporter_WritePrometheus(t *testing.T) {
 				"# TYPE pilot_intent_judge_failures_total counter",
 				`pilot_intent_judge_failures_total{cause="context_deadline"} 6`,
 				`pilot_intent_judge_failures_total{cause="external_sigkill"} 1`,
+				// GH-5861: post-merge reviews broken out by verdict.
+				"# HELP pilot_post_merge_reviews_total",
+				"# TYPE pilot_post_merge_reviews_total counter",
+				`pilot_post_merge_reviews_total{verdict="APPROVE"} 9`,
+				`pilot_post_merge_reviews_total{verdict="REQUEST-CHANGES"} 2`,
 			},
 		},
 		{

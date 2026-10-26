@@ -595,6 +595,29 @@ orchestrator:
       min_tests: 1        # escalate if fewer than this many tests ran
       max_skip_ratio: 0.5  # escalate if skipped/(run+skipped) exceeds this
 
+    # Post-merge reviewer (GH-5861). After a Pilot PR merges, a model pass
+    # reviews the merged diff against the issue it implemented and posts one
+    # PR comment starting "VERDICT: APPROVE | APPROVE-WITH-NOTES |
+    # REQUEST-CHANGES" with a defect list (each: file:line, claim, evidence).
+    # REQUEST-CHANGES also files one follow-up issue labeled with
+    # issue_labels plus post-merge-review, titled "fix(#<PR>): ...". The
+    # verdict is recorded in pr_reviews as reviewer post-merge-reviewer. It is
+    # an input to human review of tier-1 merges (migrations, gate removals,
+    # auth, public routes), never a substitute; it never re-opens or reverts
+    # the merged PR. Reviews write no executions row, so they are outside
+    # executor.daily_ticket_cap and have their own cap below. Needs the
+    # `claude` binary and a local checkout of the project (the merged diff is
+    # read with git). PRs without a GitHub issue are not reviewed. Default off.
+    post_merge_review:
+      enabled: false
+      # Model for the review. Empty uses the executor's configured model
+      # (executor.default_model).
+      model: ""
+      # Max reviews per UTC day (its own counter). Default 20.
+      daily_cap: 20
+      # Bound on one review. Default 5m.
+      timeout: 5m
+
     # Cross-PR platform-outage breaker (GH-4791, TASK-458 part 1). The
     # per-PR circuit breaker above is deliberately scoped to one PR at a
     # time ("so one bad PR doesn't block others") and cannot see a

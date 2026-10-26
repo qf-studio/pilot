@@ -93,6 +93,9 @@ type Metrics struct {
 	// poller's pre-flight gate previously failed open on every judge crash
 	// with no visible signal that the judge was effectively dead.
 	IntentJudgeFailures map[string]int64
+	// PostMergeReviewVerdicts counts post-merge reviews by verdict (APPROVE,
+	// APPROVE-WITH-NOTES, REQUEST-CHANGES, unknown, error) — GH-5861.
+	PostMergeReviewVerdicts map[string]int64
 	// StageTimeouts counts per-PR stage-handler calls abandoned by the
 	// per-stage deadline (Config.StageTimeout), keyed by the PR's stage when
 	// the deadline fired — GH-5541. Exported as
@@ -228,6 +231,7 @@ func NewMetrics() *Metrics {
 		LabelCleanups:              make(map[string]int64),
 		ApprovalPersistMisses:      make(map[string]int64),
 		IntentJudgeFailures:        make(map[string]int64),
+		PostMergeReviewVerdicts:    make(map[string]int64),
 		StageTimeouts:              make(map[string]int64),
 		StagePanics:                make(map[string]int64),
 		TokensConsumed:             make(map[tokenKey]int64),
@@ -424,6 +428,15 @@ func (m *Metrics) RecordIntentJudgeFailure(cause string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.IntentJudgeFailures[cause]++
+}
+
+// RecordPostMergeReview increments the per-verdict post-merge review counter.
+// verdict is an executor.PostMergeVerdict value, or "error" when the review
+// subprocess failed. GH-5861.
+func (m *Metrics) RecordPostMergeReview(verdict string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PostMergeReviewVerdicts[verdict]++
 }
 
 // RecordStageTimeout increments the per-stage deadline counter — GH-5541.
@@ -728,6 +741,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		LabelCleanups:                 copyStringIntMap(m.LabelCleanups),
 		ApprovalPersistMisses:         copyStringIntMap(m.ApprovalPersistMisses),
 		IntentJudgeFailures:           copyStringIntMap(m.IntentJudgeFailures),
+		PostMergeReviewVerdicts:       copyStringIntMap(m.PostMergeReviewVerdicts),
 		StageTimeouts:                 copyStringIntMap(m.StageTimeouts),
 		StagePanics:                   copyStringIntMap(m.StagePanics),
 		LastTickAt:                    m.LastTickAt,
@@ -825,6 +839,7 @@ type MetricsSnapshot struct {
 	ApprovalPersistMisses     map[string]int64
 	ApprovalSubmitFailures    int64
 	IntentJudgeFailures       map[string]int64 // GH-4377: cause → count
+	PostMergeReviewVerdicts   map[string]int64 // GH-5861: verdict → post-merge review count
 	StageTimeouts             map[string]int64 // GH-5541: stage → per-stage deadline expiries
 	StagePanics               map[string]int64 // GH-5547: stage → panics recovered from stage handlers
 	LastTickAt                time.Time        // GH-5541: last PR-loop progress; zero before the first tick
