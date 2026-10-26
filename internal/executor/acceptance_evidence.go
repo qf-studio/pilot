@@ -460,6 +460,9 @@ type AcceptanceCommandResult struct {
 	// set for a non-zero exit code, which is a legitimate (and sometimes
 	// expected) command outcome that still produces output worth pasting.
 	Err string
+	// FromQualityGate is true when Output was reused from the matching
+	// quality-gate run instead of executing the command again (GH-5867).
+	FromQualityGate bool
 }
 
 // MutationOutcome is the outcome of applying a mutation-style acceptance
@@ -491,6 +494,10 @@ type AcceptanceEvidenceResult struct {
 	NotVerifiedReason string
 }
 
+// evidenceFromQualityGateMarker labels a command line whose output was
+// reused from the quality-gate run (GH-5867).
+const evidenceFromQualityGateMarker = "(from the quality-gate run)"
+
 // RenderAcceptanceEvidenceSections renders the "## Evidence" and
 // "## Not verified" PR-body sections from a set of results. Returns "" when
 // there is nothing evidence-requiring to report (results is empty, or every
@@ -519,7 +526,11 @@ func RenderAcceptanceEvidenceSections(results []AcceptanceEvidenceResult) string
 			hasEvidence = true
 			fmt.Fprintf(&evidence, "### %s\n\n", evidenceHeading(r.Item.Text, r.Commands))
 			for _, c := range r.Commands {
-				fmt.Fprintf(&evidence, "```\n$ %s\n%s\n```\n\n", c.Command, c.Output)
+				suffix := ""
+				if c.FromQualityGate {
+					suffix = " " + evidenceFromQualityGateMarker
+				}
+				fmt.Fprintf(&evidence, "```\n$ %s%s\n%s\n```\n\n", c.Command, suffix, c.Output)
 			}
 		case AcceptanceItemMutation:
 			hasEvidence = true

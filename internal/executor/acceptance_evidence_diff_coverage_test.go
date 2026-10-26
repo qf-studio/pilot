@@ -393,7 +393,7 @@ func TestAppendAcceptanceEvidence_DiffCoverage_MergedIntoNotVerified(t *testing.
 	r := &Runner{config: DefaultBackendConfig()}
 	prBody := "## Summary\n\nsome PR body"
 
-	got := r.appendAcceptanceEvidence(ctx, task, dir, prBody)
+	got := r.appendAcceptanceEvidence(ctx, task, dir, prBody, nil)
 
 	if !strings.Contains(got, "## Not verified") {
 		t.Fatalf("expected a merged \"## Not verified\" section, got %q", got)

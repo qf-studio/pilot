@@ -803,7 +803,7 @@ func TestAppendAcceptanceEvidence_FlagOff_ByteIdentical(t *testing.T) {
 	disabled := false
 	r := &Runner{config: &BackendConfig{AcceptanceEvidence: &AcceptanceEvidenceConfig{Enabled: &disabled}}}
 
-	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), prBody)
+	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), prBody, nil)
 	if got != prBody {
 		t.Fatalf("expected byte-identical PR body when disabled, got %q", got)
 	}
@@ -814,7 +814,7 @@ func TestAppendAcceptanceEvidence_NoAcceptanceCriteria_ByteIdentical(t *testing.
 	task := &Task{ID: "GH-1"}
 	r := &Runner{config: DefaultBackendConfig()}
 
-	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), prBody)
+	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), prBody, nil)
 	if got != prBody {
 		t.Fatalf("expected byte-identical PR body with no acceptance criteria, got %q", got)
 	}
@@ -823,12 +823,12 @@ func TestAppendAcceptanceEvidence_NoAcceptanceCriteria_ByteIdentical(t *testing.
 func TestAppendAcceptanceEvidence_NilRunnerOrTask_ByteIdentical(t *testing.T) {
 	prBody := "## Summary\n\nsome PR body"
 	var r *Runner
-	if got := r.appendAcceptanceEvidence(context.Background(), &Task{}, "/tmp", prBody); got != prBody {
+	if got := r.appendAcceptanceEvidence(context.Background(), &Task{}, "/tmp", prBody, nil); got != prBody {
 		t.Fatalf("nil Runner: expected byte-identical PR body, got %q", got)
 	}
 
 	r2 := &Runner{config: DefaultBackendConfig()}
-	if got := r2.appendAcceptanceEvidence(context.Background(), nil, "/tmp", prBody); got != prBody {
+	if got := r2.appendAcceptanceEvidence(context.Background(), nil, "/tmp", prBody, nil); got != prBody {
 		t.Fatalf("nil Task: expected byte-identical PR body, got %q", got)
 	}
 }

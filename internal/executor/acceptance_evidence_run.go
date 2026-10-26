@@ -286,6 +286,15 @@ func finalizeEvidenceOutput(output string) string {
 // exit code, which is a legitimate result worth pasting), is reported as
 // Not-verified rather than silently dropped.
 func runPasteOutputItem(ctx context.Context, runner AcceptanceCommandRunner, dir string, item AcceptanceItem, allowedCommands []string) AcceptanceEvidenceResult {
+	return runPasteOutputItemReusing(ctx, runner, dir, item, allowedCommands, nil)
+}
+
+// runPasteOutputItemReusing is runPasteOutputItem with GH-5867 quality-gate
+// reuse: a command whose argv matches a passed gate in gateOutputs renders
+// that gate's captured output (trimmed and redacted like any other) instead
+// of being executed again. A ctx that expires between commands skips the
+// remaining ones with the budget-exhausted reason rather than spawning them.
+func runPasteOutputItemReusing(ctx context.Context, runner AcceptanceCommandRunner, dir string, item AcceptanceItem, allowedCommands []string, gateOutputs evidenceGateOutputs) AcceptanceEvidenceResult {
 	result := AcceptanceEvidenceResult{Item: item}
 
 	if len(item.Commands) == 0 {
@@ -303,6 +312,20 @@ func runPasteOutputItem(ctx context.Context, runner AcceptanceCommandRunner, dir
 	var lastErr error
 	allErrored := true
 	for _, command := range item.Commands {
+		if out, ok := gateOutputs.lookup(command); ok {
+			result.Commands = append(result.Commands, AcceptanceCommandResult{
+				Command: command, Output: finalizeEvidenceOutput(out), FromQualityGate: true,
+			})
+			allErrored = false
+			continue
+		}
+		if ctx.Err() != nil {
+			lastErr = errEvidenceBudgetExhausted
+			result.Commands = append(result.Commands, AcceptanceCommandResult{
+				Command: command, Output: evidenceBudgetExhaustedReason, Err: evidenceBudgetExhaustedReason,
+			})
+			continue
+		}
 		out, err := runner.RunCommand(ctx, dir, command)
 		cr := AcceptanceCommandResult{Command: command, Output: finalizeEvidenceOutput(out)}
 		var exitErr *exec.ExitError
@@ -317,7 +340,9 @@ func runPasteOutputItem(ctx context.Context, runner AcceptanceCommandRunner, dir
 
 	if allErrored {
 		var te *acceptanceCommandTimeoutError
-		if errors.As(lastErr, &te) {
+		if errors.Is(lastErr, errEvidenceBudgetExhausted) {
+			result.NotVerifiedReason = evidenceBudgetExhaustedReason
+		} else if errors.As(lastErr, &te) {
 			result.NotVerifiedReason = te.Error()
 		} else {
 			result.NotVerifiedReason = fmt.Sprintf("execution error running %q: %s", item.Commands[0], result.Commands[0].Err)
@@ -464,7 +489,12 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 // still produces a byte-identical result when nothing else is reported,
 // since runDiffCoverageCheck below shells out to git only when
 // ExtractDiffCoveragePaths finds a candidate path at all.
-func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workDir, prBody string) string {
+//
+// GH-5867: the classified items run on their own budget context
+// (evidenceBudgetCtx) so a slow command can never consume the time the PR
+// create step needs, and a paste-output command identical to a quality gate
+// that passed in this run (gates) reuses that gate's captured output.
+func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workDir, prBody string, gates *QualityGatesResult) string {
 	if r == nil || task == nil {
 		return prBody
 	}
@@ -489,7 +519,15 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 		}
 		items, stats := classifier.Classify(ctx, task.AcceptanceCriteria)
 		r.logAcceptanceClassification(task, stats)
-		results = RunAcceptanceEvidenceItems(ctx, runner, workDir, items, cfg.EffectiveAllowedCommands())
+
+		budgetCtx, cancel := r.evidenceBudgetCtx(ctx)
+		results = runAcceptanceEvidenceItemsBudgeted(budgetCtx, runner, workDir, items, cfg.EffectiveAllowedCommands(), evidenceRunOptions{
+			gateOutputs: newEvidenceGateOutputs(gates),
+			onEvent: func(event string, index int, elapsed time.Duration) {
+				r.logEvidenceEvent(task, event, index, elapsed)
+			},
+		})
+		cancel()
 	}
 
 	// GH-5466: merged into the same "## Not verified" section as the
@@ -500,13 +538,58 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 	// distinct section) keeps every existing acceptance-evidence test
 	// green, since that function's behavior and tests are untouched by this
 	// change.
-	results = append(results, runDiffCoverageCheck(ctx, r, task, workDir)...)
+	// GH-5867: git probes only — own fresh window so a deadline the evidence
+	// step ran into does not silently skip the check.
+	diffCtx, diffCancel := finalizeCtx(ctx, finalizeGitTimeout)
+	results = append(results, runDiffCoverageCheck(diffCtx, r, task, workDir)...)
+	diffCancel()
 
 	section := RenderAcceptanceEvidenceSections(results)
 	if section == "" {
 		return prBody
 	}
 	return strings.TrimRight(prBody, "\n") + "\n\n" + section
+}
+
+// evidenceBudgetCtx returns the context the acceptance-evidence step runs on
+// (GH-5867): the task ctx's values with its deadline detached, bounded by the
+// configured acceptance_evidence_budget. The step therefore has the same
+// budget whether the task ctx is nearly spent or not, and an expired task
+// deadline no longer cuts evidence commands off. A real cancellation
+// (context.Canceled, e.g. an explicit stop request) still propagates, as in
+// finalizeCtx (GH-5342).
+func (r *Runner) evidenceBudgetCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	var cfg *BackendConfig
+	if r != nil {
+		cfg = r.config
+	}
+	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.EffectiveAcceptanceEvidenceBudget())
+	stop := context.AfterFunc(ctx, func() {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			cancel()
+		}
+	})
+	return bctx, func() {
+		stop()
+		cancel()
+	}
+}
+
+// logEvidenceEvent emits the GH-5867 WARN line for a quality-gate output reuse
+// or the first item the evidence budget cut off.
+func (r *Runner) logEvidenceEvent(task *Task, event string, itemIndex int, elapsed time.Duration) {
+	if r == nil || r.log == nil {
+		return
+	}
+	msg := "Acceptance evidence reused quality-gate output"
+	if event == evidenceEventBudgetExhausted {
+		msg = "Acceptance evidence budget exhausted"
+	}
+	r.log.Warn(msg,
+		slog.String("task_id", task.ID),
+		slog.Int("item_index", itemIndex),
+		slog.Duration("elapsed", elapsed),
+	)
 }
 
 // logAcceptanceClassification emits the one per-task info line whose counters
@@ -643,14 +726,129 @@ func RunAcceptanceEvidence(ctx context.Context, runner AcceptanceCommandRunner, 
 // every evidence-requiring item against dir in encounter order and skips
 // "other" items.
 func RunAcceptanceEvidenceItems(ctx context.Context, runner AcceptanceCommandRunner, dir string, items []AcceptanceItem, allowedCommands []string) []AcceptanceEvidenceResult {
-	results := make([]AcceptanceEvidenceResult, 0, len(items))
-	for _, item := range items {
-		switch item.Kind {
-		case AcceptanceItemPasteOutput:
-			results = append(results, runPasteOutputItem(ctx, runner, dir, item, allowedCommands))
-		case AcceptanceItemMutation:
-			results = append(results, runMutationItem(ctx, runner, dir, item, allowedCommands))
+	return runAcceptanceEvidenceItemsBudgeted(ctx, runner, dir, items, allowedCommands, evidenceRunOptions{})
+}
+
+// evidenceBudgetExhaustedReason is the Not-verified reason rendered for every
+// evidence item that did not get to run because the evidence budget (GH-5867)
+// ran out.
+const evidenceBudgetExhaustedReason = "Not verified: evidence budget exhausted"
+
+var errEvidenceBudgetExhausted = errors.New("evidence budget exhausted")
+
+// Evidence events reported through evidenceRunOptions.onEvent.
+const (
+	evidenceEventReused          = "quality_gate_reused"
+	evidenceEventBudgetExhausted = "budget_exhausted"
+)
+
+// evidenceArgvSeparator joins argv fields into a reuse-lookup key; NUL cannot
+// appear in a command line, so distinct argv never collide.
+const evidenceArgvSeparator = "\x00"
+
+// evidenceGateOutputs maps the argv of every quality gate that passed in this
+// run to its captured output (GH-5867).
+type evidenceGateOutputs map[string]string
+
+func evidenceArgvKey(command string) (string, bool) {
+	argv, err := splitCommandFields(command)
+	if err != nil || len(argv) == 0 {
+		return "", false
+	}
+	return strings.Join(argv, evidenceArgvSeparator), true
+}
+
+// newEvidenceGateOutputs indexes the passed gates of a quality-gate run by
+// argv. Failed gates, gates that never ran a command and a nil result yield
+// no entry, so those commands still execute.
+func newEvidenceGateOutputs(gates *QualityGatesResult) evidenceGateOutputs {
+	if gates == nil {
+		return nil
+	}
+	m := make(evidenceGateOutputs, len(gates.Gates))
+	for _, g := range gates.Gates {
+		if !g.Passed || g.ExitCode != 0 || g.Command == "" {
+			continue
 		}
+		if key, ok := evidenceArgvKey(g.Command); ok {
+			m[key] = g.Output
+		}
+	}
+	return m
+}
+
+// lookup returns the captured gate output for command when its argv equals a
+// passed gate's. Safe on a nil map.
+func (m evidenceGateOutputs) lookup(command string) (string, bool) {
+	if len(m) == 0 {
+		return "", false
+	}
+	key, ok := evidenceArgvKey(command)
+	if !ok {
+		return "", false
+	}
+	out, ok := m[key]
+	return out, ok
+}
+
+// evidenceRunOptions tunes runAcceptanceEvidenceItemsBudgeted (GH-5867).
+type evidenceRunOptions struct {
+	// gateOutputs enables reuse of passed quality-gate output.
+	gateOutputs evidenceGateOutputs
+	// onEvent is called for each reused command and once at the first item
+	// the budget cut off, with the 1-based item index and the time spent in
+	// the evidence step so far.
+	onEvent func(event string, itemIndex int, elapsed time.Duration)
+}
+
+// runAcceptanceEvidenceItemsBudgeted runs evidence-requiring items in order.
+// ctx is the evidence budget: once it is done, every remaining item is
+// recorded as Not-verified (budget exhausted) without being run, and a
+// command the budget killed mid-run is reported the same way instead of as a
+// per-command timeout.
+func runAcceptanceEvidenceItemsBudgeted(ctx context.Context, runner AcceptanceCommandRunner, dir string, items []AcceptanceItem, allowedCommands []string, opts evidenceRunOptions) []AcceptanceEvidenceResult {
+	start := time.Now()
+	emit := func(event string, index int) {
+		if opts.onEvent != nil {
+			opts.onEvent(event, index, time.Since(start))
+		}
+	}
+
+	results := make([]AcceptanceEvidenceResult, 0, len(items))
+	exhaustedReported := false
+	for i, item := range items {
+		if item.Kind != AcceptanceItemPasteOutput && item.Kind != AcceptanceItemMutation {
+			continue
+		}
+
+		var res AcceptanceEvidenceResult
+		if ctx.Err() != nil {
+			res = AcceptanceEvidenceResult{Item: item, NotVerifiedReason: evidenceBudgetExhaustedReason}
+		} else if item.Kind == AcceptanceItemPasteOutput {
+			res = runPasteOutputItemReusing(ctx, runner, dir, item, allowedCommands, opts.gateOutputs)
+		} else {
+			res = runMutationItem(ctx, runner, dir, item, allowedCommands)
+		}
+
+		// The budget killed a running command: its error reads as a plain
+		// timeout or execution failure, which would blame the command.
+		if ctx.Err() != nil && res.NotVerifiedReason != "" && res.NotVerifiedReason != evidenceBudgetExhaustedReason &&
+			(strings.HasPrefix(res.NotVerifiedReason, "timed out after") ||
+				strings.HasPrefix(res.NotVerifiedReason, "execution error running") ||
+				strings.HasPrefix(res.NotVerifiedReason, "could not run")) {
+			res.NotVerifiedReason = evidenceBudgetExhaustedReason
+		}
+
+		for _, c := range res.Commands {
+			if c.FromQualityGate {
+				emit(evidenceEventReused, i+1)
+			}
+		}
+		if res.NotVerifiedReason == evidenceBudgetExhaustedReason && !exhaustedReported {
+			exhaustedReported = true
+			emit(evidenceEventBudgetExhausted, i+1)
+		}
+		results = append(results, res)
 	}
 	return results
 }

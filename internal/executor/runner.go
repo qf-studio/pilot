@@ -392,6 +392,13 @@ func logGitCtxErr(ctx context.Context, log *slog.Logger, msg string, attrs ...an
 // branch name, sha, and the pinned ref — so the parent failure message and
 // issue comment are actionable instead of a bare sha. GH-3785.
 func formatGitStepFailureWithRecovery(ctx context.Context, git *GitOperations, step string, attempts int, stepErr error, taskID, branch, sha string) string {
+	// GH-5867: the step that just failed may have burned the remainder of the
+	// task deadline (evidence, retries); the recovery ref is the only thing
+	// keeping the pushed commits reachable, so it gets a fresh window rather
+	// than failing instantly on the dead ctx. A real cancellation is not
+	// extended (finalizeCtx).
+	ctx, cancel := finalizeCtx(ctx, finalizeGitTimeout)
+	defer cancel()
 	recoveryRef, refErr := git.CreateRecoveryRef(ctx, taskID, "HEAD")
 	shortSHA := sha
 	if len(shortSHA) > 7 {
@@ -2602,7 +2609,13 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	} else {
 		prBody = fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, extraFixesKeyword(task.Description, epicIssueNum), task.Description)
 	}
-	prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody)
+	prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, nil)
+	// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
+	// blown meanwhile. Re-derive the finalize window right before PR/MR creation
+	// so CreatePR and the recovery ref get a live ctx (a real cancellation is
+	// not extended).
+	ctx, prCreateCancel := finalizeCtx(ctx, r.finalizeTimeout())
+	defer prCreateCancel()
 
 	// GH-4220 (b): route the epic parent's title through the same
 	// autoPrefixTitle/inferConventionalPrefix machinery as the direct path
@@ -3554,7 +3567,13 @@ func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, gi
 	issueNum := strings.TrimPrefix(task.ID, "GH-")
 	prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot after a task timeout (GH-5346 salvage path) for %s.\n\nCloses #%s%s\n\n## Changes\n\n%s",
 		task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
-	prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody)
+	prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, nil)
+	// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
+	// blown meanwhile. Re-derive the finalize window right before PR/MR creation
+	// so CreatePR and the recovery ref get a live ctx (a real cancellation is
+	// not extended).
+	ctx, prCreateCancel := finalizeCtx(ctx, r.finalizeTimeout())
+	defer prCreateCancel()
 
 	// GH-5346: adapter-aware routing, matching the ordinary direct-path
 	// PR-create leg (executeWithOptions) — a GitHub-SDK-managed repo, a
@@ -7209,7 +7228,13 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			if creatorKind == prCreatorKindGitHubSDK {
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
-				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody)
+				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates)
+				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
+				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
+				// so CreatePR and the recovery ref get a live ctx (a real cancellation is
+				// not extended).
+				ctx, prCreateCancel := finalizeCtx(ctx, r.finalizeTimeout())
+				defer prCreateCancel()
 				var createErr error
 				for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
 					prURL, createErr = creator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
@@ -7243,7 +7268,13 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// GH-5583: on the project-keyed path "Closes #" is emitted only
 				// for gitlab-sourced tasks (see mrSourceSuffix).
 				prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, mrSourceSuffix(task, creatorKind), task.Description)
-				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody)
+				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates)
+				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
+				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
+				// so CreatePR and the recovery ref get a live ctx (a real cancellation is
+				// not extended).
+				ctx, prCreateCancel := finalizeCtx(ctx, r.finalizeTimeout())
+				defer prCreateCancel()
 				// Retry MR creation before giving up (GH-3785): the branch is
 				// already pushed at this point, so a transient API failure here
 				// must not strand delivered commits behind a bare error.
@@ -7273,7 +7304,13 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// GitHub: use gh CLI with auto-close keyword
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
-				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody)
+				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates)
+				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
+				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
+				// so CreatePR and the recovery ref get a live ctx (a real cancellation is
+				// not extended).
+				ctx, prCreateCancel := finalizeCtx(ctx, r.finalizeTimeout())
+				defer prCreateCancel()
 				// Retry PR creation before giving up (GH-3785): same rationale as
 				// the MR-creator branch above — the branch is already pushed.
 				var createErr error

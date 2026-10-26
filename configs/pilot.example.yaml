@@ -807,6 +807,11 @@ executor:
   # into the (public) PR body, mutation file paths are confined to the
   # worktree, and each command is subject to a per-command timeout.
   # A backticked allowlisted command followed by passes / succeeds / is green / exits 0 is run and pasted.
+  # A paste-output command identical to a quality gate that passed in this run reuses the
+  # gate's captured output ("(from the quality-gate run)") instead of running again.
+  # acceptance_evidence_budget: 15m  # Budget for the whole evidence step (default 15m, must be >= 0);
+  #                                  # once spent, remaining items render "Not verified: evidence budget exhausted"
+  #                                  # and the PR is still created
   # acceptance_evidence:
   #   enabled: true                 # Master switch; false = PR body unchanged (default true)
   #   allowed_commands:             # First-token allowlist; anything else -> "Not verified: command not in allowlist"

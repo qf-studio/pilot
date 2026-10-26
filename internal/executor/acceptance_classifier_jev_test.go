@@ -473,7 +473,7 @@ func TestAppendAcceptanceEvidence_LogsClassificationLine(t *testing.T) {
 	}
 	task := &Task{ID: "GH-9", AcceptanceCriteria: []string{pasteItemText}}
 
-	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary")
+	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary", nil)
 	if !strings.Contains(got, "go vet ./...") {
 		t.Fatalf("shadow mode must keep the regex paste_output item and run it, got %q", got)
 	}

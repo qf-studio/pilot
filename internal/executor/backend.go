@@ -573,6 +573,25 @@ type BackendConfig struct {
 	// orchestrator.execution.finalize_timeout (config.ExecutionConfig),
 	// which is copied here at startup. Default: 15m. GH-5346.
 	FinalizeTimeout time.Duration `yaml:"finalize_timeout,omitempty"`
+
+	// AcceptanceEvidenceBudget bounds the whole acceptance-evidence step
+	// (every paste-output and mutation item together) so a slow evidence
+	// command cannot eat the task budget the PR-create step still needs.
+	// Once exhausted, remaining items render "Not verified: evidence budget
+	// exhausted". Default: 15m. GH-5867.
+	AcceptanceEvidenceBudget time.Duration `yaml:"acceptance_evidence_budget,omitempty"`
+}
+
+// defaultAcceptanceEvidenceBudget is the AcceptanceEvidenceBudget default.
+const defaultAcceptanceEvidenceBudget = 15 * time.Minute
+
+// EffectiveAcceptanceEvidenceBudget returns the acceptance-evidence step
+// budget, applying the 15-minute default when unset or non-positive. GH-5867.
+func (c *BackendConfig) EffectiveAcceptanceEvidenceBudget() time.Duration {
+	if c == nil || c.AcceptanceEvidenceBudget <= 0 {
+		return defaultAcceptanceEvidenceBudget
+	}
+	return c.AcceptanceEvidenceBudget
 }
 
 // EffectiveFinalizeTimeout returns the post-backend finalization budget,
@@ -1238,14 +1257,15 @@ func DefaultBackendConfig() *BackendConfig {
 	prePushLint := true
 	acceptanceEvidenceEnabled := true
 	return &BackendConfig{
-		Type:                   "claude-code",
-		AutoCreatePR:           &autoCreatePR,
-		DetectEphemeral:        &detectEphemeral,
-		PrePushLint:            &prePushLint,
-		AcceptanceEvidence:     &AcceptanceEvidenceConfig{Enabled: &acceptanceEvidenceEnabled},
-		PlanningTimeout:        2 * time.Minute,
-		DailyTicketCap:         0,
-		DailyTicketCapTimezone: "UTC",
+		Type:                     "claude-code",
+		AutoCreatePR:             &autoCreatePR,
+		DetectEphemeral:          &detectEphemeral,
+		PrePushLint:              &prePushLint,
+		AcceptanceEvidence:       &AcceptanceEvidenceConfig{Enabled: &acceptanceEvidenceEnabled},
+		AcceptanceEvidenceBudget: defaultAcceptanceEvidenceBudget,
+		PlanningTimeout:          2 * time.Minute,
+		DailyTicketCap:           0,
+		DailyTicketCapTimezone:   "UTC",
 		ClaudeCode: &ClaudeCodeConfig{
 			Command:      "claude",
 			AllowedTools: DefaultAllowedToolsExecution(),

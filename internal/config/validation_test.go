@@ -1323,3 +1323,58 @@ func TestLoad_DailyTicketCap(t *testing.T) {
 		})
 	}
 }
+
+// TestAcceptanceEvidenceBudget covers executor.acceptance_evidence_budget
+// (GH-5867): 15m default, YAML parsing, negative values rejected at load.
+func TestAcceptanceEvidenceBudget(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		path := t.TempDir() + "/config.yaml"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	t.Run("defaults to 15m", func(t *testing.T) {
+		cfg, err := Load(write(t, "version: \"1.0\"\n"))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := cfg.Executor.AcceptanceEvidenceBudget; got != 15*time.Minute {
+			t.Errorf("AcceptanceEvidenceBudget = %v, want 15m", got)
+		}
+		if got := cfg.Executor.EffectiveAcceptanceEvidenceBudget(); got != 15*time.Minute {
+			t.Errorf("EffectiveAcceptanceEvidenceBudget = %v, want 15m", got)
+		}
+	})
+
+	t.Run("configured value is read", func(t *testing.T) {
+		cfg, err := Load(write(t, "executor:\n  acceptance_evidence_budget: 20m\n"))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := cfg.Executor.EffectiveAcceptanceEvidenceBudget(); got != 20*time.Minute {
+			t.Errorf("EffectiveAcceptanceEvidenceBudget = %v, want 20m", got)
+		}
+	})
+
+	t.Run("negative rejected", func(t *testing.T) {
+		_, err := Load(write(t, "executor:\n  acceptance_evidence_budget: -5m\n"))
+		if err == nil || !strings.Contains(err.Error(), "acceptance_evidence_budget") {
+			t.Fatalf("expected error naming acceptance_evidence_budget, got %v", err)
+		}
+	})
+
+	t.Run("Validate rejects negative, accepts zero", func(t *testing.T) {
+		cfg := baseValidConfig()
+		cfg.Executor = &executor.BackendConfig{AcceptanceEvidenceBudget: -time.Second}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "acceptance_evidence_budget") {
+			t.Errorf("expected negative budget error, got %v", err)
+		}
+		cfg.Executor = &executor.BackendConfig{AcceptanceEvidenceBudget: 0}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("zero (default) must be valid, got %v", err)
+		}
+	})
+}

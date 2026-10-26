@@ -136,7 +136,7 @@ func TestAcceptanceEvidence_LiveSmokeNotVerifiedHoldsPR(t *testing.T) {
 	t.Run("appendAcceptanceEvidence output is held end to end", func(t *testing.T) {
 		r := &Runner{config: DefaultBackendConfig(), acceptanceRunner: &fakeAcceptanceCommandRunner{}}
 		task := &Task{ID: "GH-1", AcceptanceCriteria: []string{"paste the output of a live smoke against the box"}}
-		body := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary\n\nx")
+		body := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary\n\nx", nil)
 		if got := LiveSmokeNotVerifiedBullets(body); len(got) == 0 {
 			t.Fatalf("live-smoke Not-verified bullet must hold the PR, body:\n%s", body)
 		}

@@ -248,7 +248,7 @@ func TestAcceptanceEvidenceWiring_ExecutionRowReachesEvidenceGate(t *testing.T) 
 	r.acceptanceRunner = fake
 
 	prBody := "## Summary\n\nsome PR body"
-	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), prBody)
+	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), prBody, nil)
 
 	if !strings.Contains(got, "## Evidence") {
 		t.Fatalf("PR body has no Evidence section; the execution-row path dropped the criteria: %q", got)

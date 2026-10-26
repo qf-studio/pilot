@@ -1343,6 +1343,10 @@ func (c *Config) Validate() error {
 		if err := validateUsageLimitPause(c.Executor.UsageLimitPause); err != nil {
 			return err
 		}
+		// GH-5867: 0 = default (15m); negative is a config mistake.
+		if c.Executor.AcceptanceEvidenceBudget < 0 {
+			return fmt.Errorf("invalid executor.acceptance_evidence_budget: %s (must be >= 0; 0 = default %s)", c.Executor.AcceptanceEvidenceBudget, c.Executor.EffectiveAcceptanceEvidenceBudget())
+		}
 	}
 
 	if c.Orchestrator != nil && c.Orchestrator.DailyBrief != nil {
