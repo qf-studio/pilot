@@ -134,6 +134,8 @@ func (g *GitOperations) CreateOrResetBranchFromOrigin(ctx context.Context, branc
 //   - branchName doesn't exist locally yet: created directly from baseRef.
 //   - branchName exists but is behind baseRef (stale — e.g. left over from a
 //     prior, now-superseded run, GH-912): deleted and recreated from baseRef.
+//     If it is the branch the clone is currently on (GH-5829), HEAD is first
+//     detached at baseRef (clean tree) or the call errors (dirty tree).
 //   - branchName exists and is NOT behind baseRef (it may carry legitimate
 //     work-in-progress commits from an earlier attempt on this same clone):
 //     switched to as-is, preserving those commits.
@@ -180,6 +182,25 @@ func (g *GitOperations) EnsureBranchFromOrigin(ctx context.Context, branchName, 
 		return baseRef, false, nil
 	}
 
+	// Decision (GH-5829): git refuses `branch -D` on the branch HEAD is on, and
+	// direct mode never switches the clone back to the default branch after a
+	// task, so a retry after a closed PR always starts on the stale branch.
+	// Detach HEAD at baseRef first (clean tree only — a dirty tree could hold
+	// unreviewed work, so refuse with the real cause instead of git's message).
+	current, curErr := g.GetCurrentBranch(ctx)
+	if curErr == nil && current == branchName {
+		dirty, dirtyErr := g.HasUncommittedChanges(ctx)
+		if dirtyErr != nil {
+			return baseRef, false, fmt.Errorf("failed to check working tree before recreating stale branch %s: %w", branchName, dirtyErr)
+		}
+		if dirty {
+			return baseRef, false, fmt.Errorf("stale branch %s is checked out in the clone, refusing to recreate it: working tree has uncommitted changes", branchName)
+		}
+		if detachErr := g.detachHeadAt(ctx, baseRef); detachErr != nil {
+			return baseRef, false, fmt.Errorf("failed to detach HEAD from stale branch %s: %w", branchName, detachErr)
+		}
+	}
+
 	if delErr := g.DeleteBranch(ctx, branchName); delErr != nil {
 		return baseRef, false, fmt.Errorf("failed to delete stale branch %s: %w", branchName, delErr)
 	}
@@ -187,6 +208,17 @@ func (g *GitOperations) EnsureBranchFromOrigin(ctx context.Context, branchName, 
 		return baseRef, false, fmt.Errorf("failed to recreate stale branch %s from %s: %w", branchName, baseRef, createErr)
 	}
 	return baseRef, true, nil
+}
+
+// detachHeadAt runs `git checkout --detach <ref>`.
+func (g *GitOperations) detachHeadAt(ctx context.Context, ref string) error {
+	cmd := exec.CommandContext(ctx, "git", "checkout", "--detach", ref)
+	cmd.Dir = g.projectPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, output)
+	}
+	return nil
 }
 
 // checkoutNewBranchFrom runs `git checkout -b <branchName> <startPoint>`.

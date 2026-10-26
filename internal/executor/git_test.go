@@ -2245,3 +2245,83 @@ func TestRemoteBranchHead_WithRemote(t *testing.T) {
 		t.Error("RemoteBranchHead with no remote = ok, want false")
 	}
 }
+
+// TestEnsureBranchFromOrigin_StaleCheckedOutBranchIsRecreated covers GH-5829:
+// in direct mode the clone stays on pilot/GH-N after a task, so a retry finds
+// the stale branch checked out and `git branch -D` would be refused.
+func TestEnsureBranchFromOrigin_StaleCheckedOutBranchIsRecreated(t *testing.T) {
+	const branch = "pilot/GH-5829"
+
+	tests := []struct {
+		name        string
+		checkedOut  bool
+		dirty       bool
+		wantErr     string
+		wantCreated bool
+	}{
+		{name: "checked out and clean is recreated at new base", checkedOut: true, wantCreated: true},
+		{name: "checked out and dirty is refused", checkedOut: true, dirty: true, wantErr: "checked out in the clone, refusing"},
+		{name: "not checked out is recreated as before", wantCreated: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			local, origin := setupSyncTestRepos(t, "main")
+			ctx := context.Background()
+			git := NewGitOperations(local)
+
+			if err := git.CreateBranch(ctx, branch); err != nil {
+				t.Fatalf("seed stale branch: %v", err)
+			}
+			staleSHA := headSHA(t, local)
+			if !tt.checkedOut {
+				runGit(t, local, "checkout", "main")
+			}
+			dirtyFile := filepath.Join(local, "dirty.txt")
+			if tt.dirty {
+				if err := os.WriteFile(dirtyFile, []byte("uncommitted"), 0644); err != nil {
+					t.Fatalf("write dirty file: %v", err)
+				}
+			}
+
+			pushExtraCommitFromSecondClone(t, origin, "main", "remote advanced")
+
+			baseRef, created, err := git.EnsureBranchFromOrigin(ctx, branch, "main")
+
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) || !strings.Contains(err.Error(), branch) {
+					t.Fatalf("err = %v, want it to contain %q and %q", err, tt.wantErr, branch)
+				}
+				if created {
+					t.Error("created = true, want false on refusal")
+				}
+				cur, curErr := git.GetCurrentBranch(ctx)
+				if curErr != nil || cur != branch {
+					t.Errorf("current branch = %q (%v), want %q untouched", cur, curErr, branch)
+				}
+				if got := gitOutput(t, local, "rev-parse", branch); got != staleSHA {
+					t.Errorf("branch %s = %s, want untouched %s", branch, got, staleSHA)
+				}
+				if data, readErr := os.ReadFile(dirtyFile); readErr != nil || string(data) != "uncommitted" {
+					t.Errorf("dirty file = %q (%v), want preserved", data, readErr)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("EnsureBranchFromOrigin: %v", err)
+			}
+			if created != tt.wantCreated {
+				t.Errorf("created = %v, want %v", created, tt.wantCreated)
+			}
+			cur, curErr := git.GetCurrentBranch(ctx)
+			if curErr != nil || cur != branch {
+				t.Errorf("current branch = %q (%v), want %q", cur, curErr, branch)
+			}
+			newBase := gitOutput(t, local, "rev-parse", baseRef)
+			if head := headSHA(t, local); head != newBase || head == staleSHA {
+				t.Errorf("HEAD = %s, want new base %s (stale was %s)", head, newBase, staleSHA)
+			}
+		})
+	}
+}
