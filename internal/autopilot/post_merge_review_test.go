@@ -580,7 +580,8 @@ func TestPostMergeReview_SharedDailyCapAcrossControllers(t *testing.T) {
 func TestPostMergeReview_BudgetFallbackIsPerController(t *testing.T) {
 	_, gh := newPMRGitHub(t)
 	c := newPMRController(t, gh, &pmrFakeReviewer{}, true)
-	if c.PostMergeReviewBudget() == nil || c.PostMergeReviewBudget() != c.PostMergeReviewBudget() {
+	first := c.PostMergeReviewBudget()
+	if first == nil || first != c.PostMergeReviewBudget() {
 		t.Fatal("unwired controller must lazily build one stable budget")
 	}
 	shared := NewPostMergeReviewBudget(3)
