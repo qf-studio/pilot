@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- fixture helpers ---------------------------------------------------
@@ -374,5 +376,204 @@ func TestHandleDocsFile_MissingAgentDir_404DistinguishableBody(t *testing.T) {
 	}
 	if body.Error != "no .agent directory" {
 		t.Errorf("Error = %q, want %q", body.Error, "no .agent directory")
+	}
+}
+
+// --- handleDocsSummary ---------------------------------------------------
+
+// docsGit runs git in dir with the given commit date for both author and
+// committer, failing the test on error.
+func docsGit(t *testing.T, dir string, when time.Time, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	stamp := when.UTC().Format(time.RFC3339)
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_DATE="+stamp, "GIT_COMMITTER_DATE="+stamp,
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+func requireGit(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+}
+
+func getDocsSummary(t *testing.T, s *Server) (docsSummaryResponse, string) {
+	t.Helper()
+	req := httpTestRequest(t, http.MethodGet, "/api/v1/docs/summary", nil)
+	w := newTestResponseRecorder()
+	s.handleDocsSummary(w, req)
+	if w.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.status, w.body.String())
+	}
+	var got docsSummaryResponse
+	if err := json.Unmarshal(w.body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v (body=%s)", err, w.body.String())
+	}
+	return got, w.body.String()
+}
+
+func TestHandleDocsSummary_GitDatesNotMtime(t *testing.T) {
+	requireGit(t)
+	root := t.TempDir()
+	agent := filepath.Join(root, ".agent")
+	now := time.Now()
+
+	docsWriteFile(t, filepath.Join(agent, "system", "old.md"), "# old")
+	docsWriteFile(t, filepath.Join(agent, "system", "edited.md"), "# v1")
+	docsWriteFile(t, filepath.Join(agent, "knowledge", "memories", "patterns", "p-old.md"), "# p1")
+	docsWriteFile(t, filepath.Join(agent, "knowledge", "memories", "patterns", "p-edited.md"), "# v1")
+	docsGit(t, root, now, "init", "-q")
+	docsGit(t, root, now.Add(-10*24*time.Hour), "add", "-A")
+	docsGit(t, root, now.Add(-10*24*time.Hour), "commit", "-q", "-m", "add")
+
+	// Added yesterday, brand new this week.
+	docsWriteFile(t, filepath.Join(agent, "tasks", "TASK-9-new.md"), "# new")
+	docsWriteFile(t, filepath.Join(agent, "knowledge", "memories", "learnings", "l-new.md"), "# l")
+	docsGit(t, root, now.Add(-24*time.Hour), "add", "-A")
+	docsGit(t, root, now.Add(-24*time.Hour), "commit", "-q", "-m", "add new")
+
+	// Added 10 days ago, edited yesterday: updated, not created.
+	docsWriteFile(t, filepath.Join(agent, "system", "edited.md"), "# v2")
+	docsWriteFile(t, filepath.Join(agent, "knowledge", "memories", "patterns", "p-edited.md"), "# v2")
+	docsGit(t, root, now.Add(-24*time.Hour), "commit", "-q", "-am", "edit")
+
+	// Untracked file: no git date, must not count even though its mtime is now.
+	docsWriteFile(t, filepath.Join(agent, "system", "untracked.md"), "# u")
+
+	s := newTestServerWithDocsProject(root)
+	got, _ := getDocsSummary(t, s)
+
+	if got.Docs.CreatedThisWeek == nil || *got.Docs.CreatedThisWeek != 1 {
+		t.Errorf("docs.createdThisWeek = %v, want 1 (only TASK-9-new.md)", got.Docs.CreatedThisWeek)
+	}
+	if got.Docs.UpdatedThisWeek == nil || *got.Docs.UpdatedThisWeek != 2 {
+		t.Errorf("docs.updatedThisWeek = %v, want 2 (edited.md + TASK-9-new.md)", got.Docs.UpdatedThisWeek)
+	}
+	if got.Memory.Total != 3 {
+		t.Errorf("memory.total = %d, want 3", got.Memory.Total)
+	}
+	if got.Memory.CreatedThisWeek == nil || *got.Memory.CreatedThisWeek != 1 {
+		t.Errorf("memory.createdThisWeek = %v, want 1 (l-new.md)", got.Memory.CreatedThisWeek)
+	}
+	if got.Memory.UpdatedThisWeek == nil || *got.Memory.UpdatedThisWeek != 2 {
+		t.Errorf("memory.updatedThisWeek = %v, want 2 (p-edited.md + l-new.md)", got.Memory.UpdatedThisWeek)
+	}
+}
+
+func TestHandleDocsSummary_FreshCloneNotAllUpdated(t *testing.T) {
+	requireGit(t)
+	root := t.TempDir()
+	now := time.Now()
+	docsWriteFile(t, filepath.Join(root, ".agent", "system", "a.md"), "# a")
+	docsGit(t, root, now, "init", "-q")
+	docsGit(t, root, now.Add(-30*24*time.Hour), "add", "-A")
+	docsGit(t, root, now.Add(-30*24*time.Hour), "commit", "-q", "-m", "old")
+	// mtime of the file is "now" (as after a fresh clone); git says 30 days ago.
+
+	got, _ := getDocsSummary(t, newTestServerWithDocsProject(root))
+	if got.Docs.UpdatedThisWeek == nil || *got.Docs.UpdatedThisWeek != 0 {
+		t.Errorf("docs.updatedThisWeek = %v, want 0", got.Docs.UpdatedThisWeek)
+	}
+}
+
+func TestHandleDocsSummary_GraphPresentAndAbsent(t *testing.T) {
+	requireGit(t)
+
+	t.Run("with graph.json", func(t *testing.T) {
+		root := buildDocsFixture(t)
+		docsWriteFile(t, filepath.Join(root, ".agent", "knowledge", "graph.json"), `{
+			"updated": "2026-10-15T10:28:29.793377+00:00",
+			"last_updated": "2026-10-22T14:45:33.958570+00:00",
+			"nodes": {"concepts": {"a": {}, "b": {}}, "tasks": {"TASK-1": {}}, "memories": {"m1": {}}},
+			"edges": [{"from":"a","to":"b"}, {"from":"b","to":"a"}],
+			"stats": {"total_nodes": 999, "total_edges": 999}
+		}`)
+		got, _ := getDocsSummary(t, newTestServerWithDocsProject(root))
+		if got.Graph == nil {
+			t.Fatal("graph = null, want object")
+		}
+		if got.Graph.Nodes != 4 || got.Graph.Edges != 2 {
+			t.Errorf("graph nodes/edges = %d/%d, want 4/2", got.Graph.Nodes, got.Graph.Edges)
+		}
+		want := time.Date(2026, 10, 22, 14, 45, 33, 958570000, time.UTC)
+		if got.Graph.UpdatedAt == nil || !got.Graph.UpdatedAt.Equal(want) {
+			t.Errorf("graph.updatedAt = %v, want %v", got.Graph.UpdatedAt, want)
+		}
+	})
+
+	t.Run("without graph.json", func(t *testing.T) {
+		root := buildDocsFixture(t)
+		if err := os.Remove(filepath.Join(root, ".agent", "knowledge", "graph.json")); err != nil {
+			t.Fatal(err)
+		}
+		got, body := getDocsSummary(t, newTestServerWithDocsProject(root))
+		if got.Graph != nil {
+			t.Errorf("graph = %+v, want null", got.Graph)
+		}
+		if !strings.Contains(body, `"graph":null`) {
+			t.Errorf("body must serialize graph as null: %s", body)
+		}
+	})
+}
+
+func TestHandleDocsSummary_ReadCounterIsNull(t *testing.T) {
+	requireGit(t)
+	root := buildDocsFixture(t)
+	got, body := getDocsSummary(t, newTestServerWithDocsProject(root))
+	if got.Docs.ReadByPilotThisWeek != nil || got.Memory.ReadByPilotThisWeek != nil {
+		t.Errorf("readByPilotThisWeek must be nil: %+v %+v", got.Docs, got.Memory)
+	}
+	if n := strings.Count(body, `"readByPilotThisWeek":null`); n != 2 {
+		t.Errorf("want 2 null readByPilotThisWeek fields, got %d: %s", n, body)
+	}
+}
+
+func TestHandleDocsSummary_NotGitRepoYieldsNullCounts(t *testing.T) {
+	requireGit(t)
+	root := buildDocsFixture(t) // t.TempDir(), not a git repo
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(root))
+	got, body := getDocsSummary(t, newTestServerWithDocsProject(root))
+	if got.Docs.CreatedThisWeek != nil || got.Docs.UpdatedThisWeek != nil {
+		t.Errorf("docs counts must be null without git: %s", body)
+	}
+	if got.Memory.Total != 5 {
+		t.Errorf("memory.total = %d, want 5", got.Memory.Total)
+	}
+}
+
+func TestHandleDocsSummary_ErrorLadder(t *testing.T) {
+	root := buildDocsFixture(t)
+	s := newTestServerWithDocsProject(root)
+
+	w := newTestResponseRecorder()
+	s.handleDocsSummary(w, httpTestRequest(t, http.MethodPost, "/api/v1/docs/summary", nil))
+	if w.status != http.StatusMethodNotAllowed {
+		t.Errorf("POST status = %d, want 405", w.status)
+	}
+
+	w = newTestResponseRecorder()
+	s.handleDocsSummary(w, httpTestRequest(t, http.MethodGet, "/api/v1/docs/summary?project=/somewhere/else", nil))
+	if w.status != http.StatusNotFound {
+		t.Errorf("unknown project status = %d, want 404", w.status)
+	}
+}
+
+func TestParseDocsGitLog(t *testing.T) {
+	out := "\x011000\n\nM\tsystem/a.md\n\x01500\n\nA\tsystem/a.md\nA\tsystem/b.md\n"
+	h := parseDocsGitLog(out)
+	a := h["system/a.md"]
+	if a.updated.Unix() != 1000 || a.created.Unix() != 500 {
+		t.Errorf("a = %+v, want updated=1000 created=500", a)
+	}
+	b := h["system/b.md"]
+	if b.updated.Unix() != 500 || b.created.Unix() != 500 {
+		t.Errorf("b = %+v", b)
 	}
 }

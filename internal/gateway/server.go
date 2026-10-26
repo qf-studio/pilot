@@ -281,6 +281,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// adapters.chat.enabled-style config gate (founder decision 2026-08-19).
 	apiMux.HandleFunc("GET /api/v1/docs/tree", s.handleDocsTree)
 	apiMux.HandleFunc("GET /api/v1/docs/file", s.handleDocsFile)
+	apiMux.HandleFunc("GET /api/v1/docs/summary", s.handleDocsSummary) // GH-5857
 
 	// GH-4835: chat routes only exist when a ChatAPI has been wired
 	// (adapters.chat.enabled: true at both daemon construction sites). When
