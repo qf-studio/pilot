@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"testing"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/executor/workflow"
@@ -768,6 +769,12 @@ type Task struct {
 	// Unexported and run-scoped: never persisted, never set for a SHA Pilot did
 	// not push.
 	pushedWIPSHA string
+	// inheritedHeadSHA is a stale task-branch head a previous run of this same
+	// task left on origin with no open PR (GH-5864). The dispatcher records it
+	// on the execution row on a re-pick and buildTaskFromExecution restores it
+	// here; pushBranchWithRetry may lease on exactly this SHA and no other.
+	// Never set for autopilot-fix continuations (FromPR > 0).
+	inheritedHeadSHA string
 	// SourceAdapter identifies the adapter that originated this task (GH-1471).
 	// Examples: "github", "linear", "jira", "gitlab", "azuredevops"
 	// When non-empty and not "github", epic sub-issue creation uses the SubIssueCreator
@@ -3350,6 +3357,12 @@ func (r *Runner) pushBranchWithRetry(ctx context.Context, git *GitOperations, ta
 				task.pushedWIPSHA = localHead
 				return nil
 			}
+			// GH-5864: origin sits on the head a previous run of this task left
+			// behind without a PR. Replace it once, leased on that SHA.
+			if remoteOK && task.inheritedHeadSHA != "" && remoteHead == task.inheritedHeadSHA &&
+				r.leasePushInheritedHead(ctx, git, task, log, localHead) {
+				return nil
+			}
 			// Deterministic: re-running from origin/main cannot fast-forward a
 			// remote head this run did not push, so escalate instead of re-picking.
 			if !remoteOK {
@@ -3386,6 +3399,72 @@ func (r *Runner) pushBranchWithRetry(ctx context.Context, git *GitOperations, ta
 		}
 	}
 	return pushErr
+}
+
+// inheritedHeadOpenPRCheck reports the URL of an open PR whose head is branch.
+// A var so tests can stand in for `gh pr list`; it short-circuits under
+// `go test` like the other gh probes in this package.
+var inheritedHeadOpenPRCheck = func(ctx context.Context, git *GitOperations, branch string) (string, error) {
+	if testing.Testing() {
+		return "", nil
+	}
+	return git.FindOpenPRByBranch(ctx, branch)
+}
+
+// leasePushInheritedHead is the single leased push a re-pick gets over the
+// stale head a previous run left on task.Branch (GH-5864). It refuses when an
+// open PR now has the branch as its head (that is the autopilot continuation
+// path, not an abandoned run) or when the PR lookup fails, and the caller then
+// escalates as before. On success it posts one issue comment naming the
+// replaced SHA so that run's work stays recoverable, and returns true.
+// Decision: the lease pins the recorded SHA, so a push that landed on the
+// branch since the dispatcher looked is rejected rather than overwritten.
+func (r *Runner) leasePushInheritedHead(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger, localHead string) bool {
+	if url, err := inheritedHeadOpenPRCheck(ctx, git, task.Branch); err != nil || url != "" {
+		log.Warn("Push rejected against an inherited head but the branch has an open PR (or the PR lookup failed) — not leasing",
+			slog.String("task_id", task.ID),
+			slog.String("branch", task.Branch),
+			slog.String("open_pr", url),
+			slog.Any("error", err),
+		)
+		return false
+	}
+	log.Warn("Push rejected as non-fast-forward against the head a previous run left without a PR — retrying with lease (option: lease)",
+		slog.String("task_id", task.ID),
+		slog.String("branch", task.Branch),
+		slog.String("remote_head", task.inheritedHeadSHA),
+		slog.String("local_head", localHead),
+	)
+	if err := git.PushForceWithLease(ctx, task.Branch, task.inheritedHeadSHA, task.ID); err != nil {
+		log.Warn("Lease push over the inherited head failed — escalating",
+			slog.String("task_id", task.ID), slog.Any("error", err))
+		return false
+	}
+	replaced := task.inheritedHeadSHA
+	task.inheritedHeadSHA = ""
+	task.pushedWIPSHA = localHead
+	r.commentInheritedHeadReplaced(ctx, task, replaced, log)
+	return true
+}
+
+// commentInheritedHeadReplaced posts the one issue comment that names the
+// replaced head, so the previous run's commit stays findable (GH-5864).
+func (r *Runner) commentInheritedHeadReplaced(ctx context.Context, task *Task, replaced string, log *slog.Logger) {
+	if task.SourceAdapter != "" && task.SourceAdapter != "github" {
+		return
+	}
+	issueNum := task.GHIssueRef()
+	if issueNum == "" {
+		return
+	}
+	commentCtx, cancel := finalizeCtx(ctx, finalizeGitTimeout)
+	defer cancel()
+	body := fmt.Sprintf("Pilot replaced the head of `%s` (`%s`), left by a previous run of this task that opened no PR, with this run's work. The old commit stays recoverable by SHA: `git fetch origin %s`.",
+		task.Branch, replaced, replaced)
+	if err := ghIssueComment(commentCtx, task.ProjectPath, issueNum, body); err != nil {
+		log.Warn("failed to post the replaced-inherited-head comment",
+			slog.String("task_id", task.ID), slog.Any("error", err))
+	}
 }
 
 // leasePushFixContinuation is the single forced push an autopilot-fix

@@ -166,3 +166,76 @@ func TestDispatcher_QueueSingleTask_NoOpDoesNotReArm(t *testing.T) {
 		t.Errorf("expected the claim to remain at generation 0 (no retry claimed), got generation=%d found=%v", gen, found)
 	}
 }
+
+// TestDispatcher_QueueSingleTask_RecordsInheritedHead (GH-5864): a re-pick of a
+// task whose previous run left a branch head on origin with no PR records that
+// head on the new execution row, and the runner's Task gets it back. A first
+// run, a re-pick with no stale branch, and an autopilot continuation record
+// nothing.
+func TestDispatcher_QueueSingleTask_RecordsInheritedHead(t *testing.T) {
+	const staleSHA = "f688fe4aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tests := []struct {
+		name     string
+		priorRun bool
+		probe    string
+		fromPR   int
+		want     string
+	}{
+		{"re-pick with a stale branch", true, staleSHA, 0, staleSHA},
+		{"re-pick, no stale branch", true, "", 0, ""},
+		{"first run never probes", false, staleSHA, 0, ""},
+		{"autopilot continuation is left alone", true, staleSHA, 77, ""},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			taskID, projectPath := "GH-5864-"+string(rune('a'+i)), "/project-gh-5864"
+			if tt.priorRun {
+				prior := &Task{ID: taskID, ProjectPath: projectPath}
+				priorID, err := NewExecutionLifecycle(store).Begin(prior, ExecStatusRunning, 0)
+				if err != nil {
+					t.Fatalf("setup: generation 0 Begin failed: %v", err)
+				}
+				if err := store.UpdateExecutionStatus(priorID, "failed", "failed before opening a PR"); err != nil {
+					t.Fatalf("setup: mark failed: %v", err)
+				}
+			}
+
+			var probedBranch string
+			prev := staleBranchHeadProbe
+			staleBranchHeadProbe = func(_ context.Context, _, branch string) string {
+				probedBranch = branch
+				return tt.probe
+			}
+			defer func() { staleBranchHeadProbe = prev }()
+
+			dispatcher := NewDispatcher(store, NewRunner(), nil)
+			if err := dispatcher.Start(context.Background()); err != nil {
+				t.Fatalf("failed to start dispatcher: %v", err)
+			}
+			defer dispatcher.Stop()
+
+			task := &Task{ID: taskID, ProjectPath: projectPath, Branch: "pilot/" + taskID, FromPR: tt.fromPR}
+			execID, err := dispatcher.queueSingleTask(context.Background(), task)
+			if err != nil || execID == "" {
+				t.Fatalf("queueSingleTask = %q, %v, want a queued execution", execID, err)
+			}
+
+			exec, err := store.GetExecution(execID)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if exec.InheritedHead != tt.want {
+				t.Errorf("InheritedHead = %q, want %q", exec.InheritedHead, tt.want)
+			}
+			if got := buildTaskFromExecution(exec).inheritedHeadSHA; got != tt.want {
+				t.Errorf("rebuilt task inheritedHeadSHA = %q, want %q", got, tt.want)
+			}
+			if tt.want != "" && probedBranch != task.Branch {
+				t.Errorf("probed branch = %q, want %q", probedBranch, task.Branch)
+			}
+		})
+	}
+}

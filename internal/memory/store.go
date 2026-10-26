@@ -205,6 +205,9 @@ func (s *Store) migrate() error {
 		// failed, NULL no push attempted), so adapters read a structured signal
 		// instead of parsing the row error.
 		`ALTER TABLE executions ADD COLUMN branch_pushed INTEGER`,
+		// GH-5864: SHA of a stale pilot/GH-N head a previous run of the same task
+		// left on origin with no PR; the re-pick may lease-push over exactly it.
+		`ALTER TABLE executions ADD COLUMN inherited_head TEXT`,
 		`CREATE INDEX IF NOT EXISTS idx_executions_status ON executions(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_patterns_project ON patterns(project_path)`,
 		// Cross-project pattern indexes
@@ -734,10 +737,15 @@ type Execution struct {
 	// BranchPushed is holdPushedBranch's push result: true pushed, false the
 	// push failed, nil no push was attempted. GH-5715.
 	BranchPushed *bool
-	FilesChanged int
-	LinesAdded   int
-	LinesRemoved int
-	ModelName    string
+	// InheritedHead is the SHA of a stale task-branch head a previous run left
+	// on origin with no open PR, recorded by the dispatcher on a re-pick so the
+	// final push may lease on exactly that SHA. Empty when there was none.
+	// GH-5864.
+	InheritedHead string
+	FilesChanged  int
+	LinesAdded    int
+	LinesRemoved  int
+	ModelName     string
 	// GH-2807: effort and complexity for cost-by-tier observability
 	EffortLevel     string `json:"effort_level,omitempty"`
 	ComplexityLevel string `json:"complexity_level,omitempty"`
@@ -866,7 +874,8 @@ const executionDetailColumns = `
 	COALESCE(approval_decision_by, ''),
 	COALESCE(effort_level, ''), COALESCE(complexity_level, ''),
 	COALESCE(is_canary, 0),
-	COALESCE(NULLIF(key_source, ''), 'unknown'), reported_cost_usd, branch_pushed`
+	COALESCE(NULLIF(key_source, ''), 'unknown'), reported_cost_usd, branch_pushed,
+	COALESCE(inherited_head, '')`
 
 // rowScanner abstracts *sql.Row and *sql.Rows so scanExecutionDetail serves both
 // a single QueryRow result and a Query loop (used by ListExecutionsForTask).
@@ -890,7 +899,7 @@ func scanExecutionDetail(row rowScanner) (*Execution, error) {
 		&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON,
 		&exec.ApprovalRequestID, &exec.ApprovalDecision, &approvalDecisionAt, &exec.ApprovalDecisionBy,
 		&exec.EffortLevel, &exec.ComplexityLevel, &exec.IsCanary,
-		&exec.KeySource, &reportedCost, &branchPushed)
+		&exec.KeySource, &reportedCost, &branchPushed, &exec.InheritedHead)
 	if err != nil {
 		return nil, err
 	}
@@ -3573,6 +3582,18 @@ func (s *Store) SetExecutionBranchPushed(id string, pushed bool) error {
 	return s.withRetry("SetExecutionBranchPushed", func() error {
 		args := append([]interface{}{v, id}, notTerminalArgs...)
 		_, err := s.db.Exec(`UPDATE executions SET branch_pushed = ? WHERE id = ? AND status NOT IN (`+notTerminal+`)`, args...)
+		return err
+	})
+}
+
+// SetExecutionInheritedHead records the stale task-branch head sha a re-pick
+// inherited from a previous run (GH-5864). Guarded like SetExecutionBranchPushed
+// so a row some other writer already finished is not stamped.
+func (s *Store) SetExecutionInheritedHead(id, sha string) error {
+	notTerminal, notTerminalArgs := notTerminalClause()
+	return s.withRetry("SetExecutionInheritedHead", func() error {
+		args := append([]interface{}{sha, id}, notTerminalArgs...)
+		_, err := s.db.Exec(`UPDATE executions SET inherited_head = ? WHERE id = ? AND status NOT IN (`+notTerminal+`)`, args...)
 		return err
 	})
 }

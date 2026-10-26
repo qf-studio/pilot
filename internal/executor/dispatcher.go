@@ -2855,6 +2855,8 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 		return "", nil
 	}
 
+	d.recordInheritedHead(ctx, task, execID)
+
 	// GH-3732: surface per-project serialization instead of leaving a queued
 	// task invisible until its turn comes up — log what it's waiting behind.
 	if blockedBy, position, busy := d.queueBlockInfo(task.ProjectPath); busy {
@@ -2881,6 +2883,56 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 	d.ensureWorker(task.ProjectPath)
 
 	return execID, nil
+}
+
+// staleBranchHeadProbe returns the SHA origin's task branch points at when no
+// open PR has it as head, or "" otherwise (branch absent, PR open, origin or gh
+// unreachable). GH-5864. Tests override this var directly; under `go test` it
+// short-circuits like the other gh probes in this file.
+var staleBranchHeadProbe = func(ctx context.Context, projectPath, branch string) string {
+	if testing.Testing() {
+		return ""
+	}
+	git := NewGitOperations(projectPath)
+	sha, ok := git.RemoteBranchHead(ctx, branch)
+	if !ok {
+		return ""
+	}
+	if url, err := git.FindOpenPRByBranch(ctx, branch); err != nil || url != "" {
+		return "" // open PR: the autopilot continuation path owns the branch
+	}
+	return sha
+}
+
+// recordInheritedHead stamps the stale head a previous run of task left on
+// origin's task branch with no PR onto the execution row, so the re-pick's
+// final push may lease on exactly that SHA (GH-5864). It only acts on a re-pick
+// (claimed generation > 0) of a non-continuation task, and runs before the
+// worktree exists. Best-effort: any failure leaves the row untouched and the
+// push escalates as before.
+func (d *Dispatcher) recordInheritedHead(ctx context.Context, task *Task, execID string) {
+	if task.Branch == "" || task.FromPR > 0 || task.FixFromSHA != "" {
+		return
+	}
+	if gen, err := d.ExecutionGeneration(task.ID, task.ProjectPath); err != nil || gen == 0 {
+		return
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	sha := staleBranchHeadProbe(probeCtx, task.ProjectPath, task.Branch)
+	if sha == "" {
+		return
+	}
+	if err := d.store.SetExecutionInheritedHead(execID, sha); err != nil {
+		d.log.Warn("failed to record inherited task-branch head",
+			slog.String("task_id", task.ID), slog.String("execution_id", execID), slog.Any("error", err))
+		return
+	}
+	d.log.Info("re-pick inherits a stale task-branch head with no open PR — final push may lease on it",
+		slog.String("task_id", task.ID),
+		slog.String("branch", task.Branch),
+		slog.String("inherited_head", sha),
+	)
 }
 
 // queueBlockInfo reports whether the project's worker is currently busy
@@ -4297,6 +4349,8 @@ func buildTaskFromExecution(exec *memory.Execution) *Task {
 		SourceIssueID: exec.TaskSourceIssueID,
 		Labels:        exec.TaskLabels,
 		IsCanary:      exec.IsCanary,
+
+		inheritedHeadSHA: exec.InheritedHead,
 
 		AcceptanceCriteria: acceptance.Extract(exec.TaskDescription),
 	}
