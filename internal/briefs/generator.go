@@ -13,6 +13,7 @@ type Generator struct {
 	store  *memory.Store
 	config *BriefConfig
 	pool   PoolSource
+	now    func() time.Time // clock; tests inject a fixed instant
 }
 
 // PoolSource reports the percent of the included allowance used, and false
@@ -33,6 +34,7 @@ func NewGenerator(store *memory.Store, config *BriefConfig) *Generator {
 	return &Generator{
 		store:  store,
 		config: config,
+		now:    time.Now,
 	}
 }
 
@@ -88,7 +90,7 @@ func (g *Generator) Generate(period BriefPeriod) (*Brief, error) {
 
 	brief := &Brief{
 		Kind:        KindDaily,
-		GeneratedAt: time.Now(),
+		GeneratedAt: g.now(),
 		Period:      period,
 		Completed:   []TaskSummary{},
 		InProgress:  []TaskSummary{},
@@ -177,7 +179,7 @@ func (g *Generator) Generate(period BriefPeriod) (*Brief, error) {
 // GenerateDaily creates a brief for the period since the previous daily brief
 // was sent, ending now (GH-5813).
 func (g *Generator) GenerateDaily() (*Brief, error) {
-	return g.GenerateDailyEnding(time.Now())
+	return g.GenerateDailyEnding(g.now())
 }
 
 // GenerateDailyEnding creates the daily brief for [previous daily brief sent,
@@ -234,7 +236,7 @@ func (g *Generator) weeklyProof(period BriefPeriod, shipped []ShippedRun) (*Week
 		return nil, err
 	}
 	if shipped == nil {
-		shipped = BuildStructured(time.Now(), period, in.Shipped, nil, nil).Shipped
+		shipped = BuildStructured(g.now(), period, in.Shipped, nil, nil).Shipped
 	}
 	return BuildWeeklyProof(in, shipped), nil
 }
@@ -258,7 +260,7 @@ func (g *Generator) GenerateWeeklyStructured(period BriefPeriod) (*StructuredBri
 // GenerateWeekly creates the weekly brief for the 7 days ending now, the same
 // window the scheduled weekly brief uses at fire time.
 func (g *Generator) GenerateWeekly() (*Brief, error) {
-	return g.GenerateWeeklyEnding(time.Now())
+	return g.GenerateWeeklyEnding(g.now())
 }
 
 // StoreStructured builds the console's structured brief for the period and
@@ -342,7 +344,7 @@ func (g *Generator) GenerateStructured(period BriefPeriod) (*StructuredBrief, er
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
+	now := g.now()
 	var reviews []ReviewInput
 	for _, p := range pending {
 		if p.ExpiresAt.Before(now) {

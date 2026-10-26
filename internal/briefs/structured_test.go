@@ -234,6 +234,9 @@ func TestStructuredBrief_TimezoneBerlin(t *testing.T) {
 	config := DefaultBriefConfig()
 	config.Timezone = "Europe/Berlin"
 	g := NewGenerator(store, config)
+	// Pin the clock: the email date line renders GeneratedAt, so it must not
+	// depend on the day the suite runs.
+	g.now = func() time.Time { return time.Date(2026, 10, 22, 23, 30, 0, 0, time.UTC) }
 
 	// 23:30 UTC on Oct 22 is already Oct 23, 01:30 in Berlin (CEST, +02:00).
 	end := time.Date(2026, 10, 22, 23, 30, 0, 0, time.UTC)
