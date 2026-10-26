@@ -44,6 +44,26 @@ const (
 	// regardless of the stage's default_action: a hold that exists to force a
 	// human act must never be released by the clock (GH-5599).
 	MetaFailClosedOnTimeout = "fail_closed_on_timeout"
+	// MetaKind classifies the request for the console's Review-needed list:
+	// KindPRApproval or KindDecision. Absent means KindPRApproval (GH-5858).
+	MetaKind = "kind"
+	// MetaMode is the autopilot environment (dev/stage/prod) that gated the
+	// request (GH-5858).
+	MetaMode = "mode"
+	// MetaTaskTitle is the title of the task the request is about (for a
+	// merge approval, the PR title). Distinct from Request.Title, which is the
+	// approval's own headline (GH-5858).
+	MetaTaskTitle = "task_title"
+)
+
+// Request kinds carried in Request.Metadata[MetaKind] and emitted as `kind` on
+// GET /api/v1/approvals (GH-5858).
+const (
+	// KindPRApproval is a merge-approval request (the pre-merge gate).
+	KindPRApproval = "pr_approval"
+	// KindDecision is an approval the executor raises when it cannot decide on
+	// its own (destructive-command hold, dropped-column migration, scope question).
+	KindDecision = "decision"
 )
 
 // Request represents an approval request

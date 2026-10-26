@@ -1,0 +1,45 @@
+[
+  {
+    "requestId": "pr-42-1",
+    "executionId": "exec-42",
+    "taskId": "GH-100",
+    "projectPath": "/tmp/proj-a",
+    "project": null,
+    "prNumber": 42,
+    "prUrl": "https://github.com/org/repo/pull/42",
+    "requestedAt": "2026-10-26T09:00:00Z",
+    "kind": "pr_approval",
+    "mode": "prod",
+    "reason": "live smoke not verified",
+    "title": "feat: add widget"
+  },
+  {
+    "requestId": "dec-1",
+    "executionId": null,
+    "taskId": "GH-101",
+    "projectPath": null,
+    "project": null,
+    "prNumber": null,
+    "prUrl": null,
+    "requestedAt": "2026-10-26T09:01:00Z",
+    "kind": "decision",
+    "mode": "prod",
+    "reason": "destructive action: migration drops a column",
+    "title": "drop legacy column"
+  },
+  {
+    "requestId": "legacy-1",
+    "executionId": null,
+    "taskId": "GH-102",
+    "projectPath": null,
+    "project": null,
+    "prNumber": null,
+    "prUrl": null,
+    "requestedAt": "2026-10-26T09:02:00Z",
+    "kind": "pr_approval",
+    "mode": null,
+    "reason": null,
+    "title": null
+  }
+]
+

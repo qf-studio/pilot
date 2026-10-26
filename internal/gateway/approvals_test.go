@@ -6,7 +6,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"flag"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -726,4 +730,112 @@ func httpTestRequestWithPathValue(t *testing.T, method, target string, body *byt
 	req := httpTestRequest(t, method, target, body)
 	req.SetPathValue(key, value)
 	return req
+}
+
+// --- GH-5858: kind / mode / reason / title wire contract -------------------
+
+var updateApprovalsFixture = flag.Bool("update-approvals-fixture", false,
+	"rewrite testdata/approvals_wire_contract.json from the handler output")
+
+const approvalsFixturePath = "testdata/approvals_wire_contract.json"
+
+// approvalsContractStore seeds one merge approval (the metadata shape the
+// autopilot controller submits), one executor decision with a multi-line
+// reason, and one legacy row that predates the fields.
+func approvalsContractStore() *mockDashboardStore {
+	created := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	expires := time.Now().Add(time.Hour)
+	return &mockDashboardStore{
+		pendingApprovals: []*memory.PendingApproval{
+			{
+				ID: "pr-42-1", TaskID: "GH-100", CreatedAt: created, ExpiresAt: expires,
+				Metadata: map[string]interface{}{
+					"pr_url":                         "https://github.com/org/repo/pull/42",
+					"pr_title":                       "feat: add widget",
+					"pr_number":                      float64(42),
+					approval.MetaKind:                approval.KindPRApproval,
+					approval.MetaMode:                "prod",
+					approval.MetaTaskTitle:           "feat: add widget",
+					approval.MetaEscalationReason:    "live smoke not verified",
+					approval.MetaFailClosedOnTimeout: true,
+				},
+			},
+			{
+				ID: "dec-1", TaskID: "GH-101", CreatedAt: created.Add(time.Minute), ExpiresAt: expires,
+				Metadata: map[string]interface{}{
+					approval.MetaKind:             approval.KindDecision,
+					approval.MetaMode:             "prod",
+					approval.MetaTaskTitle:        "drop legacy column",
+					approval.MetaEscalationReason: "destructive action: migration drops a column\nsecond line is detail",
+				},
+			},
+			{
+				ID: "legacy-1", TaskID: "GH-102", CreatedAt: created.Add(2 * time.Minute), ExpiresAt: expires,
+			},
+		},
+		execByApprovalReqID: map[string]*memory.Execution{
+			"pr-42-1": {ID: "exec-42", ProjectPath: "/tmp/proj-a", PRUrl: "https://github.com/org/repo/pull/42"},
+		},
+	}
+}
+
+func getApprovalsBody(t *testing.T, store *mockDashboardStore) []byte {
+	t.Helper()
+	s := newTestServerWithDashboard(store)
+	w := newTestResponseRecorder()
+	s.handleApprovals(w, httpTestRequest(t, http.MethodGet, "/api/v1/approvals", nil))
+	if w.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%s)", w.status, w.body.String())
+	}
+	return w.body.Bytes()
+}
+
+func TestHandleApprovals_KindModeReasonTitle_ExactJSON(t *testing.T) {
+	body := getApprovalsBody(t, approvalsContractStore())
+
+	want := `[` +
+		`{"requestId":"pr-42-1","executionId":"exec-42","taskId":"GH-100","projectPath":"/tmp/proj-a","project":null,` +
+		`"prNumber":42,"prUrl":"https://github.com/org/repo/pull/42","requestedAt":"2026-10-26T09:00:00Z",` +
+		`"kind":"pr_approval","mode":"prod","reason":"live smoke not verified","title":"feat: add widget"},` +
+		`{"requestId":"dec-1","executionId":null,"taskId":"GH-101","projectPath":null,"project":null,` +
+		`"prNumber":null,"prUrl":null,"requestedAt":"2026-10-26T09:01:00Z",` +
+		`"kind":"decision","mode":"prod","reason":"destructive action: migration drops a column","title":"drop legacy column"},` +
+		// Legacy row: absent metadata = pr_approval with null mode/reason/title.
+		`{"requestId":"legacy-1","executionId":null,"taskId":"GH-102","projectPath":null,"project":null,` +
+		`"prNumber":null,"prUrl":null,"requestedAt":"2026-10-26T09:02:00Z",` +
+		`"kind":"pr_approval","mode":null,"reason":null,"title":null}` +
+		`]`
+	if got := strings.TrimSpace(string(body)); got != want {
+		t.Errorf("approvals JSON mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// TestHandleApprovals_WireContractFixture compares the handler output with the
+// fixture the console decodes in its internal/approvals client tests. The
+// fixture is generated from this handler, never hand-edited:
+//
+//	go test ./internal/gateway -run TestHandleApprovals_WireContractFixture -update-approvals-fixture
+func TestHandleApprovals_WireContractFixture(t *testing.T) {
+	body := getApprovalsBody(t, approvalsContractStore())
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, body, "", "  "); err != nil {
+		t.Fatalf("indent: %v", err)
+	}
+	pretty.WriteByte('\n')
+
+	if *updateApprovalsFixture {
+		if err := os.MkdirAll(filepath.Dir(approvalsFixturePath), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(approvalsFixturePath, pretty.Bytes(), 0o644); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+	}
+	want, err := os.ReadFile(approvalsFixturePath)
+	if err != nil {
+		t.Fatalf("read fixture (regenerate with -update-approvals-fixture): %v", err)
+	}
+	if !bytes.Equal(pretty.Bytes(), want) {
+		t.Errorf("fixture out of date (regenerate with -update-approvals-fixture)\n got: %s\nwant: %s", pretty.Bytes(), want)
+	}
 }

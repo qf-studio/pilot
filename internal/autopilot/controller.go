@@ -5238,6 +5238,11 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		"pr_url":    prState.PRURL,
 		"pr_title":  prState.PRTitle,
 		"pr_number": prState.PRNumber,
+		// GH-5858: the console's Review-needed list reads these off
+		// GET /api/v1/approvals.
+		approval.MetaKind:      approval.KindPRApproval,
+		approval.MetaMode:      c.config.EnvironmentName(),
+		approval.MetaTaskTitle: prState.PRTitle,
 	}
 	// GH-5599: tell the approver WHY this PR is gated and, for a live-smoke
 	// hold, what approving now means — the routine pre-merge wording alone

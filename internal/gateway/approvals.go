@@ -34,6 +34,11 @@ func (s *Server) SetDecisionRecorder(r approval.DecisionRecorder) {
 // approval_pending row's own `project` column (the submitter's canonicalized project
 // path), not the executions join, so it's populated even when the join misses. Also
 // nullable — empty/pre-migration rows carry no project.
+//
+// GH-5858: Kind is always set (absent metadata = pr_approval, matching the
+// console's own fallback); Mode, Reason and Title are nullable and come off the
+// persisted request metadata (approval.MetaKind / MetaMode /
+// MetaEscalationReason / MetaTaskTitle), so no schema change is needed.
 type approvalResponse struct {
 	RequestID   string    `json:"requestId"`
 	ExecutionID *string   `json:"executionId"`
@@ -43,6 +48,45 @@ type approvalResponse struct {
 	PRNumber    *int      `json:"prNumber"`
 	PRUrl       *string   `json:"prUrl"`
 	RequestedAt time.Time `json:"requestedAt"`
+	Kind        string    `json:"kind"`
+	Mode        *string   `json:"mode"`
+	Reason      *string   `json:"reason"`
+	Title       *string   `json:"title"`
+}
+
+// metaString returns the trimmed string at key in a persisted request's
+// metadata, or nil when absent, not a string, or blank.
+func metaString(meta map[string]interface{}, key string) *string {
+	v, _ := meta[key].(string)
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil
+	}
+	return &v
+}
+
+// approvalKind maps persisted metadata to the wire kind; anything but an
+// explicit "decision" is a pr_approval (rows predating GH-5858 carry no kind).
+func approvalKind(meta map[string]interface{}) string {
+	if k, _ := meta[approval.MetaKind].(string); k == approval.KindDecision {
+		return approval.KindDecision
+	}
+	return approval.KindPRApproval
+}
+
+// approvalReason returns the first line of the request's escalation reason:
+// the console renders it as a one-line why.
+func approvalReason(meta map[string]interface{}) *string {
+	r := metaString(meta, approval.MetaEscalationReason)
+	if r == nil {
+		return nil
+	}
+	line, _, _ := strings.Cut(*r, "\n")
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil
+	}
+	return &line
 }
 
 // decisionRequestBody is the POST /api/v1/approvals/{requestId}/decision body.
@@ -102,6 +146,10 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 			RequestID:   row.ID,
 			TaskID:      row.TaskID,
 			RequestedAt: row.CreatedAt,
+			Kind:        approvalKind(row.Metadata),
+			Mode:        metaString(row.Metadata, approval.MetaMode),
+			Reason:      approvalReason(row.Metadata),
+			Title:       metaString(row.Metadata, approval.MetaTaskTitle),
 		}
 		if row.Project != "" {
 			proj := row.Project
@@ -156,7 +204,7 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 // later Rehydrate() doesn't re-notify a request already decided over HTTP.
 //
 // Decision integrity (GH-4757 / PR#4752 review): Store.SetApprovalDecision now
-// guards its UPDATE atomically (AND approval_decision = ''), so two racing
+// guards its UPDATE atomically (AND approval_decision = ”), so two racing
 // decisions — two concurrent POSTs, or a POST racing a Telegram/Slack button
 // tap — can never both win. The loser's RecordDecision call returns
 // memory.ErrApprovalAlreadyDecided; this handler turns that into 409 rather

@@ -114,6 +114,33 @@ func TestSubmitAsyncApprovalRequest_LiveSmokeMetadata(t *testing.T) {
 	}
 }
 
+// TestSubmitAsyncApprovalRequest_ConsoleFields covers GH-5858: the merge
+// approval carries the kind, mode and task title that GET /api/v1/approvals
+// emits for the console's Review-needed list.
+func TestSubmitAsyncApprovalRequest_ConsoleFields(t *testing.T) {
+	mgr := asyncApprovalManager()
+	handler := &mockCapturingApprovalHandler{}
+	mgr.RegisterHandler(handler)
+	c := NewController(DefaultConfig(), github.NewClient(testutil.FakeGitHubToken), mgr, "owner", "repo")
+	prState := &PRState{PRNumber: 5858, IssueNumber: 58, PRTitle: "feat: widget", Stage: StageAwaitApproval}
+	if err := c.handleAwaitApproval(context.Background(), prState); err != nil {
+		t.Fatalf("handleAwaitApproval: %v", err)
+	}
+	if len(handler.sent) != 1 {
+		t.Fatalf("sent %d requests, want 1", len(handler.sent))
+	}
+	md := handler.sent[0].Metadata
+	if got := md[approval.MetaKind]; got != approval.KindPRApproval {
+		t.Errorf("kind = %v, want %s", got, approval.KindPRApproval)
+	}
+	if got := md[approval.MetaMode]; got != c.config.EnvironmentName() || got == "" {
+		t.Errorf("mode = %v, want %q", got, c.config.EnvironmentName())
+	}
+	if got := md[approval.MetaTaskTitle]; got != "feat: widget" {
+		t.Errorf("task_title = %v, want the PR title", got)
+	}
+}
+
 // TestNotifyApprovalRequired_LiveSmokeHoldNamesReason covers GH-5599: the chat
 // notification for a live-smoke hold names the reason, lists at least one
 // bullet and states what approving means.

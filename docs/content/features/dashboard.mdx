@@ -281,7 +281,44 @@ The following REST endpoints are available under `/api/v1/`:
 | `GET` | `/api/v1/autopilot` | Autopilot state and active PRs | v1.55.0 |
 | `GET` | `/api/v1/history` | Execution history with metrics | v1.55.0 |
 | `GET` | `/api/v1/metrics` | Token usage, cost, queue stats | v1.55.0 |
+| `GET` | `/api/v1/approvals` | Pending approval requests (see below) | unreleased |
 | `GET` | `/health` | Health check (used by desktop app) | v1.53.0 |
+
+**Pending approvals — `GET /api/v1/approvals`:**
+
+Returns an array with one row per pending, unexpired approval request.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `requestId` | string | Approval request ID |
+| `executionId` | string \| null | Linked execution, when the join succeeds |
+| `taskId` | string | Task the request belongs to |
+| `projectPath` | string \| null | Project path of the linked execution |
+| `project` | string \| null | Canonical project path recorded on the request |
+| `prNumber` | number \| null | PR number, when a PR is linked |
+| `prUrl` | string \| null | PR URL, when a PR is linked |
+| `requestedAt` | string | RFC 3339 time the request was raised |
+| `kind` | string | `pr_approval` (merge approval) or `decision` (the executor cannot decide on its own: destructive-command hold, dropped-column migration, scope question). Rows that predate the field read as `pr_approval`. |
+| `mode` | string \| null | Autopilot environment that gated the request (`dev`, `stage`, `prod`) |
+| `reason` | string \| null | One-line cause the request was raised, e.g. `destructive action: migration drops a column` |
+| `title` | string \| null | Title of the task (for a merge approval, the PR title) |
+
+```json
+{
+  "requestId": "pr-42-1",
+  "executionId": "exec-42",
+  "taskId": "GH-100",
+  "projectPath": "/tmp/proj-a",
+  "project": null,
+  "prNumber": 42,
+  "prUrl": "https://github.com/org/repo/pull/42",
+  "requestedAt": "2026-10-26T09:00:00Z",
+  "kind": "pr_approval",
+  "mode": "prod",
+  "reason": "live smoke not verified",
+  "title": "feat: add widget"
+}
+```
 
 **Example — list tasks:**
 
