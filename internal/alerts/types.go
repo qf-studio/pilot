@@ -139,6 +139,11 @@ const (
 	// reached and ExecutionLifecycle.Begin started holding new tickets until
 	// the next org-local midnight. Emitted once per org per org-local day.
 	AlertTypeDailyTicketCapHit AlertType = "daily_ticket_cap_hit"
+
+	// AlertTypeUsageLimitPause (GH-5862): a run ended rate_limited (Claude
+	// usage-limit failure) and the dispatcher paused task admission until the
+	// reported reset. Emitted once per pause episode.
+	AlertTypeUsageLimitPause AlertType = "usage_limit_pause"
 )
 
 // HandlerEmittedAlertTypes lists every AlertType whose handler
@@ -163,6 +168,7 @@ var HandlerEmittedAlertTypes = []AlertType{
 	AlertTypePushRetryExhaustedFailureStreak,
 	AlertTypeEnvClassFailureStreak,
 	AlertTypeDailyTicketCapHit,
+	AlertTypeUsageLimitPause,
 }
 
 // CoverageGaps returns the subset of HandlerEmittedAlertTypes that cfg has
@@ -704,6 +710,19 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    0,
 			Description: "Alert when the daily ticket cap (executor.daily_ticket_cap) is reached and new tickets are held until the next org-local day",
+		},
+		// Usage-limit admission pause (GH-5862): the dispatcher emits this once
+		// per pause episode, when a rate_limited run arms the pause. A second
+		// rate_limited result while paused extends the pause without alerting.
+		{
+			Name:        "usage_limit_pause",
+			Type:        AlertTypeUsageLimitPause,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    0,
+			Description: "Alert when a Claude usage-limit failure pauses task admission until the reported reset (executor.usage_limit_pause)",
 		},
 		// GH-5498: emitted by the executor's HeartbeatCallback right before it
 		// kills a Claude subprocess that produced no stream events for longer

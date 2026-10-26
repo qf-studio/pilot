@@ -679,6 +679,17 @@ executor:
   # Examples: "UTC", "Europe/Berlin". "Local" and unknown names fail at load.
   # daily_ticket_cap_timezone: "UTC"
 
+  # Usage-limit pause (GH-5862): when a run fails with a Claude usage limit
+  # (outcome rate_limited), hold task admission until the reported reset plus
+  # 5 minutes instead of starting the next queued task into the same wall.
+  # Running tasks finish; pollers keep queueing. In-memory: a restart clears it
+  # and the next rate_limited result re-arms it. `pilot status` and
+  # /api/v1/status show it while held.
+  # usage_limit_pause:
+  #   enabled: true          # default true
+  #   max_pause: 6h          # cap when the parsed reset is further away (default 6h)
+  #   fallback_pause: 30m    # used when no reset time parses (default 30m)
+
   # Non-Anthropic provider routing (GH-2287, GH-2371)
   # Configure once here — Pilot injects ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL
   # into the Claude Code subprocess env, so ~/.claude/settings.json does not

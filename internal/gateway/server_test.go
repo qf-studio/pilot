@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 func TestNewServer(t *testing.T) {
@@ -540,6 +541,59 @@ func TestStatusEndpoint_IncludesAdapterHealth(t *testing.T) {
 	}
 	if response.Adapters[1].Name != "github" || !response.Adapters[1].Healthy {
 		t.Errorf("Unexpected github status: %+v", response.Adapters[1])
+	}
+}
+
+// mockAdmissionSource implements AdmissionStatusSource for tests.
+type mockAdmissionSource struct{ status executor.AdmissionStatus }
+
+func (m *mockAdmissionSource) AdmissionStatus() executor.AdmissionStatus { return m.status }
+
+// TestStatusEndpoint_AdmissionPause covers GH-5862: /api/v1/status reports the
+// admission pause, its owners and the usage-limit resume time, and clears them
+// after resume.
+func TestStatusEndpoint_AdmissionPause(t *testing.T) {
+	server := NewServer(&Config{Host: "127.0.0.1", Port: 9090})
+	src := &mockAdmissionSource{}
+	server.SetAdmissionStatusSource(src)
+
+	type admissionResp struct {
+		Paused    bool       `json:"admission_paused"`
+		Owners    []string   `json:"admission_pause_owners"`
+		ResumesAt *time.Time `json:"admission_resumes_at"`
+	}
+	get := func(t *testing.T) admissionResp {
+		t.Helper()
+		w := httptest.NewRecorder()
+		server.handleStatus(w, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d", w.Code)
+		}
+		var r admissionResp
+		if err := json.NewDecoder(w.Body).Decode(&r); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return r
+	}
+
+	resumeAt := time.Date(2026, 10, 26, 14, 5, 0, 0, time.UTC)
+	src.status = executor.AdmissionStatus{
+		Paused:              true,
+		Owners:              []string{executor.AdmissionPauseOwnerUsageLimit},
+		UsageLimitResumesAt: resumeAt,
+	}
+	r := get(t)
+	if !r.Paused || len(r.Owners) != 1 || r.Owners[0] != "usage-limit" {
+		t.Fatalf("paused response = %+v", r)
+	}
+	if r.ResumesAt == nil || !r.ResumesAt.Equal(resumeAt) {
+		t.Fatalf("admission_resumes_at = %v, want %v", r.ResumesAt, resumeAt)
+	}
+
+	src.status = executor.AdmissionStatus{}
+	r = get(t)
+	if r.Paused || len(r.Owners) != 0 || r.ResumesAt != nil {
+		t.Fatalf("resumed response = %+v, want cleared", r)
 	}
 }
 

@@ -4583,6 +4583,44 @@ func TestAlertResolutionDisabled(t *testing.T) {
 	}
 }
 
+// TestHandleUsageLimitPause covers GH-5862: the dispatcher's usage_limit_pause
+// event fires the matching rule with the task and resume time in the message.
+func TestHandleUsageLimitPause(t *testing.T) {
+	config := &AlertConfig{
+		Enabled:  true,
+		Defaults: DefaultConfig().Defaults,
+		Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+		Rules: []AlertRule{{
+			Name: "usage_limit_pause", Type: AlertTypeUsageLimitPause, Enabled: true,
+			Severity: SeverityWarning, Channels: []string{"test-channel"},
+		}},
+	}
+	mockCh := newMockChannel("test-channel", "webhook")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	engine.ProcessEvent(Event{
+		Type:      EventTypeUsageLimitPause,
+		TaskID:    "GH-5862",
+		Metadata:  map[string]string{"resumes_at": "2026-10-26T14:05:00Z"},
+		Timestamp: time.Now(),
+	})
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
+	got := mockCh.getAlerts()
+	if len(got) != 1 || got[0].Type != AlertTypeUsageLimitPause || got[0].Severity != SeverityWarning {
+		t.Fatalf("alerts = %+v, want one warning usage_limit_pause", got)
+	}
+	for _, want := range []string{"GH-5862", "2026-10-26T14:05:00Z"} {
+		if !strings.Contains(got[0].Message, want) {
+			t.Errorf("message %q missing %q", got[0].Message, want)
+		}
+	}
+}
+
 // TestHandleDailyTicketCapHit covers GH-5808: the executor's daily cap gate
 // emits daily_ticket_cap_hit once per org-local day. The rule cooldown is per
 // rule, so the day rides in the message: the same day dedupes, the next day

@@ -472,6 +472,11 @@ type BackendConfig struct {
 	// the host's timezone.
 	DailyTicketCapTimezone string `yaml:"daily_ticket_cap_timezone,omitempty"`
 
+	// UsageLimitPause holds task admission after a run ends rate_limited
+	// (a Claude usage-limit failure) until the reported reset (GH-5862).
+	// Nil means the defaults: enabled, 6h max, 30m fallback.
+	UsageLimitPause *UsageLimitPauseConfig `yaml:"usage_limit_pause,omitempty"`
+
 	// UseWorktree enables git worktree isolation for execution.
 	// When true, Pilot creates a temporary worktree for each task, allowing
 	// execution even when the user has uncommitted changes in their working directory.
@@ -1323,6 +1328,60 @@ func DefaultTimeoutConfig() *TimeoutConfig {
 		Medium:  "30m",
 		Complex: "60m",
 	}
+}
+
+const (
+	// DefaultUsageLimitMaxPause caps how long a usage-limit pause can hold
+	// admission when the parsed reset is further away.
+	DefaultUsageLimitMaxPause = 6 * time.Hour
+	// DefaultUsageLimitFallbackPause is the pause used when the error carries
+	// no parsable reset time.
+	DefaultUsageLimitFallbackPause = 30 * time.Minute
+)
+
+// UsageLimitPauseConfig controls the admission pause a rate_limited run arms
+// (GH-5862). Example YAML:
+//
+//	executor:
+//	  usage_limit_pause:
+//	    enabled: true
+//	    max_pause: 6h
+//	    fallback_pause: 30m
+type UsageLimitPauseConfig struct {
+	// Enabled turns the pause on. Nil (omitted) means true.
+	Enabled *bool `yaml:"enabled,omitempty"`
+
+	// MaxPause caps the pause when the parsed reset is further away. Zero
+	// means DefaultUsageLimitMaxPause.
+	MaxPause time.Duration `yaml:"max_pause,omitempty"`
+
+	// FallbackPause is the pause used when no reset time parses. Zero means
+	// DefaultUsageLimitFallbackPause.
+	FallbackPause time.Duration `yaml:"fallback_pause,omitempty"`
+}
+
+// IsEnabled reports whether the pause is on; a nil receiver or nil Enabled is on.
+func (c *UsageLimitPauseConfig) IsEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
+// EffectiveMaxPause returns MaxPause or its default.
+func (c *UsageLimitPauseConfig) EffectiveMaxPause() time.Duration {
+	if c == nil || c.MaxPause <= 0 {
+		return DefaultUsageLimitMaxPause
+	}
+	return c.MaxPause
+}
+
+// EffectiveFallbackPause returns FallbackPause or its default.
+func (c *UsageLimitPauseConfig) EffectiveFallbackPause() time.Duration {
+	if c == nil || c.FallbackPause <= 0 {
+		return DefaultUsageLimitFallbackPause
+	}
+	return c.FallbackPause
 }
 
 // StagnationConfig controls stagnation detection and recovery (GH-925).

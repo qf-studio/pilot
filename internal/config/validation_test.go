@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/approval"
@@ -1206,6 +1207,54 @@ func TestConfig_Validate_DailyTicketCap(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestConfig_Validate_UsageLimitPause(t *testing.T) {
+	tests := []struct {
+		name      string
+		pause     *executor.UsageLimitPauseConfig
+		errSubstr string
+	}{
+		{name: "nil uses defaults"},
+		{name: "zero values use defaults", pause: &executor.UsageLimitPauseConfig{}},
+		{name: "explicit", pause: &executor.UsageLimitPauseConfig{MaxPause: 2 * time.Hour, FallbackPause: time.Hour}},
+		{name: "negative max", pause: &executor.UsageLimitPauseConfig{MaxPause: -time.Hour}, errSubstr: "max_pause"},
+		{name: "negative fallback", pause: &executor.UsageLimitPauseConfig{FallbackPause: -time.Minute}, errSubstr: "fallback_pause"},
+		{name: "fallback above max", pause: &executor.UsageLimitPauseConfig{MaxPause: time.Hour, FallbackPause: 2 * time.Hour}, errSubstr: "exceeds max_pause"},
+		{name: "default fallback above small max", pause: &executor.UsageLimitPauseConfig{MaxPause: 10 * time.Minute}, errSubstr: "exceeds max_pause"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Executor = &executor.BackendConfig{UsageLimitPause: tt.pause}
+			err := cfg.Validate()
+			if tt.errSubstr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.errSubstr) {
+				t.Fatalf("err = %v, want substring %q", err, tt.errSubstr)
+			}
+		})
+	}
+}
+
+func TestLoad_UsageLimitPause(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	body := "executor:\n  usage_limit_pause:\n    enabled: false\n    max_pause: 3h\n    fallback_pause: 15m\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p := cfg.Executor.UsageLimitPause
+	if p == nil || p.IsEnabled() || p.EffectiveMaxPause() != 3*time.Hour || p.EffectiveFallbackPause() != 15*time.Minute {
+		t.Errorf("got %+v, want disabled/3h/15m", p)
 	}
 }
 

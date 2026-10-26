@@ -241,6 +241,15 @@ type Dispatcher struct {
 	// mirrors len(admissionPauseOwners) > 0 so ProjectWorker.processQueue's
 	// hot-path check stays a lock-free atomic load.
 	admissionPauseOwners map[string]bool
+
+	// usageLimitMu guards the usage-limit pause state below (GH-5862). Held
+	// across PauseAdmissionFor/ResumeAdmissionFor, never the reverse.
+	usageLimitMu       sync.Mutex
+	usageLimitResumeAt time.Time  // zero when the usage-limit owner is not set
+	usageLimitGen      uint64     // bumped per (re)arm so a stale timer is a no-op
+	usageLimitTimer    pauseTimer // pending resume
+	// clock is the usage-limit pause's time seam; nil means the real clock.
+	clock pauseClock
 }
 
 // NewDispatcher creates a new task dispatcher.
@@ -595,6 +604,7 @@ func (d *Dispatcher) wakeHeldWorkers() {
 func (d *Dispatcher) Stop() {
 	d.log.Info("Stopping dispatcher")
 	d.cancel()
+	d.stopUsageLimitPauseTimer()
 
 	// Stop all workers
 	d.mu.Lock()
@@ -2968,6 +2978,7 @@ func (d *Dispatcher) ensureWorker(projectPath string) {
 	// Create new worker
 	worker := NewProjectWorker(projectPath, d.store, d.runner, d.log)
 	worker.setAdmissionPaused(d.admissionPaused)
+	worker.onRateLimited = d.armUsageLimitPause
 	worker.setBasePresenceHoldMaxCycles(d.config.BasePresenceHoldMaxCycles)
 	d.workers[projectPath] = worker
 
@@ -3297,6 +3308,12 @@ type ProjectWorker struct {
 	// as "never paused", preserving prior behavior for any caller that
 	// doesn't wire it. GH-4683.
 	admissionPaused *atomic.Bool
+
+	// onRateLimited, when set, is called with the task id, project path and
+	// error of a run that finalized rate_limited, before its terminal status
+	// is persisted (GH-5862). Wired by Dispatcher.ensureWorker; nil for a
+	// directly constructed worker.
+	onRateLimited func(taskID, projectPath, errMsg string)
 
 	// basePresenceHoldMaxCycles mirrors DispatcherConfig.BasePresenceHoldMaxCycles
 	// (GH-5045/GH-5052), threaded in post-construction the same way
@@ -3943,6 +3960,12 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				msg = fmt.Sprintf("Completed with PR: %s", result.PRUrl)
 			}
 			w.runner.EmitProgress(exec.TaskID, "Completed", 100, msg)
+		}
+
+		// GH-5862: a usage-limit failure is a wall every queued task would hit
+		// too — hold admission before this loop picks up the next one.
+		if outcome.Status == ExecStatusRateLimited && w.onRateLimited != nil {
+			w.onRateLimited(exec.TaskID, exec.ProjectPath, outcome.Error)
 		}
 
 		// GH-4259: persist the terminal status/metrics after the events above

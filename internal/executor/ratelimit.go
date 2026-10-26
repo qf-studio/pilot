@@ -28,6 +28,13 @@ func IsRateLimitError(errMsg string) bool {
 //   - "You've hit your limit · resets 2:30pm (UTC)"
 //   - "You've hit your limit · resets 12pm (America/New_York)"
 func ParseRateLimitError(errMsg string) (*RateLimitInfo, bool) {
+	return parseRateLimitErrorAt(errMsg, time.Now())
+}
+
+// parseRateLimitErrorAt is ParseRateLimitError against an explicit clock, so
+// callers with an injected clock (the dispatcher's usage-limit pause) resolve
+// "resets 6am" relative to the same instant they schedule from.
+func parseRateLimitErrorAt(errMsg string, clockNow time.Time) (*RateLimitInfo, bool) {
 	if !IsRateLimitError(errMsg) {
 		return nil, false
 	}
@@ -82,7 +89,7 @@ func ParseRateLimitError(errMsg string) (*RateLimitInfo, bool) {
 		}
 
 		// Calculate reset time
-		now := time.Now().In(loc)
+		now := clockNow.In(loc)
 		resetTime := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, loc)
 
 		// If reset time is in the past, it's tomorrow

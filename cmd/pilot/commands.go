@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -230,6 +231,10 @@ func newStatusCmd() *cobra.Command {
 			fmt.Println("Pilot Status")
 			fmt.Println("───────────────────────────────────────")
 			fmt.Printf("Gateway: http://%s:%d\n", cfg.Gateway.Host, cfg.Gateway.Port)
+			// GH-5862: best-effort — a stopped daemon just prints nothing.
+			if line := fetchAdmissionPauseLine(fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)); line != "" {
+				fmt.Println(line)
+			}
 			fmt.Println()
 
 			// Check adapters
@@ -277,6 +282,45 @@ func newStatusCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 
 	return cmd
+}
+
+// admissionStatusBody is the admission slice of GET /api/v1/status (GH-5862).
+type admissionStatusBody struct {
+	AdmissionPaused      bool       `json:"admission_paused"`
+	AdmissionPauseOwners []string   `json:"admission_pause_owners"`
+	AdmissionResumesAt   *time.Time `json:"admission_resumes_at"`
+}
+
+// admissionPauseLine renders the one status line for a usage-limit pause, or
+// "" when that owner is not holding admission.
+func admissionPauseLine(st admissionStatusBody) string {
+	if !st.AdmissionPaused || st.AdmissionResumesAt == nil {
+		return ""
+	}
+	for _, o := range st.AdmissionPauseOwners {
+		if o == executor.AdmissionPauseOwnerUsageLimit {
+			return fmt.Sprintf("admission paused: usage limit, resumes at %s", st.AdmissionResumesAt.Local().Format(time.RFC1123))
+		}
+	}
+	return ""
+}
+
+// fetchAdmissionPauseLine asks the running daemon for its admission state.
+func fetchAdmissionPauseLine(baseURL string) string {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(baseURL + "/api/v1/status")
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var st admissionStatusBody
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		return ""
+	}
+	return admissionPauseLine(st)
 }
 
 func newInitCmd() *cobra.Command {

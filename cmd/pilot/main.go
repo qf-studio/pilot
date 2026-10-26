@@ -1413,6 +1413,10 @@ Examples:
 
 			// GH-4314: surface adapter goroutine health on /api/v1/status.
 			p.Gateway().SetAdapterHealthSource(&adapterHealthProviderAdapter{registry: adapterHealthRegistry})
+			// GH-5862: surface the dispatcher's admission pause on /api/v1/status.
+			if gwDispatcher != nil {
+				p.Gateway().SetAdmissionStatusSource(gwDispatcher)
+			}
 
 			// GH-1585: Wire autopilot provider to gateway so /api/v1/autopilot returns live PR data
 			if gwAutopilotController != nil {
@@ -3407,6 +3411,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// only runs in --dashboard mode). Without this, the orphan-running sweep's
 	// live-worker exclusion set is silently empty in the common headless
 	// (--telegram/--github, no --dashboard) deployment.
+	// GH-5862: surface the admission pause on /api/v1/status in polling mode.
+	if gwServer != nil && dispatcher != nil {
+		gwServer.SetAdmissionStatusSource(dispatcher)
+	}
+
 	if dispatcher != nil {
 		for _, ctrl := range autopilotControllers {
 			ctrl.SetDispatcherLiveness(dispatcher)

@@ -225,6 +225,12 @@ const (
 	// carries day (YYYY-MM-DD), cap, dispatched, and resumes_at (RFC 3339).
 	EventTypeDailyTicketCapHit EventType = "daily_ticket_cap_hit"
 
+	// Usage-limit pause events (GH-5862): fired by the dispatcher
+	// (executor.AlertEventTypeUsageLimitPause) when a rate_limited run pauses
+	// task admission. Metadata carries owner, reset_at (RFC 3339, empty when
+	// none parsed) and resumes_at (RFC 3339).
+	EventTypeUsageLimitPause EventType = "usage_limit_pause"
+
 	// Heartbeat timeout events (GH-5498): fired by the executor's
 	// HeartbeatCallback (Runner.heartbeatTimeoutCallback) just before the
 	// Claude subprocess is killed for producing no stream events for longer
@@ -739,6 +745,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleEnvClassFailureStreak(ctx, event)
 	case EventTypeDailyTicketCapHit:
 		e.handleDailyTicketCapHit(ctx, event)
+	case EventTypeUsageLimitPause:
+		e.handleUsageLimitPause(ctx, event)
 	case EventTypeHeartbeatTimeout:
 		e.handleHeartbeatTimeout(ctx, event)
 	case EventTypeTaskTimeout:
@@ -1200,6 +1208,30 @@ func (e *Engine) handleDailyTicketCapHit(ctx context.Context, event Event) {
 	if !matched {
 		e.logger.Warn("daily ticket cap event has no matching rule — alert dropped silently",
 			slog.String("day", event.Metadata["day"]))
+	}
+}
+
+// handleUsageLimitPause fires AlertTypeUsageLimitPause rules when the
+// dispatcher pauses admission after a rate_limited run (GH-5862). The emitter
+// already gated on once-per-episode, so no Condition-based counting happens
+// here.
+func (e *Engine) handleUsageLimitPause(ctx context.Context, event Event) {
+	matched := false
+	for _, rule := range e.config.Rules {
+		if rule.Type != AlertTypeUsageLimitPause {
+			continue
+		}
+		matched = true
+		if rule.Enabled && e.shouldFire(rule) {
+			message := fmt.Sprintf("Claude usage limit hit (task %s): task admission paused until %s",
+				event.TaskID, event.Metadata["resumes_at"])
+			alert := e.createAlert(rule, event, message)
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+	if !matched {
+		e.logger.Warn("usage limit pause event has no matching rule — alert dropped silently",
+			slog.String("task_id", event.TaskID))
 	}
 }
 

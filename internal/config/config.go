@@ -1258,6 +1258,25 @@ func validateReleaseTriggerFields(pathPrefix, trigger, schedule, timezone string
 	return nil
 }
 
+// validateUsageLimitPause checks executor.usage_limit_pause (GH-5862): durations
+// must not be negative, and the fallback pause cannot exceed the max pause that
+// caps it.
+func validateUsageLimitPause(p *executor.UsageLimitPauseConfig) error {
+	if p == nil {
+		return nil
+	}
+	if p.MaxPause < 0 {
+		return fmt.Errorf("invalid executor.usage_limit_pause.max_pause: %s (must be >= 0; 0 = default %s)", p.MaxPause, executor.DefaultUsageLimitMaxPause)
+	}
+	if p.FallbackPause < 0 {
+		return fmt.Errorf("invalid executor.usage_limit_pause.fallback_pause: %s (must be >= 0; 0 = default %s)", p.FallbackPause, executor.DefaultUsageLimitFallbackPause)
+	}
+	if p.EffectiveFallbackPause() > p.EffectiveMaxPause() {
+		return fmt.Errorf("invalid executor.usage_limit_pause: fallback_pause %s exceeds max_pause %s", p.EffectiveFallbackPause(), p.EffectiveMaxPause())
+	}
+	return nil
+}
+
 // validateDailyTicketCapTimezone checks executor.daily_ticket_cap_timezone.
 // Empty means UTC. "Local" is rejected even though time.LoadLocation accepts
 // it: the cap's day boundary must not depend on the host's timezone.
@@ -1319,6 +1338,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid executor.daily_ticket_cap: %d (must be >= 0; 0 = unlimited)", c.Executor.DailyTicketCap)
 		}
 		if err := validateDailyTicketCapTimezone(c.Executor.DailyTicketCapTimezone); err != nil {
+			return err
+		}
+		if err := validateUsageLimitPause(c.Executor.UsageLimitPause); err != nil {
 			return err
 		}
 	}

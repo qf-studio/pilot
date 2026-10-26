@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/qf-studio/pilot/internal/adapters/linear"
 	"github.com/qf-studio/pilot/internal/approval"
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
@@ -79,6 +80,12 @@ type AdapterHealthSource interface {
 	AdapterHealthSnapshot() []AdapterHealthStatus
 }
 
+// AdmissionStatusSource exposes the dispatcher's admission-pause state to
+// /api/v1/status (GH-5862). *executor.Dispatcher implements it.
+type AdmissionStatusSource interface {
+	AdmissionStatus() executor.AdmissionStatus
+}
+
 // PollerUpSource exposes per-adapter poller up/down state for the
 // pilot_poller_up Prometheus gauge (GH-5588). An AdapterHealthSource that also
 // implements it is wired into the exporter automatically.
@@ -111,6 +118,7 @@ type Server struct {
 	chatSource               ChatMetricsSource // GH-5677: wired into prometheusExporter for pilot_chat_* counters
 	autopilotProvider        AutopilotProvider
 	adapterHealthSource      AdapterHealthSource
+	admissionSource          AdmissionStatusSource // GH-5862: admission pause on /api/v1/status
 	dashboardStore           DashboardStore
 	dashboardProjectPath     string           // Project path filter for dashboard metrics/queue/history APIs ("" = all projects)
 	dashboardStatsWindowDays int              // GH-4735: rolling window (days) for windowed cost/success stats; 0 = use default
@@ -466,6 +474,14 @@ func (s *Server) SetAdapterHealthSource(source AdapterHealthSource) {
 	}
 }
 
+// SetAdmissionStatusSource wires the dispatcher's admission-pause state into
+// /api/v1/status (GH-5862). Call it at both daemon construction sites.
+func (s *Server) SetAdmissionStatusSource(source AdmissionStatusSource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.admissionSource = source
+}
+
 // SetGitGraphPath sets the project path used by the /api/v1/gitgraph endpoint.
 // Defaults to "." if not set.
 func (s *Server) SetGitGraphPath(path string) {
@@ -680,6 +696,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	v := s.version
 	ahSource := s.adapterHealthSource
+	admSource := s.admissionSource
 	s.mu.RUnlock()
 
 	resp := map[string]interface{}{
@@ -689,6 +706,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if ahSource != nil {
 		resp["adapters"] = ahSource.AdapterHealthSnapshot()
+	}
+	resp["admission_paused"] = false
+	resp["admission_pause_owners"] = []string{}
+	if admSource != nil {
+		adm := admSource.AdmissionStatus()
+		resp["admission_paused"] = adm.Paused
+		if adm.Owners != nil {
+			resp["admission_pause_owners"] = adm.Owners
+		}
+		if !adm.UsageLimitResumesAt.IsZero() {
+			resp["admission_resumes_at"] = adm.UsageLimitResumesAt
+		}
 	}
 
 	_ = json.NewEncoder(w).Encode(resp)

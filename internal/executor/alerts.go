@@ -112,6 +112,11 @@ const (
 	// cast. DailyCapGate emits it once per org per org-local day, the first
 	// time ExecutionLifecycle.Begin holds a ticket.
 	AlertEventTypeDailyTicketCapHit AlertEventType = "daily_ticket_cap_hit"
+
+	// AlertEventTypeUsageLimitPause (GH-5862) mirrors
+	// alerts.EventTypeUsageLimitPause ("usage_limit_pause") byte-for-byte.
+	// Dispatcher.armUsageLimitPause emits it once per pause episode.
+	AlertEventTypeUsageLimitPause AlertEventType = "usage_limit_pause"
 )
 
 // SelfReviewDeadManTrackerName is the alerts.DeadManTracker registration
