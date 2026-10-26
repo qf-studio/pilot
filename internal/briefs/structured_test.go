@@ -236,7 +236,10 @@ func TestStructuredBrief_TimezoneBerlin(t *testing.T) {
 	g := NewGenerator(store, config)
 
 	// 23:30 UTC on Oct 22 is already Oct 23, 01:30 in Berlin (CEST, +02:00).
+	// The clock is fixed to the same instant so the date line does not
+	// depend on the day the test runs.
 	end := time.Date(2026, 10, 22, 23, 30, 0, 0, time.UTC)
+	g.SetClock(func() time.Time { return end })
 	sb, err := g.GenerateStructured(BriefPeriod{Start: end.Add(-24 * time.Hour), End: end})
 	if err != nil {
 		t.Fatalf("GenerateStructured: %v", err)

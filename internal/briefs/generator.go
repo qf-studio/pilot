@@ -13,6 +13,9 @@ type Generator struct {
 	store  *memory.Store
 	config *BriefConfig
 	pool   PoolSource
+	// clock reports the current time; nil means time.Now. Tests set it via
+	// SetClock so generated-at stamps are deterministic.
+	clock func() time.Time
 }
 
 // PoolSource reports the percent of the included allowance used, and false
@@ -23,6 +26,20 @@ type PoolSource func() (percent float64, ok bool)
 // section. Without one, the section is null.
 func (g *Generator) SetPoolSource(p PoolSource) {
 	g.pool = p
+}
+
+// SetClock overrides the generator's time source (nil restores time.Now).
+// Intended for tests that assert on the generated-at date.
+func (g *Generator) SetClock(clock func() time.Time) {
+	g.clock = clock
+}
+
+// now returns the current time from the injected clock, else the wall clock.
+func (g *Generator) now() time.Time {
+	if g.clock != nil {
+		return g.clock()
+	}
+	return time.Now()
 }
 
 // NewGenerator creates a new brief generator
@@ -88,7 +105,7 @@ func (g *Generator) Generate(period BriefPeriod) (*Brief, error) {
 
 	brief := &Brief{
 		Kind:        KindDaily,
-		GeneratedAt: time.Now(),
+		GeneratedAt: g.now(),
 		Period:      period,
 		Completed:   []TaskSummary{},
 		InProgress:  []TaskSummary{},
@@ -177,7 +194,7 @@ func (g *Generator) Generate(period BriefPeriod) (*Brief, error) {
 // GenerateDaily creates a brief for the period since the previous daily brief
 // was sent, ending now (GH-5813).
 func (g *Generator) GenerateDaily() (*Brief, error) {
-	return g.GenerateDailyEnding(time.Now())
+	return g.GenerateDailyEnding(g.now())
 }
 
 // GenerateDailyEnding creates the daily brief for [previous daily brief sent,
@@ -234,7 +251,7 @@ func (g *Generator) weeklyProof(period BriefPeriod, shipped []ShippedRun) (*Week
 		return nil, err
 	}
 	if shipped == nil {
-		shipped = BuildStructured(time.Now(), period, in.Shipped, nil, nil).Shipped
+		shipped = BuildStructured(g.now(), period, in.Shipped, nil, nil).Shipped
 	}
 	return BuildWeeklyProof(in, shipped), nil
 }
@@ -258,7 +275,7 @@ func (g *Generator) GenerateWeeklyStructured(period BriefPeriod) (*StructuredBri
 // GenerateWeekly creates the weekly brief for the 7 days ending now, the same
 // window the scheduled weekly brief uses at fire time.
 func (g *Generator) GenerateWeekly() (*Brief, error) {
-	return g.GenerateWeeklyEnding(time.Now())
+	return g.GenerateWeeklyEnding(g.now())
 }
 
 // StoreStructured builds the console's structured brief for the period and
@@ -342,7 +359,7 @@ func (g *Generator) GenerateStructured(period BriefPeriod) (*StructuredBrief, er
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
+	now := g.now()
 	var reviews []ReviewInput
 	for _, p := range pending {
 		if p.ExpiresAt.Before(now) {
