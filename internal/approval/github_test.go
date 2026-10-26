@@ -811,3 +811,123 @@ func TestGitHubHandler_PruneExpired_SweepsOrphanedAliasRows(t *testing.T) {
 		t.Error("expired github-review row (raw alias) was not swept")
 	}
 }
+
+// --- GH-5803: decision must be recorded on a ctx that survives the poll cancel ---
+
+// ctxCheckingRecorder mimics memory.Store.SetApprovalDecision: it fails with
+// ctx.Err() when the ctx it is handed is already done.
+type ctxCheckingRecorder struct {
+	mu       sync.Mutex
+	ctxErr   error
+	decision Decision
+	by       string
+	calls    int
+}
+
+func (r *ctxCheckingRecorder) RecordDecision(ctx context.Context, _ string, decision Decision, by string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	if err := ctx.Err(); err != nil {
+		r.ctxErr = err
+		return err
+	}
+	r.decision, r.by = decision, by
+	return nil
+}
+
+// driveCheckApproval wires cancelPoll as the pending entry's CancelFn exactly
+// like SendApprovalRequest/Rehydrate do, then runs one checkApproval on pollCtx.
+func driveCheckApproval(t *testing.T, h *GitHubHandler, req *Request, prNumber int) <-chan *Response {
+	t.Helper()
+	pollCtx, cancelPoll := context.WithCancel(context.Background())
+	t.Cleanup(cancelPoll)
+	ch := make(chan *Response, 1)
+	h.mu.Lock()
+	h.pending[req.ID] = &githubPending{
+		Request: req, Owner: "OrgA", Repo: "RepoA", PRNumber: prNumber,
+		ResponseCh: ch, CancelFn: cancelPoll,
+	}
+	h.mu.Unlock()
+
+	if !h.checkApproval(pollCtx, req.ID) {
+		t.Fatal("checkApproval returned false for an approved PR")
+	}
+	return ch
+}
+
+func assertDetachedApproval(t *testing.T, rec *ctxCheckingRecorder, ch <-chan *Response) {
+	t.Helper()
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.ctxErr != nil {
+		t.Fatalf("recorder saw a done ctx (%v); the decision write ran on the cancelled poll ctx", rec.ctxErr)
+	}
+	if rec.calls != 1 || rec.decision != DecisionApproved || rec.by != "alice" {
+		t.Errorf("recorder calls=%d decision=%q by=%q, want 1/approved/alice", rec.calls, rec.decision, rec.by)
+	}
+	select {
+	case resp := <-ch:
+		if resp == nil || resp.Decision != DecisionApproved || resp.ApprovedBy != "alice" {
+			t.Errorf("waiter response = %+v, want approved by alice", resp)
+		}
+	default:
+		t.Fatal("waiter received no response")
+	}
+}
+
+func TestCheckApproval_RecordsDecisionOnDetachedContext(t *testing.T) {
+	client := &mockGitHubReviewClient{hasApproval: true, approver: "alice"}
+	rec := &ctxCheckingRecorder{}
+	h := newStoreHandler(client, nil, rec)
+
+	ch := driveCheckApproval(t, h, githubReviewRequest("req-detached", "", 11), 11)
+	assertDetachedApproval(t, rec, ch)
+}
+
+func TestCheckApproval_Rehydrated_RecordsDecisionOnDetachedContext(t *testing.T) {
+	store := newMockPendingStore()
+	if err := store.InsertPendingApproval(&memory.PendingApproval{
+		ID:               "req-rehydrated",
+		Stage:            string(StagePreMerge),
+		PreferredChannel: githubReviewAlias,
+		Metadata:         map[string]interface{}{"pr_number": float64(12)},
+		ExpiresAt:        time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := &mockGitHubReviewClient{hasApproval: true, approver: "alice"}
+	rec := &ctxCheckingRecorder{}
+	h := newStoreHandler(client, store, rec)
+	// Hold the real poll off so Rehydrate's entry can be checked deterministically.
+	h.pollInterval = time.Hour
+	client.mu.Lock()
+	client.hasApproval = false
+	client.mu.Unlock()
+
+	if err := h.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("Rehydrate: %v", err)
+	}
+	waitFor(t, "initial poll", func() bool { return len(client.recordedCalls()) >= 1 })
+
+	h.mu.RLock()
+	p := h.pending["req-rehydrated"]
+	h.mu.RUnlock()
+	if p == nil {
+		t.Fatal("rehydrate did not restore the pending entry")
+	}
+
+	// The reviewer approves; drive a check on a ctx tied to the restored entry's CancelFn.
+	client.mu.Lock()
+	client.hasApproval = true
+	client.mu.Unlock()
+	pollCtx, cancelPoll := context.WithCancel(context.Background())
+	defer cancelPoll()
+	origCancel := p.CancelFn
+	p.CancelFn = func() { origCancel(); cancelPoll() }
+
+	if !h.checkApproval(pollCtx, "req-rehydrated") {
+		t.Fatal("checkApproval returned false for an approved PR")
+	}
+	assertDetachedApproval(t, rec, p.ResponseCh)
+}

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // mockPRStateWriter records SetApprovalDecision calls for test assertions.
@@ -787,7 +789,7 @@ func TestManager_RecordDecision_CleansUpPendingOnWriterError(t *testing.T) {
 	config.PreExecution.Timeout = 10 * time.Second
 
 	m := NewManager(config)
-	sentinel := errors.New("already decided sentinel")
+	sentinel := memory.ErrApprovalAlreadyDecided
 	writer := &mockPRStateWriter{err: sentinel}
 	m.WithStateWriter(writer)
 
@@ -1291,4 +1293,67 @@ func TestManager_SubmitApprovalRequest_NoHandlerFailsClosed(t *testing.T) {
 			t.Errorf("request ID = %q, want %q", id, req.ID)
 		}
 	})
+}
+
+// submitPendingForRecord submits an async request whose handler never responds
+// and returns the manager with a log buffer attached.
+func submitPendingForRecord(t *testing.T, writerErr error, id string) (*Manager, *bytes.Buffer) {
+	t.Helper()
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 10 * time.Second
+
+	m := NewManager(config)
+	var logs bytes.Buffer
+	m.log = slog.New(slog.NewTextHandler(&logs, nil))
+	m.WithStateWriter(&mockPRStateWriter{err: writerErr})
+	m.RegisterHandler(&mockHandler{name: DefaultChannelName})
+
+	req := &Request{ID: id, TaskID: "TASK-5803", Stage: StagePreExecution, CreatedAt: time.Now()}
+	if _, err := m.SubmitApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if n := len(m.GetPendingRequests()); n != 1 {
+		t.Fatalf("expected 1 pending before RecordDecision, got %d", n)
+	}
+	return m, &logs
+}
+
+// TestRecordDecision_PersistenceErrorKeepsPending is the GH-5803 pin: a plain
+// writer error (e.g. context canceled, DB down) is a persistence failure, not a
+// lost race — the pending entry must survive so the write can be retried.
+func TestRecordDecision_PersistenceErrorKeepsPending(t *testing.T) {
+	plain := errors.New("db down")
+	m, logs := submitPendingForRecord(t, plain, "persist-fail-1")
+
+	err := m.RecordDecision(context.Background(), "persist-fail-1", DecisionApproved, "alice")
+	if !errors.Is(err, plain) {
+		t.Fatalf("expected wrapped plain error, got %v", err)
+	}
+	if n := len(m.GetPendingRequests()); n != 1 {
+		t.Errorf("pending entry must be kept on a persistence error, got %d pending", n)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "failed to persist approval decision") || !strings.Contains(out, "level=WARN") {
+		t.Errorf("expected WARN persistence-failure log, got: %s", out)
+	}
+	if strings.Contains(out, "race lost") {
+		t.Errorf("persistence failure must not be logged as race lost: %s", out)
+	}
+}
+
+func TestRecordDecision_AlreadyDecidedRemovesPendingAndLogsRaceLost(t *testing.T) {
+	m, logs := submitPendingForRecord(t, memory.ErrApprovalAlreadyDecided, "race-lost-1")
+
+	err := m.RecordDecision(context.Background(), "race-lost-1", DecisionApproved, "bob")
+	if !errors.Is(err, memory.ErrApprovalAlreadyDecided) {
+		t.Fatalf("expected ErrApprovalAlreadyDecided, got %v", err)
+	}
+	if n := len(m.GetPendingRequests()); n != 0 {
+		t.Errorf("pending entry must be removed on a lost race, got %d pending", n)
+	}
+	if !strings.Contains(logs.String(), "race lost") {
+		t.Errorf("expected race lost log, got: %s", logs.String())
+	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // Manager coordinates approval workflows across multiple channels
@@ -510,6 +511,18 @@ func (m *Manager) RecordDecision(ctx context.Context, requestID string, decision
 		}
 	}
 
+	// GH-5803: only a lost race (another decider already recorded) means the
+	// waiter can be dropped. Any other writer error is a persistence failure —
+	// keep the pending entry (and its waiter) so the decision can be retried.
+	if writerErr != nil && !errors.Is(writerErr, memory.ErrApprovalAlreadyDecided) {
+		m.log.Warn("failed to persist approval decision — keeping request pending for retry",
+			slog.String("request_id", requestID),
+			slog.String("decision", string(decision)),
+			slog.String("by", by),
+			slog.Any("error", writerErr))
+		return writerErr
+	}
+
 	m.mu.Lock()
 	pr, exists := m.pending[requestID]
 	if exists {
@@ -521,6 +534,7 @@ func (m *Manager) RecordDecision(ctx context.Context, requestID string, decision
 		// Cancel the background goroutine waiting on the handler response.
 		pr.CancelFn()
 		if writerErr != nil {
+			// Only ErrApprovalAlreadyDecided reaches here (see above).
 			m.log.Info("approval decision race lost — waiter cleaned up without applying decision",
 				slog.String("request_id", requestID),
 				slog.String("decision", string(decision)),

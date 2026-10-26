@@ -12,6 +12,10 @@ import (
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
+// approvalWriteTimeout bounds the decision write made from the poll goroutine
+// on a context detached from the (cancelled) poll context.
+const approvalWriteTimeout = 10 * time.Second
+
 // GitHubReviewClient defines the interface for GitHub PR review operations
 type GitHubReviewClient interface {
 	HasApprovalReview(ctx context.Context, owner, repo string, number int) (bool, string, error)
@@ -407,7 +411,12 @@ func (h *GitHubHandler) checkApproval(ctx context.Context, requestID string) boo
 		}
 		pending.CancelFn()
 
-		h.resolvePending(ctx, pending, &Response{
+		// Decision: ctx is the poll ctx and CancelFn above cancels it, so the write
+		// must run on a detached, bounded ctx — otherwise SetApprovalDecision fails
+		// with "context canceled" and every polled approval is dropped (GH-5803).
+		writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), approvalWriteTimeout)
+		defer cancelWrite()
+		h.resolvePending(writeCtx, pending, &Response{
 			RequestID:   requestID,
 			Decision:    DecisionApproved,
 			ApprovedBy:  approver,
