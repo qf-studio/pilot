@@ -955,6 +955,91 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: skipReasonNeedsHuman}, nil
 	}
 
+	// Resolve owner/repo. M7 4d.2c: the per-repo SDK poller passes its repo
+	// explicitly (repoFullName) because resolveGithubRepo matches by repo NAME only
+	// and is ambiguous when two projects share a repo name under different owners
+	// (repo_resolver.go documents this limitation). Event-based resolution remains
+	// the fallback for the webhook / rate-limit-retry paths that don't carry it.
+	var repoOwner, repoName string
+	if repoFullName != "" {
+		if parts := strings.SplitN(repoFullName, "/", 2); len(parts) == 2 {
+			repoOwner, repoName = parts[0], parts[1]
+		}
+	}
+	if repoOwner == "" || repoName == "" {
+		_, ro, rn, resolveErr := sdkshim.ResolveRepoForEvent(cfg, "github", ev)
+		if resolveErr != nil && resolveErr.Error() != sdkshim.ErrRepoNotResolved.Error() {
+			logging.WithComponent("github").Warn("Unexpected repo resolution error",
+				slog.String("task_id", taskID),
+				slog.Any("error", resolveErr),
+			)
+		}
+		repoOwner, repoName = ro, rn
+	}
+
+	// GH-4050: Fetch the real issue so State (and author, for MemberID) flow into the
+	// task the same way the legacy in-tree path sets them. sdkcore.IssueEvent doesn't
+	// surface issue state — without it, an empty State + empty Labels combo bypasses
+	// the epic.go parent-done gate and permits spurious sub-issue spawning on
+	// re-dispatch of a closed/merged parent (GH-201 OAuth dispatch loop).
+	//
+	// GH-5849: the fetch runs before the admission checks (it has no side effects)
+	// because ev is a pre-slot-wait snapshot — the SDK poller blocks on its
+	// concurrency semaphore after it marks the issue processed, so by the time
+	// this function runs the issue may have been closed or relabeled. The live
+	// labels drive the admission checks and the task's Labels below.
+	issueNum, _ := strconv.Atoi(ev.IssueID)
+	var issueState, memberID string
+	// GH-4631: default to the poll-tick snapshot; overwritten below with the
+	// fresh GET body when the fetch succeeds, so the spec-quality gate
+	// validates the current issue body rather than a stale list-snapshot.
+	specBody := ev.Body
+	var specClient *githubSDK.Client
+	var realIssue *githubSDK.Issue
+	// Fail open on fetch failure: liveLabels stays the ev.Labels snapshot.
+	liveLabels := ev.Labels
+	if repoOwner != "" && repoName != "" {
+		if ghToken, _ := resolveGitHubToken(cfg); ghToken != "" {
+			// TASK-461 Leg 2: built via newGitHubSDKClient for uniformity with
+			// the daemon-lifetime sites — this per-event client already
+			// re-resolved ghToken fresh above, so the swap is low-risk, not a
+			// behavior fix.
+			specClient = newGitHubSDKClient(cfg, githubTaskClientOpts...)
+			if realIssue = fetchGithubIssueForSDKTask(ctx, specClient, repoOwner, repoName, issueNum, taskID); realIssue != nil {
+				issueState = realIssue.State
+				memberID = resolveGitHubMemberIDByLogin(realIssue.User.Login, realIssue.User.Email)
+				specBody = realIssue.Body
+				liveLabels = make([]string, 0, len(realIssue.Labels))
+				for _, l := range realIssue.Labels {
+					liveLabels = append(liveLabels, l.Name)
+				}
+			}
+		}
+	}
+
+	// GH-5849: live admission check — the issue was closed, lost the trigger
+	// label, or gained an admission-blocking label while it waited for a slot.
+	// Only runs on positive evidence (successful fetch); a failed fetch fails
+	// open. Same GH-5072 reasoning as the needs-human skip below: the SDK
+	// bridge drops Skipped, so the poller unmarks and re-picks — arm the
+	// claim-lost backoff to damp that loop.
+	if realIssue != nil {
+		triggerLabel := "pilot"
+		if cfg != nil && cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.PilotLabel != "" {
+			triggerLabel = cfg.Adapters.GitHub.PilotLabel
+		}
+		if reason := githubLiveAdmissionSkipReason(issueState, liveLabels, triggerLabel); reason != "" {
+			logging.WithComponent("github").Info("SDK-dispatch: skipping admission, live issue no longer eligible",
+				slog.String("task_id", taskID),
+				slog.String("reason", reason),
+			)
+			if dispatcher != nil {
+				repickBackoff.recordClaimLostDrop(backoffKey)
+			}
+			return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: reason}, nil
+		}
+	}
+
 	// GH-5056: admission backstop — an issue carrying pilot-needs-human must
 	// never be (re-)admitted through this chokepoint, no matter what
 	// unmarked it. The SDK poller's own candidate filter (studio-sdk
@@ -968,7 +1053,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	// other side effect (spec-guard, pilot-in-progress label/comment, task
 	// construction, dispatch) so a re-admitted needs-human issue costs
 	// nothing beyond this one check.
-	if githubEventHasNeedsHumanLabel(ev.Labels) {
+	if githubEventHasNeedsHumanLabel(liveLabels) {
 		logging.WithComponent("github").Info("SDK-dispatch: skipping admission, issue carries pilot-needs-human",
 			slog.String("task_id", taskID),
 			slog.String("reason", labelPilotNeedsHumanSDK),
@@ -1021,62 +1106,13 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		runner.RecordBorrowedBranch(taskID, branchName, fromPR)
 	}
 
-	// Resolve owner/repo. M7 4d.2c: the per-repo SDK poller passes its repo
-	// explicitly (repoFullName) because resolveGithubRepo matches by repo NAME only
-	// and is ambiguous when two projects share a repo name under different owners
-	// (repo_resolver.go documents this limitation). Event-based resolution remains
-	// the fallback for the webhook / rate-limit-retry paths that don't carry it.
-	var repoOwner, repoName string
-	if repoFullName != "" {
-		if parts := strings.SplitN(repoFullName, "/", 2); len(parts) == 2 {
-			repoOwner, repoName = parts[0], parts[1]
-		}
-	}
-	if repoOwner == "" || repoName == "" {
-		_, ro, rn, resolveErr := sdkshim.ResolveRepoForEvent(cfg, "github", ev)
-		if resolveErr != nil && resolveErr.Error() != sdkshim.ErrRepoNotResolved.Error() {
-			logging.WithComponent("github").Warn("Unexpected repo resolution error",
-				slog.String("task_id", taskID),
-				slog.Any("error", resolveErr),
-			)
-		}
-		repoOwner, repoName = ro, rn
-	}
-
-	// GH-4050: Fetch the real issue so State (and author, for MemberID) flow into the
-	// task the same way the legacy in-tree path sets them. sdkcore.IssueEvent doesn't
-	// surface issue state — without it, an empty State + empty Labels combo bypasses
-	// the epic.go parent-done gate and permits spurious sub-issue spawning on
-	// re-dispatch of a closed/merged parent (GH-201 OAuth dispatch loop).
-	issueNum, _ := strconv.Atoi(ev.IssueID)
-	var issueState, memberID string
-	// GH-4631: default to the poll-tick snapshot; overwritten below with the
-	// fresh GET body when the fetch succeeds, so the spec-quality gate
-	// validates the current issue body rather than a stale list-snapshot.
-	specBody := ev.Body
-	var specClient *githubSDK.Client
-	if repoOwner != "" && repoName != "" {
-		if ghToken, _ := resolveGitHubToken(cfg); ghToken != "" {
-			// TASK-461 Leg 2: built via newGitHubSDKClient for uniformity with
-			// the daemon-lifetime sites — this per-event client already
-			// re-resolved ghToken fresh above, so the swap is low-risk, not a
-			// behavior fix.
-			specClient = newGitHubSDKClient(cfg)
-			if realIssue := fetchGithubIssueForSDKTask(ctx, specClient, repoOwner, repoName, issueNum, taskID); realIssue != nil {
-				issueState = realIssue.State
-				memberID = resolveGitHubMemberIDByLogin(realIssue.User.Login, realIssue.User.Email)
-				specBody = realIssue.Body
-			}
-		}
-	}
-
 	// M7 4d.3: pre-dispatch spec quality gate on the SDK path (GH-2619 parity —
 	// previously exclusive to the legacy in-tree handler). The issue is
 	// reconstructed from the event; labels ride along so the
 	// pilot-skip-spec-check opt-out works.
 	if specClient != nil {
-		specLabels := make([]githubSDK.Label, 0, len(ev.Labels))
-		for _, l := range ev.Labels {
+		specLabels := make([]githubSDK.Label, 0, len(liveLabels))
+		for _, l := range liveLabels {
 			specLabels = append(specLabels, githubSDK.Label{Name: l})
 		}
 		specIssue := &githubSDK.Issue{Number: issueNum, Title: title, Body: specBody, Labels: specLabels}
@@ -1166,7 +1202,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		Priority:           sdkshim.PriorityFromSDK(ev.Priority),
 		BaseBranch:         resolveProjectBaseBranch(cfg, projectPath), // GH-2290
 		MemberID:           memberID,                                   // GH-634: RBAC lookup
-		Labels:             ev.Labels,                                  // GH-727: flow labels for complexity/no-decompose classifier
+		Labels:             liveLabels,                                 // GH-727/GH-5849: live labels (ev.Labels on fetch failure) for complexity/no-decompose classifier
 		AcceptanceCriteria: github.ExtractAcceptanceCriteria(ev.Body),  // GH-920: acceptance criteria in prompts
 		FromPR:             fromPR,                                     // GH-1267: session resumption from PR context
 		FixFromSHA:         fixFromSHA,                                 // GH-5348: recreate a deleted fix branch from the original commit
@@ -1320,6 +1356,40 @@ const labelPilotNeedsHumanSDK = "pilot-needs-human"
 // const stands in until (if ever) the field survives the studio-sdk bridge
 // (GH-5072 nit fold-in).
 const skipReasonNeedsHuman = "needs_human"
+
+// githubTaskClientOpts are extra options for the per-event GitHub client
+// handleGithubIssueEventSDK builds. Production leaves it empty; tests point
+// the client at an httptest server via githubSDK.WithClientBaseURL.
+var githubTaskClientOpts []githubSDK.ClientOption
+
+// Skip reasons for the GH-5849 live-issue admission check. Like
+// skipReasonNeedsHuman these are host-only values (not in sdk/util/skipreason).
+const (
+	skipReasonIssueClosed         = "issue_closed"
+	skipReasonTriggerLabelRemoved = "trigger_label_removed"
+	skipReasonPilotBlocked        = "pilot_blocked"
+	skipReasonNeedsClarification  = "needs_clarification"
+)
+
+// githubLiveAdmissionSkipReason returns the skip reason when the live issue
+// (state + label names re-fetched after the slot wait) must not be admitted,
+// or "" when it is still eligible (GH-5849). liveLabels must come from the
+// fresh fetch, not the pre-wait ev.Labels snapshot.
+func githubLiveAdmissionSkipReason(state string, liveLabels []string, triggerLabel string) string {
+	switch {
+	case state == githubSDK.StateClosed:
+		return skipReasonIssueClosed
+	case !githubEventHasLabel(liveLabels, triggerLabel):
+		return skipReasonTriggerLabelRemoved
+	case githubEventHasNeedsHumanLabel(liveLabels):
+		return skipReasonNeedsHuman
+	case githubEventHasLabel(liveLabels, githubSDK.LabelBlocked):
+		return skipReasonPilotBlocked
+	case githubEventHasLabel(liveLabels, githubSDK.LabelNeedsClarification):
+		return skipReasonNeedsClarification
+	}
+	return ""
+}
 
 // githubEventHasNeedsHumanLabel reports whether labels carries
 // pilot-needs-human (GH-5056). See handleGithubIssueEventSDK's call site

@@ -114,7 +114,7 @@ func TestHandleGithubIssueEventSDK_NeedsHumanLabelBlocksAdmission(t *testing.T) 
 func TestGithubHandlerSDK_NeedsHumanAdmissionCheckWired(t *testing.T) {
 	body := githubFuncBody(t, "handlers.go", "func handleGithubIssueEventSDK(")
 
-	const checkExpr = "githubEventHasNeedsHumanLabel(ev.Labels)"
+	const checkExpr = "githubEventHasNeedsHumanLabel(liveLabels)"
 	if !strings.Contains(body, checkExpr) {
 		t.Fatalf("handleGithubIssueEventSDK must call %s before dispatch (GH-5056)", checkExpr)
 	}

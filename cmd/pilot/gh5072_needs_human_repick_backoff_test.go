@@ -3,16 +3,25 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
+	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 
+	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 // GH-5072 (PR#5064 residual): the GH-5056 needs-human admission backstop
@@ -213,5 +222,139 @@ func TestHandleGithubIssueEventSDK_NeedsHumanBackoffExpiresAndReadmits(t *testin
 	}
 	if repickBackoff.allow(backoffKey) == false {
 		t.Error("readmit call: expected the backoff pre-check itself to have allowed this attempt (window had elapsed)")
+	}
+}
+
+// GH-5849: the SDK poller blocks on its concurrency semaphore AFTER it marks an
+// issue processed, so the pre-wait ev snapshot can be minutes stale by the time
+// handleGithubIssueEventSDK runs. The handler re-checks the live issue and
+// skips (arming the same claim-lost backoff as the needs-human park, since the
+// bridge drops Skipped and the poller unmarks for retry) instead of running it.
+func TestHandleGithubIssueEventSDK_LiveLabelsGate(t *testing.T) {
+	const (
+		owner = "acme"
+		repo  = "widgets"
+	)
+	cases := []struct {
+		name       string
+		liveState  string
+		liveLabels []string
+		fetchErr   bool
+		wantReason string // "" => must not be skipped by the live gate
+	}{
+		{name: "live issue closed", liveState: "closed", liveLabels: []string{"pilot"}, wantReason: skipReasonIssueClosed},
+		{name: "trigger label removed", liveState: "open", liveLabels: []string{"bug"}, wantReason: skipReasonTriggerLabelRemoved},
+		{name: "pilot-blocked added", liveState: "open", liveLabels: []string{"pilot", "pilot-blocked"}, wantReason: skipReasonPilotBlocked},
+		{name: "pilot-needs-clarification added", liveState: "open", liveLabels: []string{"pilot", "pilot-needs-clarification"}, wantReason: skipReasonNeedsClarification},
+		{name: "pilot-needs-human added", liveState: "open", liveLabels: []string{"pilot", "pilot-needs-human"}, wantReason: skipReasonNeedsHuman},
+		{name: "fetch error proceeds with ev.Labels", fetchErr: true},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var writes []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					mu.Lock()
+					writes = append(writes, r.Method+" "+r.URL.Path)
+					mu.Unlock()
+					_, _ = w.Write([]byte(`{}`))
+					return
+				}
+				if tc.fetchErr {
+					http.Error(w, `{"message":"boom"}`, http.StatusInternalServerError)
+					return
+				}
+				type label struct {
+					Name string `json:"name"`
+				}
+				labels := make([]label, 0, len(tc.liveLabels))
+				for _, l := range tc.liveLabels {
+					labels = append(labels, label{Name: l})
+				}
+				if err := json.NewEncoder(w).Encode(map[string]any{
+					"number": 58490 + i,
+					"title":  "stale snapshot",
+					"body":   "body",
+					"state":  tc.liveState,
+					"labels": labels,
+					"user":   map[string]string{"login": "someone"},
+				}); err != nil {
+					t.Errorf("encode issue: %v", err)
+				}
+			}))
+			t.Cleanup(srv.Close)
+
+			prev := githubTaskClientOpts
+			githubTaskClientOpts = []githubSDK.ClientOption{githubSDK.WithClientBaseURL(srv.URL)}
+			t.Cleanup(func() { githubTaskClientOpts = prev })
+
+			tmpDir := t.TempDir()
+			store, err := memory.NewStore(tmpDir)
+			if err != nil {
+				t.Fatalf("memory.NewStore: %v", err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			dispatcher := executor.NewDispatcher(store, executor.NewRunner(), nil)
+			if err := dispatcher.Start(context.Background()); err != nil {
+				t.Fatalf("dispatcher.Start: %v", err)
+			}
+			t.Cleanup(dispatcher.Stop)
+
+			taskID := fmt.Sprintf("GH-%d", 58490+i)
+			projectPath := "/nonexistent-gh5849-project"
+			backoffKey := repickBackoffKey(projectPath, taskID)
+			t.Cleanup(func() { repickBackoff.recordSuccess(backoffKey) })
+
+			cfg := &config.Config{Adapters: &config.AdaptersConfig{GitHub: &github.Config{
+				Token:      testutil.FakeGitHubToken,
+				PilotLabel: "pilot",
+			}}}
+			// ev is the pre-wait snapshot: still carries the trigger label.
+			// pilot-skip-spec-check keeps the fetch-error case past the spec
+			// guard so it reaches dispatch.
+			ev := sdkcore.IssueEvent{
+				SequenceID: taskID,
+				IssueID:    strconv.Itoa(58490 + i),
+				Title:      "stale snapshot",
+				Labels:     []string{"pilot", "pilot-skip-spec-check"},
+			}
+
+			result, err := handleGithubIssueEventSDK(context.Background(), cfg, ev, projectPath, owner+"/"+repo, dispatcher, nil, nil, nil, nil, nil, nil)
+
+			if tc.wantReason == "" {
+				if result != nil && result.Skipped {
+					switch result.SkipReason {
+					case skipReasonIssueClosed, skipReasonTriggerLabelRemoved, skipReasonPilotBlocked, skipReasonNeedsClarification, skipReasonNeedsHuman:
+						t.Fatalf("fetch error must fail open, got live-gate skip: %+v (err=%v)", result, err)
+					}
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("handleGithubIssueEventSDK() error = %v, want nil", err)
+			}
+			if result == nil || result.Success || !result.Skipped || result.SkipReason != tc.wantReason {
+				t.Fatalf("result = %+v, want Success=false Skipped=true SkipReason=%q", result, tc.wantReason)
+			}
+			mu.Lock()
+			gotWrites := append([]string(nil), writes...)
+			mu.Unlock()
+			if len(gotWrites) != 0 {
+				t.Errorf("skip must write no label and no comment, got %v", gotWrites)
+			}
+			if repickBackoff.allow(backoffKey) {
+				t.Error("expected the repick backoff to be armed by the skip")
+			}
+			drops, found, err := dispatcher.ClaimLostDropCount(backoffKey)
+			if err != nil {
+				t.Fatalf("ClaimLostDropCount: %v", err)
+			}
+			if !found || drops != 1 {
+				t.Errorf("claim-lost drops = %d (found=%v), want 1", drops, found)
+			}
+		})
 	}
 }
