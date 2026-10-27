@@ -5239,6 +5239,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			// GH-917: Check for classified Claude Code error types
 			alertType := AlertEventTypeTaskFailed
 			errorCategory := "unknown"
+			var suppressAlert bool  // GH-5879: usage_limit_pause replaces the rate_limit alert
 			var stderrOutput string // GH-917-5: Always capture stderr for logging
 
 			// GH-4395: some backends return a nil *BackendResult alongside a
@@ -5259,6 +5260,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				case "rate_limit":
 					alertType = AlertEventTypeRateLimit
 					errorCategory = "rate_limit"
+					suppressAlert = r.usageLimitPauseEnabled()
 					log.Warn("Backend hit rate limit",
 						slog.String("task_id", task.ID),
 						slog.String("stderr", beErr.ErrorStderr()),
@@ -5449,16 +5451,20 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				metadata["stderr"] = stderrOutput
 			}
 
-			// Emit alert event with error category metadata
-			r.emitAlertEvent(AlertEvent{
-				Type:      alertType,
-				TaskID:    task.ID,
-				TaskTitle: task.Title,
-				Project:   task.ProjectPath,
-				Error:     result.Error,
-				Metadata:  metadata,
-				Timestamp: time.Now(),
-			})
+			// Emit alert event with error category metadata. GH-5879: when the
+			// usage-limit pause is enabled the dispatcher's usage_limit_pause
+			// alert is the one notification for a rate_limit failure.
+			if !suppressAlert {
+				r.emitAlertEvent(AlertEvent{
+					Type:      alertType,
+					TaskID:    task.ID,
+					TaskTitle: task.Title,
+					Project:   task.ProjectPath,
+					Error:     result.Error,
+					Metadata:  metadata,
+					Timestamp: time.Now(),
+				})
+			}
 
 			// Dispatch webhook for task failed (non-timeout)
 			r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
@@ -6374,6 +6380,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 							// GH-917: Check for classified backend error types in retry
 							alertType := AlertEventTypeTaskFailed
 							errorCategory := "unknown"
+							suppressAlert := false // GH-5879
 
 							if beErr, ok := retryErr.(BackendError); ok {
 								result.Error = fmt.Sprintf("retry execution failed: %v", beErr)
@@ -6382,6 +6389,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 								case "rate_limit":
 									alertType = AlertEventTypeRateLimit
 									errorCategory = "rate_limit"
+									suppressAlert = r.usageLimitPauseEnabled()
 									log.Warn("Retry hit rate limit",
 										slog.String("task_id", task.ID),
 										slog.Int("retry_attempt", retryAttempt+1),
@@ -6413,18 +6421,20 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 								r.reportProgress(task.ID, "Retry Failed", 100, result.Error)
 							}
 
-							r.emitAlertEvent(AlertEvent{
-								Type:      alertType,
-								TaskID:    task.ID,
-								TaskTitle: task.Title,
-								Project:   task.ProjectPath,
-								Error:     result.Error,
-								Metadata: map[string]string{
-									"error_category": errorCategory,
-									"phase":          "quality_retry",
-								},
-								Timestamp: time.Now(),
-							})
+							if !suppressAlert {
+								r.emitAlertEvent(AlertEvent{
+									Type:      alertType,
+									TaskID:    task.ID,
+									TaskTitle: task.Title,
+									Project:   task.ProjectPath,
+									Error:     result.Error,
+									Metadata: map[string]string{
+										"error_category": errorCategory,
+										"phase":          "quality_retry",
+									},
+									Timestamp: time.Now(),
+								})
+							}
 
 							// Dispatch webhook for task failed
 							r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
@@ -8936,6 +8946,18 @@ func estimateCostWithCache(input, output, cacheCreation, cacheRead int64, model 
 }
 
 // emitAlertEvent sends an event to the alert processor if configured
+// usageLimitPauseEnabled reports whether the dispatcher's usage-limit admission
+// pause is on. When it is, the pause's usage_limit_pause alert is the single
+// notification for a rate_limit failure, so the runner skips its per-run
+// rate_limit alert (GH-5879).
+func (r *Runner) usageLimitPauseEnabled() bool {
+	var cfg *UsageLimitPauseConfig
+	if r.config != nil {
+		cfg = r.config.UsageLimitPause
+	}
+	return cfg.IsEnabled()
+}
+
 func (r *Runner) emitAlertEvent(event AlertEvent) {
 	if r.alertProcessor == nil {
 		r.alertProcessorWarnOnce.Do(func() {

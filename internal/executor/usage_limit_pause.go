@@ -83,7 +83,7 @@ func (d *Dispatcher) usageLimitPauseConfig() *UsageLimitPauseConfig {
 // armUsageLimitPause holds admission after taskID finalized rate_limited with
 // errMsg (GH-5862). The resume is the parsed reset plus the scheduler's
 // RetryBuffer (fallback_pause when no reset parses), capped at max_pause from
-// now. A later call while paused only moves the resume later; it never adds an
+// now. A reset that already passed (GH-5879) resumes at now plus RetryBuffer. A later call while paused only moves the resume later; it never adds an
 // owner and never alerts again. Running tasks are untouched and the single
 // task's own re-queue at reset time stays with the poller's Scheduler.
 func (d *Dispatcher) armUsageLimitPause(taskID, projectPath, errMsg string) {
@@ -96,9 +96,13 @@ func (d *Dispatcher) armUsageLimitPause(taskID, projectPath, errMsg string) {
 	now := clock.Now()
 
 	var resetAt time.Time
+	var alreadyReset bool
+	retryBuffer := DefaultSchedulerConfig().RetryBuffer
 	resumeAt := now.Add(cfg.EffectiveFallbackPause())
 	if info, ok := parseRateLimitErrorAt(errMsg, now); ok {
-		if candidate := info.ResetTime.Add(DefaultSchedulerConfig().RetryBuffer); candidate.After(now) {
+		if info.AlreadyReset {
+			resetAt, resumeAt, alreadyReset = info.ResetTime, now.Add(retryBuffer), true
+		} else if candidate := info.ResetTime.Add(retryBuffer); candidate.After(now) {
 			resetAt, resumeAt = info.ResetTime, candidate
 		}
 	}
@@ -140,6 +144,9 @@ func (d *Dispatcher) armUsageLimitPause(taskID, projectPath, errMsg string) {
 	}
 	if !resetAt.IsZero() {
 		attrs = append(attrs, slog.Time("reset_at", resetAt))
+	}
+	if alreadyReset {
+		attrs = append(attrs, slog.String("reset_note", "reset had already passed; resuming after retry buffer"))
 	}
 	d.log.Info(msg, attrs...)
 	if !extended {
