@@ -598,6 +598,7 @@ func TestCreatePostMergeReviewIssue_LabelsAndPlainLocations(t *testing.T) {
 	fl.issueLabels = []string{"pilot", postMergeReviewLabel} // overlap must not duplicate
 	review := requestChangesReview()
 	review.Defects[0].Evidence = "see `internal/server/handler.go` in the other repo"
+	review.Notes = "counterpart lives in `console-ui/src/api/client.ts` in another repo"
 
 	if _, err := fl.CreatePostMergeReviewIssue(context.Background(), 42, "https://github.com/owner/repo/pull/42", 10, review); err != nil {
 		t.Fatalf("create: %v", err)
@@ -618,6 +619,12 @@ func TestCreatePostMergeReviewIssue_LabelsAndPlainLocations(t *testing.T) {
 	}
 	if !strings.Contains(defects, "- at internal/foo/client.go:42 — ") {
 		t.Errorf("location not rendered as plain text:\n%s", defects)
+	}
+	if strings.Contains(in.Body, "`") {
+		t.Errorf("issue body contains a backtick:\n%s", in.Body)
+	}
+	if !strings.Contains(in.Body, "console-ui/src/api/client.ts") {
+		t.Errorf("reviewer notes path missing from body:\n%s", in.Body)
 	}
 }
 

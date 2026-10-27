@@ -474,7 +474,10 @@ func (f *FeedbackLoop) CreatePostMergeReviewIssue(ctx context.Context, prNumber 
 	fmt.Fprintf(&sb, "A post-merge review of PR #%d (%s), which implemented issue #%d, returned REQUEST-CHANGES. The PR is already merged; fix the defects below on a new PR.\n\n", prNumber, prURL, issueNumber)
 	sb.WriteString("## Defects\n\n")
 	sb.WriteString(formatPostMergeDefects(review.Defects))
-	if notes := sanitizePostMergeField(review.Notes, maxPostMergeNotesChars); notes != "" {
+	// Decision: Notes are backtick-free for the same reason as the defects —
+	// the base-presence gate scans backtick spans over the whole issue body,
+	// and a counterpart path in another repository would park the issue.
+	if notes := plainPostMergeField(review.Notes, maxPostMergeNotesChars); notes != "" {
 		sb.WriteString("\n## Reviewer Notes\n\n")
 		sb.WriteString(notes)
 		sb.WriteString("\n")
