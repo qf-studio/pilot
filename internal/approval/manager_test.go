@@ -3,6 +3,7 @@ package approval
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1355,5 +1356,44 @@ func TestRecordDecision_AlreadyDecidedRemovesPendingAndLogsRaceLost(t *testing.T
 	}
 	if !strings.Contains(logs.String(), "race lost") {
 		t.Errorf("expected race lost log, got: %s", logs.String())
+	}
+}
+
+// TestRecordDecision_ErrNoRowsCleansWaiter is the GH-5888 pin: sql.ErrNoRows
+// (an unlinked request: SetApprovalRequestID never landed) cleans the pending
+// entry and cancels the waiter like a lost race, instead of leaving it armed
+// until the stage timeout.
+func TestRecordDecision_ErrNoRowsCleansWaiter(t *testing.T) {
+	m, logs := submitPendingForRecord(t, fmt.Errorf("update approval: %w", sql.ErrNoRows), "unlinked-1")
+	handler := m.handlers[DefaultChannelName].(*mockHandler)
+
+	err := m.RecordDecision(context.Background(), "unlinked-1", DecisionApproved, "carol")
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected wrapped sql.ErrNoRows, got %v", err)
+	}
+	if n := len(m.GetPendingRequests()); n != 0 {
+		t.Errorf("pending entry must be removed on sql.ErrNoRows, got %d pending", n)
+	}
+
+	// CancelFn cancelled the waiter's context: the goroutine calls
+	// handler.CancelRequest (disarming the card) well before the 10s timeout.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		handler.mu.Lock()
+		n := len(handler.cancelCalls)
+		handler.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	handler.mu.Lock()
+	cancels := append([]string(nil), handler.cancelCalls...)
+	handler.mu.Unlock()
+	if len(cancels) != 1 || cancels[0] != "unlinked-1" {
+		t.Errorf("waiter must be cancelled and the card disarmed, cancelCalls = %v", cancels)
+	}
+	if strings.Contains(logs.String(), "timed out") {
+		t.Errorf("waiter must not run to timeout: %s", logs.String())
 	}
 }

@@ -2,6 +2,7 @@ package approval
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -497,12 +498,15 @@ func (m *Manager) NotifyMerged(ctx context.Context, requestID, shortSHA string) 
 // any background goroutine waiting on this request. Safe to call from
 // handler callbacks (e.g. Telegram button taps).
 //
-// GH-4777: waiter cleanup (the pending-map delete + CancelFn below) must run
-// even when the writer rejects the decision (e.g. memory.ErrApprovalAlreadyDecided
-// from a lost race) — the writer error is still returned to the caller, but a
-// race LOSER must not leave its channel button armed or its background
-// goroutine alive just because the write itself failed. Previously this
-// early-returned on writer error, before cleanup ever ran (PR#4767 review).
+// Writer outcomes (GH-4777, GH-5803, GH-5888):
+//   - success: the pending entry is dropped and the waiter cancelled.
+//   - memory.ErrApprovalAlreadyDecided (lost race) or sql.ErrNoRows (unlinked
+//     request: SetApprovalRequestID never landed): the same cleanup runs, then
+//     the error is returned. The row can never accept this decision, so the
+//     channel button must not stay armed nor the waiter live until the stage
+//     timeout.
+//   - any other writer error (persistence failure): the entry stays pending so
+//     the decision can be retried, and the error is returned.
 func (m *Manager) RecordDecision(ctx context.Context, requestID string, decision Decision, by string) error {
 	var writerErr error
 	if m.stateWriter != nil {
@@ -511,10 +515,13 @@ func (m *Manager) RecordDecision(ctx context.Context, requestID string, decision
 		}
 	}
 
-	// GH-5803: only a lost race (another decider already recorded) means the
-	// waiter can be dropped. Any other writer error is a persistence failure —
-	// keep the pending entry (and its waiter) so the decision can be retried.
-	if writerErr != nil && !errors.Is(writerErr, memory.ErrApprovalAlreadyDecided) {
+	// GH-5803/GH-5888: only a lost race (another decider already recorded) or
+	// an unlinked request (no row to update) means the waiter can be dropped.
+	// Any other writer error is a persistence failure — keep the pending entry
+	// (and its waiter) so the decision can be retried.
+	if writerErr != nil &&
+		!errors.Is(writerErr, memory.ErrApprovalAlreadyDecided) &&
+		!errors.Is(writerErr, sql.ErrNoRows) {
 		m.log.Warn("failed to persist approval decision — keeping request pending for retry",
 			slog.String("request_id", requestID),
 			slog.String("decision", string(decision)),
@@ -533,7 +540,13 @@ func (m *Manager) RecordDecision(ctx context.Context, requestID string, decision
 	if exists {
 		// Cancel the background goroutine waiting on the handler response.
 		pr.CancelFn()
-		if writerErr != nil {
+		if errors.Is(writerErr, sql.ErrNoRows) {
+			m.log.Warn("approval decision for unlinked request — waiter cleaned up without applying decision",
+				slog.String("request_id", requestID),
+				slog.String("decision", string(decision)),
+				slog.String("by", by),
+				slog.Any("error", writerErr))
+		} else if writerErr != nil {
 			// Only ErrApprovalAlreadyDecided reaches here (see above).
 			m.log.Info("approval decision race lost — waiter cleaned up without applying decision",
 				slog.String("request_id", requestID),
