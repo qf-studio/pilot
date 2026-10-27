@@ -28,6 +28,7 @@
 | Task dispatcher | ✅ | executor | - | - | Per-project queue (GH-46) |
 | Sequential execution | ✅ | executor | `--sequential` | `orchestrator.execution.mode` | Wait for PR merge before next issue |
 | Self-review | ✅ | executor | - | - | Auto code review before PR push (v0.13.0) |
+| Pre-flight git_clean self-heal | ✅ | executor | - | - | Direct-mode clone dirty on a pushed `pilot/` branch with no other running/queued row is hard-reset once; otherwise error lists the 3 conditions (GH-5901) |
 | Auto build gate | ✅ | executor | - | - | Minimal build gate when none configured (v0.13.0) |
 | Epic decomposition | ✅ | executor | - | `decompose.enabled` | PlanEpic + CreateSubIssues for complex tasks (v0.20.2) |
 | Epic scope guard | ✅ | executor | - | - | Consolidate single-package epics to prevent conflict cascade (v1.0.11) |

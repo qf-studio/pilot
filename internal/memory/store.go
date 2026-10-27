@@ -1245,6 +1245,13 @@ const (
 	// project worker is signalled; see ProjectWorker.processQueue and
 	// executor/base_presence.go.
 	StageBasePresenceHeld Stage = "executor.base_presence_held"
+	// StagePreflightSelfHeal records (GH-5901) that the git_clean pre-flight
+	// found a direct-mode clone dirty, proved the dirt belonged to a finished
+	// Pilot run (pilot/ branch, HEAD pushed, no other running/queued row for
+	// the project) and discarded it with a hard reset so the task could
+	// proceed. Detail is a JSON object: {"branch","files"}. Lets the finish
+	// tripwire and the dashboard attribute a clean clone to the heal.
+	StagePreflightSelfHeal Stage = "executor.preflight_self_heal"
 )
 
 // Event represents a single stage-transition record for an execution.

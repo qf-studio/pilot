@@ -4150,7 +4150,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			SkipGitClean: task.LocalMode || (r.config != nil && r.config.UseWorktree),
 			BackendType:  r.backendType(),
 		}
-		if err := RunPreflightChecksWithOptions(ctx, executionPath, preflightOpts); err != nil {
+		if err := r.runPreflight(ctx, task, executionPath, preflightOpts); err != nil {
 			r.log.Warn("Pre-flight check failed",
 				slog.String("task_id", task.ID),
 				slog.Any("error", err),
