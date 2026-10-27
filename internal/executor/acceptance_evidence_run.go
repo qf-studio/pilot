@@ -329,7 +329,13 @@ func runPasteOutputItemReusing(ctx context.Context, runner AcceptanceCommandRunn
 		out, err := runner.RunCommand(ctx, dir, command)
 		cr := AcceptanceCommandResult{Command: command, Output: finalizeEvidenceOutput(out)}
 		var exitErr *exec.ExitError
-		if err != nil && !errors.As(err, &exitErr) {
+		if err != nil && ctx.Err() != nil {
+			// GH-5890: the budget (or a cancellation) ended while this command
+			// was running, so its output is partial — a kill reads as a plain
+			// timeout or an ExitError, neither of which may render as evidence.
+			cr.Err = evidenceBudgetExhaustedReason
+			lastErr = errEvidenceBudgetExhausted
+		} else if err != nil && !errors.As(err, &exitErr) {
 			cr.Err = redactOutputForEvidence(err.Error())
 			lastErr = err
 		} else {
@@ -522,7 +528,7 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 
 		budgetCtx, cancel := r.evidenceBudgetCtx(ctx)
 		results = runAcceptanceEvidenceItemsBudgeted(budgetCtx, runner, workDir, items, cfg.EffectiveAllowedCommands(), evidenceRunOptions{
-			gateOutputs: newEvidenceGateOutputs(gates),
+			gateOutputs: r.evidenceGateOutputsAtHead(ctx, task, workDir, gates),
 			onEvent: func(event string, index int, elapsed time.Duration) {
 				r.logEvidenceEvent(task, event, index, elapsed)
 			},
@@ -549,6 +555,33 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 		return prBody
 	}
 	return strings.TrimRight(prBody, "\n") + "\n\n" + section
+}
+
+// evidenceGateOutputsAtHead indexes the reusable gate output of gates, or
+// returns nil when the pushed HEAD is no longer the tree the gates ran on
+// (GH-5890). Self-review can commit fixes after the gates with no gate re-run,
+// so a reused gate line would describe a tree that is not the pushed SHA; the
+// command is then run instead. A gates result without a recorded HeadSHA
+// predates the pin and is reused as before.
+func (r *Runner) evidenceGateOutputsAtHead(ctx context.Context, task *Task, workDir string, gates *QualityGatesResult) evidenceGateOutputs {
+	outputs := newEvidenceGateOutputs(gates)
+	if len(outputs) == 0 || gates.HeadSHA == "" {
+		return outputs
+	}
+	gitCtx, cancel := finalizeCtx(ctx, finalizeGitTimeout)
+	defer cancel()
+	head, err := NewGitOperations(workDir).GetCurrentCommitSHA(gitCtx)
+	if err == nil && head == gates.HeadSHA {
+		return outputs
+	}
+	if r.log != nil {
+		r.log.Info("Acceptance evidence skipped quality-gate reuse: HEAD moved after the gates ran",
+			slog.String("task_id", task.ID),
+			slog.String("gate_sha", gates.HeadSHA),
+			slog.String("head_sha", head),
+		)
+	}
+	return nil
 }
 
 // evidenceBudgetCtx returns the context the acceptance-evidence step runs on

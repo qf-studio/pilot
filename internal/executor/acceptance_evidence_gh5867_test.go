@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -188,4 +189,112 @@ func TestEvidenceBudgetCtx_DetachesDeadlineButKeepsCancel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("a real cancellation of the task ctx must stop the evidence step")
 	}
+}
+
+// initEvidenceGitRepo makes dir a git repo with one commit and returns HEAD.
+func initEvidenceGitRepo(t *testing.T, dir string) string {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	sha, err := NewGitOperations(dir).GetCurrentCommitSHA(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sha
+}
+
+// TestAppendAcceptanceEvidence_NoReuseAfterHeadMoved pins GH-5890: gate output
+// is reused only while the pushed HEAD is the tree the gates ran on.
+func TestAppendAcceptanceEvidence_NoReuseAfterHeadMoved(t *testing.T) {
+	dir := t.TempDir()
+	head := initEvidenceGitRepo(t, dir)
+
+	tests := []struct {
+		name      string
+		gateSHA   string
+		wantReuse bool
+	}{
+		{"same HEAD reuses", head, true},
+		{"moved HEAD runs the command", "0123456789abcdef0123456789abcdef01234567", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logBuf strings.Builder
+			r := &Runner{config: DefaultBackendConfig(), log: slog.New(slog.NewTextHandler(&logBuf, nil))}
+			fake := &fakeAcceptanceCommandRunner{responses: map[string]fakeCommandResponse{
+				"make test": {output: "ran for real"},
+			}}
+			r.acceptanceRunner = fake
+			gates := &QualityGatesResult{Enabled: true, HeadSHA: tt.gateSHA, Gates: []QualityGateResult{
+				{Name: "test", Passed: true, Command: "make test", Output: "gate output"},
+			}}
+			task := &Task{ID: "GH-5890", AcceptanceCriteria: []string{"paste the output of `make test` into the PR body"}}
+
+			got := r.appendAcceptanceEvidence(context.Background(), task, dir, "## Summary", gates)
+
+			if reused := strings.Contains(got, evidenceFromQualityGateMarker); reused != tt.wantReuse {
+				t.Errorf("reused = %v, want %v:\n%s", reused, tt.wantReuse, got)
+			}
+			if ran := len(fake.calls) == 1; ran == tt.wantReuse {
+				t.Errorf("runner calls = %v, want ran=%v", fake.calls, !tt.wantReuse)
+			}
+			logged := strings.Contains(logBuf.String(), "HEAD moved after the gates ran") &&
+				strings.Contains(logBuf.String(), tt.gateSHA) && strings.Contains(logBuf.String(), head)
+			if logged == tt.wantReuse {
+				t.Errorf("Info line with both SHAs logged = %v, want %v; log:\n%s", logged, !tt.wantReuse, logBuf.String())
+			}
+		})
+	}
+}
+
+// TestRunPasteOutputItem_BudgetKillMarksCommandErr: a command killed by the
+// budget carries Err even though the run reports a plain ExitError, and the
+// not-yet-run command after it is marked too.
+func TestRunPasteOutputItem_BudgetKillMarksCommandErr(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner := &killOnSecondRunner{cancel: cancel}
+	item := AcceptanceItem{Kind: AcceptanceItemPasteOutput, Text: "paste a, b and c",
+		Commands: []string{"go test ./a/", "go test ./b/", "go test ./c/"}}
+
+	res := runPasteOutputItemReusing(ctx, runner, t.TempDir(), item, defaultTestAllowedCommands, nil)
+
+	if res.NotVerifiedReason != "" {
+		t.Fatalf("a mixed item has no item-level reason, got %q", res.NotVerifiedReason)
+	}
+	if len(res.Commands) != 3 {
+		t.Fatalf("want 3 command results, got %d", len(res.Commands))
+	}
+	if res.Commands[0].Err != "" {
+		t.Errorf("A finished, got Err %q", res.Commands[0].Err)
+	}
+	for _, c := range res.Commands[1:] {
+		if c.Err != evidenceBudgetExhaustedReason {
+			t.Errorf("%s: Err = %q, want %q", c.Command, c.Err, evidenceBudgetExhaustedReason)
+		}
+	}
+}
+
+// killOnSecondRunner lets the first command finish, then ends the ctx during
+// the second and returns the kill as a plain ExitError, as exec does.
+type killOnSecondRunner struct {
+	cancel context.CancelFunc
+	n      int
+}
+
+func (k *killOnSecondRunner) RunCommand(_ context.Context, _, command string) (string, error) {
+	k.n++
+	if k.n == 1 {
+		return "ok  \tpkg/a\t0.1s", nil
+	}
+	k.cancel()
+	return "ok  \tpkg/b\t(partial)", &exec.ExitError{}
 }

@@ -908,6 +908,10 @@ type QualityGatesResult struct {
 	TotalDuration time.Duration
 	// TotalRetries is the sum of all retry attempts across gates
 	TotalRetries int
+	// HeadSHA is the worktree HEAD when the gate run ended (GH-5890). Empty
+	// when it could not be read. Acceptance evidence reuses gate output only
+	// while the pushed HEAD still equals it.
+	HeadSHA string
 }
 
 // ExecutionResult represents the result of task execution by the Runner.
@@ -3155,6 +3159,7 @@ func (r *Runner) attemptBackendTimeoutSalvage(ctx context.Context, task *Task, g
 				return true
 			default:
 				result.QualityGates = r.buildQualityGatesResult(outcome, 0)
+				r.stampQualityGatesHead(finCtx, git, result.QualityGates, log)
 				r.recordQualityGateEvents(task.LogExecutionID(), outcome)
 			}
 		}
@@ -6532,6 +6537,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// Populate quality gate results in ExecutionResult (GH-209)
 				if finalOutcome != nil {
 					result.QualityGates = r.buildQualityGatesResult(finalOutcome, totalQualityRetries)
+					r.stampQualityGatesHead(ctx, git, result.QualityGates, log)
 					r.recordQualityGateEvents(task.LogExecutionID(), finalOutcome)
 				}
 			}
@@ -9126,6 +9132,20 @@ func (r *Runner) buildQualityGatesResult(outcome *QualityOutcome, totalRetries i
 	}
 
 	return qgResult
+}
+
+// stampQualityGatesHead records the worktree HEAD at the end of the gate run on
+// qg (GH-5890). A read failure leaves HeadSHA empty and is logged.
+func (r *Runner) stampQualityGatesHead(ctx context.Context, git *GitOperations, qg *QualityGatesResult, log *slog.Logger) {
+	if qg == nil || git == nil {
+		return
+	}
+	sha, err := git.GetCurrentCommitSHA(ctx)
+	if err != nil {
+		log.Warn("Could not record HEAD after quality gates", slog.Any("error", err))
+		return
+	}
+	qg.HeadSHA = sha
 }
 
 // recordQualityGateEvents persists quality.CheckResults timing (computed but

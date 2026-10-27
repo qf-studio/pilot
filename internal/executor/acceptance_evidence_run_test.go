@@ -864,3 +864,42 @@ func TestAcceptanceEvidenceConfig_Effective(t *testing.T) {
 		t.Errorf("invalid timeout should fall back to default, got %s", got)
 	}
 }
+
+// TestRenderAcceptanceEvidence_MixedItemBudgetKill pins GH-5890: in an item
+// whose commands A finished, B was killed by the budget and C never ran, A is
+// Evidence while B and C are Not verified with their reason.
+func TestRenderAcceptanceEvidence_MixedItemBudgetKill(t *testing.T) {
+	results := []AcceptanceEvidenceResult{{
+		Item: AcceptanceItem{Kind: AcceptanceItemPasteOutput, Text: "paste the test runs"},
+		Commands: []AcceptanceCommandResult{
+			{Command: "go test ./a/", Output: "ok  pkg/a"},
+			{Command: "go test ./b/", Output: "ok  pkg/b partial", Err: evidenceBudgetExhaustedReason},
+			{Command: "go test ./c/", Output: evidenceBudgetExhaustedReason, Err: evidenceBudgetExhaustedReason},
+		},
+	}}
+
+	got := RenderAcceptanceEvidenceSections(results)
+	evidencePart, notVerifiedPart, ok := strings.Cut(got, "## Not verified")
+	if !ok {
+		t.Fatalf("expected a Not verified section:\n%s", got)
+	}
+	if !strings.Contains(evidencePart, "## Evidence") || !strings.Contains(evidencePart, "$ go test ./a/") {
+		t.Errorf("A must render under Evidence:\n%s", got)
+	}
+	for _, killed := range []string{"go test ./b/", "ok  pkg/b partial"} {
+		if strings.Contains(evidencePart, killed) {
+			t.Errorf("%q must not render under Evidence:\n%s", killed, got)
+		}
+	}
+	if strings.Contains(notVerifiedPart, "ok  pkg/a") {
+		t.Errorf("finished output must stay out of Not verified:\n%s", got)
+	}
+	for _, cmd := range []string{"go test ./b/", "go test ./c/"} {
+		if !strings.Contains(notVerifiedPart, "`"+cmd+"`") {
+			t.Errorf("%s must be listed under Not verified:\n%s", cmd, got)
+		}
+	}
+	if n := strings.Count(notVerifiedPart, "Reason: "+evidenceBudgetExhaustedReason); n != 2 {
+		t.Errorf("want 2 budget-exhausted reasons, got %d:\n%s", n, got)
+	}
+}

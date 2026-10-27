@@ -508,29 +508,52 @@ func RenderAcceptanceEvidenceSections(results []AcceptanceEvidenceResult) string
 	hasEvidence := false
 	hasNotVerified := false
 
+	writeNotVerified := func(text, command, reason string) {
+		hasNotVerified = true
+		// Match text+reason, as LiveSmokeNotVerifiedBullets does on the
+		// rendered body, so a reason-only match is explained too (GH-5597).
+		if IsLiveSmokeBullet(text + "\n" + reason) {
+			reason += "; " + liveSmokeHoldNote
+		}
+		if command != "" {
+			fmt.Fprintf(&notVerified, "- **%s**\n  Command: `%s`\n  Reason: %s\n\n", text, command, reason)
+			return
+		}
+		fmt.Fprintf(&notVerified, "- **%s**\n  Reason: %s\n\n", text, reason)
+	}
+
 	for _, r := range results {
 		if r.NotVerifiedReason != "" {
-			hasNotVerified = true
-			reason := r.NotVerifiedReason
-			// Match text+reason, as LiveSmokeNotVerifiedBullets does on the
-			// rendered body, so a reason-only match is explained too (GH-5597).
-			if IsLiveSmokeBullet(r.Item.Text + "\n" + reason) {
-				reason += "; " + liveSmokeHoldNote
-			}
-			fmt.Fprintf(&notVerified, "- **%s**\n  Reason: %s\n\n", r.Item.Text, reason)
+			writeNotVerified(r.Item.Text, "", r.NotVerifiedReason)
 			continue
 		}
 
 		switch r.Item.Kind {
 		case AcceptanceItemPasteOutput:
-			hasEvidence = true
-			fmt.Fprintf(&evidence, "### %s\n\n", evidenceHeading(r.Item.Text, r.Commands))
+			// GH-5890: a command that errored (budget kill, timeout, execution
+			// error) is Not verified on its own, even when its siblings in the
+			// same item finished — its partial output must never read as a pass.
+			var finished, errored []AcceptanceCommandResult
 			for _, c := range r.Commands {
-				suffix := ""
-				if c.FromQualityGate {
-					suffix = " " + evidenceFromQualityGateMarker
+				if c.Err != "" {
+					errored = append(errored, c)
+				} else {
+					finished = append(finished, c)
 				}
-				fmt.Fprintf(&evidence, "```\n$ %s%s\n%s\n```\n\n", c.Command, suffix, c.Output)
+			}
+			if len(finished) > 0 || len(errored) == 0 {
+				hasEvidence = true
+				fmt.Fprintf(&evidence, "### %s\n\n", evidenceHeading(r.Item.Text, finished))
+				for _, c := range finished {
+					suffix := ""
+					if c.FromQualityGate {
+						suffix = " " + evidenceFromQualityGateMarker
+					}
+					fmt.Fprintf(&evidence, "```\n$ %s%s\n%s\n```\n\n", c.Command, suffix, c.Output)
+				}
+			}
+			for _, c := range errored {
+				writeNotVerified(r.Item.Text, c.Command, c.Err)
 			}
 		case AcceptanceItemMutation:
 			hasEvidence = true
