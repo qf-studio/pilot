@@ -1398,12 +1398,16 @@ func githubEventHasNeedsHumanLabel(labels []string) bool {
 	return githubEventHasLabel(labels, labelPilotNeedsHumanSDK)
 }
 
-// githubEventHasLabel reports whether labels contains an exact match for
-// label. Shared by the needs-human re-admission check above and the
-// terminal-drop pilot-strip guard (GH-5300, shouldStripPilotAfterTerminalDrops).
+// githubEventHasLabel reports whether labels contains label, compared
+// case-insensitively. Shared by the live admission gate, the needs-human
+// re-admission check above and the terminal-drop pilot-strip guard (GH-5300,
+// shouldStripPilotAfterTerminalDrops).
+// Decision: GitHub treats label names case-insensitively, and the SDK poller
+// (HasLabel) and webhook handler both use strings.EqualFold, so a config
+// pilot_label of "Pilot" must still match a repo label "pilot" here (GH-5889).
 func githubEventHasLabel(labels []string, label string) bool {
 	for _, l := range labels {
-		if l == label {
+		if strings.EqualFold(l, label) {
 			return true
 		}
 	}

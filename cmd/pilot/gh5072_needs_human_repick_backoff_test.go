@@ -239,6 +239,7 @@ func TestHandleGithubIssueEventSDK_LiveLabelsGate(t *testing.T) {
 		name       string
 		liveState  string
 		liveLabels []string
+		cfgLabel   string // config pilot_label; "" => "pilot"
 		fetchErr   bool
 		wantReason string // "" => must not be skipped by the live gate
 	}{
@@ -247,6 +248,8 @@ func TestHandleGithubIssueEventSDK_LiveLabelsGate(t *testing.T) {
 		{name: "pilot-blocked added", liveState: "open", liveLabels: []string{"pilot", "pilot-blocked"}, wantReason: skipReasonPilotBlocked},
 		{name: "pilot-needs-clarification added", liveState: "open", liveLabels: []string{"pilot", "pilot-needs-clarification"}, wantReason: skipReasonNeedsClarification},
 		{name: "pilot-needs-human added", liveState: "open", liveLabels: []string{"pilot", "pilot-needs-human"}, wantReason: skipReasonNeedsHuman},
+		{name: "trigger label case differs from config is admitted", liveState: "open", liveLabels: []string{"pilot"}, cfgLabel: "Pilot"},
+		{name: "needs-human label case differs is still skipped", liveState: "open", liveLabels: []string{"pilot", "Pilot-Needs-Human"}, wantReason: skipReasonNeedsHuman},
 		{name: "fetch error proceeds with ev.Labels", fetchErr: true},
 	}
 
@@ -307,9 +310,13 @@ func TestHandleGithubIssueEventSDK_LiveLabelsGate(t *testing.T) {
 			backoffKey := repickBackoffKey(projectPath, taskID)
 			t.Cleanup(func() { repickBackoff.recordSuccess(backoffKey) })
 
+			pilotLabel := tc.cfgLabel
+			if pilotLabel == "" {
+				pilotLabel = "pilot"
+			}
 			cfg := &config.Config{Adapters: &config.AdaptersConfig{GitHub: &github.Config{
 				Token:      testutil.FakeGitHubToken,
-				PilotLabel: "pilot",
+				PilotLabel: pilotLabel,
 			}}}
 			// ev is the pre-wait snapshot: still carries the trigger label.
 			// pilot-skip-spec-check keeps the fetch-error case past the spec
@@ -327,7 +334,7 @@ func TestHandleGithubIssueEventSDK_LiveLabelsGate(t *testing.T) {
 				if result != nil && result.Skipped {
 					switch result.SkipReason {
 					case skipReasonIssueClosed, skipReasonTriggerLabelRemoved, skipReasonPilotBlocked, skipReasonNeedsClarification, skipReasonNeedsHuman:
-						t.Fatalf("fetch error must fail open, got live-gate skip: %+v (err=%v)", result, err)
+						t.Fatalf("case must pass the live gate, got live-gate skip: %+v (err=%v)", result, err)
 					}
 				}
 				return
