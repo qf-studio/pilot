@@ -215,7 +215,6 @@ var allowRules = []rule{
 	{"run", "list", kindRead},
 	{"auth", "status", kindRead},
 	{"api", "", kindAPIRead},
-	{"pr", "create", kindOwnArtifact},
 	{"issue", "comment", kindOwnArtifact},
 	{"pr", "comment", kindOwnArtifact},
 }
@@ -243,6 +242,21 @@ var hardDenyIssueSubs = map[string]bool{
 	"pin":      true,
 	"unpin":    true,
 	"develop":  true,
+}
+
+// hardDenyPRSubs are `gh pr <sub>` forms that open, merge or re-target the
+// task's PR. They are Pilot's steps, never the agent session's: the executor
+// opens the PR only after the quality gates, intent judge, self-review and
+// evidence steps, and an agent-opened PR is adopted by the autopilot
+// reconciler and merged on CI alone (GH-5862 incident, 2026-10-26). Denied
+// regardless of branch or --head. `edit` is denied wholesale, which covers
+// `--base` re-targeting.
+var hardDenyPRSubs = map[string]bool{
+	"create": true,
+	"merge":  true,
+	"close":  true,
+	"ready":  true,
+	"edit":   true,
 }
 
 // flagAction is the policy-relevant effect of recognizing a given flag.
@@ -651,6 +665,9 @@ func Classify(id Identity, args []string, env EnvOverride) Decision {
 	if p.command == "issue" && hardDenyIssueSubs[p.sub] {
 		return deny(fmt.Sprintf("gh issue %s mutates issue lifecycle state and is never permitted", p.sub), allowedSummary())
 	}
+	if p.command == "pr" && hardDenyPRSubs[p.sub] {
+		return deny(fmt.Sprintf("pr %s is Pilot's step: the executor opens the PR after the quality gates", p.sub), allowedSummary())
+	}
 	if p.hasAddLabel || p.hasRemoveLabel {
 		return deny("label mutation (--add-label/--remove-label) is never permitted", allowedSummary())
 	}
@@ -776,21 +793,11 @@ func isAPIGraphQL(p parsedArgs) bool {
 	return len(p.positional) > 0 && p.positional[0] == "graphql"
 }
 
-// checkOwnArtifact allows pr create / issue comment / pr comment only when
-// the call's target matches the task's own branch or issue number.
+// checkOwnArtifact allows issue comment / pr comment only when the call's
+// target matches the task's own branch or issue number. pr create is not
+// here: it is hard-denied in Classify (see hardDenyPRSubs).
 func checkOwnArtifact(id Identity, p parsedArgs) Decision {
 	switch p.command + " " + p.sub {
-	case "pr create":
-		if !p.headGiven {
-			// No explicit --head: gh defaults to the current branch, which
-			// in the executor's worktree is already the task branch.
-			return Decision{Verdict: VerdictAllow, Reason: "pr create on current branch"}
-		}
-		if p.head == id.TaskBranch && id.TaskBranch != "" {
-			return Decision{Verdict: VerdictAllow, Reason: "pr create targets the task's own branch"}
-		}
-		return deny(fmt.Sprintf("gh pr create --head %s does not match the task's branch %s", p.head, id.TaskBranch), allowedSummary())
-
 	case "issue comment":
 		if len(p.positional) == 0 {
 			return deny("gh issue comment requires an issue number and none was given", allowedSummary())
@@ -828,7 +835,7 @@ func deny(reason, allowed string) Decision {
 // rejection.
 func allowedSummary() string {
 	return "allowed: gh issue view/list, gh pr view/list/checks/diff, gh run view/list, " +
-		"gh auth status, gh api (GET only), gh pr create (own branch), " +
+		"gh auth status, gh api (GET only), " +
 		"gh issue comment/gh pr comment (own issue/PR)"
 }
 

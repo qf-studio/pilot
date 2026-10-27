@@ -88,7 +88,8 @@ func githubScopeDirective(task *Task) string {
 		"You are scoped to %s issue #%s and branch `%s` ONLY — comment on your OWN issue or its own PR if needed, and do nothing else there: "+
 			"NEVER close, reopen, edit, or label ANY issue, including this one — issue lifecycle and `pilot-*` labels are system-owned, applied by the Notifier after your run, not by you. "+
 			"NEVER run `gh issue`, `gh pr`, `gh release`, or `gh api` mutation commands against any other issue, PR, or repository. "+
-			"NEVER push to any branch except `%s`.\n\n",
+			"NEVER push to any branch except `%s`. "+
+			"Pilot opens the pull request after the quality gates; never run gh pr create or gh pr merge — commit and push to the task branch only.\n\n",
 		task.SourceRepo, task.SourceIssueID, own, own,
 	)
 }

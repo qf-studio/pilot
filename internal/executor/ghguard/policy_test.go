@@ -46,8 +46,6 @@ func TestClassify(t *testing.T) {
 		{"api GET explicit --method lowercase", []string{"api", "repos/qf-studio/pilot/issues/1", "--method", "get"}, VerdictAllow},
 
 		// --- own-artifact allows ---
-		{"pr create no head (current branch)", []string{"pr", "create", "--title", "t", "--body", "b"}, VerdictAllow},
-		{"pr create head matches task branch", []string{"pr", "create", "--head", "pilot/GH-4671", "--title", "t"}, VerdictAllow},
 		{"issue comment own issue", []string{"issue", "comment", "4671", "--body", "hi"}, VerdictAllow},
 		{"issue comment own issue via URL", []string{"issue", "comment", "https://github.com/qf-studio/pilot/issues/4671", "--body", "hi"}, VerdictAllow},
 		{"pr comment no target (current branch)", []string{"pr", "comment", "--body", "hi"}, VerdictAllow},
@@ -68,6 +66,12 @@ func TestClassify(t *testing.T) {
 
 		// --- hard denies: cross-issue/PR number on own-artifact commands ---
 		{"issue comment on sibling issue", []string{"issue", "comment", "1", "--body", "hi"}, VerdictDeny},
+		{"pr create no head (current branch)", []string{"pr", "create", "--title", "t", "--body", "b"}, VerdictDeny},
+		{"pr create head matches task branch", []string{"pr", "create", "--head", "pilot/GH-4671", "--title", "t"}, VerdictDeny},
+		{"pr merge", []string{"pr", "merge", "12"}, VerdictDeny},
+		{"pr close", []string{"pr", "close", "12"}, VerdictDeny},
+		{"pr ready", []string{"pr", "ready", "12"}, VerdictDeny},
+		{"pr edit base", []string{"pr", "edit", "12", "--base", "main"}, VerdictDeny},
 		{"pr create head mismatched branch", []string{"pr", "create", "--head", "some-other-branch", "--title", "t"}, VerdictDeny},
 		{"pr comment on numeric target", []string{"pr", "comment", "99", "--body", "hi"}, VerdictDeny},
 		{"pr comment on URL target", []string{"pr", "comment", "https://github.com/qf-studio/pilot/pull/99", "--body", "hi"}, VerdictDeny},
@@ -145,11 +149,11 @@ func TestClassify(t *testing.T) {
 
 		// pr create -f is --fill (boolean), not a value flag
 		{"pr create fill does not swallow --head", []string{"pr", "create", "-f", "--head", "other-branch"}, VerdictDeny}, // G11
-		{"pr create fill with own head", []string{"pr", "create", "-f", "--head", "pilot/GH-4671"}, VerdictAllow},
-		{"pr create fill with own head via -H", []string{"pr", "create", "-f", "-H", "pilot/GH-4671"}, VerdictAllow},
+		{"pr create fill with own head", []string{"pr", "create", "-f", "--head", "pilot/GH-4671"}, VerdictDeny},
+		{"pr create fill with own head via -H", []string{"pr", "create", "-f", "-H", "pilot/GH-4671"}, VerdictDeny},
 
 		// -- terminates flag parsing
-		{"pr create -- then --head is positional not a flag", []string{"pr", "create", "--head", "pilot/GH-4671", "--", "--head"}, VerdictAllow},
+		{"pr create -- then --head is positional not a flag", []string{"pr", "create", "--head", "pilot/GH-4671", "--", "--head"}, VerdictDeny},
 
 		// fail-closed on unverifiable api/own-artifact flags
 		{"api unknown flag fails closed", []string{"api", "x", "--not-a-real-flag", "v"}, VerdictDeny},
@@ -355,9 +359,9 @@ func TestClassify_IncompleteIdentity(t *testing.T) {
 		t.Errorf("pr create --head with empty identity: got %s, want deny", got.Verdict)
 	}
 
-	// pr create with no --head at all still allows (defaults to current branch).
-	if got := Classify(id, []string{"pr", "create", "--title", "t"}, EnvOverride{}); got.Verdict != VerdictAllow {
-		t.Errorf("pr create no --head with empty identity: got %s, want allow", got.Verdict)
+	// pr create is Pilot's step, so it is denied with no --head too.
+	if got := Classify(id, []string{"pr", "create", "--title", "t"}, EnvOverride{}); got.Verdict != VerdictDeny {
+		t.Errorf("pr create no --head with empty identity: got %s, want deny", got.Verdict)
 	}
 }
 
@@ -556,5 +560,45 @@ func writeExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// GH-5877: the executor, not the agent session, opens and merges the PR —
+// after the quality gates. An agent-opened PR is adopted by the reconciler
+// and merged on CI alone, so pr create/merge/close/ready/edit are denied for
+// the agent regardless of branch, while comment/view/checks stay allowed.
+func TestPolicy_PRCreateDeniedForAgent(t *testing.T) {
+	id := Identity{TaskRepo: "qf-studio/pilot", TaskIssue: "1", TaskBranch: "pilot/GH-1"}
+
+	denied := [][]string{
+		{"pr", "create", "--head", "pilot/GH-1"},
+		{"pr", "create", "--title", "t", "--body", "b"},
+		{"pr", "merge", "12"},
+		{"pr", "close", "12"},
+		{"pr", "ready", "12"},
+		{"pr", "edit", "12", "--base", "main"},
+	}
+	for _, args := range denied {
+		got := Classify(id, args, EnvOverride{})
+		if got.Verdict != VerdictDeny {
+			t.Errorf("gh %v: got %s (%s), want deny", args, got.Verdict, got.Reason)
+			continue
+		}
+		if !strings.Contains(got.Reason, "Pilot's step") {
+			t.Errorf("gh %v: reason %q should contain \"Pilot's step\"", args, got.Reason)
+		}
+	}
+
+	allowed := [][]string{
+		{"pr", "comment", "--body", "hi"},
+		{"pr", "comment", "pilot/GH-1", "--body", "hi"},
+		{"pr", "view", "12"},
+		{"pr", "checks", "12"},
+		{"issue", "comment", "1", "--body", "hi"},
+	}
+	for _, args := range allowed {
+		if got := Classify(id, args, EnvOverride{}); got.Verdict != VerdictAllow {
+			t.Errorf("gh %v: got %s (%s), want allow", args, got.Verdict, got.Reason)
+		}
 	}
 }

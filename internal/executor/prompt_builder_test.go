@@ -1497,3 +1497,35 @@ func TestBuildPromptAnnotatesFreeformMutationPins(t *testing.T) {
 		t.Error("acceptance block header should explain MUTATION PIN items")
 	}
 }
+
+// GH-5877: the scope rule must tell the agent that Pilot opens the PR after
+// the gates — an agent-opened PR is adopted and merged on CI alone.
+func TestBuildPrompt_PRCreationIsPilotsStep(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tempDir, ".agent"), 0755); err != nil {
+		t.Fatalf("Failed to create .agent dir: %v", err)
+	}
+
+	runner := NewRunner()
+	task := &Task{
+		ID:            "GH-5877",
+		Title:         "deny pr create",
+		Description:   "guard denies gh pr create",
+		ProjectPath:   tempDir,
+		Branch:        "pilot/GH-5877",
+		SourceRepo:    "qf-studio/pilot",
+		SourceIssueID: "5877",
+	}
+
+	prompt := runner.BuildPrompt(task, tempDir)
+
+	for _, want := range []string{
+		"Pilot opens the pull request after the quality gates",
+		"never run gh pr create",
+		"gh pr merge",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("BuildPrompt should contain %q (GH-5877), got:\n%s", want, prompt)
+		}
+	}
+}
