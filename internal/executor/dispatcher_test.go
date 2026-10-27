@@ -6856,3 +6856,145 @@ func TestProcessQueue_HeldTaskDoesNotStarveRunnableTasks(t *testing.T) {
 		t.Errorf("held task status after re-check = %q, want still queued", got)
 	}
 }
+
+// fakeLiveRegistry is a liveExecutionRegistry whose live set is fixed by the test.
+type fakeLiveRegistry map[string]bool
+
+func (f fakeLiveRegistry) IsRunning(taskID string) bool { return f[taskID] }
+
+// seedStaleRunningWithCompletedSibling saves a running row plus a genuinely
+// completed sibling row for the same task and an on-disk fake worktree dir
+// matching PruneOrphanedWorktreeForTask's naming, returning the worktree path.
+func seedStaleRunningWithCompletedSibling(t *testing.T, store *memory.Store, taskID, projectPath string, withSibling bool) string {
+	t.Helper()
+	running := &memory.Execution{ID: "exec-" + taskID + "-running", TaskID: taskID, ProjectPath: projectPath, Status: "running"}
+	if err := store.SaveExecution(running); err != nil {
+		t.Fatalf("save running row: %v", err)
+	}
+	if withSibling {
+		sibling := &memory.Execution{ID: "exec-" + taskID + "-done", TaskID: taskID, ProjectPath: projectPath, Status: "completed", PRUrl: "https://github.com/qf-studio/pilot/pull/1"}
+		if err := store.SaveExecution(sibling); err != nil {
+			t.Fatalf("save completed sibling: %v", err)
+		}
+	}
+	wt, err := os.MkdirTemp("", "pilot-worktree-"+taskID+"-")
+	if err != nil {
+		t.Fatalf("create fake worktree: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(wt) })
+	return wt
+}
+
+// TestRecoverStaleRunning_SkipsLiveExecution is the GH-5878 regression guard:
+// a running row older than the threshold whose task the runner reports as
+// live in this process is neither deleted nor marked failed/stalled and its
+// worktree is not pruned, even when a completed sibling row exists (the
+// GH-5862 incident: an agent-opened PR merged mid-run).
+func TestRecoverStaleRunning_SkipsLiveExecution(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	const taskID = "GH-98781"
+	const projectPath = "/project-live-exec"
+	wt := seedStaleRunningWithCompletedSibling(t, store, taskID, projectPath, true)
+
+	origCheck := staleRunningMergedPRCheck
+	staleRunningMergedPRCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	defer func() { staleRunningMergedPRCheck = origCheck }()
+
+	d := NewDispatcher(store, NewRunner(), &DispatcherConfig{StaleRunningThreshold: 0, StaleQueuedThreshold: 0, StaleRecoveryInterval: time.Hour})
+	d.liveness = fakeLiveRegistry{taskID: true}
+
+	if n := d.recoverStaleRunningTasks(); n != 0 {
+		t.Errorf("reset count = %d, want 0", n)
+	}
+
+	got, err := store.GetExecution("exec-" + taskID + "-running")
+	if err != nil {
+		t.Fatalf("live running row must not be deleted: %v", err)
+	}
+	if got.Status != "running" {
+		t.Errorf("live row status = %q, want running", got.Status)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("live execution's worktree must not be pruned: %v", err)
+	}
+}
+
+// TestRecoverStaleRunning_NotLiveStillReaped pins the unchanged non-live
+// paths: a completed sibling deletes the row (and prunes its worktree); with
+// no completed row and no live worker the row is marked stalled.
+func TestRecoverStaleRunning_NotLiveStillReaped(t *testing.T) {
+	origCheck := staleRunningMergedPRCheck
+	staleRunningMergedPRCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	defer func() { staleRunningMergedPRCheck = origCheck }()
+
+	tests := []struct {
+		name        string
+		taskID      string
+		sibling     bool
+		wantDeleted bool
+	}{
+		{name: "completed sibling deletes row", taskID: "GH-98782", sibling: true, wantDeleted: true},
+		{name: "no completed row marks stalled", taskID: "GH-98783", sibling: false, wantDeleted: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+			wt := seedStaleRunningWithCompletedSibling(t, store, tc.taskID, "/project-not-live", tc.sibling)
+
+			d := NewDispatcher(store, NewRunner(), &DispatcherConfig{StaleRunningThreshold: 0, StaleQueuedThreshold: 0, StaleRecoveryInterval: time.Hour})
+			d.liveness = fakeLiveRegistry{} // nothing live
+
+			d.recoverStaleRunningTasks()
+
+			got, err := store.GetExecution("exec-" + tc.taskID + "-running")
+			if tc.wantDeleted {
+				if err == nil {
+					t.Errorf("expected row deleted, still has status %q", got.Status)
+				}
+				if _, statErr := os.Stat(wt); statErr == nil {
+					t.Errorf("expected worktree pruned, still exists")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if got.Status != string(ExecStatusStalled) {
+				t.Errorf("status = %q, want %q", got.Status, ExecStatusStalled)
+			}
+		})
+	}
+}
+
+// TestReapOrphanedClaims_SkipsLiveExecution is the GH-5878 claim-reaper guard:
+// a row-less claim whose task is live in this process must survive the reap,
+// while the same claim is reaped once the runner no longer holds the task.
+func TestReapOrphanedClaims_SkipsLiveExecution(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	config := DefaultDispatcherConfig()
+	config.OrphanedClaimGraceWindow = 10 * time.Millisecond
+	d := NewDispatcher(store, NewRunner(), config)
+
+	const taskID, projectPath = "GH-98784", "/project-live-claim"
+	if claimed, err := store.ClaimExecution(taskID, projectPath, 0, "exec-live-owner"); err != nil || !claimed {
+		t.Fatalf("seed claim: claimed=%v err=%v", claimed, err)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	d.liveness = fakeLiveRegistry{taskID: true}
+	d.reapOrphanedClaims()
+	if _, _, found, err := store.LatestClaimGeneration(taskID, projectPath); err != nil || !found {
+		t.Fatalf("live execution's claim must not be reaped: found=%v err=%v", found, err)
+	}
+
+	d.liveness = fakeLiveRegistry{}
+	d.reapOrphanedClaims()
+	if _, _, found, err := store.LatestClaimGeneration(taskID, projectPath); err != nil || found {
+		t.Errorf("non-live orphan claim should be reaped: found=%v err=%v", found, err)
+	}
+}

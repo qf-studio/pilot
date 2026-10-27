@@ -1382,6 +1382,28 @@ func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) 
 	return count > 0, nil
 }
 
+// CompletedExecutionID returns the id of a genuine completed execution row
+// (same definition as HasCompletedExecution) for taskID in projectPath,
+// excluding the row excludeID. found is false when no such row exists. GH-5878:
+// the stale-running reaper uses this to compare against rows other than the one
+// it is about to delete and to log which row satisfied the shortcut.
+func (s *Store) CompletedExecutionID(taskID, projectPath, excludeID string) (id string, found bool, err error) {
+	err = s.db.QueryRow(`
+		SELECT id FROM executions
+		WHERE task_id = ? AND project_path = ? AND id != ? AND status = 'completed'
+			AND (error IS NULL OR error = '')
+			AND (commit_sha != '' OR pr_url != '')
+		ORDER BY created_at DESC LIMIT 1
+	`, taskID, projectPath, excludeID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return id, true, nil
+}
+
 // HasTerminalCompletion reports whether taskID has ANY row in projectPath
 // that is terminal in the sense that no further dispatch is warranted:
 // either a genuine HasCompletedExecution row (completed with a commit/PR
@@ -4069,6 +4091,16 @@ type OrphanedClaim struct {
 // Returns the reaped claims (possibly empty) for the caller to log —
 // deletion already happened by the time this returns.
 func (s *Store) ReapOrphanedClaims(graceWindow time.Duration) ([]OrphanedClaim, error) {
+	return s.ReapOrphanedClaimsUnless(graceWindow, nil)
+}
+
+// ReapOrphanedClaimsUnless is ReapOrphanedClaims with a liveness veto: claims
+// for which isLive(taskID, projectPath) reports true are neither deleted nor
+// returned. GH-5878: a claim whose execution is still running in this process
+// can lack an executions row (the stale-running reaper deleted it), and
+// reaping the claim would let a duplicate dispatch start under a live run. A
+// nil isLive keeps ReapOrphanedClaims' behaviour.
+func (s *Store) ReapOrphanedClaimsUnless(graceWindow time.Duration, isLive func(taskID, projectPath string) bool) ([]OrphanedClaim, error) {
 	// GH-5308: execution_claims.created_at is DATETIME DEFAULT CURRENT_TIMESTAMP
 	// (ClaimExecution never stamps it itself — see backdateClaim's comment in
 	// store_test.go), which SQLite/the DSN's _time_format=sqlite driver write
@@ -4113,6 +4145,9 @@ func (s *Store) ReapOrphanedClaims(graceWindow time.Duration) ([]OrphanedClaim, 
 		if err := rows.Scan(&taskID, &projectPath, &generation, &executionID, &createdAt); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scanning orphaned claim: %w", err)
+		}
+		if isLive != nil && isLive(taskID, projectPath) {
+			continue
 		}
 		orphans = append(orphans, OrphanedClaim{
 			TaskID:      taskID,

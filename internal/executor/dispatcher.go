@@ -184,9 +184,13 @@ func (c *DispatcherConfig) resolveDefaults() {
 // Progress updates are emitted via runner.EmitProgress() so they
 // flow through the same callback path as execution progress.
 type Dispatcher struct {
-	config     *DispatcherConfig
-	store      *memory.Store
-	runner     *Runner
+	config *DispatcherConfig
+	store  *memory.Store
+	runner *Runner
+	// liveness answers "is this task executing in this process?" for the
+	// stale-running reaper and claim reaper (GH-5878). Backed by the runner's
+	// registry; nil (no runner) keeps the pre-GH-5878 behaviour.
+	liveness   liveExecutionRegistry
 	decomposer *TaskDecomposer           // Optional task decomposer
 	workers    map[string]*ProjectWorker // key: project path
 	mu         sync.RWMutex
@@ -278,9 +282,23 @@ func NewDispatcher(store *memory.Store, runner *Runner, config *DispatcherConfig
 	// used by tests exercising Dispatcher in isolation.
 	if runner != nil {
 		runner.setReclaimSelfOwnedQueuedChildFn(d.reclaimSelfOwnedQueuedChild)
+		d.liveness = runner
 	}
 
 	return d
+}
+
+// liveExecutionRegistry reports whether a task is executing in this process.
+// *Runner satisfies it via IsRunning; tests substitute a fake.
+type liveExecutionRegistry interface {
+	IsRunning(taskID string) bool
+}
+
+// isExecutionLive reports whether the runner holds taskID in this process.
+// GH-5878: a row older than StaleRunningThreshold is not stale if its run is
+// still going (quality gates alone can take 20–36 minutes).
+func (d *Dispatcher) isExecutionLive(taskID string) bool {
+	return d.liveness != nil && d.liveness.IsRunning(taskID)
 }
 
 // SetDecomposer sets the task decomposer for auto-splitting complex tasks.
@@ -645,7 +663,10 @@ func (d *Dispatcher) recoverStaleTasks() int {
 // not a change to the drop path itself, so the next admission attempt after
 // this reaps it claims generation 0 fresh instead of colliding forever.
 func (d *Dispatcher) reapOrphanedClaims() {
-	orphans, err := d.store.ReapOrphanedClaims(d.config.OrphanedClaimGraceWindow)
+	// GH-5878: never reap a claim whose execution is live in this process.
+	orphans, err := d.store.ReapOrphanedClaimsUnless(d.config.OrphanedClaimGraceWindow, func(taskID, _ string) bool {
+		return d.isExecutionLive(taskID)
+	})
 	if err != nil {
 		d.log.Warn("failed to reap orphaned execution claims", slog.Any("error", err))
 		return
@@ -679,6 +700,19 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 		d.log.Warn("Failed to fetch stale running executions", slog.Any("error", err))
 	}
 	for _, exec := range staleRunning {
+		// GH-5878: liveness check runs before every deletion shortcut below.
+		// Age alone is not staleness — a run in the quality gates can outlast
+		// StaleRunningThreshold, and a completed sibling row (e.g. an
+		// agent-opened PR that merged) must not license deleting the row and
+		// pruning the worktree of an execution this process is still running.
+		if d.isExecutionLive(exec.TaskID) {
+			d.log.Debug("stale-running reap skipped: execution is live in this process, not stale",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+			)
+			continue
+		}
+
 		// GH-4227: decomposed-parent guard runs BEFORE the own-row
 		// HasCompletedExecution check below — an epic parent whose task_id
 		// decomposed into children that ALL already shipped never gets its own
@@ -704,9 +738,11 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 
 		// If this task already completed successfully, delete the orphan row
 		// instead of marking it failed (avoids dashboard showing false failures).
-		completed, hceErr := d.store.HasCompletedExecution(exec.TaskID, exec.ProjectPath)
+		// GH-5878: compare against rows other than the one being reaped and
+		// log which completed row satisfied the shortcut.
+		completedID, completed, hceErr := d.store.CompletedExecutionID(exec.TaskID, exec.ProjectPath, exec.ID)
 		if hceErr != nil {
-			d.log.Warn("HasCompletedExecution error during stale-running reap; treating as not completed",
+			d.log.Warn("CompletedExecutionID error during stale-running reap; treating as not completed",
 				slog.String("execution_id", exec.ID),
 				slog.String("task_id", exec.TaskID),
 				slog.Any("error", hceErr))
@@ -715,6 +751,7 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 			d.log.Info("Deleting orphan running row (task already completed)",
 				slog.String("execution_id", exec.ID),
 				slog.String("task_id", exec.TaskID),
+				slog.String("completed_execution_id", completedID),
 			)
 			d.deleteOrphanRunningRow(exec)
 			continue
@@ -815,6 +852,15 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 // shipped — either via HasCompletedExecution on the row's own task_id or via
 // the decomposed-parent guard finding every decomposed child complete.
 func (d *Dispatcher) deleteOrphanRunningRow(exec *memory.Execution) {
+	// GH-5878: defense in depth — never delete a row or prune a worktree out
+	// from under an execution this process is still running.
+	if d.isExecutionLive(exec.TaskID) {
+		d.log.Debug("stale-running reap skipped: execution is live in this process, not stale",
+			slog.String("execution_id", exec.ID),
+			slog.String("task_id", exec.TaskID),
+		)
+		return
+	}
 	if err := d.store.DeleteExecution(exec.ID); err != nil {
 		d.log.Error("Failed to delete orphan running row", slog.String("id", exec.ID), slog.Any("error", err))
 	}
