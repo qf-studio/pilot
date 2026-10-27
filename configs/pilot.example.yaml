@@ -323,6 +323,7 @@ orchestrator:
     # task ctx is actually Done(); a task that finishes within its normal
     # timeout is unaffected. Default: 15m.
     finalize_timeout: 15m
+    # The self-review phase has its own budget: executor.self_review_timeout.
 
   # Daily brief: a scheduled summary of the last day's runs, delivered to the
   # channels below. A weekly brief (tickets shipped, median time to PR, merged
@@ -815,6 +816,12 @@ executor:
   # A backticked allowlisted command followed by passes / succeeds / is green / exits 0 is run and pasted.
   # A paste-output command identical to a quality gate that passed in this run reuses the
   # gate's captured output ("(from the quality-gate run)") instead of running again.
+  # self_review_timeout: 5m   # Budget for the self-review phase (must be >= 0). Unset/0 keeps the
+  #                           # per-backend defaults (2m claude-code, 10m opencode); a set value applies
+  #                           # to every backend. History: the old hard-coded 2m killed ~77 of ~150
+  #                           # self-reviews at exactly 120s on multi-file changes. In direct mode the
+  #                           # killed session's edits are now discarded (never left in the clone) and the
+  #                           # PR body notes the termination.
   # acceptance_evidence_budget: 15m  # Budget for the whole evidence step (default 15m, must be >= 0);
   #                                  # once spent, remaining items render "Not verified: evidence budget exhausted"
   #                                  # and the PR is still created

@@ -574,6 +574,11 @@ type BackendConfig struct {
 	// which is copied here at startup. Default: 15m. GH-5346.
 	FinalizeTimeout time.Duration `yaml:"finalize_timeout,omitempty"`
 
+	// SelfReviewTimeout bounds the self-review phase. Zero or unset keeps the
+	// per-backend defaults (2m Claude Code, 10m OpenCode); a set value applies
+	// to every backend. GH-5900.
+	SelfReviewTimeout time.Duration `yaml:"self_review_timeout,omitempty"`
+
 	// AcceptanceEvidenceBudget bounds the whole acceptance-evidence step
 	// (every paste-output and mutation item together) so a slow evidence
 	// command cannot eat the task budget the PR-create step still needs.
@@ -602,6 +607,19 @@ func (c *BackendConfig) EffectiveFinalizeTimeout() time.Duration {
 		return 15 * time.Minute
 	}
 	return c.FinalizeTimeout
+}
+
+// EffectiveSelfReviewTimeout returns the self-review phase budget for the given
+// backend type: SelfReviewTimeout when set, otherwise 10m for OpenCode (slower
+// server-managed sessions, GH-2416) and 2m for everything else. GH-5900.
+func (c *BackendConfig) EffectiveSelfReviewTimeout(backendType string) time.Duration {
+	if c != nil && c.SelfReviewTimeout > 0 {
+		return c.SelfReviewTimeout
+	}
+	if backendType == BackendTypeOpenCode {
+		return 10 * time.Minute
+	}
+	return 2 * time.Minute
 }
 
 // EffectiveStallTimeout returns the stall detection threshold, applying the

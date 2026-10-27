@@ -684,16 +684,17 @@ type ToolResultContent struct {
 
 // progressState tracks execution phase for compact progress reporting
 type progressState struct {
-	phase        string   // Current phase: Exploring, Implementing, Testing, Committing
-	filesRead    int      // Count of files read
-	filesWrite   int      // Count of files written
-	commands     int      // Count of bash commands
-	hasNavigator bool     // Project has Navigator
-	navPhase     string   // Navigator phase: INIT, RESEARCH, IMPL, VERIFY, COMPLETE
-	navIteration int      // Navigator loop iteration
-	navProgress  int      // Navigator-reported progress
-	exitSignal   bool     // Navigator EXIT_SIGNAL detected
-	commitSHAs   []string // Extracted commit SHAs from git output
+	selfReview   selfReviewOutcome // GH-5900: how the self-review phase ended
+	phase        string            // Current phase: Exploring, Implementing, Testing, Committing
+	filesRead    int               // Count of files read
+	filesWrite   int               // Count of files written
+	commands     int               // Count of bash commands
+	hasNavigator bool              // Project has Navigator
+	navPhase     string            // Navigator phase: INIT, RESEARCH, IMPL, VERIFY, COMPLETE
+	navIteration int               // Navigator loop iteration
+	navProgress  int               // Navigator-reported progress
+	exitSignal   bool              // Navigator EXIT_SIGNAL detected
+	commitSHAs   []string          // Extracted commit SHAs from git output
 	// GH-4964: captured only when a structured exit signal explicitly opts
 	// into the no-op/decline branch (no_op:true + non-empty reason) — see
 	// SignalParser.NoOpExitReason. The bare mandatory exit signal never sets
@@ -1008,6 +1009,10 @@ type ExecutionResult struct {
 	IsEpic bool
 	// EpicPlan contains the planning result for epic tasks (GH-405)
 	EpicPlan *EpicPlan
+	// SelfReviewTerminated is how long the self-review session ran before it was
+	// killed (timeout or cancellation); zero when it was not terminated. Its
+	// edits were discarded by selfReviewTreeHygiene. GH-5900.
+	SelfReviewTerminated time.Duration
 	// IntentWarning contains the reason if the intent judge flagged a mismatch.
 	// When set, the PR was created despite intent misalignment (after retry failed).
 	IntentWarning string
@@ -1629,11 +1634,11 @@ func (r *Runner) finalizeTimeout() time.Duration {
 	return r.config.EffectiveFinalizeTimeout()
 }
 
+// selfReviewTimeout returns the self-review phase budget: executor.self_review_timeout
+// when set, else the per-backend default (2m Claude Code, 10m OpenCode, GH-2416).
+// GH-5900.
 func (r *Runner) selfReviewTimeout() time.Duration {
-	if r.backendType() == BackendTypeOpenCode {
-		return 10 * time.Minute
-	}
-	return 2 * time.Minute
+	return r.config.EffectiveSelfReviewTimeout(r.backendType())
 }
 
 // fallbackModelName returns the best-known model name for telemetry rows when
@@ -6702,6 +6707,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// Continue anyway - self-review is advisory
 		}
 
+		// GH-5900: leave the direct-mode clone clean on every self-review exit.
+		result.SelfReviewTerminated = r.afterSelfReview(task, git, state, runSelfReview, useWorktree)
+
 		// Handle intent judge result
 		if runIntentJudge {
 			if intentErr != nil {
@@ -7293,6 +7301,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
 				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates)
+				prBody += selfReviewPRNote(result.SelfReviewTerminated) // GH-5900
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
 				// so CreatePR and the recovery ref get a live ctx (a real cancellation is
@@ -7333,6 +7342,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// for gitlab-sourced tasks (see mrSourceSuffix).
 				prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, mrSourceSuffix(task, creatorKind), task.Description)
 				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates)
+				prBody += selfReviewPRNote(result.SelfReviewTerminated) // GH-5900
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
 				// so CreatePR and the recovery ref get a live ctx (a real cancellation is
@@ -7369,6 +7379,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
 				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates)
+				prBody += selfReviewPRNote(result.SelfReviewTerminated) // GH-5900
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
 				// so CreatePR and the recovery ref get a live ctx (a real cancellation is
@@ -7422,7 +7433,15 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		tailCtx = ctx
 
 		// GH-1599: Log task completed milestone
-		r.saveLogEntry(task.LogExecutionID(), "info", "Task completed successfully")
+		completedMsg := "Task completed successfully"
+		if result.SelfReviewTerminated > 0 {
+			completedMsg += "; " + strings.TrimSpace(selfReviewPRNote(result.SelfReviewTerminated)) // GH-5900
+			log.Info("Task completed with terminated self-review",
+				slog.String("task_id", task.ID),
+				slog.Duration("self_review_terminated_after", result.SelfReviewTerminated),
+			)
+		}
+		r.saveLogEntry(task.LogExecutionID(), "info", completedMsg)
 
 		// Emit task completed event
 		r.emitAlertEvent(AlertEvent{
@@ -8073,6 +8092,8 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath st
 
 	r.log.Info("Running self-review phase", slog.String("task_id", task.ID))
 	r.reportProgress(task.ID, "Self-Review", 95, "Reviewing changes...")
+	reviewStart := time.Now()
+	state.selfReview = selfReviewOutcome{ran: true}
 
 	reviewPrompt := r.buildSelfReviewPrompt(task)
 
@@ -8149,6 +8170,11 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath st
 	r.ingestGhGuardDenials(task, result) // GH-4671
 
 	if err != nil {
+		// GH-5900: remember how the phase ended so the caller can clean the tree.
+		state.selfReview.failed = true
+		state.selfReview.killed = selfReviewWasTerminated(reviewCtx, err)
+		// Floor at 1s: a zero duration means "not terminated" to the caller.
+		state.selfReview.elapsed = max(time.Since(reviewStart).Round(time.Second), time.Second)
 		// Self-review failure is not fatal - log and continue
 		r.log.Warn("Self-review execution failed",
 			slog.String("task_id", task.ID),
@@ -8172,6 +8198,7 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath st
 
 	// Check if review found and fixed issues
 	if strings.Contains(result.Output, "REVIEW_FIXED:") {
+		state.selfReview.fixed = true
 		r.log.Info("Self-review fixed issues",
 			slog.String("task_id", task.ID),
 		)

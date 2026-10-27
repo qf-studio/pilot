@@ -1343,6 +1343,10 @@ func (c *Config) Validate() error {
 		if err := validateUsageLimitPause(c.Executor.UsageLimitPause); err != nil {
 			return err
 		}
+		// GH-5900: 0 = per-backend default (2m Claude Code, 10m OpenCode); negative is a config mistake.
+		if c.Executor.SelfReviewTimeout < 0 {
+			return fmt.Errorf("invalid executor.self_review_timeout: %s (must be >= 0; 0 = per-backend default)", c.Executor.SelfReviewTimeout)
+		}
 		// GH-5867: 0 = default (15m); negative is a config mistake.
 		if c.Executor.AcceptanceEvidenceBudget < 0 {
 			return fmt.Errorf("invalid executor.acceptance_evidence_budget: %s (must be >= 0; 0 = default %s)", c.Executor.AcceptanceEvidenceBudget, c.Executor.EffectiveAcceptanceEvidenceBudget())
