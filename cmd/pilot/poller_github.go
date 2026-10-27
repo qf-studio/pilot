@@ -66,6 +66,32 @@ func (a githubPollerMetricsAdapter) RecordUnsourcedLabeledIssues(repo string, co
 	a.metrics.SetUnsourcedLabeledIssues(repo, int64(count))
 }
 
+// applyGithubExecutionSettings copies the orchestrator execution settings the
+// SDK poller honours onto its PollerDeps. Unset values stay zero/nil so the SDK
+// applies its own defaults (auto mode, wait true, 30s, 1h).
+//
+// Mode (since #5207) was the only execution field passed; wait_for_merge,
+// poll_interval and pr_timeout were read by the daemon for the banner and the
+// epic merge waiter only, so the GitHub poller ran sequential mode on SDK
+// defaults regardless of config (GH-5903, closes #5897/#5898). The triple is
+// carried via resolveExecutionWaitSettings, the same resolver the banner and
+// the epic merge waiter use.
+func applyGithubExecutionSettings(pd *sdkcore.PollerDeps, cfg *config.Config) {
+	if cfg.Orchestrator == nil {
+		return
+	}
+	if cfg.Orchestrator.MaxConcurrent > 0 {
+		pd.MaxConcurrent = cfg.Orchestrator.MaxConcurrent
+	}
+	if cfg.Orchestrator.Execution != nil && cfg.Orchestrator.Execution.Mode != "" {
+		pd.ExecutionMode = cfg.Orchestrator.Execution.Mode
+	}
+	wait := resolveExecutionWaitSettings(cfg)
+	pd.WaitForMerge = wait.WaitForMerge
+	pd.PRPollInterval = wait.PollInterval
+	pd.PRTimeout = wait.PRTimeout
+}
+
 // borrowedBranchReader is the narrow seam githubOnPRCreatedHandler needs to
 // detect a fix issue whose task was dispatched onto a borrowed origin branch
 // (GH-5421) — satisfied by *executor.Runner's BorrowedBranch method. A
@@ -617,17 +643,7 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 	if deps.AutopilotStateStore != nil {
 		pollerDeps.ProcessedStore = deps.AutopilotStateStore
 	}
-	if deps.Cfg.Orchestrator.MaxConcurrent > 0 {
-		pollerDeps.MaxConcurrent = deps.Cfg.Orchestrator.MaxConcurrent
-	}
-	// orchestrator.execution.mode was validated in config but never reached
-	// the SDK poller, so sequential configs silently ran in auto (parallel)
-	// mode while the startup banner claimed "waiting for PR merge". Pass the
-	// configured mode through; the SDK maps it to the GitHub poller option.
-	// Empty mode keeps the SDK default (auto), matching prior behavior.
-	if deps.Cfg.Orchestrator.Execution != nil && deps.Cfg.Orchestrator.Execution.Mode != "" {
-		pollerDeps.ExecutionMode = deps.Cfg.Orchestrator.Execution.Mode
-	}
+	applyGithubExecutionSettings(&pollerDeps, deps.Cfg)
 
 	// M7 4d.2b: per-repo autopilot controller (keyed owner/repo). The default repo
 	// falls back to the backwards-compat singular controller. When autopilot is

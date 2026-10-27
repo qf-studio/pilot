@@ -32,9 +32,13 @@ orchestrator:
     pr_timeout: 1h
 ```
 
-- **`wait_for_merge`** — block until the PR is merged before starting the next task
+The GitHub poller honours all three settings:
+
+- **`wait_for_merge`** — block until the PR is merged before starting the next task. With `false`, the next issue is dispatched right after the PR opens, and the startup banner reads "sequential mode · not waiting for PR merge"
 - **`poll_interval`** — how often to check PR merge status (default: 30s)
 - **`pr_timeout`** — maximum time to wait for a merge before moving on (default: 1h)
+
+The startup banner and the daemon's "Running in sequential mode" log line print the effective values.
 
 <Callout type="info">
   Sequential mode is useful when tasks touch overlapping files and you want to avoid merge conflicts entirely.
@@ -64,6 +68,8 @@ Combines parallel throughput with conflict prevention. Pilot groups candidate is
 1. **Independent tasks** (no shared directories) run concurrently
 2. **Overlapping tasks** (shared directories) run sequentially — oldest first
 
+Scope comes from the file paths written in the issue **body**; the title and labels are not read. An overlapping issue also waits while the older issue is still open with an unmerged PR, bounded by `pr_timeout`.
+
 ```yaml
 orchestrator:
   max_concurrent: 3
@@ -75,9 +81,9 @@ orchestrator:
 
 The `groupByOverlappingScope()` function in the GitHub poller uses a **union-find algorithm** to partition issues into groups:
 
-1. **Extract scope** — parse directory paths from each issue's title, body, and labels
+1. **Extract scope** — parse directory paths from each issue's body (not the title or labels)
 2. **Build groups** — if two issues reference at least one common directory, they belong to the same group (transitive closure)
-3. **Dispatch** — from each group, only the oldest issue is dispatched; the rest wait for the next poll cycle
+3. **Dispatch** — from each group, only the oldest issue is dispatched; the rest wait for the next poll cycle, and keep waiting while the older issue's PR is open, until the PR merges or `pr_timeout` elapses
 
 ```
 Issues:  A (src/api/)  B (src/api/, src/db/)  C (src/ui/)  D (src/ui/)
@@ -105,13 +111,13 @@ orchestrator:
     # Execution mode: "sequential", "parallel", or "auto"
     mode: auto
 
-    # Wait for PR merge before next task (sequential mode only)
+    # Wait for PR merge before next task (sequential mode)
     wait_for_merge: true
 
     # PR merge check interval
     poll_interval: 30s
 
-    # Maximum time to wait for a PR merge
+    # Maximum time to wait for a PR merge (sequential mode, and auto-mode overlap holds)
     pr_timeout: 1h
 ```
 

@@ -3528,21 +3528,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 			// Determine execution mode from config
 			execMode := executionModeSequential // Default to sequential
-			waitForMerge := true
-			pollInterval := 30 * time.Second
-			prTimeout := 1 * time.Hour
-
 			if cfg.Orchestrator != nil && cfg.Orchestrator.Execution != nil {
-				execCfg := cfg.Orchestrator.Execution
-				execMode = resolveExecutionMode(execCfg.Mode)
-				waitForMerge = execCfg.WaitForMerge
-				if execCfg.PollInterval > 0 {
-					pollInterval = execCfg.PollInterval
-				}
-				if execCfg.PRTimeout > 0 {
-					prTimeout = execCfg.PRTimeout
-				}
+				execMode = resolveExecutionMode(cfg.Orchestrator.Execution.Mode)
 			}
+			// GH-5903: one resolver for the wait triple, shared with the SDK
+			// poller deps (poller_github.go) and the epic merge waiter below.
+			waitSettings := resolveExecutionWaitSettings(cfg)
 
 			// M7 4d.2b: when use_sdk_poller is on, the SDK registration fans out a
 			// poller for the default repo AND every projects[] github repo. This is
@@ -3594,8 +3585,8 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			}
 
 			if hasGithubPollers {
-				if !dashboardMode && execMode == executionModeSequential && waitForMerge {
-					fmt.Printf("   ◌ sequential mode · waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
+				if !dashboardMode && execMode == executionModeSequential {
+					fmt.Print(waitSettings.sequentialBannerLine())
 				}
 
 				// GH-4391: startup scan window + inter-repo stagger interval come
@@ -3763,8 +3754,8 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
 					if len(parts) == 2 {
 						mergeWaiter := github.NewMergeWaiter(client, parts[0], parts[1], &github.MergeWaiterConfig{
-							PollInterval: pollInterval,
-							Timeout:      prTimeout,
+							PollInterval: waitSettings.Interval(),
+							Timeout:      waitSettings.Timeout(),
 						})
 						runner.SetSubIssueMergeWait(func(ctx context.Context, prNumber int) error {
 							_, err := mergeWaiter.WaitForMerge(ctx, prNumber)
