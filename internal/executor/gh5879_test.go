@@ -101,15 +101,17 @@ func TestScheduler_QueueTaskAlreadyResetRetriesAfterBuffer(t *testing.T) {
 
 // rateLimitErrBackend fails every Execute with a classified rate_limit error.
 type rateLimitErrBackend struct {
-	mu    sync.Mutex
-	calls int
+	mu             sync.Mutex
+	calls          int
+	gotProjectPath string
 }
 
 func (b *rateLimitErrBackend) Name() string      { return "mock-rate-limit-err" }
 func (b *rateLimitErrBackend) IsAvailable() bool { return true }
-func (b *rateLimitErrBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
+func (b *rateLimitErrBackend) Execute(_ context.Context, opts ExecuteOptions) (*BackendResult, error) {
 	b.mu.Lock()
 	b.calls++
+	b.gotProjectPath = opts.ProjectPath
 	b.mu.Unlock()
 	return nil, &ClaudeCodeError{Type: ErrorTypeRateLimit, Message: "You've hit your limit · resets 2pm (UTC)"}
 }
@@ -128,7 +130,8 @@ func TestRunner_RateLimitAlertSuppressedWhenPauseArms(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			const proj = "/tmp/pilot-gh5879-alert"
 			clock := newFakePauseClock(time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC))
-			d, alertSink, cleanup := newUsageLimitDispatcher(t, &rateLimitErrBackend{}, tt.pause, clock)
+			backend := &rateLimitErrBackend{}
+			d, alertSink, cleanup := newUsageLimitDispatcher(t, backend, tt.pause, clock)
 			defer cleanup()
 
 			exec, err := d.QueueTask(context.Background(), &Task{ID: "GH-5880", Title: "A", ProjectPath: proj})
@@ -136,6 +139,13 @@ func TestRunner_RateLimitAlertSuppressedWhenPauseArms(t *testing.T) {
 				t.Fatalf("queue: %v", err)
 			}
 			waitForExecStatus(t, d.store, exec, "rate_limited", 2*time.Second)
+
+			backend.mu.Lock()
+			gotPath := backend.gotProjectPath
+			backend.mu.Unlock()
+			if gotPath != proj {
+				t.Errorf("backend received ProjectPath %q, want %q", gotPath, proj)
+			}
 
 			alertSink.mu.Lock()
 			defer alertSink.mu.Unlock()
