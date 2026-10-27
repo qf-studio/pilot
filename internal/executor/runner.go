@@ -334,8 +334,9 @@ const finalizeGitTimeout = 5 * time.Minute
 //
 // A real cancellation (context.Canceled — explicit stop request or process
 // shutdown) is left untouched, since that's a genuine "stop now" signal, not
-// an exhausted budget on otherwise-complete work. Only a blown deadline gets
-// a fresh, bounded window to finish saving already-completed work.
+// an exhausted budget on otherwise-complete work. Only a blown (or, GH-5891,
+// nearly blown) deadline gets a fresh, bounded window to finish saving
+// already-completed work.
 //
 // GH-5346: the fresh window is built on context.WithoutCancel(ctx) rather
 // than context.Background() — a plain Background() root silently dropped
@@ -345,11 +346,41 @@ const finalizeGitTimeout = 5 * time.Minute
 // finalization working like nothing happened. WithoutCancel preserves ctx's
 // values and detaches only its Done()/Err() (which are already spent) and
 // its cancellation propagation — exactly the two properties we need to shed.
+//
+// GH-5891: the window is also granted while the deadline is still ahead but
+// closer than budget (the "seconds left" tail): a child of the task ctx would
+// die mid-step and all CreatePR attempts, 300 ms apart, would fail with
+// "context deadline exceeded" (GH-5861 signature). A cancel that arrives during
+// the fresh window still ends it (AfterFunc, as in evidenceBudgetCtx), but a
+// cancel issued after the deadline already blew is not seen — ctx.Err() is
+// sticky at DeadlineExceeded.
 func finalizeCtx(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc) {
-	if ctx.Err() == context.DeadlineExceeded {
-		return context.WithTimeout(context.WithoutCancel(ctx), budget)
+	if ctx.Err() == nil {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return context.WithCancel(ctx)
+		}
+		remaining := time.Until(deadline)
+		if remaining >= budget {
+			return context.WithCancel(ctx)
+		}
+		logging.WithComponent("executor.finalize").Info("Finalize window granted on a live ctx with a short deadline",
+			slog.Duration("remaining", remaining),
+			slog.Duration("budget", budget),
+		)
+	} else if ctx.Err() != context.DeadlineExceeded {
+		return context.WithCancel(ctx)
 	}
-	return context.WithCancel(ctx)
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), budget)
+	stop := context.AfterFunc(ctx, func() {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			cancel()
+		}
+	})
+	return wctx, func() {
+		stop()
+		cancel()
+	}
 }
 
 // logGitCtxErr logs a post-backend git/gh call failure, downgrading to
@@ -5699,6 +5730,10 @@ retrySucceeded:
 		}
 	}
 
+	// GH-5891: the context the post-PR tail (recordLearning below) runs on. The
+	// success branch swaps in the finalize window once PR creation has run; every
+	// other path keeps the task ctx.
+	tailCtx := ctx
 	if !result.Success {
 		log.Error("Task execution failed",
 			slog.String("error", result.Error),
@@ -6065,6 +6100,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		// grants a fresh window, which would silently re-enable a Claude
 		// Code re-invocation this GH-5346 revision is explicitly meant to
 		// forbid once the backend has timed out.
+		taskCtx := ctx
 		taskCtxWasDone := ctx.Err() != nil
 		ctx, finalizeCancel := finalizeCtx(ctx, r.finalizeTimeout())
 		defer finalizeCancel()
@@ -6676,7 +6712,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 				if state.intentRetried {
 					result.IntentWarning = intentVerdict.Reason
-				} else if taskCtxWasDone || ctx.Err() != nil {
+				} else if taskCtxWasDone || taskCtx.Err() != nil {
 					// GH-5342 (subtask 3): quality-gate retries above run on
 					// their own fresh, unbounded-relative-to-ctx timeout
 					// (GH-4876), so they can burn real wall-clock while this
@@ -6706,10 +6742,15 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					// ctx (not a fresh window), and it's the intent-judge
 					// call itself that ran long enough to blow that original
 					// deadline mid-finalization.
+					//
+					// GH-5891: finalizeCtx now also hands back a detached window
+					// while the deadline is still ahead but closer than the
+					// budget, so the finalization ctx no longer reflects the task
+					// deadline; the live check reads the original task ctx.
 					log.Warn("Skipping intent-judge retry: task ctx already done",
 						slog.String("task_id", task.ID),
 						slog.Bool("task_ctx_was_done", taskCtxWasDone),
-						slog.Any("ctx_err", ctx.Err()),
+						slog.Any("ctx_err", taskCtx.Err()),
 					)
 					result.IntentWarning = intentVerdict.Reason
 				} else {
@@ -7235,6 +7276,13 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// block) is resolved first, ahead of the source-adapter ladder.
 			creator, creatorKind := r.resolvePRCreator(task)
 			log.Info("PR creator resolved", slog.String("task_id", task.ID), slog.String("kind", creatorKind))
+			// GH-5891: the finalize window re-derived after the evidence step below
+			// is assigned to this scope's ctx (not shadowed inside the creator
+			// branches), so the post-PR tail — task-completed webhook, main sync and
+			// learning record — runs on it too instead of the task ctx the evidence
+			// step may have run past. It cannot be derived any earlier: evidence is
+			// what blows the deadline.
+			var prCreateCancel context.CancelFunc
 			if creatorKind == prCreatorKindGitHubSDK {
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
@@ -7243,7 +7291,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
 				// so CreatePR and the recovery ref get a live ctx (a real cancellation is
 				// not extended).
-				ctx, prCreateCancel := finalizeCtx(ctx, r.finalizeTimeout())
+				ctx, prCreateCancel = finalizeCtx(ctx, r.finalizeTimeout())
 				defer prCreateCancel()
 				var createErr error
 				for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
@@ -7283,7 +7331,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
 				// so CreatePR and the recovery ref get a live ctx (a real cancellation is
 				// not extended).
-				ctx, prCreateCancel := finalizeCtx(ctx, r.finalizeTimeout())
+				ctx, prCreateCancel = finalizeCtx(ctx, r.finalizeTimeout())
 				defer prCreateCancel()
 				// Retry MR creation before giving up (GH-3785): the branch is
 				// already pushed at this point, so a transient API failure here
@@ -7319,7 +7367,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
 				// so CreatePR and the recovery ref get a live ctx (a real cancellation is
 				// not extended).
-				ctx, prCreateCancel := finalizeCtx(ctx, r.finalizeTimeout())
+				ctx, prCreateCancel = finalizeCtx(ctx, r.finalizeTimeout())
 				defer prCreateCancel()
 				// Retry PR creation before giving up (GH-3785): same rationale as
 				// the MR-creator branch above — the branch is already pushed.
@@ -7361,6 +7409,11 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		} else {
 			r.reportProgress(task.ID, "Completed", 100, "Task completed successfully")
 		}
+
+		// GH-5891: ctx here is the finalize window re-derived after the evidence
+		// step (see prCreateCancel above), so the webhook, main sync and learning
+		// record below no longer run on a task ctx whose deadline blew meanwhile.
+		tailCtx = ctx
 
 		// GH-1599: Log task completed milestone
 		r.saveLogEntry(task.LogExecutionID(), "info", "Task completed successfully")
@@ -7501,7 +7554,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 	}
 
 	// GH-1813: Record execution outcome for pattern learning (self-improvement)
-	r.recordLearning(ctx, task, result)
+	r.recordLearning(tailCtx, task, result)
 
 	// GH-2015: Record execution into knowledge graph for cross-project learnings
 	r.recordGraphLearning(task, result)
