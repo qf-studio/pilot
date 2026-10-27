@@ -8,7 +8,8 @@ import (
 )
 
 // TestTaskCompletionInvariant verifies that IsTaskShipped (Go predicate) and
-// HasCompletedExecution (SQL) always agree for a given Execution row.
+// HasCompletedExecution (SQL) always agree for a given Execution row, and that
+// CompletedExecutionID (a second SQL copy of the same predicate) agrees too.
 // This is the cross-site invariant from TASK-296: a single source of truth for
 // "is this task genuinely shipped?" prevents the GH-3080 / TASK-288 false-positive pattern
 // where one site accepts a row the other would reject.
@@ -105,6 +106,27 @@ func TestTaskCompletionInvariant(t *testing.T) {
 			}
 			if sqlResult != tc.wantShipped {
 				t.Errorf("HasCompletedExecution = %v, want %v", sqlResult, tc.wantShipped)
+			}
+			// CompletedExecutionID copies the HasCompletedExecution predicate;
+			// a row that satisfies one must satisfy the other (GH-5883).
+			gotID, idFound, idErr := store.CompletedExecutionID(tc.exec.TaskID, tc.exec.ProjectPath, "no-such-row")
+			if idErr != nil {
+				t.Fatalf("CompletedExecutionID: %v", idErr)
+			}
+			if idFound != tc.wantShipped {
+				t.Errorf("CompletedExecutionID found = %v, want %v", idFound, tc.wantShipped)
+			}
+			if idFound != sqlResult {
+				t.Errorf("INVARIANT VIOLATED: CompletedExecutionID found=%v != HasCompletedExecution=%v for row %+v",
+					idFound, sqlResult, tc.exec)
+			}
+			if idFound && gotID != tc.exec.ID {
+				t.Errorf("CompletedExecutionID = %q, want %q", gotID, tc.exec.ID)
+			}
+			// Excluding the row itself must leave nothing: the exclusion arm
+			// is part of the contract the reaper relies on.
+			if _, excludedFound, exErr := store.CompletedExecutionID(tc.exec.TaskID, tc.exec.ProjectPath, tc.exec.ID); exErr != nil || excludedFound {
+				t.Errorf("CompletedExecutionID excluding own row: found=%v err=%v, want not found", excludedFound, exErr)
 			}
 			if goResult != sqlResult {
 				t.Errorf("INVARIANT VIOLATED: IsTaskShipped=%v != HasCompletedExecution=%v for row %+v",

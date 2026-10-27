@@ -6921,6 +6921,54 @@ func TestRecoverStaleRunning_SkipsLiveExecution(t *testing.T) {
 	}
 }
 
+// TestRecoverStaleRunning_RealRunnerWiring pins the runner-to-dispatcher
+// liveness wiring (GH-5883): the Dispatcher is built through NewDispatcher with
+// a real Runner and no fake registry, so dropping the line that installs the
+// runner as the liveness registry makes the live row get reaped. The skip line
+// must be visible at the daemon's default Info level.
+func TestRecoverStaleRunning_RealRunnerWiring(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	const taskID = "GH-98784"
+	const projectPath = "/project-real-runner"
+	wt := seedStaleRunningWithCompletedSibling(t, store, taskID, projectPath, true)
+
+	origCheck := staleRunningMergedPRCheck
+	staleRunningMergedPRCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	defer func() { staleRunningMergedPRCheck = origCheck }()
+
+	runner := NewRunner()
+	d := NewDispatcher(store, runner, &DispatcherConfig{StaleRunningThreshold: 0, StaleQueuedThreshold: 0, StaleRecoveryInterval: time.Hour})
+	var logs bytes.Buffer
+	d.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	runner.registerExecCancel(taskID, func() {})
+
+	d.recoverStaleRunningTasks()
+
+	if _, err := store.GetExecution("exec-" + taskID + "-running"); err != nil {
+		t.Fatalf("live running row must survive the reap: %v", err)
+	}
+	if _, err := os.Stat(wt); err != nil {
+		t.Errorf("live execution's worktree must not be pruned: %v", err)
+	}
+	if !strings.Contains(logs.String(), "stale-running reap skipped: execution is live in this process, not stale") {
+		t.Errorf("skip line not logged at Info; captured log: %q", logs.String())
+	}
+
+	runner.unregisterExecCancel(taskID)
+
+	d.recoverStaleRunningTasks()
+
+	if got, err := store.GetExecution("exec-" + taskID + "-running"); err == nil {
+		t.Errorf("row must be deleted once the run is no longer live, still has status %q", got.Status)
+	}
+	if _, err := os.Stat(wt); err == nil {
+		t.Errorf("worktree must be pruned once the run is no longer live")
+	}
+}
+
 // TestRecoverStaleRunning_NotLiveStillReaped pins the unchanged non-live
 // paths: a completed sibling deletes the row (and prunes its worktree); with
 // no completed row and no live worker the row is marked stalled.

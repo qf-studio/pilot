@@ -706,7 +706,7 @@ func (d *Dispatcher) recoverStaleRunningTasks() int {
 		// agent-opened PR that merged) must not license deleting the row and
 		// pruning the worktree of an execution this process is still running.
 		if d.isExecutionLive(exec.TaskID) {
-			d.log.Debug("stale-running reap skipped: execution is live in this process, not stale",
+			d.log.Info("stale-running reap skipped: execution is live in this process, not stale",
 				slog.String("execution_id", exec.ID),
 				slog.String("task_id", exec.TaskID),
 			)
@@ -855,7 +855,7 @@ func (d *Dispatcher) deleteOrphanRunningRow(exec *memory.Execution) {
 	// GH-5878: defense in depth — never delete a row or prune a worktree out
 	// from under an execution this process is still running.
 	if d.isExecutionLive(exec.TaskID) {
-		d.log.Debug("stale-running reap skipped: execution is live in this process, not stale",
+		d.log.Info("stale-running reap skipped: execution is live in this process, not stale",
 			slog.String("execution_id", exec.ID),
 			slog.String("task_id", exec.TaskID),
 		)
