@@ -178,6 +178,11 @@ func (s *Scheduler) checkTasks(ctx context.Context) {
 func (s *Scheduler) QueueTask(task *Task, rl *RateLimitInfo) {
 	// Add buffer to retry time
 	retryAt := rl.ResetTime.Add(s.config.RetryBuffer)
+	if rl.AlreadyReset {
+		// GH-5879: the reset is behind us; waiting for ResetTime + buffer would
+		// schedule the retry in the past, so retry one buffer from now.
+		retryAt = time.Now().Add(s.config.RetryBuffer)
+	}
 
 	s.queue.Add(task, retryAt, rl.RawError)
 

@@ -317,8 +317,9 @@ func TestDispatcher_UsageLimitPauseCappedByMaxPause(t *testing.T) {
 	d, _, cleanup := newUsageLimitDispatcher(t, newPerProjectBackend(), &UsageLimitPauseConfig{MaxPause: 2 * time.Hour}, clock)
 	defer cleanup()
 
-	// 10:00 now, "resets 9am" is tomorrow 09:00 — 23h away, far past max_pause.
-	d.armUsageLimitPause("GH-1", "/p", "You've hit your limit · resets 9am (UTC)")
+	// 10:00 now, "resets 7am" is 3h past recentResetWindow so it is tomorrow
+	// 07:00 — 21h away, far past max_pause.
+	d.armUsageLimitPause("GH-1", "/p", "You've hit your limit · resets 7am (UTC)")
 
 	if got, want := d.AdmissionStatus().UsageLimitResumesAt, usageLimitTestNow.Add(2*time.Hour); !got.Equal(want) {
 		t.Fatalf("resumes at %v, want capped %v", got, want)

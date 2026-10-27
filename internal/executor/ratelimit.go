@@ -7,11 +7,22 @@ import (
 	"time"
 )
 
+// recentResetWindow is how far in the past a calendar-day reset instant may be
+// and still count as "the limit has just reset" rather than "resets tomorrow".
+// The error text is written when Claude hits the wall, but the run finalizes
+// minutes later (finalize window, recovery steps, worker loop), so a reset
+// that passes in between must not roll to the next day (GH-5879).
+const recentResetWindow = 2 * time.Hour
+
 // RateLimitInfo contains parsed rate limit information from Claude Code errors
 type RateLimitInfo struct {
 	ResetTime time.Time
 	Timezone  string
 	RawError  string
+	// AlreadyReset is true when ResetTime is in the past, within
+	// recentResetWindow of the parse clock: the limit has already reset, so
+	// callers retry after their buffer instead of waiting for ResetTime.
+	AlreadyReset bool
 }
 
 // IsRateLimitError checks if an error message indicates a rate limit
@@ -92,15 +103,22 @@ func parseRateLimitErrorAt(errMsg string, clockNow time.Time) (*RateLimitInfo, b
 		now := clockNow.In(loc)
 		resetTime := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, loc)
 
-		// If reset time is in the past, it's tomorrow
+		// A reset just behind us has already happened; only an older one is
+		// tomorrow's.
+		alreadyReset := false
 		if resetTime.Before(now) {
-			resetTime = resetTime.Add(24 * time.Hour)
+			if now.Sub(resetTime) <= recentResetWindow {
+				alreadyReset = true
+			} else {
+				resetTime = resetTime.Add(24 * time.Hour)
+			}
 		}
 
 		return &RateLimitInfo{
-			ResetTime: resetTime,
-			Timezone:  tz,
-			RawError:  errMsg,
+			ResetTime:    resetTime,
+			Timezone:     tz,
+			RawError:     errMsg,
+			AlreadyReset: alreadyReset,
 		}, true
 	}
 

@@ -686,6 +686,11 @@ executor:
   # Running tasks finish; pollers keep queueing. In-memory: a restart clears it
   # and the next rate_limited result re-arms it. `pilot status` and
   # /api/v1/status show it while held.
+  # A reset that passed in the last 2 hours counts as already reset: the pause
+  # (and a single task's re-queue) lasts 5 minutes, not until tomorrow.
+  # While enabled, the usage_limit_pause alert is the one notification for the
+  # episode and the per-run rate_limit alert is not sent; with the pause
+  # disabled the per-run rate_limit alert is sent as before.
   # usage_limit_pause:
   #   enabled: true          # default true
   #   max_pause: 6h          # cap when the parsed reset is further away (default 6h)

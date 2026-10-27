@@ -165,11 +165,11 @@ func TestParseRateLimitError(t *testing.T) {
 				}
 			}
 
-			// Reset time should be in the future
+			// Reset time should be in the future, unless it just passed
+			// (GH-5879: AlreadyReset within recentResetWindow).
 			if info.ResetTime.Before(time.Now()) {
-				// Unless it's within a small margin (test timing issues)
-				if time.Since(info.ResetTime) > time.Minute {
-					t.Errorf("reset time %v is not in the future", info.ResetTime)
+				if !info.AlreadyReset || time.Since(info.ResetTime) > recentResetWindow+time.Minute {
+					t.Errorf("reset time %v is in the past and not AlreadyReset", info.ResetTime)
 				}
 			}
 		})
