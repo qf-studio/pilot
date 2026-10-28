@@ -255,7 +255,7 @@ func TestPostMergeReviewCheckout_ReportsFieldWithoutProducer(t *testing.T) {
 				line = i + 1
 			}
 		}
-		answer := fmt.Sprintf("VERDICT: REQUEST-CHANGES\nDEFECTS:\n- client/api.go:2, binds org_id that no producer sends, server/handler.go:%d emits only organization_id\nNOTES:\n", line)
+		answer := fmt.Sprintf("VERDICT: REQUEST-CHANGES\nDEFECTS:\n- [blocking] client/api.go:2, binds org_id that no producer sends, server/handler.go:%d emits only organization_id\nNOTES:\n", line)
 		return []byte(streamLine(t, map[string]any{"type": "system", "subtype": "init"}) +
 			streamLine(t, streamToolUse("Grep", "")) +
 			streamLine(t, streamToolUse("Read", producer)) +

@@ -106,6 +106,7 @@ func newReviewMergeEnv(repo string) (*reviewMergeEnv, error) {
 // reviewMergeDefect is one defect in the output; Location is split into File
 // and Line when it has the file:line shape.
 type reviewMergeDefect struct {
+	Severity string `json:"severity,omitempty"`
 	File     string `json:"file"`
 	Line     string `json:"line,omitempty"`
 	Claim    string `json:"claim"`
@@ -121,6 +122,7 @@ type reviewMergeResult struct {
 	DiffSource     string              `json:"diff_source"`
 	Verdict        string              `json:"verdict"`
 	Defects        []reviewMergeDefect `json:"defects"`
+	NotVerified    []string            `json:"not_verified"`
 	Notes          string              `json:"notes"`
 	DiffBytes      int                 `json:"diff_bytes"`
 	DiffFiles      int                 `json:"diff_files"`
@@ -175,6 +177,7 @@ func runReviewMerge(ctx context.Context, opts reviewMergeOptions, env *reviewMer
 		DiffSource:     gathered.DiffSource,
 		Verdict:        string(review.Verdict),
 		Defects:        make([]reviewMergeDefect, 0, len(review.Defects)),
+		NotVerified:    append([]string{}, review.NotVerified...),
 		Notes:          review.Notes,
 		DiffBytes:      review.DiffBytes,
 		DiffFiles:      review.DiffFiles,
@@ -230,7 +233,7 @@ func runReviewMerge(ctx context.Context, opts reviewMergeOptions, env *reviewMer
 
 // splitDefect splits "path:line" locations; anything else stays in File.
 func splitDefect(d executor.PostMergeDefect) reviewMergeDefect {
-	out := reviewMergeDefect{File: d.Location, Claim: d.Claim, Evidence: d.Evidence}
+	out := reviewMergeDefect{Severity: string(d.Severity), File: d.Location, Claim: d.Claim, Evidence: d.Evidence}
 	if i := strings.LastIndex(d.Location, ":"); i > 0 && i < len(d.Location)-1 {
 		line := d.Location[i+1:]
 		if strings.Trim(line, "0123456789-,") == "" {
@@ -259,10 +262,22 @@ func printReviewMerge(out io.Writer, res *reviewMergeResult, opts reviewMergeOpt
 			if d.Line != "" {
 				loc += ":" + terminalSafe(d.Line)
 			}
-			p("  - %s — %s\n", loc, terminalSafe(d.Claim))
+			tag := ""
+			if d.Severity != "" {
+				tag = "[" + terminalSafe(d.Severity) + "] "
+			}
+			p("  - %s%s — %s\n", tag, loc, terminalSafe(d.Claim))
 			if d.Evidence != "" {
 				p("    Evidence: %s\n", terminalSafe(d.Evidence))
 			}
+		}
+		p("\n")
+	}
+
+	if len(res.NotVerified) > 0 {
+		p("Not verified:\n")
+		for _, item := range res.NotVerified {
+			p("  - %s\n", terminalSafe(item))
 		}
 		p("\n")
 	}

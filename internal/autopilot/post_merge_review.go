@@ -368,21 +368,26 @@ func plainPostMergeField(s string, max int) string {
 	return strings.ReplaceAll(sanitizePostMergeField(s, max), "`", "")
 }
 
-// formatPostMergeDefects renders the defect list as markdown bullets.
+// formatPostMergeDefects renders the defect list as markdown bullets, each led
+// by its [severity] tag when withSeverity is set.
 //
 // Decision: locations are plain text ("at internal/foo/bar.go:42") and
 // backticks are stripped from every field. The list lands in a `pilot` issue,
 // and the executor's base-presence gate holds an issue whose backticked path
 // is not on the task repo's default branch (SOP Rule 3b) — the checklist asks
 // the model to name counterpart files that may live in another repository.
-func formatPostMergeDefects(defects []executor.PostMergeDefect) string {
+func formatPostMergeDefects(defects []executor.PostMergeDefect, withSeverity bool) string {
 	var sb strings.Builder
 	for i, d := range defects {
 		if i == maxPostMergeDefects {
 			fmt.Fprintf(&sb, "- … %d more defects omitted\n", len(defects)-maxPostMergeDefects)
 			break
 		}
-		fmt.Fprintf(&sb, "- at %s — %s", plainPostMergeField(d.Location, 200), plainPostMergeField(d.Claim, maxPostMergeFieldChars))
+		tag := ""
+		if withSeverity && d.Severity != "" {
+			tag = "[" + plainPostMergeField(string(d.Severity), 20) + "] "
+		}
+		fmt.Fprintf(&sb, "- %sat %s — %s", tag, plainPostMergeField(d.Location, 200), plainPostMergeField(d.Claim, maxPostMergeFieldChars))
 		if ev := plainPostMergeField(d.Evidence, maxPostMergeFieldChars); ev != "" {
 			fmt.Fprintf(&sb, "\n  Evidence: %s", ev)
 		}
@@ -401,13 +406,22 @@ func BuildPostMergeReviewComment(review *executor.PostMergeReview) string {
 func PostMergeDiffLine(review *executor.PostMergeReview) string { return postMergeDiffLine(review) }
 
 // buildPostMergeReviewComment renders the PR comment: verdict first, then
-// defects and notes.
+// defects (severity-tagged), the Not-verified list and notes, the Diff line last.
 func buildPostMergeReviewComment(review *executor.PostMergeReview) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "**VERDICT: %s**\n\n", review.Verdict)
 	if len(review.Defects) > 0 {
 		sb.WriteString("### Defects\n\n")
-		sb.WriteString(formatPostMergeDefects(review.Defects))
+		sb.WriteString(formatPostMergeDefects(review.Defects, true))
+		sb.WriteString("\n")
+	}
+	if len(review.NotVerified) > 0 {
+		sb.WriteString("### Not verified\n\n")
+		for _, item := range review.NotVerified {
+			if item = sanitizePostMergeField(item, maxPostMergeFieldChars); item != "" {
+				fmt.Fprintf(&sb, "- %s\n", item)
+			}
+		}
 		sb.WriteString("\n")
 	}
 	if notes := sanitizePostMergeField(review.Notes, maxPostMergeNotesChars); notes != "" {

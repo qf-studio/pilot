@@ -47,8 +47,23 @@ const DefaultPostMergeReviewMaxDiffChars = 200000
 // intent judge's 60s: this prompt carries the whole checklist and a full diff.
 const defaultPostMergeReviewTimeout = 5 * time.Minute
 
-// PostMergeDefect is one finding of a REQUEST-CHANGES review.
+// PostMergeSeverity is how much a defect weighs in the verdict.
+type PostMergeSeverity string
+
+const (
+	// PostMergeSeverityBlocking defects justify REQUEST-CHANGES.
+	PostMergeSeverityBlocking PostMergeSeverity = "blocking"
+	// PostMergeSeverityMinor defects are reported but never escalate the verdict.
+	PostMergeSeverityMinor PostMergeSeverity = "minor"
+)
+
+// MaxPostMergeNotVerified caps the Not-verified list of one review.
+const MaxPostMergeNotVerified = 3
+
+// PostMergeDefect is one finding of a review.
 type PostMergeDefect struct {
+	// Severity is blocking or minor; minor when the reviewer tagged neither.
+	Severity PostMergeSeverity
 	// Location is the file:line the defect is anchored to.
 	Location string
 	// Claim is what is wrong.
@@ -61,7 +76,13 @@ type PostMergeDefect struct {
 type PostMergeReview struct {
 	Verdict PostMergeVerdict
 	Defects []PostMergeDefect
-	Notes   string
+	// NotVerified lists up to MaxPostMergeNotVerified things the reviewer could
+	// not confirm, each with the reason.
+	NotVerified []string
+	Notes       string
+	// Downgraded is true when the model said REQUEST-CHANGES without a
+	// [blocking] defect and the verdict was lowered to APPROVE-WITH-NOTES.
+	Downgraded bool
 
 	// DiffBytes is the size of the merged diff before any trimming.
 	DiffBytes int
@@ -79,6 +100,17 @@ type PostMergeReview struct {
 	DiffTrimmed bool
 	// TrimmedFiles lists the files whose diff body was cut.
 	TrimmedFiles []string
+}
+
+// BlockingDefects returns the defects tagged [blocking], in order.
+func (r *PostMergeReview) BlockingDefects() []PostMergeDefect {
+	var out []PostMergeDefect
+	for _, d := range r.Defects {
+		if d.Severity == PostMergeSeverityBlocking {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // PostMergeReviewInput is everything the reviewer sees about one merged PR.
@@ -180,16 +212,22 @@ Checklist:
 4) Migrations: is there a down path, can any data be lost, is row-level security (RLS) handled?
 ` + postMergeChecklistItem5 + `
 
-IMPORTANT — truncation handling: A "## Changed Files" manifest lists every file the diff touches and is never truncated. A "...[truncated: ..." marker only means that content was cut for length; it is NOT evidence that anything is missing. Never cite a truncation marker as a defect. When content you needed was cut, list the affected files in NOTES under a "Not reviewed" bullet and do not guess at what the cut part contains. Only report a defect you can anchor to a file and line you can see, or to a counterpart file you can name.
+IMPORTANT — truncation handling: A "## Changed Files" manifest lists every file the diff touches and is never truncated. A "...[truncated: ..." marker only means that content was cut for length; it is NOT evidence that anything is missing. Never cite a truncation marker as a defect. When content you needed was cut, list the affected files in NOT-VERIFIED under a "Not reviewed" bullet and do not guess at what the cut part contains. Only report a defect you can anchor to a file and line you can see, or to a counterpart file you can name.
+
+PR body: it is supplied in full under "## PR Body". Its "## Evidence" block is where build, test, lint and adapter bullets of the issue are checked — read it for each such bullet. "Not in the diff" is never a reason to skip one of them.
+
+Severity. Tag every defect [blocking] or [minor]. Blocking means exactly one of: a requirement of the issue is not met; a wire field has no producer; a test proves nothing about the contract it guards; a migration loses data; an out-of-scope change alters behaviour. Everything else is [minor].
 
 Output exactly this format and nothing before it:
 VERDICT: <APPROVE|APPROVE-WITH-NOTES|REQUEST-CHANGES>
 DEFECTS:
-<one line per defect: file:line, claim, evidence — or the single word none>
+<one line per defect, on every verdict: [blocking] or [minor], then file:line - claim - evidence — or the single word none>
+NOT-VERIFIED:
+<at most three lines, each naming what you could not confirm and why (counterpart file not in the diff, evidence truncated) — or the single word none>
 NOTES:
-<free-form notes, may be empty>
+<requirement-by-requirement outcomes only, may be empty>
 
-Use REQUEST-CHANGES only when there is at least one defect. Do not use commas inside the claim.`
+Verdict rule: REQUEST-CHANGES only when at least one defect is [blocking]. APPROVE-WITH-NOTES when every defect is [minor] or when NOT-VERIFIED is non-empty. APPROVE when DEFECTS and NOT-VERIFIED are both none. List every defect you find, whatever the verdict. NOTES must not contain "could not", "please verify" or "I assume" phrasing: every hedge goes to NOT-VERIFIED. Do not use " - " inside the claim.`
 
 // postMergeMemoriesHeader heads the project-memory block of a review prompt.
 const postMergeMemoriesHeader = "## Known pitfalls from project memory (review context)\n\n"
@@ -251,8 +289,14 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 	if in.CIResult != "" {
 		fmt.Fprintf(&sb, "\n## CI Result\n%s\n", in.CIResult)
 	}
-	if evidence := ExtractPRBodyEvidence(in.PRBody); evidence != "" {
-		fmt.Fprintf(&sb, "\n## PR Evidence (from the PR body)\n%s\n", truncatePreflightBody(evidence))
+	if strings.TrimSpace(in.PRBody) != "" {
+		prBody := truncatePreflightBody(in.PRBody)
+		fmt.Fprintf(&sb, "\n## PR Body\n%s\n", prBody)
+		// Truncation keeps a head and a tail; an Evidence block cut out of the
+		// middle is re-supplied so the evidence checks still have it.
+		if evidence := ExtractPRBodyEvidence(in.PRBody); evidence != "" && !strings.Contains(prBody, evidence) {
+			fmt.Fprintf(&sb, "\n## PR Evidence (from the PR body)\n%s\n", truncatePreflightBody(evidence))
+		}
 	}
 	if len(report.Trimmed) > 0 {
 		parts := make([]string, 0, len(report.Trimmed))
@@ -282,6 +326,10 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 		text, filesRead = parsePostMergeStream(output)
 	}
 	review := parsePostMergeReview(text)
+	if review.Downgraded {
+		r.log.Info("post-merge review: REQUEST-CHANGES without a [blocking] defect, downgraded to APPROVE-WITH-NOTES",
+			slog.Int("pr", in.PRNumber), slog.Int("defects", len(review.Defects)))
+	}
 	review.Checkout = workDir != ""
 	review.FilesRead = filesRead
 	review.DiffBytes = report.OriginalBytes
@@ -293,8 +341,9 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 }
 
 var (
-	postMergeVerdictRegex = regexp.MustCompile(`(?i)^VERDICT:\s*(APPROVE-WITH-NOTES|APPROVE|REQUEST-CHANGES)\s*$`)
-	postMergeHeaderRegex  = regexp.MustCompile(`(?i)^(DEFECTS|NOTES):\s*(.*)$`)
+	postMergeVerdictRegex  = regexp.MustCompile(`(?i)^VERDICT:\s*(APPROVE-WITH-NOTES|APPROVE|REQUEST-CHANGES)\s*$`)
+	postMergeHeaderRegex   = regexp.MustCompile(`(?i)^(DEFECTS|NOT[- ]VERIFIED|NOTES):\s*(.*)$`)
+	postMergeSeverityRegex = regexp.MustCompile(`(?i)^\[(blocking|minor)\]\s*`)
 	// postMergeEvidenceHeadingRegex matches the "## Evidence" PR-body section
 	// (and "## Evidence (manual pins)") rendered by RenderAcceptanceEvidenceSections.
 	postMergeEvidenceHeadingRegex = regexp.MustCompile(`(?im)^##\s+Evidence\b.*$`)
@@ -302,8 +351,10 @@ var (
 )
 
 // parsePostMergeReview parses the reviewer's output contract. The verdict must
-// be the first non-empty line; anything else, or a REQUEST-CHANGES with no
-// defect lines, is a contract violation and yields PostMergeUnknown.
+// be the first non-empty line; anything else is a contract violation and yields
+// PostMergeUnknown. A REQUEST-CHANGES with no [blocking] defect (none at all
+// included) is not a violation: it is lowered to APPROVE-WITH-NOTES and flagged
+// Downgraded.
 func parsePostMergeReview(text string) *PostMergeReview {
 	review := &PostMergeReview{Verdict: PostMergeUnknown}
 
@@ -322,12 +373,12 @@ func parsePostMergeReview(text string) *PostMergeReview {
 	verdict := PostMergeVerdict(strings.ToUpper(m[1]))
 
 	var defects []PostMergeDefect
-	var notes []string
+	var notes, notVerified []string
 	section := ""
 	for _, line := range lines[i+1:] {
 		trimmed := strings.TrimSpace(line)
 		if h := postMergeHeaderRegex.FindStringSubmatch(trimmed); h != nil {
-			section = strings.ToUpper(h[1])
+			section = strings.ToUpper(strings.ReplaceAll(h[1], " ", "-"))
 			trimmed = strings.TrimSpace(h[2])
 			if trimmed == "" {
 				continue
@@ -341,33 +392,56 @@ func parsePostMergeReview(text string) *PostMergeReview {
 			if d, ok := parsePostMergeDefect(trimmed); ok {
 				defects = append(defects, d)
 			}
+		case "NOT-VERIFIED":
+			item := strings.TrimSpace(strings.TrimLeft(trimmed, "-*• \t"))
+			if item != "" && !strings.EqualFold(strings.TrimRight(item, "."), "none") && len(notVerified) < MaxPostMergeNotVerified {
+				notVerified = append(notVerified, item)
+			}
 		case "NOTES":
 			notes = append(notes, trimmed)
 		}
 	}
 
-	if verdict == PostMergeRequestChanges && len(defects) == 0 {
-		return review
+	review.Defects = defects
+	review.NotVerified = notVerified
+	if verdict == PostMergeRequestChanges && len(review.BlockingDefects()) == 0 {
+		verdict = PostMergeApproveWithNotes
+		review.Downgraded = true
 	}
 	review.Verdict = verdict
-	review.Defects = defects
 	review.Notes = strings.Join(notes, "\n")
 	return review
 }
 
-// parsePostMergeDefect parses "file:line, claim, evidence". " | " separators
-// are accepted too. The literal "none" (any bullet prefix) is not a defect.
+// postMergeDefectSeparators are the field separators of a defect line.
+var postMergeDefectSeparators = []string{",", " | ", " - "}
+
+// parsePostMergeDefect parses "[severity] file:line, claim, evidence". " | " and
+// " - " separators are accepted too; the one that occurs first in the line
+// wins, so a dash or comma inside the claim of a dash-separated line does not
+// re-split it. A leading "[blocking]" or "[minor]" sets Severity, minor when
+// absent. The literal "none" (any bullet prefix) is not a defect.
 func parsePostMergeDefect(line string) (PostMergeDefect, bool) {
 	line = strings.TrimSpace(strings.TrimLeft(line, "-*• \t"))
+	severity := PostMergeSeverityMinor
+	if m := postMergeSeverityRegex.FindStringSubmatch(line); m != nil {
+		severity = PostMergeSeverity(strings.ToLower(m[1]))
+		line = strings.TrimSpace(line[len(m[0]):])
+	}
 	if line == "" || strings.EqualFold(strings.TrimRight(line, "."), "none") {
 		return PostMergeDefect{}, false
 	}
-	sep := ","
-	if strings.Contains(line, " | ") {
-		sep = " | "
+	sep, first := "", -1
+	for _, candidate := range postMergeDefectSeparators {
+		if i := strings.Index(line, candidate); i >= 0 && (first < 0 || i < first) {
+			sep, first = candidate, i
+		}
 	}
-	parts := strings.SplitN(line, sep, 3)
-	d := PostMergeDefect{Location: strings.TrimSpace(parts[0])}
+	parts := []string{line}
+	if sep != "" {
+		parts = strings.SplitN(line, sep, 3)
+	}
+	d := PostMergeDefect{Severity: severity, Location: strings.TrimSpace(parts[0])}
 	if len(parts) > 1 {
 		d.Claim = strings.TrimSpace(parts[1])
 	}

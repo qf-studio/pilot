@@ -123,6 +123,7 @@ func requestChangesReview() *executor.PostMergeReview {
 	return &executor.PostMergeReview{
 		Verdict: executor.PostMergeRequestChanges,
 		Defects: []executor.PostMergeDefect{{
+			Severity: executor.PostMergeSeverityBlocking,
 			Location: "internal/foo/client.go:42",
 			Claim:    "binds to field org_id that the server never sends",
 			Evidence: "internal/server/handler.go emits only organization_id",
@@ -355,7 +356,7 @@ func TestCreatePostMergeReviewIssue_SanitizesModelOutput(t *testing.T) {
 	fl := NewFeedbackLoop(gh, "owner", "repo", DefaultConfig())
 	review := &executor.PostMergeReview{
 		Verdict: executor.PostMergeRequestChanges,
-		Defects: []executor.PostMergeDefect{{Location: "a.go:1", Claim: "hid\u200bden", Evidence: strings.Repeat("e", 5000)}},
+		Defects: []executor.PostMergeDefect{{Severity: executor.PostMergeSeverityBlocking, Location: "a.go:1", Claim: "hid\u200bden", Evidence: strings.Repeat("e", 5000)}},
 	}
 	if _, err := fl.CreatePostMergeReviewIssue(context.Background(), 42, "u", 10, review); err != nil {
 		t.Fatalf("create: %v", err)
@@ -504,6 +505,64 @@ func TestBuildPostMergeReviewComment(t *testing.T) {
 	approve := buildPostMergeReviewComment(&executor.PostMergeReview{Verdict: executor.PostMergeApprove})
 	if strings.Contains(approve, "### Defects") || strings.Contains(approve, "### Notes") {
 		t.Errorf("clean approve should carry no empty sections:\n%s", approve)
+	}
+}
+
+func TestPostMergeReviewCommentSections(t *testing.T) {
+	review := &executor.PostMergeReview{
+		Verdict: executor.PostMergeApproveWithNotes,
+		Defects: []executor.PostMergeDefect{
+			{Severity: executor.PostMergeSeverityBlocking, Location: "a.go:1", Claim: "claim-one"},
+			{Severity: executor.PostMergeSeverityMinor, Location: "b.go:2", Claim: "claim-two"},
+		},
+		NotVerified: []string{"nv-one: counterpart not in the diff", "nv-two: evidence truncated", "nv-three"},
+		Notes:       "requirement 1 met",
+		DiffBytes:   100, DiffFiles: 2,
+	}
+	got := buildPostMergeReviewComment(review)
+
+	order := []string{"### Defects", "- [blocking] at a.go:1 — claim-one", "- [minor] at b.go:2 — claim-two",
+		"### Not verified", "- nv-one: counterpart not in the diff", "- nv-three", "### Notes", "requirement 1 met", "Diff: 100 bytes"}
+	prev := -1
+	for _, want := range order {
+		i := strings.Index(got, want)
+		if i < 0 {
+			t.Fatalf("comment missing %q:\n%s", want, got)
+		}
+		if i < prev {
+			t.Errorf("%q is out of order in the comment:\n%s", want, got)
+		}
+		prev = i
+	}
+	if n := strings.Count(got, "\n- nv-"); n != 3 {
+		t.Errorf("Not verified bullets = %d, want 3:\n%s", n, got)
+	}
+
+	none := buildPostMergeReviewComment(&executor.PostMergeReview{Verdict: executor.PostMergeApprove})
+	if strings.Contains(none, "### Not verified") {
+		t.Errorf("empty NotVerified must render no section:\n%s", none)
+	}
+}
+
+func TestCreatePostMergeReviewIssue_BlockingDefectsOnly(t *testing.T) {
+	mock, gh := newPMRGitHub(t)
+	fl := NewFeedbackLoop(gh, "owner", "repo", DefaultConfig())
+	review := &executor.PostMergeReview{
+		Verdict: executor.PostMergeRequestChanges,
+		Defects: []executor.PostMergeDefect{
+			{Severity: executor.PostMergeSeverityMinor, Location: "minor.go:1", Claim: "minor-claim"},
+			{Severity: executor.PostMergeSeverityBlocking, Location: "block.go:2", Claim: "blocking-claim"},
+		},
+	}
+	if _, err := fl.CreatePostMergeReviewIssue(context.Background(), 42, "u", 10, review); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	body := mock.issues[0].Body
+	if !strings.Contains(body, "blocking-claim") {
+		t.Errorf("issue body missing the blocking defect:\n%s", body)
+	}
+	if strings.Contains(body, "minor-claim") {
+		t.Errorf("issue body carries a minor defect:\n%s", body)
 	}
 }
 

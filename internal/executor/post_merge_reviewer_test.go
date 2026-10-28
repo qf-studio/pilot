@@ -12,8 +12,8 @@ import (
 
 const postMergeFixtureRequestChanges = `VERDICT: REQUEST-CHANGES
 DEFECTS:
-- internal/adapters/foo/client.go:42, binds to field "org_id" that the server never sends, internal/server/handler.go emits only "organization_id"
-- internal/adapters/foo/client_test.go:10, test mocks the adapter instead of exercising it, the httptest handler returns a hand-written payload
+- [blocking] internal/adapters/foo/client.go:42, binds to field "org_id" that the server never sends, internal/server/handler.go emits only "organization_id"
+- [minor] internal/adapters/foo/client_test.go:10, test mocks the adapter instead of exercising it, the httptest handler returns a hand-written payload
 NOTES:
 Migration 0042 has a down path.
 Consider a contract test.`
@@ -32,11 +32,13 @@ func TestPostMergeReviewer_ParsesFixture(t *testing.T) {
 	}
 	want := []PostMergeDefect{
 		{
+			Severity: PostMergeSeverityBlocking,
 			Location: "internal/adapters/foo/client.go:42",
 			Claim:    `binds to field "org_id" that the server never sends`,
 			Evidence: `internal/server/handler.go emits only "organization_id"`,
 		},
 		{
+			Severity: PostMergeSeverityMinor,
 			Location: "internal/adapters/foo/client_test.go:10",
 			Claim:    "test mocks the adapter instead of exercising it",
 			Evidence: "the httptest handler returns a hand-written payload",
@@ -65,12 +67,13 @@ func TestParsePostMergeReview(t *testing.T) {
 		{"approve", "VERDICT: APPROVE\nDEFECTS:\nnone\nNOTES:\n", PostMergeApprove, 0},
 		{"approve with notes", "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\nnone\nNOTES:\nnit", PostMergeApproveWithNotes, 0},
 		{"leading blank lines and lowercase", "\n\nverdict: approve\nDEFECTS: none\nNOTES:", PostMergeApprove, 0},
-		{"pipe separator", "VERDICT: REQUEST-CHANGES\nDEFECTS:\na.go:1 | c | e\nNOTES:", PostMergeRequestChanges, 1},
+		{"pipe separator", "VERDICT: REQUEST-CHANGES\nDEFECTS:\n[blocking] a.go:1 | c | e\nNOTES:", PostMergeRequestChanges, 1},
 		{"empty output", "", PostMergeUnknown, 0},
 		{"prose before verdict", "Sure, here is my review.\nVERDICT: APPROVE", PostMergeUnknown, 0},
 		{"unknown verdict word", "VERDICT: LGTM\nDEFECTS:\nnone", PostMergeUnknown, 0},
 		{"verdict with trailing text", "VERDICT: APPROVE because fine\nDEFECTS:\nnone", PostMergeUnknown, 0},
-		{"request changes without defects", "VERDICT: REQUEST-CHANGES\nDEFECTS:\nnone\nNOTES:", PostMergeUnknown, 0},
+		{"request changes without defects downgrades", "VERDICT: REQUEST-CHANGES\nDEFECTS:\nnone\nNOTES:", PostMergeApproveWithNotes, 0},
+		{"approve with notes keeps a minor defect", "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\n[minor] a.go:1 - c - e\nNOT-VERIFIED:\nnone\nNOTES:", PostMergeApproveWithNotes, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -149,14 +152,14 @@ func TestPostMergeReviewer_PromptAndArgs(t *testing.T) {
 	prompt := gotArgs[2]
 	for _, want := range []string{
 		"post-merge code reviewer", "wire field", "ISSUE-TITLE", "ISSUE-BODY",
-		"## CI Result\nsuccess", "## PR Evidence", "go test ./...", "DIFF-LINE", "PR #9",
+		"## CI Result\nsuccess", "## PR Body\n## Summary", "## Evidence", "go test ./...", "ignored", "DIFF-LINE", "PR #9",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
 		}
 	}
-	if strings.Contains(prompt, "ignored") {
-		t.Error("prompt carries content past the evidence section")
+	if strings.Contains(prompt, "## PR Evidence") {
+		t.Error("evidence is inside the supplied PR body and must not be repeated")
 	}
 	if !strings.Contains(strings.Join(gotArgs, " "), "--model claude-test-model") {
 		t.Errorf("args = %q, want --model claude-test-model", gotArgs)
@@ -268,5 +271,163 @@ func TestPostMergeReviewer_SetMaxDiffChars(t *testing.T) {
 	r.SetMaxDiffChars(0)
 	if r.MaxDiffChars() != 200000 {
 		t.Fatalf("zero must restore the default, got %d", r.MaxDiffChars())
+	}
+}
+
+func TestParsePostMergeDefectSeparators(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want PostMergeDefect
+		ok   bool
+	}{
+		{"comma", "a.go:1, the claim, the evidence",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:1", Claim: "the claim", Evidence: "the evidence"}, true},
+		{"pipe", "a.go:1 | the claim | the evidence",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:1", Claim: "the claim", Evidence: "the evidence"}, true},
+		{"dash", "internal/x.go:12 - claim text - evidence text",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "internal/x.go:12", Claim: "claim text", Evidence: "evidence text"}, true},
+		{"dash with commas in the claim", "a.go:1 - claim, with commas - evidence",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:1", Claim: "claim, with commas", Evidence: "evidence"}, true},
+		{"dash inside the evidence stays in the evidence", "a.go:1 - claim - evidence - more",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:1", Claim: "claim", Evidence: "evidence - more"}, true},
+		{"comma line with a dash in the evidence", "a.go:1, claim, evidence - more",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:1", Claim: "claim", Evidence: "evidence - more"}, true},
+		{"hyphenated path is not a separator", "my-pkg/a-b.go:1 - claim - evidence",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "my-pkg/a-b.go:1", Claim: "claim", Evidence: "evidence"}, true},
+		{"blocking tag with bullet", "- [blocking] a.go:1 - claim - evidence",
+			PostMergeDefect{Severity: PostMergeSeverityBlocking, Location: "a.go:1", Claim: "claim", Evidence: "evidence"}, true},
+		{"minor tag", "[minor] a.go:1, claim, evidence",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:1", Claim: "claim", Evidence: "evidence"}, true},
+		{"tag is case-insensitive", "[BLOCKING] a.go:1 | claim | evidence",
+			PostMergeDefect{Severity: PostMergeSeverityBlocking, Location: "a.go:1", Claim: "claim", Evidence: "evidence"}, true},
+		{"no tag defaults to minor", "a.go:1 - claim",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:1", Claim: "claim"}, true},
+		{"none", "none", PostMergeDefect{}, false},
+		{"bulleted none", "- None.", PostMergeDefect{}, false},
+		{"tagged none", "[minor] none", PostMergeDefect{}, false},
+		{"empty", "  ", PostMergeDefect{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parsePostMergeDefect(tt.line)
+			if ok != tt.ok || got != tt.want {
+				t.Errorf("parsePostMergeDefect(%q) = %+v, %v; want %+v, %v", tt.line, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+// TestParsePostMergeDefectSeparators_Dash pins the " - " separator on its own.
+func TestParsePostMergeDefectSeparators_Dash(t *testing.T) {
+	got, ok := parsePostMergeDefect("internal/x.go:12 - claim text - evidence text")
+	if !ok || got.Location != "internal/x.go:12" || got.Claim != "claim text" || got.Evidence != "evidence text" {
+		t.Fatalf("got %+v, %v; want location, claim and evidence split on \" - \"", got, ok)
+	}
+}
+
+func TestParsePostMergeReviewSeverity(t *testing.T) {
+	tests := []struct {
+		name         string
+		text         string
+		wantVerdict  PostMergeVerdict
+		wantDowngrad bool
+		wantBlocking int
+		wantDefects  int
+	}{
+		{"blocking keeps request-changes",
+			"VERDICT: REQUEST-CHANGES\nDEFECTS:\n[blocking] a.go:1 - c - e\n[minor] b.go:2 - c - e\nNOTES:",
+			PostMergeRequestChanges, false, 1, 2},
+		{"approve with notes carries a minor defect",
+			"VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\n[minor] a.go:1 - c - e\nNOTES:\nreq 1 met",
+			PostMergeApproveWithNotes, false, 0, 1},
+		{"untagged request-changes defects are minor",
+			"VERDICT: REQUEST-CHANGES\nDEFECTS:\na.go:1, c, e\nNOTES:",
+			PostMergeApproveWithNotes, true, 0, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parsePostMergeReview(tt.text)
+			if got.Verdict != tt.wantVerdict || got.Downgraded != tt.wantDowngrad ||
+				len(got.BlockingDefects()) != tt.wantBlocking || len(got.Defects) != tt.wantDefects {
+				t.Errorf("verdict=%q downgraded=%v blocking=%d defects=%d; want %q %v %d %d",
+					got.Verdict, got.Downgraded, len(got.BlockingDefects()), len(got.Defects),
+					tt.wantVerdict, tt.wantDowngrad, tt.wantBlocking, tt.wantDefects)
+			}
+		})
+	}
+}
+
+func TestParsePostMergeReviewSeverity_MinorOnlyDowngrades(t *testing.T) {
+	got := parsePostMergeReview("VERDICT: REQUEST-CHANGES\nDEFECTS:\n[minor] a.go:1 - c - e\n[minor] b.go:2 - c - e\nNOTES:\nnit")
+	if got.Verdict != PostMergeApproveWithNotes {
+		t.Fatalf("verdict = %q, want %q for a minor-only REQUEST-CHANGES", got.Verdict, PostMergeApproveWithNotes)
+	}
+	if !got.Downgraded || len(got.Defects) != 2 {
+		t.Errorf("downgraded=%v defects=%d, want true and the two minor defects kept", got.Downgraded, len(got.Defects))
+	}
+}
+
+func TestParsePostMergeReviewSeverity_NotVerifiedCap(t *testing.T) {
+	text := "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\nnone\nNOT-VERIFIED:\n- one\n- two\n* three\n- four\n- five\nNOTES:\nok"
+	got := parsePostMergeReview(text)
+	want := []string{"one", "two", "three"}
+	if len(got.NotVerified) != len(want) {
+		t.Fatalf("NotVerified = %q, want %q", got.NotVerified, want)
+	}
+	for i := range want {
+		if got.NotVerified[i] != want[i] {
+			t.Errorf("NotVerified[%d] = %q, want %q", i, got.NotVerified[i], want[i])
+		}
+	}
+	if got.Notes != "ok" {
+		t.Errorf("notes = %q, want the NOTES section after NOT-VERIFIED", got.Notes)
+	}
+	for _, none := range []string{"NOT-VERIFIED: none", "NOT VERIFIED:\nNone."} {
+		if g := parsePostMergeReview("VERDICT: APPROVE\nDEFECTS:\nnone\n" + none + "\nNOTES:"); len(g.NotVerified) != 0 {
+			t.Errorf("%q parsed items %q, want none", none, g.NotVerified)
+		}
+	}
+}
+
+func TestPostMergeReviewer_DowngradeIsLogged(t *testing.T) {
+	r := newPostMergeReviewerWithRunner(mockJudgeRunner("VERDICT: REQUEST-CHANGES\nDEFECTS:\n[minor] a.go:1 - c - e\nNOTES:\n"))
+	var logs strings.Builder
+	r.log = slog.New(slog.NewTextHandler(&logs, nil))
+	got, err := r.Review(context.Background(), PostMergeReviewInput{PRNumber: 77, Diff: "diff --git a/x b/x\n+x"})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if got.Verdict != PostMergeApproveWithNotes {
+		t.Fatalf("verdict = %q, want %q", got.Verdict, PostMergeApproveWithNotes)
+	}
+	for _, want := range []string{"downgraded", "REQUEST-CHANGES", "APPROVE-WITH-NOTES", "pr=77"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("log missing %q:\n%s", want, logs.String())
+		}
+	}
+}
+
+func TestPostMergeReviewer_PromptContract(t *testing.T) {
+	var prompt string
+	r := newPostMergeReviewerWithRunner(func(_ context.Context, args ...string) ([]byte, error) {
+		prompt = args[2]
+		return []byte("VERDICT: APPROVE\nDEFECTS:\nnone\nNOT-VERIFIED:\nnone\nNOTES:\n"), nil
+	})
+	// An Evidence block in the middle of a body too long to send whole is
+	// re-supplied under its own heading.
+	body := strings.Repeat("a", maxPreflightBodyChars) + "\n## Evidence\n\nEVIDENCE-LINE\n\n## Tail\n" + strings.Repeat("b", maxPreflightBodyChars)
+	if _, err := r.Review(context.Background(), PostMergeReviewInput{PRNumber: 3, Diff: "diff --git a/x b/x\n+x", PRBody: body}); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	for _, want := range []string{
+		"[blocking]", "[minor]", "NOT-VERIFIED:", "at most three", "supplied in full under \"## PR Body\"",
+		"REQUEST-CHANGES only when at least one defect is [blocking]", "\"could not\"", "\"please verify\"", "\"I assume\"",
+		"a requirement of the issue is not met", "a wire field has no producer", "\"Not in the diff\" is never a reason",
+		"## PR Body\n", "## PR Evidence (from the PR body)\n## Evidence\n\nEVIDENCE-LINE",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
 	}
 }
