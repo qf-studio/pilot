@@ -2,15 +2,20 @@ package autopilot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	ghadapter "github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/text"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // GH-5861: post-merge reviewer wiring. After a Pilot PR merges, handleMerged
@@ -215,19 +220,11 @@ func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeR
 	start := time.Now()
 
 	gatherCtx, cancel := context.WithTimeout(ctx, postMergeReviewGatherTimeout)
-	pr, err := c.ghClient.GetPullRequest(gatherCtx, c.owner, c.repo, in.prNumber)
-	var issueTitle, issueBody, diff string
-	if err == nil {
-		diff, err = c.postMergeDiffFor(gatherCtx, pr.MergeCommitSHA)
-	}
-	if err == nil {
-		iss, ierr := c.ghClient.GetIssue(gatherCtx, c.owner, c.repo, in.issueNumber)
-		if ierr != nil {
-			err = fmt.Errorf("fetch issue: %w", ierr)
-		} else {
-			issueTitle, issueBody = iss.Title, iss.Body
-		}
-	}
+	gathered, err := gatherPostMergeReviewInput(gatherCtx, c.ghClient, c.owner, c.repo, c.projectPath, in.prNumber, in.issueNumber,
+		func(ctx context.Context, mergeSHA string) (string, string, error) {
+			diff, err := c.postMergeDiffFor(ctx, mergeSHA)
+			return diff, PostMergeDiffSourceLocal, err
+		})
 	cancel()
 	if err != nil {
 		c.metrics.RecordPostMergeReview(postMergeReviewError)
@@ -236,13 +233,7 @@ func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeR
 		return
 	}
 
-	input := executor.PostMergeReviewInput{
-		PRNumber:   in.prNumber,
-		IssueTitle: issueTitle,
-		IssueBody:  issueBody,
-		Diff:       diff,
-		PRBody:     pr.Body,
-	}
+	input := gathered.Input
 	if in.ciStatus != "" {
 		input.CIResult = fmt.Sprintf("CI status at merge time: %s", in.ciStatus)
 	}
@@ -382,6 +373,15 @@ func formatPostMergeDefects(defects []executor.PostMergeDefect) string {
 	return sb.String()
 }
 
+// BuildPostMergeReviewComment renders the PR comment the controller posts for a
+// review, so other callers post exactly the same text.
+func BuildPostMergeReviewComment(review *executor.PostMergeReview) string {
+	return buildPostMergeReviewComment(review)
+}
+
+// PostMergeDiffLine renders the "Diff: ..." line of a review.
+func PostMergeDiffLine(review *executor.PostMergeReview) string { return postMergeDiffLine(review) }
+
 // buildPostMergeReviewComment renders the PR comment: verdict first, then
 // defects and notes.
 func buildPostMergeReviewComment(review *executor.PostMergeReview) string {
@@ -432,6 +432,162 @@ func postMergeDiffLine(review *executor.PostMergeReview) string {
 	return line + fmt.Sprintf("yes (%d files: %s)", len(review.TrimmedFiles), list)
 }
 
+// Diff sources reported by PostMergeGather.DiffSource.
+const (
+	PostMergeDiffSourceLocal         = "local checkout"
+	PostMergeDiffSourceGitHubCompare = "github compare"
+)
+
+// PostMergeGitHub is the GitHub surface the gather step needs. The studio-sdk
+// *github.Client satisfies it, which is what the controller passes.
+type PostMergeGitHub interface {
+	GetPullRequest(ctx context.Context, owner, repo string, number int) (*github.PullRequest, error)
+	GetIssue(ctx context.Context, owner, repo string, number int) (*github.Issue, error)
+}
+
+// PostMergeClosingIssues is an optional capability of a PostMergeGitHub:
+// listing the issues a PR closes. Without it, issue resolution skips straight
+// to the head-branch name.
+type PostMergeClosingIssues interface {
+	ClosingIssueNumbers(ctx context.Context, owner, repo string, prNumber int) ([]int, error)
+}
+
+// PostMergeCompareDiff is an optional capability of a PostMergeGitHub: the
+// diff of a merge commit against its first parent, read through GitHub. It is
+// the diff source when there is no local checkout holding the commit.
+type PostMergeCompareDiff interface {
+	MergeCommitDiff(ctx context.Context, owner, repo, mergeSHA string) (string, error)
+}
+
+// PostMergeGather is the outcome of gathering one merged PR's review inputs.
+type PostMergeGather struct {
+	Input executor.PostMergeReviewInput
+	// IssueNumber is the issue the review is judged against, whether the
+	// caller gave it or it was resolved.
+	IssueNumber int
+	// MergeCommitSHA is the merge commit whose diff was read.
+	MergeCommitSHA string
+	// DiffSource says where the diff came from (PostMergeDiffSource*), with
+	// the reason when the local checkout was tried and failed.
+	DiffSource string
+}
+
+// postMergeBranchIssueRe finds the issue number in a head branch name such as
+// "pilot/GH-5910".
+var postMergeBranchIssueRe = regexp.MustCompile(`(?i)\bGH-(\d+)`)
+
+// GatherPostMergeReviewInput collects what the post-merge reviewer reads about
+// one merged PR: the PR, its merged diff and the issue it was meant to
+// implement. issueNumber <= 0 resolves the issue from the PR's first closing
+// issue reference, else the GH-N in its head branch name, else fails asking for
+// the issue. The diff comes from the local checkout at projectPath (fetching
+// the merge commit first) and, when that is unset or fails, from GitHub's
+// compare of the merge commit's first parent to the merge commit when gh
+// supports it (PostMergeCompareDiff). It writes nothing anywhere.
+func GatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, repo, projectPath string, prNumber, issueNumber int) (*PostMergeGather, error) {
+	return gatherPostMergeReviewInput(ctx, gh, owner, repo, projectPath, prNumber, issueNumber, nil)
+}
+
+// gatherPostMergeReviewInput is GatherPostMergeReviewInput with a seam for the
+// diff: the controller supplies its own (test override, local checkout only),
+// nil uses the default local-then-GitHub order.
+func gatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, repo, projectPath string, prNumber, issueNumber int,
+	diffFn func(ctx context.Context, mergeSHA string) (diff, source string, err error)) (*PostMergeGather, error) {
+	pr, err := gh.GetPullRequest(ctx, owner, repo, prNumber)
+	if err != nil {
+		return nil, fmt.Errorf("fetch PR #%d: %w", prNumber, err)
+	}
+	if pr.State == "open" && !pr.Merged {
+		return nil, fmt.Errorf("PR #%d is still open: only merged PRs can be reviewed", prNumber)
+	}
+	if pr.MergeCommitSHA == "" {
+		return nil, fmt.Errorf("merged PR has no merge commit sha")
+	}
+
+	if issueNumber <= 0 {
+		issueNumber, err = resolvePostMergeIssue(ctx, gh, owner, repo, pr, prNumber)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if diffFn == nil {
+		diffFn = func(ctx context.Context, mergeSHA string) (string, string, error) {
+			return defaultPostMergeDiff(ctx, gh, owner, repo, projectPath, mergeSHA)
+		}
+	}
+	diff, source, err := diffFn(ctx, pr.MergeCommitSHA)
+	if err != nil {
+		return nil, err
+	}
+
+	iss, err := gh.GetIssue(ctx, owner, repo, issueNumber)
+	if err != nil {
+		return nil, fmt.Errorf("fetch issue: %w", err)
+	}
+	return &PostMergeGather{
+		Input: executor.PostMergeReviewInput{
+			PRNumber:   prNumber,
+			IssueTitle: iss.Title,
+			IssueBody:  iss.Body,
+			Diff:       diff,
+			PRBody:     pr.Body,
+		},
+		IssueNumber:    issueNumber,
+		MergeCommitSHA: pr.MergeCommitSHA,
+		DiffSource:     source,
+	}, nil
+}
+
+// resolvePostMergeIssue finds the issue a PR implements when the caller did
+// not name one: the first closing issue reference, else the GH-N in the head
+// branch name.
+func resolvePostMergeIssue(ctx context.Context, gh PostMergeGitHub, owner, repo string, pr *github.PullRequest, prNumber int) (int, error) {
+	var lookupErr error
+	if ci, ok := gh.(PostMergeClosingIssues); ok {
+		nums, err := ci.ClosingIssueNumbers(ctx, owner, repo, prNumber)
+		if err != nil {
+			lookupErr = err
+		} else if len(nums) > 0 {
+			return nums[0], nil
+		}
+	}
+	if m := postMergeBranchIssueRe.FindStringSubmatch(pr.Head.Ref); len(m) == 2 {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+			return n, nil
+		}
+	}
+	msg := fmt.Sprintf("PR #%d has no closing issue reference and its head branch %q carries no GH-N: pass the issue with --issue", prNumber, pr.Head.Ref)
+	if lookupErr != nil {
+		msg += fmt.Sprintf(" (closing-issue lookup failed: %v)", lookupErr)
+	}
+	return 0, errors.New(msg)
+}
+
+// defaultPostMergeDiff reads the merged diff from the local checkout when
+// projectPath is set, else — or when the checkout cannot produce it — from
+// GitHub's compare of the merge commit's first parent to the merge commit.
+func defaultPostMergeDiff(ctx context.Context, gh PostMergeGitHub, owner, repo, projectPath, mergeSHA string) (diff, source string, err error) {
+	var localErr error
+	if projectPath != "" {
+		diff, localErr = localMergedDiff(ctx, projectPath, mergeSHA)
+		if localErr == nil {
+			return diff, PostMergeDiffSourceLocal, nil
+		}
+	} else {
+		localErr = errors.New("no project path configured")
+	}
+	cd, ok := gh.(PostMergeCompareDiff)
+	if !ok {
+		return "", "", localErr
+	}
+	diff, err = cd.MergeCommitDiff(ctx, owner, repo, mergeSHA)
+	if err != nil {
+		return "", "", fmt.Errorf("local diff: %v; github compare: %w", localErr, err)
+	}
+	return diff, fmt.Sprintf("%s (local checkout unavailable: %v)", PostMergeDiffSourceGitHubCompare, localErr), nil
+}
+
 // postMergeDiffFor returns the merged diff of mergeSHA. It uses the
 // controller's override when set (tests), else the local checkout.
 func (c *Controller) postMergeDiffFor(ctx context.Context, mergeSHA string) (string, error) {
@@ -466,4 +622,34 @@ func localMergedDiff(ctx context.Context, projectPath, mergeSHA string) (string,
 		return "", fmt.Errorf("git diff %s^1 %s: %w: %s", mergeSHA, mergeSHA, err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
+}
+
+// PostMergeGitHubClient is the GitHub client of an offline review: the
+// studio-sdk client for the PR and issue, plus the in-tree client for the two
+// reads the SDK does not expose (closing issue references and the raw compare
+// diff). It satisfies PostMergeGitHub, PostMergeClosingIssues and
+// PostMergeCompareDiff, and AddComment for --post.
+type PostMergeGitHubClient struct {
+	*github.Client
+	extra *ghadapter.Client
+}
+
+// NewPostMergeGitHubClient pairs an SDK client with an in-tree client.
+func NewPostMergeGitHubClient(sdk *github.Client, extra *ghadapter.Client) *PostMergeGitHubClient {
+	return &PostMergeGitHubClient{Client: sdk, extra: extra}
+}
+
+// ClosingIssueNumbers lists the issues the PR closes.
+func (c *PostMergeGitHubClient) ClosingIssueNumbers(ctx context.Context, owner, repo string, prNumber int) ([]int, error) {
+	return c.extra.ClosingIssueNumbers(ctx, owner, repo, prNumber)
+}
+
+// MergeCommitDiff returns GitHub's diff of the merge commit's first parent to
+// the merge commit.
+func (c *PostMergeGitHubClient) MergeCommitDiff(ctx context.Context, owner, repo, mergeSHA string) (string, error) {
+	parent, err := c.extra.GetCommitFirstParent(ctx, owner, repo, mergeSHA)
+	if err != nil {
+		return "", fmt.Errorf("first parent of %s: %w", mergeSHA, err)
+	}
+	return c.extra.CompareDiff(ctx, owner, repo, parent, mergeSHA)
 }

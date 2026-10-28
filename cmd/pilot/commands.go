@@ -3538,3 +3538,48 @@ Examples:
 
 	return cmd
 }
+
+// newReviewMergeCmd is `pilot review-merge`: the post-merge reviewer's
+// gather-and-review on any past PR, printed instead of posted.
+func newReviewMergeCmd() *cobra.Command {
+	var opts reviewMergeOptions
+
+	cmd := &cobra.Command{
+		Use:   "review-merge",
+		Short: "Run the post-merge reviewer on a merged PR and print the verdict",
+		Long: `Run the post-merge reviewer on any merged PR of a configured project and
+print its verdict. It gathers the same inputs the autopilot does (the PR, its
+merged diff and the issue it implements) and uses the reviewer exactly as
+orchestrator.autopilot.post_merge_review configures it (model, timeout,
+max_diff_chars), whether or not post_merge_review.enabled is set.
+
+It is diagnostic: nothing is posted unless --post is given, and even then only
+the verdict comment is posted. It never files a follow-up issue and never
+touches the pr_reviews ledger, the daily review cap or the metrics.
+
+The issue is --issue, else the PR's first closing issue reference, else the
+GH-N in its head branch name. The diff is read from the project's local
+checkout (fetching the merge commit first) and falls back to GitHub's compare
+of the merge commit's first parent to the merge commit; the output says which.`,
+		Example: `  pilot review-merge --repo qf-studio/pilot --pr 5902
+  pilot review-merge --repo qf-studio/pilot --pr 5902 --issue 5895 --json`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := opts.validate(); err != nil {
+				return err
+			}
+			env, err := reviewMergeEnvFactory(opts.Repo)
+			if err != nil {
+				return err
+			}
+			return runReviewMerge(cmd.Context(), opts, env, cmd.OutOrStdout())
+		},
+	}
+
+	cmd.Flags().StringVar(&opts.Repo, "repo", "", "Repository as owner/name (must be a configured project)")
+	cmd.Flags().IntVar(&opts.PR, "pr", 0, "Merged pull request number")
+	cmd.Flags().IntVar(&opts.Issue, "issue", 0, "Issue the PR implements (default: closing reference, else GH-N in the branch name)")
+	cmd.Flags().BoolVar(&opts.JSON, "json", false, "Output as JSON")
+	cmd.Flags().BoolVar(&opts.Post, "post", false, "Also post the verdict comment on the PR (never files an issue)")
+	return cmd
+}

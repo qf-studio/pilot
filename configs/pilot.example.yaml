@@ -609,6 +609,8 @@ orchestrator:
     # executor.daily_ticket_cap and have their own cap below. Needs the
     # `claude` binary and a local checkout of the project (the merged diff is
     # read with git). PRs without a GitHub issue are not reviewed. Default off.
+    # To run the reviewer offline on any merged PR and read the verdict without
+    # posting it, use `pilot review-merge` (docs: CLI reference, pilot review-merge).
     post_merge_review:
       enabled: false
       # Model for the review. Empty uses the executor's configured model

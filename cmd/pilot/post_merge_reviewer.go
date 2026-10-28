@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os/exec"
 
@@ -18,7 +19,25 @@ func buildPostMergeReviewer(cfg *config.Config, log *slog.Logger) *executor.Post
 	if cfg == nil || cfg.Orchestrator == nil || !cfg.Orchestrator.Autopilot.PostMergeReviewEnabled() {
 		return nil
 	}
-	pmr := cfg.Orchestrator.Autopilot.PostMergeReview
+	r, err := newPostMergeReviewer(cfg)
+	if err != nil {
+		log.Warn("autopilot.post_merge_review is enabled but the claude binary was not found — post-merge reviews stay off",
+			slog.String("error", err.Error()))
+		return nil
+	}
+	return r
+}
+
+// newPostMergeReviewer builds the reviewer from config without looking at the
+// enabled knob: model, timeout and max_diff_chars come from
+// orchestrator.autopilot.post_merge_review exactly as the daemon's reviewer
+// gets them. The daemon and `pilot review-merge` both build through here, so a
+// calibration run measures the reviewer that posts.
+func newPostMergeReviewer(cfg *config.Config) (*executor.PostMergeReviewer, error) {
+	var pmr autopilot.PostMergeReviewConfig
+	if cfg.Orchestrator != nil && cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.PostMergeReview != nil {
+		pmr = *cfg.Orchestrator.Autopilot.PostMergeReview
+	}
 
 	claudeCmd := ""
 	if cfg.Executor != nil && cfg.Executor.ClaudeCode != nil {
@@ -28,9 +47,7 @@ func buildPostMergeReviewer(cfg *config.Config, log *slog.Logger) *executor.Post
 		claudeCmd = "claude"
 	}
 	if _, err := exec.LookPath(claudeCmd); err != nil {
-		log.Warn("autopilot.post_merge_review is enabled but the claude binary was not found — post-merge reviews stay off",
-			slog.String("command", claudeCmd))
-		return nil
+		return nil, fmt.Errorf("claude binary %q not found: %w", claudeCmd, err)
 	}
 
 	model := pmr.Model
@@ -39,7 +56,7 @@ func buildPostMergeReviewer(cfg *config.Config, log *slog.Logger) *executor.Post
 	}
 	r := executor.NewPostMergeReviewer(claudeCmd, model, pmr.Timeout)
 	r.SetMaxDiffChars(pmr.MaxDiffChars)
-	return r
+	return r, nil
 }
 
 // wirePostMergeReviewer installs the post-merge reviewer on every controller

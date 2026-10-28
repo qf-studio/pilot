@@ -327,6 +327,13 @@ type TimelineEvent struct {
 // transient errors (429, 5xx, network failures). The request body is buffered
 // once before the retry loop so it can be replayed on each attempt.
 func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, result interface{}) error {
+	return c.doRequestAccept(ctx, method, path, "application/vnd.github+json", body, result)
+}
+
+// doRequestAccept is doRequest with a caller-chosen Accept header. When result
+// is a *string the response body is stored verbatim instead of JSON-decoded,
+// which is how the raw diff media type is read.
+func (c *Client) doRequestAccept(ctx context.Context, method, path, accept string, body interface{}, result interface{}) error {
 	var bodyBytes []byte
 	if body != nil {
 		var err error
@@ -352,7 +359,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 			if err != nil {
 				return err
 			}
-			req.Header.Set("Accept", "application/vnd.github+json")
+			req.Header.Set("Accept", accept)
 			req.Header.Set("Authorization", "Bearer "+token)
 			req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 			if bodyBytes != nil {
@@ -398,6 +405,10 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 				return fmt.Errorf("API error (status %d): %s", resp.StatusCode, msg)
 			}
 
+			if raw, ok := result.(*string); ok {
+				*raw = string(respBody)
+				return nil
+			}
 			if result != nil && len(respBody) > 0 {
 				if err := json.Unmarshal(respBody, result); err != nil {
 					return fmt.Errorf("failed to parse response: %w", err)
@@ -943,6 +954,75 @@ func (c *Client) CompareCommits(ctx context.Context, owner, repo, base, head str
 		return nil, err
 	}
 	return result.Commits, nil
+}
+
+// CompareDiff returns the unified diff of base...head as GitHub renders it
+// (media type application/vnd.github.diff).
+func (c *Client) CompareDiff(ctx context.Context, owner, repo, base, head string) (string, error) {
+	path := fmt.Sprintf("/repos/%s/%s/compare/%s...%s", owner, repo, base, head)
+	var diff string
+	if err := c.doRequestAccept(ctx, http.MethodGet, path, "application/vnd.github.diff", nil, &diff); err != nil {
+		return "", err
+	}
+	return diff, nil
+}
+
+// GetCommitFirstParent returns the SHA of a commit's first parent, which for a
+// squash or merge-commit merge is the base branch tip the PR landed on.
+func (c *Client) GetCommitFirstParent(ctx context.Context, owner, repo, sha string) (string, error) {
+	path := fmt.Sprintf("/repos/%s/%s/commits/%s", owner, repo, sha)
+	var result struct {
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
+	}
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return "", err
+	}
+	if len(result.Parents) == 0 {
+		return "", fmt.Errorf("commit %s has no parent", sha)
+	}
+	return result.Parents[0].SHA, nil
+}
+
+// ClosingIssueNumbers returns the numbers of the issues in owner/repo that a
+// pull request closes (GitHub's closingIssuesReferences), in GitHub's order.
+// Issues from other repositories are left out.
+func (c *Client) ClosingIssueNumbers(ctx context.Context, owner, repo string, prNumber int) ([]int, error) {
+	const query = `query($owner: String!, $repo: String!, $pr: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) {
+      closingIssuesReferences(first: 10) {
+        nodes { number repository { nameWithOwner } }
+      }
+    }
+  }
+}`
+	var result struct {
+		Repository struct {
+			PullRequest struct {
+				ClosingIssuesReferences struct {
+					Nodes []struct {
+						Number     int `json:"number"`
+						Repository struct {
+							NameWithOwner string `json:"nameWithOwner"`
+						} `json:"repository"`
+					} `json:"nodes"`
+				} `json:"closingIssuesReferences"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	vars := map[string]interface{}{"owner": owner, "repo": repo, "pr": prNumber}
+	if err := c.ExecuteGraphQL(ctx, query, vars, &result); err != nil {
+		return nil, err
+	}
+	var nums []int
+	for _, n := range result.Repository.PullRequest.ClosingIssuesReferences.Nodes {
+		if strings.EqualFold(n.Repository.NameWithOwner, owner+"/"+repo) {
+			nums = append(nums, n.Number)
+		}
+	}
+	return nums, nil
 }
 
 // CompareStatus returns GitHub's relationship of head to base for base...head:

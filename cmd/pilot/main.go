@@ -422,6 +422,7 @@ func main() {
 		newAllowCmd(),
 		newProjectCmd(),
 		newAutopilotCmd(),
+		newReviewMergeCmd(),
 		newOnboardCmd(),
 		newBackendCmd(),
 		newEvalCmd(),

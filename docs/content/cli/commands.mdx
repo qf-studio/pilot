@@ -867,6 +867,72 @@ pilot brief --now
 pilot brief --weekly
 ```
 
+### pilot review-merge
+
+Run the post-merge reviewer on any merged PR and print the verdict.
+
+```bash
+pilot review-merge --repo owner/name --pr N [--issue M] [--json] [--post]
+```
+
+Runs the same gather-and-review the autopilot runs after a merge
+(`orchestrator.autopilot.post_merge_review`), on any past PR of a configured
+project, and prints the verdict instead of posting it. Use it to measure the
+reviewer against merges that already carry a human verdict, and to tune its
+prompt. The reviewer is built exactly as the daemon builds it (model, `timeout`
+and `max_diff_chars` from `post_merge_review`), and the command runs whether or
+not `post_merge_review.enabled` is set. It needs the `claude` binary and a
+GitHub token.
+
+The run is diagnostic: it never touches the `pr_reviews` ledger, the review
+daily cap or the metrics, and it never files a follow-up issue.
+
+The issue the PR is judged against is `--issue`, else the PR's first closing
+issue reference, else the `GH-N` in its head branch name. If none of those
+exist the command fails and asks for `--issue`.
+
+The merged diff is read from the project's local checkout (the merge commit is
+fetched first). When the project has no checkout, or the checkout cannot
+produce the diff, it falls back to GitHub's compare of the merge commit's first
+parent to the merge commit. The output's `Diff source` line (`diff_source` in
+JSON) says which was used.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--repo` | Repository as `owner/name`; must match a configured project (required) |
+| `--pr` | Merged pull request number (required) |
+| `--issue` | Issue the PR implements; default: closing reference, else `GH-N` in the branch name |
+| `--json` | Output as JSON |
+| `--post` | Also post the verdict comment on the PR, the same comment the autopilot posts. Off by default |
+
+The text output shows the verdict, the defect list (file, line, claim and
+evidence), the notes, the `Diff:` line (bytes, files, trimmed), the model and
+the duration of the review. `--json` carries `verdict`, `defects` (each with
+`file`, `line`, `claim`, `evidence`), `notes`, `diff_bytes`, `diff_files`,
+`diff_trimmed`, `trimmed_files`, `model` and `duration_ms`, plus the input
+sizes `input_diff_bytes`, `input_issue_bytes` and `input_pr_body_bytes`.
+
+The exit status is non-zero when the run fails or the reviewer's output broke
+its contract (verdict `unknown`, which is never posted), so a calibration loop
+can tell.
+
+#### Examples
+
+```bash
+# Review a merged PR and read the verdict; posts nothing
+pilot review-merge --repo qf-studio/pilot --pr 5902
+
+# Name the issue explicitly and print JSON
+pilot review-merge --repo qf-studio/pilot --pr 5902 --issue 5895 --json
+
+# Calibrate over several PRs
+for pr in 5880 5890 5902; do
+  pilot review-merge --repo qf-studio/pilot --pr "$pr" --json
+done
+```
+
 ### pilot trace
 
 Render the stage-transition timeline for a task's executions.
