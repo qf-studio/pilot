@@ -1853,6 +1853,9 @@ func TestGetDiffStats(t *testing.T) {
 }
 
 func TestStripAnthropicCoAuthor(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end: real git/gh, skipped under -short")
+	}
 	gitOut := func(t *testing.T, dir string, args ...string) string {
 		t.Helper()
 		cmd := exec.Command("git", args...)

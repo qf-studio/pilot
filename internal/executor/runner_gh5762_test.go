@@ -12,6 +12,9 @@ import (
 // that commit and the final push is a non-fast-forward. The run may lease on
 // the SHA it pushed itself and on no other.
 func TestPushBranchWithRetry_OwnAutoPreservePush(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end: real git/gh, skipped under -short")
+	}
 	tests := []struct {
 		name       string
 		pushedWIP  func(s *pushScenario) string // task.pushedWIPSHA

@@ -34,6 +34,9 @@ func writeRecordingGh(t *testing.T, openPRJSON string) (commentLog string) {
 // recorded that head; the run may lease on exactly it, once, and only while no
 // open PR has the branch as its head.
 func TestPushBranchWithRetry_InheritedHeadLease(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end: real git/gh, skipped under -short")
+	}
 	const noPR, openPR = `[]`, `[{"url":"https://github.com/o/r/pull/9"}]`
 	tests := []struct {
 		name      string

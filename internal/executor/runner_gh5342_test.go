@@ -296,6 +296,27 @@ func TestNoCommitRetry_PostRetryCommitCountFailure_NotRecordedAsNoOp(t *testing.
 // already-done ctx that can't produce anything usable (exec.CommandContext
 // refuses to even start it), burning a real retry attempt for nothing.
 func TestIntentJudgeRetry_ExpiredTaskCtx_SkipsReinvocation(t *testing.T) {
+	runExpiredTaskCtxSkipsReinvocation(t, judgeTestTimeout)
+}
+
+// judgeTestTimeout is the injected intent-judge timeout for the GH-5342
+// expired-ctx tests (production default is 60s). GH-5924.
+const judgeTestTimeout = 200 * time.Millisecond
+
+// TestIntentJudgeRetry_ExpiredTaskCtx_SkipsReinvocation_FastTimeout pins the
+// GH-5924 speedup: the scenario must finish in under 2s. With the production
+// 60s judge timeout restored in the mock judge the judge subprocess outlives
+// the task ctx by a minute and this test fails.
+func TestIntentJudgeRetry_ExpiredTaskCtx_SkipsReinvocation_FastTimeout(t *testing.T) {
+	start := time.Now()
+	runExpiredTaskCtxSkipsReinvocation(t, judgeTestTimeout)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("scenario took %v, want < 2s: judge timeout is not injected", elapsed)
+	}
+}
+
+func runExpiredTaskCtxSkipsReinvocation(t *testing.T, judgeTimeout time.Duration) {
+	t.Helper()
 	capturedTitleFile := setUpFakeGhPRCreatePATH(t)
 
 	const branch = "pilot/GH-5342-intentretry"
@@ -332,7 +353,7 @@ func TestIntentJudgeRetry_ExpiredTaskCtx_SkipsReinvocation(t *testing.T) {
 	// entirely (not just the retry) and leaving IntentWarning empty. A
 	// generous ctx budget keeps that setup work outside the race window
 	// entirely, regardless of load.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	// The judge subprocess is mocked to block until the task ctx it was
@@ -343,14 +364,27 @@ func TestIntentJudgeRetry_ExpiredTaskCtx_SkipsReinvocation(t *testing.T) {
 	// this reproduces a judge call that legitimately took real wall-clock
 	// time (GH-4669's measured judge subprocess latency) and returns only
 	// after ctx is already done, deterministically and without a sleep.
+	//
+	// GH-5924: the judge ctx is bounded by the judge timeout (production
+	// default 60s), and that bound — not the task ctx — is what released this
+	// mock, so the test used to wait the full minute. The timeout is now
+	// injected (judgeTestTimeout) and the mock additionally waits for the task
+	// ctx itself, so "judge returns after the task ctx expired" stays
+	// deterministic while the wall-clock is bounded by the task ctx budget.
 	runner.intentJudge = newIntentJudgeWithRunner(func(judgeCtx context.Context, _ ...string) ([]byte, error) {
 		<-judgeCtx.Done()
+		<-ctx.Done()
 		return []byte("VERDICT: FAIL\nThe diff adds unrelated scope.\nCONFIDENCE: 0.9"), nil
 	})
+	runner.intentJudge.SetJudgeTimeout(judgeTimeout)
 
+	start := time.Now()
 	result, err := runner.Execute(ctx, task)
 	if err != nil {
 		t.Fatalf("Execute() returned error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("Execute took %v; the judge timeout must be injected, not the 60s production default", elapsed)
 	}
 
 	if backend.callCount() != 1 {

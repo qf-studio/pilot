@@ -19,6 +19,7 @@ const samplePlanningOutput = `Based on the codebase analysis, here is the implem
 var testLog = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 func TestSubtaskParserParse_HappyPath(t *testing.T) {
+	t.Parallel()
 	runner := func(_ context.Context, args ...string) ([]byte, error) {
 		return []byte(`{"subtasks": [{"order": 1, "title": "Add database migration", "description": "Create new table for user preferences"}, {"order": 2, "title": "Implement repository layer", "description": "Add CRUD methods for user preferences"}, {"order": 3, "title": "Create API endpoints", "description": "REST endpoints for reading and updating"}, {"order": 4, "title": "Add frontend settings page", "description": "React component with form controls"}]}`), nil
 	}
@@ -57,6 +58,7 @@ func TestSubtaskParserParse_HappyPath(t *testing.T) {
 }
 
 func TestSubtaskParserParse_SubprocessError(t *testing.T) {
+	t.Parallel()
 	runner := func(_ context.Context, args ...string) ([]byte, error) {
 		return nil, errors.New("subprocess failed: exit status 1")
 	}
@@ -69,6 +71,7 @@ func TestSubtaskParserParse_SubprocessError(t *testing.T) {
 }
 
 func TestSubtaskParserParse_MalformedJSON(t *testing.T) {
+	t.Parallel()
 	runner := func(_ context.Context, args ...string) ([]byte, error) {
 		return []byte("This is not JSON at all"), nil
 	}
@@ -81,6 +84,7 @@ func TestSubtaskParserParse_MalformedJSON(t *testing.T) {
 }
 
 func TestSubtaskParserParse_EmptySubtasksSlice(t *testing.T) {
+	t.Parallel()
 	runner := func(_ context.Context, args ...string) ([]byte, error) {
 		return []byte(`{"subtasks": []}`), nil
 	}
@@ -93,6 +97,7 @@ func TestSubtaskParserParse_EmptySubtasksSlice(t *testing.T) {
 }
 
 func TestSubtaskParserParse_NilParser(t *testing.T) {
+	t.Parallel()
 	var parser *SubtaskParser
 	_, err := parser.Parse(context.Background(), samplePlanningOutput)
 	if err == nil {
@@ -101,6 +106,7 @@ func TestSubtaskParserParse_NilParser(t *testing.T) {
 }
 
 func TestSubtaskParserParse_TimeoutPropagation(t *testing.T) {
+	t.Parallel()
 	runner := func(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, context.DeadlineExceeded
 	}
@@ -113,6 +119,7 @@ func TestSubtaskParserParse_TimeoutPropagation(t *testing.T) {
 }
 
 func TestSubtaskParserParse_JSONCodefenceStripping(t *testing.T) {
+	t.Parallel()
 	runner := func(_ context.Context, args ...string) ([]byte, error) {
 		return []byte("```json\n{\"subtasks\": [{\"order\": 1, \"title\": \"feat: do x\", \"description\": \"desc\"}]}\n```"), nil
 	}
@@ -128,6 +135,7 @@ func TestSubtaskParserParse_JSONCodefenceStripping(t *testing.T) {
 }
 
 func TestParseSubtasksWithFallback_SubprocessSucceeds(t *testing.T) {
+	t.Parallel()
 	runner := func(_ context.Context, args ...string) ([]byte, error) {
 		return []byte(`{"subtasks": [{"order": 1, "title": "subprocess-extracted task one", "description": "From subprocess"}, {"order": 2, "title": "subprocess-extracted task two", "description": "From subprocess"}]}`), nil
 	}
@@ -148,6 +156,7 @@ func TestParseSubtasksWithFallback_SubprocessSucceeds(t *testing.T) {
 }
 
 func TestParseSubtasksWithFallback_SubprocessFails_FallsBackToRegex(t *testing.T) {
+	t.Parallel()
 	runner := func(_ context.Context, args ...string) ([]byte, error) {
 		return nil, errors.New("subprocess failed")
 	}
@@ -168,6 +177,7 @@ func TestParseSubtasksWithFallback_SubprocessFails_FallsBackToRegex(t *testing.T
 }
 
 func TestParseSubtasksWithFallback_NilParser_FallsBackToRegex(t *testing.T) {
+	t.Parallel()
 	subtasks := parseSubtasksWithFallback(nil, samplePlanningOutput)
 
 	if len(subtasks) != 4 {
@@ -179,6 +189,7 @@ func TestParseSubtasksWithFallback_NilParser_FallsBackToRegex(t *testing.T) {
 }
 
 func TestParseSubtasksWithFallback_InvalidJSON_FallsBackToRegex(t *testing.T) {
+	t.Parallel()
 	runner := func(_ context.Context, args ...string) ([]byte, error) {
 		return []byte("not valid json"), nil
 	}
@@ -192,6 +203,7 @@ func TestParseSubtasksWithFallback_InvalidJSON_FallsBackToRegex(t *testing.T) {
 }
 
 func TestParseSubtasksWithFallback_EmptySubtasks_FallsBackToRegex(t *testing.T) {
+	t.Parallel()
 	runner := func(_ context.Context, args ...string) ([]byte, error) {
 		return []byte(`{"subtasks": []}`), nil
 	}
@@ -205,6 +217,7 @@ func TestParseSubtasksWithFallback_EmptySubtasks_FallsBackToRegex(t *testing.T) 
 }
 
 func TestNewSubtaskParser_BinaryMissing(t *testing.T) {
+	t.Parallel()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	parser := NewSubtaskParser("/nonexistent/binary/claude-does-not-exist", log)
 	if parser != nil {

@@ -80,6 +80,9 @@ func assertAdoptionInfoLine(t *testing.T, logs, taskID, sha, gateResult string) 
 // no-op classification points: the GH-916 pre-retry count (clean harvest)
 // and the ghost-SHA guard (harvested SHA equals base).
 func TestRunner_AdoptAutoPreservedCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end: real git/gh, skipped under -short")
+	}
 	const redOutput = "--- FAIL: TestPreservedWork (0.00s)\nFAIL\texample.com/x\t0.01s"
 	green := &QualityOutcome{Passed: true}
 	red := &QualityOutcome{

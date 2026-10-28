@@ -574,6 +574,9 @@ func TestExecuteSubIssues_ClaimLost_QueuedBeyondTimeoutStillSucceeds(t *testing.
 // started_at (when the child began running) rather than to when this call
 // started polling.
 func TestExecuteSubIssues_ClaimLost_RunningSilentlyTimesOutFromStartedAt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end: real git/gh, skipped under -short")
+	}
 	store, err := memory.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("memory.NewStore: %v", err)

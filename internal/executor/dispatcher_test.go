@@ -257,8 +257,8 @@ func TestDispatcher_GetWorkerStatus(t *testing.T) {
 		t.Fatalf("failed to queue task: %v", err)
 	}
 
-	// Give worker time to start
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the worker to start (GH-5924: poll instead of a fixed sleep).
+	pollUntil(t, 2*time.Second, "worker to start", func() bool { return len(dispatcher.GetWorkerStatus()) == 1 })
 
 	// Check worker exists
 	status = dispatcher.GetWorkerStatus()
@@ -435,8 +435,8 @@ func TestDispatcher_MultipleProjects(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	// Give workers time to start
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the workers to start (GH-5924: poll instead of a fixed sleep).
+	pollUntil(t, 2*time.Second, "workers to start", func() bool { return len(dispatcher.GetWorkerStatus()) == 3 })
 
 	// Check workers for each project
 	status := dispatcher.GetWorkerStatus()
@@ -2136,6 +2136,20 @@ func (b *releasableBackend) Execute(ctx context.Context, _ ExecuteOptions) (*Bac
 
 // waitForExecStatus polls until execID's stored status equals want or
 // timeout elapses.
+// pollUntil polls cond every 10ms until it returns true or timeout elapses,
+// then reports a test error (GH-5924: replaces fixed "give it a beat" sleeps).
+func pollUntil(t *testing.T, timeout time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Errorf("timed out after %v waiting for %s", timeout, what)
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func waitForExecStatus(t *testing.T, store *memory.Store, execID, want string, timeout time.Duration) *memory.Execution {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -2663,7 +2677,10 @@ func TestRunStaleRecoveryLoop_Periodic(t *testing.T) {
 	}
 
 	// Wait for the loop to tick and recover it.
-	time.Sleep(200 * time.Millisecond)
+	pollUntil(t, 2*time.Second, "periodic recovery to mark exec-periodic stalled", func() bool {
+		e, gErr := store.GetExecution("exec-periodic")
+		return gErr == nil && e.Status == "stalled"
+	})
 
 	updated, err := store.GetExecution("exec-periodic")
 	if err != nil {

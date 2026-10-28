@@ -7,6 +7,7 @@ import (
 )
 
 func TestSignalParser_ParseSignals(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	parser := NewSignalParser(logger)
 
@@ -153,6 +154,7 @@ func TestSignalParser_ParseSignals(t *testing.T) {
 }
 
 func TestSignalParser_ProgressClamping(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	parser := NewSignalParser(logger)
 
@@ -203,6 +205,7 @@ func TestSignalParser_ProgressClamping(t *testing.T) {
 }
 
 func TestSignalParser_Defaults(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	parser := NewSignalParser(logger)
 
@@ -224,6 +227,7 @@ func TestSignalParser_Defaults(t *testing.T) {
 }
 
 func TestSignalParser_ComplexContent(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	parser := NewSignalParser(logger)
 
@@ -274,6 +278,7 @@ Now running tests...`
 }
 
 func TestSignalParser_NilLogger(t *testing.T) {
+	t.Parallel()
 	// Should not panic with nil logger
 	parser := NewSignalParser(nil)
 	signals := parser.ParseSignals("```pilot-signal\n{\"type\":\"status\"}\n```")
@@ -284,6 +289,7 @@ func TestSignalParser_NilLogger(t *testing.T) {
 }
 
 func TestSignalParser_NoOpExitReason(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	parser := NewSignalParser(logger)
 
@@ -370,6 +376,7 @@ func TestSignalParser_NoOpExitReason(t *testing.T) {
 }
 
 func TestTruncateSignalForLog(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		maxLen   int

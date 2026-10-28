@@ -60,6 +60,9 @@ func setUpFakeGhPRCreateFailingPATH(t *testing.T) {
 //     terminalExecutionStatuses) — the sweep's transition IS the claim
 //     release, no separate release call is needed.
 func TestFinalizeEpicBranchPR_AbortSweepsRunningChildren(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end: real git/gh, skipped under -short")
+	}
 	tests := []struct {
 		name          string
 		setUp         func(t *testing.T) (dir string, task *Task)

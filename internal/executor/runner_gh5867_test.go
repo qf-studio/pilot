@@ -48,6 +48,9 @@ func (s slowUntilEvidenceRunner) RunCommand(_ context.Context, _, _ string) (str
 // (and the recovery ref when PR creation fails for another reason) must still
 // get a live finalize window instead of failing instantly on the dead ctx.
 func TestExecute_PRCreateSurvivesDeadlineBlownDuringEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end: real git/gh, skipped under -short")
+	}
 	run := func(t *testing.T, createErr error) (*ExecutionResult, *deadlineProbePRCreator) {
 		t.Helper()
 		const branch = "pilot/GH-5867-evidence"

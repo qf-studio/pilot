@@ -191,6 +191,9 @@ var selfHealCases = map[string]selfHealCase{
 }
 
 func TestPreflightSelfHeal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end: real git/gh, skipped under -short")
+	}
 	for key, c := range selfHealCases {
 		t.Run(key, func(t *testing.T) {
 			t.Log(c.name)

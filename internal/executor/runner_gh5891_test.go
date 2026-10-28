@@ -91,6 +91,9 @@ func (s *recordingLearningStore) RecordExecution(ctx context.Context, _ *memory.
 // task-completed webhook and the learning record, so neither is lost when the
 // task deadline blew during evidence.
 func TestExecute_PostPRTailSurvivesDeadlineBlownDuringEvidence(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end: real git/gh, skipped under -short")
+	}
 	const branch = "pilot/GH-5891-tail"
 	dir, _ := setupFreshnessRepo(t)
 	runGit(t, dir, "checkout", "-b", branch)

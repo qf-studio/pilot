@@ -17,6 +17,9 @@ import (
 // terminal failure and does escalate (pilot-blocked) — proving the
 // assertions are not vacuous.
 func TestDispatcher_AdoptedPreservedRun_NoBackoffNoBlockedLabel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end: real git/gh, skipped under -short")
+	}
 	tests := []struct {
 		name        string
 		outcome     *QualityOutcome

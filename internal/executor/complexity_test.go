@@ -5,6 +5,7 @@ import (
 )
 
 func TestDetectComplexity(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		task     *Task
@@ -336,6 +337,7 @@ This affects adapters/slack, adapters/telegram, adapters/discord.`,
 }
 
 func TestComplexity_Methods(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		complexity          Complexity
 		isTrivial           bool
@@ -373,6 +375,7 @@ func TestComplexity_Methods(t *testing.T) {
 }
 
 func TestComplexity_String(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		complexity Complexity
 		expected   string

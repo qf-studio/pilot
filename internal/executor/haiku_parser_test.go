@@ -35,6 +35,7 @@ func makeHaikuResponse(text string) string {
 }
 
 func TestHaikuParser_ParsePlanning_Success(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		response string // JSON array text from model
@@ -136,6 +137,7 @@ func TestHaikuParser_ParsePlanning_Success(t *testing.T) {
 }
 
 func TestHaikuParser_ParsePlanning_MalformedJSON(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		response string
@@ -177,6 +179,7 @@ func TestHaikuParser_ParsePlanning_MalformedJSON(t *testing.T) {
 }
 
 func TestHaikuParser_ParsePlanning_HTTPError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		statusCode int
@@ -206,6 +209,7 @@ func TestHaikuParser_ParsePlanning_HTTPError(t *testing.T) {
 }
 
 func TestHaikuParser_ParsePlanning_Timeout(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Sleep longer than client timeout
 		time.Sleep(200 * time.Millisecond)
@@ -229,6 +233,7 @@ func TestHaikuParser_ParsePlanning_Timeout(t *testing.T) {
 }
 
 func TestHaikuParser_ParsePlanning_EmptyInput(t *testing.T) {
+	t.Parallel()
 	// Should fail before making any HTTP call
 	parser := newTestHaikuParser("http://should-not-be-called")
 	_, err := parser.ParsePlanning(context.Background(), "")
@@ -238,6 +243,7 @@ func TestHaikuParser_ParsePlanning_EmptyInput(t *testing.T) {
 }
 
 func TestHaikuParser_ParsePlanning_EmptyAPIResponse(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -254,6 +260,7 @@ func TestHaikuParser_ParsePlanning_EmptyAPIResponse(t *testing.T) {
 }
 
 func TestHaikuParser_ParsePlanning_EmptySubtaskArray(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -269,6 +276,7 @@ func TestHaikuParser_ParsePlanning_EmptySubtaskArray(t *testing.T) {
 }
 
 func TestHaikuParser_ParsePlanning_ContextCancelled(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
@@ -287,6 +295,7 @@ func TestHaikuParser_ParsePlanning_ContextCancelled(t *testing.T) {
 }
 
 func TestNewHaikuParser(t *testing.T) {
+	t.Parallel()
 	parser := NewHaikuParser("my-api-key")
 	if parser == nil {
 		t.Fatal("NewHaikuParser returned nil")
