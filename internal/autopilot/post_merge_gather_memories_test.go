@@ -161,6 +161,7 @@ func TestPostMergeReviewCommentDiffLine_Memories(t *testing.T) {
 	}{
 		{"untrimmed with memories", &executor.PostMergeReview{Verdict: executor.PostMergeApprove, DiffBytes: 10, DiffFiles: 1, Memories: 3}, "Diff: 10 bytes, 1 files, trimmed: no, memories: 3\n"},
 		{"untrimmed without graph", &executor.PostMergeReview{Verdict: executor.PostMergeApprove, DiffBytes: 10, DiffFiles: 1}, "trimmed: no, memories: 0\n"},
+		{"checkout records files read", &executor.PostMergeReview{Verdict: executor.PostMergeApprove, DiffBytes: 10, DiffFiles: 1, Memories: 1, Checkout: true, FilesRead: 4}, "trimmed: no, memories: 1, checkout: yes, files read: 4\n"},
 		{"trimmed keeps memories last", &executor.PostMergeReview{Verdict: executor.PostMergeApprove, DiffBytes: 10, DiffFiles: 1, DiffTrimmed: true, TrimmedFiles: []string{"a.go"}, Memories: 2}, "trimmed: yes (1 files: a.go), memories: 2\n"},
 	}
 	for _, tt := range tests {

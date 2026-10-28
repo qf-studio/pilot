@@ -187,9 +187,16 @@ func extractStdinPrompt(args []string) (rest []string, prompt string, ok bool) {
 // than argv — see extractStdinPrompt — so diffs over Linux's 128KB
 // MAX_ARG_STRLEN no longer fail fork/exec with "argument list too long".
 func (j *IntentJudge) defaultCmdRunner(ctx context.Context, args ...string) ([]byte, error) {
+	return j.runCmdIn(ctx, "", args...)
+}
+
+// runCmdIn is defaultCmdRunner with a working directory: dir "" inherits the
+// daemon's. GH-5916: the post-merge reviewer runs in a read-only checkout.
+func (j *IntentJudge) runCmdIn(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	args, prompt, hasPrompt := extractStdinPrompt(args)
 
 	cmd := exec.CommandContext(ctx, j.claudeCmd, args...)
+	cmd.Dir = dir
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.
 	cmd.Env = modelSubprocessEnv(os.Environ())

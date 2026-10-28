@@ -266,6 +266,8 @@ func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeR
 		"verdict", string(review.Verdict),
 		"defects", len(review.Defects),
 		"memories", review.Memories,
+		"checkout", review.Checkout,
+		"files_read", review.FilesRead,
 		"duration", time.Since(start),
 	)
 	if review.Verdict == executor.PostMergeUnknown {
@@ -429,6 +431,9 @@ const maxPostMergeDiffLineFiles = 10
 func postMergeDiffLine(review *executor.PostMergeReview) string {
 	line := fmt.Sprintf("Diff: %d bytes, %d files, trimmed: ", review.DiffBytes, review.DiffFiles)
 	memories := fmt.Sprintf(", memories: %d", review.Memories)
+	if review.Checkout {
+		memories += fmt.Sprintf(", checkout: yes, files read: %d", review.FilesRead)
+	}
 	if !review.DiffTrimmed {
 		return line + "no" + memories
 	}
@@ -597,15 +602,23 @@ func gatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, 
 	if memories {
 		recalled = recallPostMergeMemories(projectPath, iss.Title, iss.Body, diff)
 	}
+	input := executor.PostMergeReviewInput{
+		PRNumber:   prNumber,
+		IssueTitle: iss.Title,
+		IssueBody:  iss.Body,
+		Diff:       diff,
+		PRBody:     pr.Body,
+		Memories:   recalled,
+	}
+	// GH-5916: a diff read from the local checkout means the merge commit is
+	// in it, so the reviewer can open counterpart files there. A diff from
+	// GitHub's compare keeps the diff-only review.
+	if source == PostMergeDiffSourceLocal {
+		input.ProjectPath = projectPath
+		input.MergeCommitSHA = pr.MergeCommitSHA
+	}
 	return &PostMergeGather{
-		Input: executor.PostMergeReviewInput{
-			PRNumber:   prNumber,
-			IssueTitle: iss.Title,
-			IssueBody:  iss.Body,
-			Diff:       diff,
-			PRBody:     pr.Body,
-			Memories:   recalled,
-		},
+		Input:          input,
 		IssueNumber:    issueNumber,
 		MergeCommitSHA: pr.MergeCommitSHA,
 		DiffSource:     source,

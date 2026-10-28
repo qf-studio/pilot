@@ -222,6 +222,9 @@ func TestGatherPostMergeReviewInput_DiffSource(t *testing.T) {
 		if len(fake.diffCalls) != 0 {
 			t.Errorf("GitHub compare called although the checkout had the commit: %v", fake.diffCalls)
 		}
+		if got.Input.ProjectPath != repoDir || got.Input.MergeCommitSHA != "HEAD" {
+			t.Errorf("reviewer checkout input = (%q, %q), want (%q, HEAD)", got.Input.ProjectPath, got.Input.MergeCommitSHA, repoDir)
+		}
 	})
 
 	t.Run("github compare without a project path", func(t *testing.T) {
@@ -238,6 +241,9 @@ func TestGatherPostMergeReviewInput_DiffSource(t *testing.T) {
 		}
 		if len(fake.diffCalls) != 1 || fake.diffCalls[0] != "mergesha9" {
 			t.Errorf("compare called with %v, want [mergesha9]", fake.diffCalls)
+		}
+		if got.Input.ProjectPath != "" || got.Input.MergeCommitSHA != "" {
+			t.Errorf("a compare diff must keep the diff-only review, got checkout input (%q, %q)", got.Input.ProjectPath, got.Input.MergeCommitSHA)
 		}
 	})
 

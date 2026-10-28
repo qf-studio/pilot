@@ -69,6 +69,12 @@ type PostMergeReview struct {
 	DiffFiles int
 	// Memories is the number of project memories rendered into the prompt.
 	Memories int
+	// Checkout is true when the reviewer ran in a read-only checkout of the
+	// merge commit with read tools (GH-5916).
+	Checkout bool
+	// FilesRead is the number of distinct files the reviewer opened with Read
+	// in that checkout; zero without one.
+	FilesRead int
 	// DiffTrimmed is true when the reviewer was shown a trimmed diff.
 	DiffTrimmed bool
 	// TrimmedFiles lists the files whose diff body was cut.
@@ -90,6 +96,11 @@ type PostMergeReviewInput struct {
 	// touched files, recalled by the caller (empty when none). The reviewer
 	// renders them; they are daemon-generated, not untrusted data.
 	Memories []graphrecall.MemorySummary
+	// ProjectPath is the local repository holding MergeCommitSHA. With both
+	// set the reviewer runs in a detached read-only checkout of that commit;
+	// without either (or when the checkout fails) it reviews the diff alone.
+	ProjectPath    string
+	MergeCommitSHA string
 }
 
 // PostMergeReviewer runs the post-merge review model pass.
@@ -98,7 +109,10 @@ type PostMergeReviewer struct {
 	timeout      time.Duration
 	maxDiffChars int
 	log          *slog.Logger
-	cmdRunner    func(ctx context.Context, args ...string) ([]byte, error)
+	// cmdRunner runs the CLI with args in dir ("" = the daemon's directory).
+	cmdRunner func(ctx context.Context, dir string, args ...string) ([]byte, error)
+	// checkout creates the review checkout; a seam for tests.
+	checkout func(ctx context.Context, repoPath, sha string) (*postMergeCheckout, error)
 }
 
 // NewPostMergeReviewer builds a reviewer that calls the Claude Code
@@ -114,7 +128,8 @@ func NewPostMergeReviewer(claudeCmd, model string, timeout time.Duration) *PostM
 		timeout:      timeout,
 		maxDiffChars: DefaultPostMergeReviewMaxDiffChars,
 		log:          slog.Default().With("component", "post-merge-reviewer"),
-		cmdRunner:    NewIntentJudge(claudeCmd).cmdRunner,
+		cmdRunner:    NewIntentJudge(claudeCmd).runCmdIn,
+		checkout:     createPostMergeCheckout,
 	}
 }
 
@@ -135,6 +150,14 @@ func (r *PostMergeReviewer) Model() string { return r.model }
 
 // newPostMergeReviewerWithRunner builds a reviewer with a fake command runner.
 func newPostMergeReviewerWithRunner(runner func(ctx context.Context, args ...string) ([]byte, error)) *PostMergeReviewer {
+	return newPostMergeReviewerWithDirRunner(func(ctx context.Context, _ string, args ...string) ([]byte, error) {
+		return runner(ctx, args...)
+	})
+}
+
+// newPostMergeReviewerWithDirRunner builds a reviewer with a fake command
+// runner that also sees the working directory.
+func newPostMergeReviewerWithDirRunner(runner func(ctx context.Context, dir string, args ...string) ([]byte, error)) *PostMergeReviewer {
 	r := NewPostMergeReviewer("claude", "", 0)
 	r.cmdRunner = runner
 	return r
@@ -152,7 +175,7 @@ const postMergeReviewerSystemPrompt = `You are a post-merge code reviewer. A pul
 
 Checklist:
 1) Does the diff do what the issue asks? Go through the issue's requirements and acceptance criteria bullet by bullet and say which are met.
-2) For every wire field the diff reads or emits (JSON/YAML keys, HTTP headers, query parameters, DB columns, event payload keys), name the counterpart producer or consumer file and confirm the field exists there. A field with no producer is a defect — a binding to a field its counterpart never sends.
+` + postMergeChecklistItem2 + `
 3) Tests: do they exercise the real adapter or a mock? A test that mocks the very adapter whose wire contract is the risk proves nothing about that contract.
 4) Migrations: is there a down path, can any data be lost, is row-level security (RLS) handled?
 ` + postMergeChecklistItem5 + `
@@ -197,6 +220,26 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 	var sb strings.Builder
 	memoriesBlock, memoriesRendered := renderMemoryBlock(postMergeMemoriesHeader, "", in.Memories)
 	systemPrompt := postMergeReviewerSystemPrompt
+
+	reviewCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	// GH-5916: with a local checkout holding the merge commit, review inside a
+	// detached worktree of it. A checkout failure is not a review failure: the
+	// diff-only review that ran before this still runs.
+	workDir := ""
+	if in.ProjectPath != "" && in.MergeCommitSHA != "" {
+		co, err := r.checkout(reviewCtx, in.ProjectPath, in.MergeCommitSHA)
+		if err != nil {
+			r.log.Warn("post-merge review: checkout unavailable, reviewing the diff only",
+				slog.Int("pr", in.PRNumber), slog.String("sha", in.MergeCommitSHA), slog.Any("error", err))
+		} else {
+			defer co.cleanup()
+			workDir = co.path
+			systemPrompt = strings.Replace(systemPrompt, postMergeChecklistItem2, postMergeChecklistItem2Checkout, 1)
+			systemPrompt = strings.Replace(systemPrompt, "\n\nIMPORTANT — truncation handling", "\n\n"+postMergeCheckoutPrompt+"\n\nIMPORTANT — truncation handling", 1)
+		}
+	}
 	if memoriesRendered > 0 {
 		systemPrompt = strings.Replace(systemPrompt, postMergeChecklistItem5, postMergeChecklistItem5+"\n"+postMergeMemoryChecklistLine, 1)
 	}
@@ -220,19 +263,27 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 	}
 	fmt.Fprintf(&sb, "\n## Merged Diff (PR #%d)\n```diff\n%s\n```", in.PRNumber, payload)
 
-	reviewCtx, cancel := context.WithTimeout(ctx, r.timeout)
-	defer cancel()
-
 	args := []string{"--print", "-p", sb.String()}
 	if r.model != "" {
 		args = append(args, "--model", r.model)
 	}
-	args = append(args, "--output-format", "text")
-	output, err := r.cmdRunner(reviewCtx, args...)
+	if workDir != "" {
+		args = append(args, postMergeCheckoutArgs()...)
+		args = append(args, "--output-format", "stream-json", "--verbose")
+	} else {
+		args = append(args, "--output-format", "text")
+	}
+	output, err := r.cmdRunner(reviewCtx, workDir, args...)
 	if err != nil {
 		return nil, fmt.Errorf("post-merge reviewer subprocess: %w", err)
 	}
-	review := parsePostMergeReview(string(output))
+	text, filesRead := string(output), 0
+	if workDir != "" {
+		text, filesRead = parsePostMergeStream(output)
+	}
+	review := parsePostMergeReview(text)
+	review.Checkout = workDir != ""
+	review.FilesRead = filesRead
 	review.DiffBytes = report.OriginalBytes
 	review.DiffFiles = report.Files
 	review.Memories = memoriesRendered

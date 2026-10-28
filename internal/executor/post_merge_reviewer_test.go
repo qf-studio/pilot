@@ -119,9 +119,12 @@ func TestPostMergeReviewer_PromptAndArgs(t *testing.T) {
 		gotArgs  []string
 		deadline time.Time
 	)
-	runner := func(ctx context.Context, args ...string) ([]byte, error) {
+	runner := func(ctx context.Context, dir string, args ...string) ([]byte, error) {
 		mu.Lock()
 		defer mu.Unlock()
+		if dir != "" {
+			t.Errorf("diff-only review cwd = %q, want none", dir)
+		}
 		gotArgs = args
 		deadline, _ = ctx.Deadline()
 		return []byte("VERDICT: APPROVE\nDEFECTS:\nnone\nNOTES:\n"), nil
