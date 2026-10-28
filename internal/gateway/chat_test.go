@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -369,7 +372,22 @@ func TestChatAPI_RoutesAbsentWhenDisabled(t *testing.T) {
 // test drive a real *executor.Runner end to end without invoking a real Claude
 // Code subprocess. A prompt containing "file an issue" replays one Read tool
 // call and answers with a valid pilot-issue block (GH-5638).
-type chatTestBackend struct{}
+//
+// It also tracks its own lifetime (GH-5923): the chat API runs each task on a
+// goroutine nobody joins, so the test needs a way to know the Runner is done
+// writing into the project directory before t.TempDir's cleanup removes it.
+type chatTestBackend struct {
+	// hold keeps Execute running this long, ignoring ctx, so a test can prove
+	// that cleanup really waits for an in-flight task.
+	hold time.Duration
+	// entered, when non-nil, receives one value as each Execute call starts.
+	entered chan struct{}
+
+	mu       sync.Mutex
+	started  int
+	finished int
+	taskIDs  []string
+}
 
 const chatBackendOutput = "chat test task done"
 
@@ -381,6 +399,22 @@ const chatIssueOutput = "Here is the draft.\n\n```pilot-issue\n" +
 func (b *chatTestBackend) Name() string      { return "chat-test-backend" }
 func (b *chatTestBackend) IsAvailable() bool { return true }
 func (b *chatTestBackend) Execute(ctx context.Context, opts executor.ExecuteOptions) (*executor.BackendResult, error) {
+	b.mu.Lock()
+	b.started++
+	b.taskIDs = append(b.taskIDs, opts.TaskID)
+	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		b.finished++
+		b.mu.Unlock()
+	}()
+	select {
+	case b.entered <- struct{}{}:
+	default:
+	}
+	if b.hold > 0 {
+		time.Sleep(b.hold)
+	}
 	if strings.Contains(opts.Prompt, "file an issue") {
 		opts.EventHandler(executor.BackendEvent{
 			Type:      executor.EventTypeToolUse,
@@ -390,6 +424,37 @@ func (b *chatTestBackend) Execute(ctx context.Context, opts executor.ExecuteOpti
 		return &executor.BackendResult{Success: true, Output: chatIssueOutput}, nil
 	}
 	return &executor.BackendResult{Success: true, Output: chatBackendOutput}, nil
+}
+
+// idle reports whether every Execute call has returned and the Runner has
+// left executeWithOptions for each task it ran (its bookkeeping and Navigator
+// copy-back happen after the backend returns).
+func (b *chatTestBackend) idle(runner *executor.Runner) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.finished != b.started {
+		return false
+	}
+	for _, id := range b.taskIDs {
+		if runner.IsRunning(id) {
+			return false
+		}
+	}
+	return true
+}
+
+// waitIdle blocks until idle reports true or the timeout expires.
+func (b *chatTestBackend) waitIdle(runner *executor.Runner, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for !b.idle(runner) {
+		if time.Now().After(deadline) {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			return fmt.Errorf("backend not idle after %s: %d started, %d finished", timeout, b.started, b.finished)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return nil
 }
 
 // chatIssueCreator is a stub comms.IssueCreator recording its calls.
@@ -415,22 +480,122 @@ func (c chatProjectSource) GetProjectByPath(string) *comms.ProjectInfo { return 
 func (c chatProjectSource) GetDefaultProject() *comms.ProjectInfo { return c.p }
 func (c chatProjectSource) ListProjects() []*comms.ProjectInfo    { return []*comms.ProjectInfo{c.p} }
 
+// freeLoopbackPort returns a port that was free on 127.0.0.1 a moment ago.
+func freeLoopbackPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("find free port: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+// startTestServer runs server.Start in the background and blocks until /ping
+// answers, so a request can't race the listener coming up. A cleanup cancels
+// the server context and waits for Start to return, instead of leaving the
+// goroutine to the end of the process.
+func startTestServer(t *testing.T, server *Server, port int) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		_ = server.Start(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-stopped:
+		case <-time.After(10 * time.Second):
+			t.Error("gateway server did not stop within 10s")
+		}
+	})
+
+	pingURL := "http://127.0.0.1:" + strconv.Itoa(port) + "/ping"
+	client := &http.Client{Timeout: time.Second}
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		resp, err := client.Get(pingURL)
+		if err != nil {
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return
+		}
+	}
+	t.Fatalf("gateway server not ready at %s within 5s", pingURL)
+}
+
+// chatHarness is a gateway server wired to a real Runner over a
+// chatTestBackend and a project directory under t.TempDir().
+type chatHarness struct {
+	baseURL    string
+	token      string
+	backend    *chatTestBackend
+	runner     *executor.Runner
+	creator    *chatIssueCreator
+	projectDir string
+}
+
+// newChatHarness builds the harness. The project directory is created first
+// and the cleanups are registered after it, so they run before TempDir's
+// RemoveAll (cleanups run last-in-first-out): the server stops, then the
+// background task finishes writing, then the directory is removed (GH-5923).
+func newChatHarness(t *testing.T, backend *chatTestBackend) *chatHarness {
+	t.Helper()
+	projectDir := t.TempDir()
+
+	runner := executor.NewRunnerWithBackend(backend)
+	runner.SetRecordingEnabled(false)
+	runner.SetSkipPreflightChecks(true)
+
+	creator := &chatIssueCreator{}
+	messenger := web.NewMessenger()
+	handler := comms.BuildHandler(comms.HandlerDeps{
+		Messenger:    messenger,
+		Runner:       runner,
+		ProjectPath:  projectDir,
+		Projects:     chatProjectSource{p: &comms.ProjectInfo{Name: "alpha", Path: projectDir}},
+		TaskIDPrefix: "WEBTEST",
+		IssueCreator: creator,
+	})
+
+	const token = "chat-composed-secret"
+	port := freeLoopbackPort(t)
+	server := NewServerWithAuth(&Config{Host: "127.0.0.1", Port: port}, &AuthConfig{Type: AuthTypeAPIToken, Token: token})
+	server.SetChatAPI(web.NewAPI(handler, messenger))
+
+	t.Cleanup(func() {
+		if err := backend.waitIdle(runner, 15*time.Second); err != nil {
+			t.Errorf("background task outlived the test: %v", err)
+		}
+	})
+	startTestServer(t, server, port)
+
+	return &chatHarness{
+		baseURL:    "http://127.0.0.1:" + strconv.Itoa(port),
+		token:      token,
+		backend:    backend,
+		runner:     runner,
+		creator:    creator,
+		projectDir: projectDir,
+	}
+}
+
 // TestChatProjectsRoute covers GET /api/v1/chat/projects: bearer auth, the
 // {"projects":[...]} body and method gating.
 func TestChatProjectsRoute(t *testing.T) {
 	api := &mockChatAPI{projects: []web.ProjectSummary{
 		{ID: "alpha", Name: "alpha", Path: "/work/alpha", Repo: "acme/alpha", Default: true},
 	}}
-	server := NewServerWithAuth(&Config{Host: "127.0.0.1", Port: 19098}, &AuthConfig{Type: AuthTypeAPIToken, Token: "chat-projects-secret"})
+	port := freeLoopbackPort(t)
+	server := NewServerWithAuth(&Config{Host: "127.0.0.1", Port: port}, &AuthConfig{Type: AuthTypeAPIToken, Token: "chat-projects-secret"})
 	server.SetChatAPI(api)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	go func() { _ = server.Start(ctx) }()
-	time.Sleep(100 * time.Millisecond)
+	startTestServer(t, server, port)
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	url := "http://127.0.0.1:19098/api/v1/chat/projects"
+	url := "http://127.0.0.1:" + strconv.Itoa(port) + "/api/v1/chat/projects"
 	do := func(method string, auth bool) *http.Response {
 		t.Helper()
 		req, _ := http.NewRequest(method, url, nil)
@@ -474,42 +639,16 @@ func TestChatProjectsRoute(t *testing.T) {
 // execute -> filed URL) with a fake executor backend and issue creator, plus
 // the approvals scope fence (#4748 / GH-4411 / GH-4431).
 func TestChatAPI_Composed(t *testing.T) {
-	backend := &chatTestBackend{}
-	runner := executor.NewRunnerWithBackend(backend)
-	runner.SetRecordingEnabled(false)
-	runner.SetSkipPreflightChecks(true)
-
-	creator := &chatIssueCreator{}
-	messenger := web.NewMessenger()
-	projectDir := t.TempDir()
-	handler := comms.BuildHandler(comms.HandlerDeps{
-		Messenger:    messenger,
-		Runner:       runner,
-		ProjectPath:  projectDir,
-		Projects:     chatProjectSource{p: &comms.ProjectInfo{Name: "alpha", Path: projectDir}},
-		TaskIDPrefix: "WEBTEST",
-		IssueCreator: creator,
-	})
-	chatAPI := web.NewAPI(handler, messenger)
-
-	config := &Config{Host: "127.0.0.1", Port: 19097}
-	authConfig := &AuthConfig{Type: AuthTypeAPIToken, Token: "chat-composed-secret"}
-	server := NewServerWithAuth(config, authConfig)
-	server.SetChatAPI(chatAPI)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	go func() { _ = server.Start(ctx) }()
-	time.Sleep(100 * time.Millisecond)
-
+	h := newChatHarness(t, &chatTestBackend{})
+	creator := h.creator
 	client := &http.Client{Timeout: 10 * time.Second}
-	baseURL := "http://127.0.0.1:19097"
+	baseURL := h.baseURL
 
 	post := func(t *testing.T, body string, auth bool) *http.Response {
 		t.Helper()
 		req, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/chat/messages", bytes.NewBufferString(body))
 		if auth {
-			req.Header.Set("Authorization", "Bearer chat-composed-secret")
+			req.Header.Set("Authorization", "Bearer "+h.token)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
@@ -526,7 +665,7 @@ func TestChatAPI_Composed(t *testing.T) {
 			url += "?after=" + strconv.FormatInt(after, 10)
 		}
 		req, _ := http.NewRequest(http.MethodGet, url, nil)
-		req.Header.Set("Authorization", "Bearer chat-composed-secret")
+		req.Header.Set("Authorization", "Bearer "+h.token)
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("GET events: %v", err)
@@ -635,6 +774,16 @@ func TestChatAPI_Composed(t *testing.T) {
 	if got := getEvents(t, "proj-conv", 0).ProjectID; got != "alpha" {
 		t.Errorf("events projectId = %q, want alpha", got)
 	}
+	// Wait for that turn's reply so its task is finished, not still running
+	// against the project directory when the test returns (GH-5923).
+	pollEvents(t, "proj-conv", 0, func(evs []web.Event) bool {
+		for _, ev := range evs {
+			if ev.Type == web.EventText && ev.Text == chatBackendOutput {
+				return true
+			}
+		}
+		return false
+	})
 
 	// 4. An approval-shaped callback must be rejected with 400 — approvals do
 	// not route through the chat API (scope fence, #4748 / GH-4411/GH-4431).
@@ -706,5 +855,56 @@ func TestChatAPI_Composed(t *testing.T) {
 	}
 	if !hasPilot {
 		t.Errorf("CreateIssue labels = %v, want pilot", creator.calls[0].Labels)
+	}
+}
+
+// TestChatAPI_Composed_RunnerDoneBeforeCleanup pins GH-5923: a task the chat
+// API started in the background must be finished, with the Runner out of it,
+// by the time the test's cleanups have run, i.e. before t.TempDir's RemoveAll
+// can race its writes. The subtest returns while the backend is still inside
+// Execute (it ignores ctx and holds for hold), so only the harness cleanup
+// waiting for the backend can make the check after t.Run pass.
+func TestChatAPI_Composed_RunnerDoneBeforeCleanup(t *testing.T) {
+	backend := &chatTestBackend{hold: 300 * time.Millisecond, entered: make(chan struct{}, 4)}
+	var runner *executor.Runner
+
+	t.Run("task in flight when the subtest returns", func(t *testing.T) {
+		h := newChatHarness(t, backend)
+		runner = h.runner
+
+		req, err := http.NewRequest(http.MethodPost, h.baseURL+"/api/v1/chat/messages",
+			bytes.NewBufferString(`{"conversationId":"slow-conv","text":"build the project"}`))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+h.token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("POST status = %d, want 202", resp.StatusCode)
+		}
+
+		select {
+		case <-backend.entered:
+		case <-time.After(10 * time.Second):
+			t.Fatal("backend Execute never started")
+		}
+		// Return with the task still running: the harness cleanup must wait.
+	})
+
+	if !backend.idle(runner) {
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		t.Fatalf("task still running after the subtest's cleanups ran: %d started, %d finished",
+			backend.started, backend.finished)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.started != 1 {
+		t.Errorf("backend Execute calls = %d, want 1", backend.started)
 	}
 }
