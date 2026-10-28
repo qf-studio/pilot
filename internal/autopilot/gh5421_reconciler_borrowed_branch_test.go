@@ -32,9 +32,7 @@ type fakeBorrowedBranchLookup struct {
 	branch   string
 	fixIssue int
 	recorded []recordedBorrowedBranch
-	// consumed counts FixIssueForBranch matches; forgotten lists the task IDs
-	// ForgetBorrowedBranch was called with (GH-5927).
-	consumed  int
+	// forgotten lists the task IDs ForgetBorrowedBranch was called with (GH-5927).
 	forgotten []string
 }
 
@@ -46,7 +44,6 @@ func (f *fakeBorrowedBranchLookup) FixIssueForBranch(branch string) (int, bool) 
 	if branch == f.branch && f.fixIssue > 0 {
 		fi := f.fixIssue
 		f.branch, f.fixIssue = "", 0
-		f.consumed++
 		return fi, true
 	}
 	return 0, false
