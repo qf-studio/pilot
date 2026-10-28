@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	ghadapter "github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/memory/graphrecall"
 	"github.com/qf-studio/pilot/internal/text"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
@@ -113,6 +115,15 @@ func (c *Controller) SetPostMergeReviewer(r PostMergeReviewer) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.postMergeReviewer = r
+}
+
+// SetPostMergeMemoryInjection sets whether reviews recall project memories.
+// The daemon passes executor.memory_injection.enabled so the one switch gates
+// executor prompts and review context alike; a controller left unset recalls.
+func (c *Controller) SetPostMergeMemoryInjection(enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.postMergeMemoriesOff = !enabled
 }
 
 // SetPostMergeReviewBudget installs a review budget shared with other
@@ -219,8 +230,12 @@ func (c *Controller) postMergeBudget() *postMergeReviewBudget {
 func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeReviewer, in postMergeReviewInputs) {
 	start := time.Now()
 
+	c.mu.RLock()
+	memories := !c.postMergeMemoriesOff
+	c.mu.RUnlock()
+
 	gatherCtx, cancel := context.WithTimeout(ctx, postMergeReviewGatherTimeout)
-	gathered, err := gatherPostMergeReviewInput(gatherCtx, c.ghClient, c.owner, c.repo, c.projectPath, in.prNumber, in.issueNumber,
+	gathered, err := gatherPostMergeReviewInput(gatherCtx, c.ghClient, c.owner, c.repo, c.projectPath, in.prNumber, in.issueNumber, memories,
 		func(ctx context.Context, mergeSHA string) (string, string, error) {
 			diff, err := c.postMergeDiffFor(ctx, mergeSHA)
 			return diff, PostMergeDiffSourceLocal, err
@@ -250,6 +265,7 @@ func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeR
 		"pr", in.prNumber,
 		"verdict", string(review.Verdict),
 		"defects", len(review.Defects),
+		"memories", review.Memories,
 		"duration", time.Since(start),
 	)
 	if review.Verdict == executor.PostMergeUnknown {
@@ -412,8 +428,9 @@ const maxPostMergeDiffLineFiles = 10
 // can tell a trimmed review from a thorough one.
 func postMergeDiffLine(review *executor.PostMergeReview) string {
 	line := fmt.Sprintf("Diff: %d bytes, %d files, trimmed: ", review.DiffBytes, review.DiffFiles)
+	memories := fmt.Sprintf(", memories: %d", review.Memories)
 	if !review.DiffTrimmed {
-		return line + "no"
+		return line + "no" + memories
 	}
 	files := review.TrimmedFiles
 	extra := 0
@@ -429,7 +446,7 @@ func postMergeDiffLine(review *executor.PostMergeReview) string {
 	if extra > 0 {
 		list += fmt.Sprintf(", and %d more", extra)
 	}
-	return line + fmt.Sprintf("yes (%d files: %s)", len(review.TrimmedFiles), list)
+	return line + fmt.Sprintf("yes (%d files: %s)", len(review.TrimmedFiles), list) + memories
 }
 
 // Diff sources reported by PostMergeGather.DiffSource.
@@ -483,15 +500,66 @@ var postMergeBranchIssueRe = regexp.MustCompile(`(?i)\bGH-(\d+)`)
 // the issue. The diff comes from the local checkout at projectPath (fetching
 // the merge commit first) and, when that is unset or fails, from GitHub's
 // compare of the merge commit's first parent to the merge commit when gh
-// supports it (PostMergeCompareDiff). It writes nothing anywhere.
-func GatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, repo, projectPath string, prNumber, issueNumber int) (*PostMergeGather, error) {
-	return gatherPostMergeReviewInput(ctx, gh, owner, repo, projectPath, prNumber, issueNumber, nil)
+// supports it (PostMergeCompareDiff). It also recalls the project's ranked
+// knowledge-graph memories for the issue and the touched files into
+// Input.Memories, unless disabled with WithoutMemoryInjection. It writes
+// nothing anywhere.
+func GatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, repo, projectPath string, prNumber, issueNumber int, opts ...GatherOption) (*PostMergeGather, error) {
+	cfg := gatherConfig{memories: true}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return gatherPostMergeReviewInput(ctx, gh, owner, repo, projectPath, prNumber, issueNumber, cfg.memories, nil)
+}
+
+// GatherOption tunes GatherPostMergeReviewInput.
+type GatherOption func(*gatherConfig)
+
+type gatherConfig struct{ memories bool }
+
+// WithoutMemoryInjection skips the memory recall; callers pass it when
+// executor.memory_injection.enabled is off, which gates review context too.
+func WithoutMemoryInjection() GatherOption { return func(c *gatherConfig) { c.memories = false } }
+
+// postMergeMemoryLimit is how many ranked memories a review receives.
+const postMergeMemoryLimit = 5
+
+var postMergeDiffHeaderRe = regexp.MustCompile(`(?m)^diff --git a/(?:.+) b/(.+)$`)
+
+// postMergeDiffFiles lists the files a unified diff touches, from its
+// "diff --git" headers, in order and without repeats.
+func postMergeDiffFiles(diff string) []string {
+	var files []string
+	seen := map[string]bool{}
+	for _, m := range postMergeDiffHeaderRe.FindAllStringSubmatch(diff, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			files = append(files, m[1])
+		}
+	}
+	return files
+}
+
+// recallPostMergeMemories returns the ranked project memories relevant to the
+// issue and the files the diff touches. It fails open: no project path, no
+// graph, no match or any error yields nil, logged at Debug at most.
+func recallPostMergeMemories(projectPath, issueTitle, issueBody, diff string) []graphrecall.MemorySummary {
+	if projectPath == "" {
+		return nil
+	}
+	text := issueTitle + " " + issueBody + " " + strings.Join(postMergeDiffFiles(diff), " ")
+	memories := graphrecall.RecallRelevant(projectPath, text, postMergeMemoryLimit)
+	slog.Debug("post-merge review: recalled project memories", "project", projectPath, "count", len(memories))
+	if len(memories) == 0 {
+		return nil
+	}
+	return memories
 }
 
 // gatherPostMergeReviewInput is GatherPostMergeReviewInput with a seam for the
 // diff: the controller supplies its own (test override, local checkout only),
 // nil uses the default local-then-GitHub order.
-func gatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, repo, projectPath string, prNumber, issueNumber int,
+func gatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, repo, projectPath string, prNumber, issueNumber int, memories bool,
 	diffFn func(ctx context.Context, mergeSHA string) (diff, source string, err error)) (*PostMergeGather, error) {
 	pr, err := gh.GetPullRequest(ctx, owner, repo, prNumber)
 	if err != nil {
@@ -525,6 +593,10 @@ func gatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, 
 	if err != nil {
 		return nil, fmt.Errorf("fetch issue: %w", err)
 	}
+	var recalled []graphrecall.MemorySummary
+	if memories {
+		recalled = recallPostMergeMemories(projectPath, iss.Title, iss.Body, diff)
+	}
 	return &PostMergeGather{
 		Input: executor.PostMergeReviewInput{
 			PRNumber:   prNumber,
@@ -532,6 +604,7 @@ func gatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, 
 			IssueBody:  iss.Body,
 			Diff:       diff,
 			PRBody:     pr.Body,
+			Memories:   recalled,
 		},
 		IssueNumber:    issueNumber,
 		MergeCommitSHA: pr.MergeCommitSHA,

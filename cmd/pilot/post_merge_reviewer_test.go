@@ -56,3 +56,25 @@ func TestPostMergeReviewer_SharedBudgetAcrossControllers(t *testing.T) {
 		t.Fatal("controllers got separate budgets; daily_cap would multiply by project count")
 	}
 }
+
+// executor.memory_injection.enabled is the one switch for review context too.
+func TestMemoryInjectionEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want bool
+	}{
+		{"nil config", nil, false},
+		{"no executor", &config.Config{}, false},
+		{"no memory_injection block", &config.Config{Executor: &executor.BackendConfig{}}, false},
+		{"disabled", &config.Config{Executor: &executor.BackendConfig{MemoryInjection: &executor.MemoryInjectionConfig{Enabled: false}}}, false},
+		{"enabled", &config.Config{Executor: &executor.BackendConfig{MemoryInjection: executor.DefaultMemoryInjectionConfig()}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := memoryInjectionEnabled(tt.cfg); got != tt.want {
+				t.Errorf("memoryInjectionEnabled = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

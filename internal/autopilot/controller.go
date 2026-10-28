@@ -522,6 +522,7 @@ type Controller struct {
 	postMergeReviewBudget *postMergeReviewBudget
 	postMergeDiff         func(ctx context.Context, mergeSHA string) (string, error)
 	postMergeReviewWG     sync.WaitGroup
+	postMergeMemoriesOff  bool // true when executor.memory_injection is off
 
 	// boardSource is the GH-4488 poll-cycle audit source: when non-nil (wired
 	// via WithProjectBoardSource, only when project_board.source_enabled is

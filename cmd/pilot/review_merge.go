@@ -34,6 +34,7 @@ type reviewMergeEnv struct {
 	Reviewer    autopilot.PostMergeReviewer
 	Model       string // reported in the output; "" means the CLI's default
 	ProjectPath string // local checkout, "" when the project has none
+	NoMemories  bool   // executor.memory_injection is off: no memory recall
 }
 
 // reviewMergeOptions are the command's flags.
@@ -98,6 +99,7 @@ func newReviewMergeEnv(repo string) (*reviewMergeEnv, error) {
 		Reviewer:    reviewer,
 		Model:       reviewer.Model(),
 		ProjectPath: proj.Path,
+		NoMemories:  !memoryInjectionEnabled(cfg),
 	}, nil
 }
 
@@ -145,7 +147,11 @@ func runReviewMerge(ctx context.Context, opts reviewMergeOptions, env *reviewMer
 	}
 
 	gatherCtx, cancel := context.WithTimeout(ctx, reviewMergeGatherTimeout)
-	gathered, err := autopilot.GatherPostMergeReviewInput(gatherCtx, env.GH, owner, repo, env.ProjectPath, opts.PR, opts.Issue)
+	var gatherOpts []autopilot.GatherOption
+	if env.NoMemories {
+		gatherOpts = append(gatherOpts, autopilot.WithoutMemoryInjection())
+	}
+	gathered, err := autopilot.GatherPostMergeReviewInput(gatherCtx, env.GH, owner, repo, env.ProjectPath, opts.PR, opts.Issue, gatherOpts...)
 	cancel()
 	if err != nil {
 		return err
