@@ -53,7 +53,6 @@ type pmrGitHub struct {
 	created  []*github.Issue
 }
 
-
 func newPMRGitHub(t *testing.T) (*pmrGitHub, *github.Client) {
 	t.Helper()
 	mock := &pmrGitHub{comments: make(map[int][]string)}

@@ -202,7 +202,7 @@ func newTunnelStopCmd() *cobra.Command {
 
 			// Also stop service if running
 			if tunnel.IsServiceRunning() {
-				if err := tunnel.StopService(); err != nil {
+				if err := tunnel.StopService(); err != nil { //nolint:staticcheck // stub always errors off-darwin
 					fmt.Printf("Warning: failed to stop service: %v\n", err)
 				}
 			}
@@ -348,7 +348,7 @@ Examples:
 				defer cancel2()
 				status, _ := manager.Status(ctx2)
 				if status != nil && status.TunnelID != "" {
-					if err := tunnel.InstallService(status.TunnelID); err != nil {
+					if err := tunnel.InstallService(status.TunnelID); err != nil { //nolint:staticcheck // stub always errors off-darwin
 						fmt.Println("✗")
 						fmt.Printf("Warning: failed to install service: %v\n", err)
 					} else {
@@ -430,7 +430,7 @@ func newTunnelServiceInstallCmd() *cobra.Command {
 			}
 
 			fmt.Print("Installing service... ")
-			if err := tunnel.InstallService(status.TunnelID); err != nil {
+			if err := tunnel.InstallService(status.TunnelID); err != nil { //nolint:staticcheck // stub always errors off-darwin
 				fmt.Println("✗")
 				return fmt.Errorf("failed to install service: %w", err)
 			}
@@ -453,7 +453,7 @@ func newTunnelServiceUninstallCmd() *cobra.Command {
 		Short: "Remove auto-start service",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Print("Uninstalling service... ")
-			if err := tunnel.UninstallService(); err != nil {
+			if err := tunnel.UninstallService(); err != nil { //nolint:staticcheck // stub always errors off-darwin
 				fmt.Println("✗")
 				return fmt.Errorf("failed to uninstall service: %w", err)
 			}
