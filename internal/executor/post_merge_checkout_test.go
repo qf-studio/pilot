@@ -279,25 +279,36 @@ func TestPostMergeReviewCheckout_ReportsFieldWithoutProducer(t *testing.T) {
 
 func TestParsePostMergeStream(t *testing.T) {
 	t.Run("plain text passes through", func(t *testing.T) {
-		text, n := parsePostMergeStream([]byte("VERDICT: APPROVE\nDEFECTS:\nnone"))
-		if text != "VERDICT: APPROVE\nDEFECTS:\nnone" || n != 0 {
-			t.Errorf("text=%q n=%d", text, n)
+		s := parsePostMergeStream([]byte("VERDICT: APPROVE\nDEFECTS:\nnone"))
+		if s.Text != "VERDICT: APPROVE\nDEFECTS:\nnone" || s.FilesRead != 0 || s.Exhausted {
+			t.Errorf("stream = %+v", s)
 		}
 	})
 	t.Run("result wins and reads are distinct", func(t *testing.T) {
 		out := streamLine(t, streamToolUse("Read", "/a")) + streamLine(t, streamToolUse("Read", "/b")) + streamLine(t, streamToolUse("Read", "/a")) +
 			streamLine(t, map[string]any{"type": "result", "result": "VERDICT: APPROVE"})
-		text, n := parsePostMergeStream([]byte(out))
-		if text != "VERDICT: APPROVE" || n != 2 {
-			t.Errorf("text=%q n=%d, want APPROVE and 2", text, n)
+		s := parsePostMergeStream([]byte(out))
+		if s.Text != "VERDICT: APPROVE" || s.FilesRead != 2 || s.Turns != 3 {
+			t.Errorf("stream = %+v, want APPROVE, 2 files, 3 turns", s)
 		}
 	})
 	t.Run("no result falls back to last assistant text", func(t *testing.T) {
 		out := streamLine(t, map[string]any{"type": "assistant", "message": map[string]any{"content": []map[string]any{
 			{"type": "text", "text": "VERDICT: APPROVE"},
 		}}})
-		if text, _ := parsePostMergeStream([]byte(out)); text != "VERDICT: APPROVE" {
-			t.Errorf("text = %q", text)
+		if s := parsePostMergeStream([]byte(out)); s.Text != "VERDICT: APPROVE" || s.Exhausted {
+			t.Errorf("stream = %+v", s)
+		}
+	})
+	t.Run("no result and narration is exhausted", func(t *testing.T) {
+		out := streamLine(t, streamToolUse("Read", "/a")) +
+			streamLine(t, map[string]any{"type": "assistant", "message": map[string]any{"content": []map[string]any{
+				{"type": "text", "text": "Let me look at one more file."},
+			}}}) +
+			streamLine(t, map[string]any{"type": "result", "subtype": "error_max_turns", "num_turns": 13})
+		s := parsePostMergeStream([]byte(out))
+		if !s.Exhausted || s.Text != "" || s.FilesRead != 1 || s.Turns != 13 {
+			t.Errorf("stream = %+v, want exhausted with no text, 1 file, 13 turns", s)
 		}
 	})
 }

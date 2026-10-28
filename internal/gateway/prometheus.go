@@ -319,7 +319,7 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	}
 
 	// pilot_post_merge_reviews_total (GH-5861): post-merge reviews by verdict.
-	writeHelp(w, "pilot_post_merge_reviews_total", "Total post-merge reviews by verdict (APPROVE, APPROVE-WITH-NOTES, REQUEST-CHANGES, unknown, error)")
+	writeHelp(w, "pilot_post_merge_reviews_total", "Total post-merge reviews by verdict (APPROVE, APPROVE-WITH-NOTES, REQUEST-CHANGES, unknown, exhausted, error)")
 	writeType(w, "pilot_post_merge_reviews_total", "counter")
 	for verdict, count := range snap.PostMergeReviewVerdicts {
 		writeCounter(w, "pilot_post_merge_reviews_total", count, "verdict", verdict)

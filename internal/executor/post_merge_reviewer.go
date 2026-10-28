@@ -31,7 +31,20 @@ const (
 	// PostMergeUnknown is returned for output that does not follow the
 	// contract. Callers must post nothing for it.
 	PostMergeUnknown PostMergeVerdict = "unknown"
+	// PostMergeExhausted is returned when the review CLI ran out of turns
+	// before it answered (GH-5920). Callers must post nothing for it.
+	PostMergeExhausted PostMergeVerdict = "exhausted"
 )
+
+// Postable reports whether v is a verdict that follows the output contract and
+// may be posted; unknown and exhausted reviews post nothing.
+func (v PostMergeVerdict) Postable() bool {
+	switch v {
+	case PostMergeApprove, PostMergeApproveWithNotes, PostMergeRequestChanges:
+		return true
+	}
+	return false
+}
 
 // PostMergeReviewerID is the reviewer identity recorded in the pr_reviews
 // ledger so bench defect-rate tracking can tell this pass from human reviews.
@@ -96,6 +109,9 @@ type PostMergeReview struct {
 	// FilesRead is the number of distinct files the reviewer opened with Read
 	// in that checkout; zero without one.
 	FilesRead int
+	// Turns is the number of CLI turns the checkout review used; zero without
+	// a checkout.
+	Turns int
 	// DiffTrimmed is true when the reviewer was shown a trimmed diff.
 	DiffTrimmed bool
 	// TrimmedFiles lists the files whose diff body was cut.
@@ -142,7 +158,9 @@ type PostMergeReviewer struct {
 	maxDiffChars int
 	log          *slog.Logger
 	// cmdRunner runs the CLI with args in dir ("" = the daemon's directory).
-	cmdRunner func(ctx context.Context, dir string, args ...string) ([]byte, error)
+	// A non-empty home is the review's own HOME (GH-5920): the runner builds
+	// the CLI environment from it with postMergeReviewEnviron.
+	cmdRunner func(ctx context.Context, dir, home string, args ...string) ([]byte, error)
 	// checkout creates the review checkout; a seam for tests.
 	checkout func(ctx context.Context, repoPath, sha string) (*postMergeCheckout, error)
 }
@@ -160,7 +178,7 @@ func NewPostMergeReviewer(claudeCmd, model string, timeout time.Duration) *PostM
 		timeout:      timeout,
 		maxDiffChars: DefaultPostMergeReviewMaxDiffChars,
 		log:          slog.Default().With("component", "post-merge-reviewer"),
-		cmdRunner:    NewIntentJudge(claudeCmd).runCmdIn,
+		cmdRunner:    NewIntentJudge(claudeCmd).runCmdInHome,
 		checkout:     createPostMergeCheckout,
 	}
 }
@@ -177,6 +195,9 @@ func (r *PostMergeReviewer) SetMaxDiffChars(n int) {
 // MaxDiffChars returns the reviewer's diff budget.
 func (r *PostMergeReviewer) MaxDiffChars() int { return r.maxDiffChars }
 
+// Timeout returns the wall-clock bound of one review subprocess.
+func (r *PostMergeReviewer) Timeout() time.Duration { return r.timeout }
+
 // Model returns the model passed to the CLI; empty means the CLI's default.
 func (r *PostMergeReviewer) Model() string { return r.model }
 
@@ -190,6 +211,14 @@ func newPostMergeReviewerWithRunner(runner func(ctx context.Context, args ...str
 // newPostMergeReviewerWithDirRunner builds a reviewer with a fake command
 // runner that also sees the working directory.
 func newPostMergeReviewerWithDirRunner(runner func(ctx context.Context, dir string, args ...string) ([]byte, error)) *PostMergeReviewer {
+	return newPostMergeReviewerWithHomeRunner(func(ctx context.Context, dir, _ string, args ...string) ([]byte, error) {
+		return runner(ctx, dir, args...)
+	})
+}
+
+// newPostMergeReviewerWithHomeRunner builds a reviewer with a fake command
+// runner that also sees the review's HOME.
+func newPostMergeReviewerWithHomeRunner(runner func(ctx context.Context, dir, home string, args ...string) ([]byte, error)) *PostMergeReviewer {
 	r := NewPostMergeReviewer("claude", "", 0)
 	r.cmdRunner = runner
 	return r
@@ -265,15 +294,24 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 	// GH-5916: with a local checkout holding the merge commit, review inside a
 	// detached worktree of it. A checkout failure is not a review failure: the
 	// diff-only review that ran before this still runs.
-	workDir := ""
+	workDir, home := "", ""
+	var confine *postMergeReviewEnv
 	if in.ProjectPath != "" && in.MergeCommitSHA != "" {
 		co, err := r.checkout(reviewCtx, in.ProjectPath, in.MergeCommitSHA)
+		if err == nil {
+			// GH-5920: the tools never run unconfined — without the hook and
+			// the review HOME the checkout is not used.
+			if confine, err = preparePostMergeReviewEnv(co.path); err != nil {
+				co.cleanup()
+			}
+		}
 		if err != nil {
 			r.log.Warn("post-merge review: checkout unavailable, reviewing the diff only",
 				slog.Int("pr", in.PRNumber), slog.String("sha", in.MergeCommitSHA), slog.Any("error", err))
 		} else {
 			defer co.cleanup()
-			workDir = co.path
+			defer confine.cleanup()
+			workDir, home = co.path, confine.home
 			systemPrompt = strings.Replace(systemPrompt, postMergeChecklistItem2, postMergeChecklistItem2Checkout, 1)
 			systemPrompt = strings.Replace(systemPrompt, "\n\nIMPORTANT — truncation handling", "\n\n"+postMergeCheckoutPrompt+"\n\nIMPORTANT — truncation handling", 1)
 		}
@@ -317,21 +355,34 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 	} else {
 		args = append(args, "--output-format", "text")
 	}
-	output, err := r.cmdRunner(reviewCtx, workDir, args...)
+	output, err := r.cmdRunner(reviewCtx, workDir, home, args...)
+	if confine != nil {
+		logPostMergeDenials(r.log, confine.denyLog, in.PRNumber)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("post-merge reviewer subprocess: %w", err)
 	}
-	text, filesRead := string(output), 0
+	text := string(output)
+	var stream postMergeStream
 	if workDir != "" {
-		text, filesRead = parsePostMergeStream(output)
+		stream = parsePostMergeStream(output)
+		text = stream.Text
 	}
 	review := parsePostMergeReview(text)
+	if stream.Exhausted {
+		// GH-5920: out of turns without an answer. The narration is not parsed.
+		review = &PostMergeReview{Verdict: PostMergeExhausted}
+		r.log.Warn("post-merge review exhausted",
+			slog.Int("pr", in.PRNumber), slog.Int("turns", stream.Turns),
+			slog.Int("files_read", stream.FilesRead), slog.Int("max_turns", postMergeReviewMaxTurns))
+	}
 	if review.Downgraded {
 		r.log.Info("post-merge review: REQUEST-CHANGES without a [blocking] defect, downgraded to APPROVE-WITH-NOTES",
 			slog.Int("pr", in.PRNumber), slog.Int("defects", len(review.Defects)))
 	}
 	review.Checkout = workDir != ""
-	review.FilesRead = filesRead
+	review.FilesRead = stream.FilesRead
+	review.Turns = stream.Turns
 	review.DiffBytes = report.OriginalBytes
 	review.DiffFiles = report.Files
 	review.Memories = memoriesRendered

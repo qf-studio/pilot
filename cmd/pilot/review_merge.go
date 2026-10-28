@@ -199,7 +199,7 @@ func runReviewMerge(ctx context.Context, opts reviewMergeOptions, env *reviewMer
 
 	// Same rule as the controller: a verdict that broke the output contract is
 	// never posted.
-	usable := review.Verdict != executor.PostMergeUnknown
+	usable := review.Verdict.Postable()
 	var postErr error
 	if opts.Post && usable {
 		cm, err := env.GH.AddComment(ctx, owner, repo, opts.PR, autopilot.BuildPostMergeReviewComment(review))

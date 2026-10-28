@@ -132,8 +132,8 @@ func TestPostMergeReviewer_PromptAndArgs(t *testing.T) {
 		deadline, _ = ctx.Deadline()
 		return []byte("VERDICT: APPROVE\nDEFECTS:\nnone\nNOTES:\n"), nil
 	}
-	r := NewPostMergeReviewer("claude", "claude-test-model", 90*time.Second)
-	r.cmdRunner = runner
+	r := newPostMergeReviewerWithDirRunner(runner)
+	r.model, r.timeout = "claude-test-model", 90*time.Second
 
 	body := "## Summary\nx\n\n## Evidence\n\n$ go test ./...\nok\n\n## Other\nignored"
 	_, err := r.Review(context.Background(), PostMergeReviewInput{

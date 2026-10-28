@@ -193,13 +193,23 @@ func (j *IntentJudge) defaultCmdRunner(ctx context.Context, args ...string) ([]b
 // runCmdIn is defaultCmdRunner with a working directory: dir "" inherits the
 // daemon's. GH-5916: the post-merge reviewer runs in a read-only checkout.
 func (j *IntentJudge) runCmdIn(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return j.runCmdInHome(ctx, dir, "", args...)
+}
+
+// runCmdInHome is runCmdIn with a review HOME: a non-empty home replaces the
+// subprocess HOME and config dir and drops the GitHub tokens (GH-5920).
+func (j *IntentJudge) runCmdInHome(ctx context.Context, dir, home string, args ...string) ([]byte, error) {
 	args, prompt, hasPrompt := extractStdinPrompt(args)
 
 	cmd := exec.CommandContext(ctx, j.claudeCmd, args...)
 	cmd.Dir = dir
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.
-	cmd.Env = modelSubprocessEnv(os.Environ())
+	if home != "" {
+		cmd.Env = postMergeReviewEnviron(os.Environ(), home)
+	} else {
+		cmd.Env = modelSubprocessEnv(os.Environ())
+	}
 	var stdout bytes.Buffer
 	stderr := newBoundedBuffer(maxJudgeStderrCaptureBytes)
 	cmd.Stdout = &stdout

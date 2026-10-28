@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
@@ -66,6 +69,7 @@ func wirePostMergeReviewer(cfg *config.Config, log *slog.Logger, controllers ...
 	if r == nil {
 		return
 	}
+	sweepStalePostMergeCheckouts(cfg, r)
 	pmr := cfg.Orchestrator.Autopilot.PostMergeReview
 	// One budget for the whole daemon: a controller runs per project, so a
 	// budget per controller would multiply daily_cap by the project count.
@@ -84,6 +88,20 @@ func wirePostMergeReviewer(cfg *config.Config, log *slog.Logger, controllers ...
 		slog.String("model", model),
 		slog.Int("max_diff_chars", r.MaxDiffChars()),
 	)
+}
+
+// sweepStalePostMergeCheckouts removes the review worktrees a crashed daemon
+// left under the temp root and prunes their git entries in every configured
+// project (GH-5920). It runs once per daemon start.
+func sweepStalePostMergeCheckouts(cfg *config.Config, r *executor.PostMergeReviewer) {
+	var paths []string
+	for _, p := range cfg.Projects {
+		if p != nil && p.Path != "" {
+			paths = append(paths, p.Path)
+		}
+	}
+	executor.SweepStalePostMergeCheckouts(context.Background(), os.TempDir(),
+		executor.PostMergeSweepThreshold(r.Timeout()), time.Now(), paths)
 }
 
 // memoryInjectionEnabled reports executor.memory_injection.enabled, the one

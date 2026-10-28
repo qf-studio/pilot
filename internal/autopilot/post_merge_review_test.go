@@ -259,6 +259,7 @@ func TestPostMergeReview_Posting(t *testing.T) {
 		{"approve", &executor.PostMergeReview{Verdict: executor.PostMergeApprove}, 1, 0},
 		{"approve with notes", &executor.PostMergeReview{Verdict: executor.PostMergeApproveWithNotes, Notes: "nit"}, 1, 0},
 		{"unknown posts nothing", &executor.PostMergeReview{Verdict: executor.PostMergeUnknown}, 0, 0},
+		{"exhausted posts nothing", &executor.PostMergeReview{Verdict: executor.PostMergeExhausted}, 0, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -591,6 +592,7 @@ func TestLedgerVerdict(t *testing.T) {
 		executor.PostMergeApproveWithNotes: memory.VerdictApproveWNotes,
 		executor.PostMergeRequestChanges:   memory.VerdictRequestChanges,
 		executor.PostMergeUnknown:          "",
+		executor.PostMergeExhausted:        "",
 	}
 	for in, want := range tests {
 		if got := ledgerVerdict(in); got != want {

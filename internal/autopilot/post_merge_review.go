@@ -270,8 +270,9 @@ func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeR
 		"files_read", review.FilesRead,
 		"duration", time.Since(start),
 	)
-	if review.Verdict == executor.PostMergeUnknown {
-		// Output broke the contract: post nothing rather than guess.
+	if !review.Verdict.Postable() {
+		// Output broke the contract, or the CLI ran out of turns: post nothing
+		// rather than guess.
 		return
 	}
 

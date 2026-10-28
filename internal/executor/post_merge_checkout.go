@@ -32,6 +32,10 @@ var postMergeReviewTools = []string{"Read", "Grep", "Glob"}
 // bounds its wall clock.
 const postMergeReviewMaxTurns = 12
 
+// postMergeCheckoutPrefix names review worktrees under the temp root; the
+// startup sweep (SweepStalePostMergeCheckouts) matches on it.
+const postMergeCheckoutPrefix = "pilot-worktree-review-"
+
 // postMergeCheckoutCleanupTimeout bounds worktree removal, which must run even
 // when the review context has already expired.
 const postMergeCheckoutCleanupTimeout = 30 * time.Second
@@ -67,7 +71,7 @@ func createPostMergeCheckout(ctx context.Context, repoPath, sha string) (*postMe
 	if len(short) > 12 {
 		short = short[:12]
 	}
-	path := filepath.Join(os.TempDir(), fmt.Sprintf("pilot-worktree-review-%s-%d", sanitizeBranchName(short), time.Now().UnixNano()))
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("%s%s-%d", postMergeCheckoutPrefix, sanitizeBranchName(short), time.Now().UnixNano()))
 	if out, err := gitInDir(ctx, repoPath, "worktree", "add", "--detach", path, sha); err != nil {
 		_ = os.RemoveAll(path)
 		return nil, fmt.Errorf("git worktree add %s: %w: %s", sha, err, strings.TrimSpace(out))
@@ -106,11 +110,27 @@ func postMergeCheckoutArgs() []string {
 	}
 }
 
-// parsePostMergeStream extracts the final answer text and the number of
-// distinct files the reviewer opened with Read from claude's stream-json
-// output. Output that is not a stream (a runner that printed plain text) is
-// returned unchanged with zero files read, so the verdict parser still sees it.
-func parsePostMergeStream(out []byte) (text string, filesRead int) {
+// postMergeStream is what the reviewer takes from claude's stream-json output.
+type postMergeStream struct {
+	// Text is the final answer: the result event's text, or the last
+	// assistant text when that parses to a verdict.
+	Text string
+	// FilesRead is the number of distinct files opened with Read.
+	FilesRead int
+	// Turns is the number of assistant turns, or the CLI's own num_turns.
+	Turns int
+	// Exhausted is true when the stream ended without a final result and the
+	// last assistant text is not a verdict: the CLI ran out of turns (GH-5920).
+	// Text is empty then — narration is never parsed.
+	Exhausted bool
+}
+
+// parsePostMergeStream extracts the final answer text, the number of distinct
+// files the reviewer opened with Read and the turns it used from claude's
+// stream-json output. Output that is not a stream (a runner that printed plain
+// text) is returned unchanged with zero files read, so the verdict parser
+// still sees it.
+func parsePostMergeStream(out []byte) postMergeStream {
 	type block struct {
 		Type  string `json:"type"`
 		Text  string `json:"text"`
@@ -120,15 +140,17 @@ func parsePostMergeStream(out []byte) (text string, filesRead int) {
 		} `json:"input"`
 	}
 	type event struct {
-		Type    string `json:"type"`
-		Result  string `json:"result"`
-		Message struct {
+		Type     string `json:"type"`
+		Result   string `json:"result"`
+		NumTurns int    `json:"num_turns"`
+		Message  struct {
 			Content []block `json:"content"`
 		} `json:"message"`
 	}
 
 	read := map[string]bool{}
 	var result, lastAssistant string
+	assistantTurns, reportedTurns := 0, 0
 	sawEvent := false
 	dec := json.NewDecoder(bytes.NewReader(out))
 	for {
@@ -143,7 +165,9 @@ func parsePostMergeStream(out []byte) (text string, filesRead int) {
 		switch ev.Type {
 		case "result":
 			result = ev.Result
+			reportedTurns = ev.NumTurns
 		case "assistant":
+			assistantTurns++
 			for _, b := range ev.Message.Content {
 				switch {
 				case b.Type == "tool_use" && b.Name == "Read" && b.Input.FilePath != "":
@@ -155,10 +179,19 @@ func parsePostMergeStream(out []byte) (text string, filesRead int) {
 		}
 	}
 	if !sawEvent {
-		return string(out), 0
+		return postMergeStream{Text: string(out)}
 	}
+	turns := assistantTurns
+	if reportedTurns > 0 {
+		turns = reportedTurns
+	}
+	s := postMergeStream{Text: result, FilesRead: len(read), Turns: turns}
 	if result == "" {
-		result = lastAssistant
+		if parsePostMergeReview(lastAssistant).Verdict == PostMergeUnknown {
+			s.Exhausted = true
+		} else {
+			s.Text = lastAssistant
+		}
 	}
-	return result, len(read)
+	return s
 }
