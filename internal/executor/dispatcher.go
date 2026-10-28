@@ -2537,6 +2537,7 @@ func (d *Dispatcher) escalateRefusal(task *Task, errStr string) {
 	)
 	d.surfaceRefusalIssue(task, errStr)
 	if d.runner != nil {
+		d.runner.ForgetBorrowedBranch(task.ID) // GH-5927
 		d.runner.EmitAlertEvent(AlertEvent{
 			Type:      AlertEventTypeTaskFailed,
 			TaskID:    task.ID,

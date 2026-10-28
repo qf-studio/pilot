@@ -39,6 +39,9 @@ func TestEvictPersistFailedPR_ReRecordsBorrowedBranchForFixIssuePR(t *testing.T)
 			}
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(prs)
+		case "/repos/owner/repo/issues/200":
+			// GH-5927: the re-recorded fix issue is verified open and labeled.
+			_, _ = w.Write([]byte(`{"number":200,"state":"open","labels":[{"name":"autopilot-fix"}]}`))
 		default:
 			t.Errorf("unexpected request to %s — the borrowed-branch registry re-record should let the reconciler skip straight to registration", r.URL.Path)
 			w.WriteHeader(http.StatusOK)

@@ -54,6 +54,8 @@ type rmFakeReviewer struct {
 	verdict executor.PostMergeVerdict
 	defects []executor.PostMergeDefect
 	notes   string
+	// notVerified is returned as PostMergeReview.NotVerified (GH-5927).
+	notVerified []string
 }
 
 func (f *rmFakeReviewer) Review(_ context.Context, in executor.PostMergeReviewInput) (*executor.PostMergeReview, error) {
@@ -61,6 +63,7 @@ func (f *rmFakeReviewer) Review(_ context.Context, in executor.PostMergeReviewIn
 	return &executor.PostMergeReview{
 		Verdict:     f.verdict,
 		Defects:     f.defects,
+		NotVerified: f.notVerified,
 		Notes:       f.notes + " [saw " + in.IssueTitle + "]",
 		DiffBytes:   len(in.Diff),
 		DiffFiles:   strings.Count(in.Diff, "diff --git"),
@@ -317,5 +320,84 @@ func TestSplitDefect(t *testing.T) {
 		if got.File != tt.file || got.Line != tt.line || got.Claim != "c" {
 			t.Errorf("splitDefect(%q) = %+v, want file %q line %q", tt.loc, got, tt.file, tt.line)
 		}
+	}
+}
+
+// TestReviewMergeJSONSeverityFields pins the --json fields severity and
+// not_verified (GH-5927). The second case is the shape of the PR#5921
+// verdict: a blocking defect plus a valid second, minor defect, with the
+// claims the reviewer could not check listed apart from the defects.
+func TestReviewMergeJSONSeverityFields(t *testing.T) {
+	tests := []struct {
+		name            string
+		defects         []executor.PostMergeDefect
+		notVerified     []string
+		wantSeverities  []string // per defect; "" means the key must be absent
+		wantNotVerified []string
+	}{
+		{
+			name:            "no defects and nothing unverified emit an empty not_verified array",
+			wantSeverities:  nil,
+			wantNotVerified: []string{},
+		},
+		{
+			name: "blocking then minor defect keep their own severity",
+			defects: []executor.PostMergeDefect{
+				{Severity: executor.PostMergeSeverityBlocking, Location: "internal/autopilot/post_merge_review.go:171", Claim: "reviews the wrong issue", Evidence: "reads PRState.IssueNumber"},
+				{Severity: executor.PostMergeSeverityMinor, Location: "internal/autopilot/feedback_loop.go:450", Claim: "title omits the issue", Evidence: "title names only the PR"},
+			},
+			notVerified:     []string{"CI result of the follow-up", "behaviour on a squash merge"},
+			wantSeverities:  []string{"blocking", "minor"},
+			wantNotVerified: []string{"CI result of the follow-up", "behaviour on a squash merge"},
+		},
+		{
+			name: "untagged severity is omitted from the defect",
+			defects: []executor.PostMergeDefect{
+				{Location: "a.go:1", Claim: "c", Evidence: "e"},
+			},
+			wantSeverities:  []string{""},
+			wantNotVerified: []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh, rev := newRMFakes()
+			rev.defects, rev.notVerified = tt.defects, tt.notVerified
+
+			out, err := runRM(t, gh, rev, "--repo", "qf-studio/pilot", "--pr", "5921", "--issue", "5917", "--json")
+			if err != nil {
+				t.Fatalf("command: %v", err)
+			}
+			var got struct {
+				Defects     []map[string]any `json:"defects"`
+				NotVerified []string         `json:"not_verified"`
+			}
+			if err := json.Unmarshal([]byte(out), &got); err != nil {
+				t.Fatalf("output is not JSON: %v\n%s", err, out)
+			}
+			if !strings.Contains(out, `"not_verified"`) {
+				t.Fatalf("JSON lacks the not_verified key:\n%s", out)
+			}
+			if got.NotVerified == nil || len(got.NotVerified) != len(tt.wantNotVerified) {
+				t.Fatalf("not_verified = %#v, want %#v", got.NotVerified, tt.wantNotVerified)
+			}
+			for i, want := range tt.wantNotVerified {
+				if got.NotVerified[i] != want {
+					t.Errorf("not_verified[%d] = %q, want %q", i, got.NotVerified[i], want)
+				}
+			}
+			if len(got.Defects) != len(tt.wantSeverities) {
+				t.Fatalf("defects = %d, want %d:\n%s", len(got.Defects), len(tt.wantSeverities), out)
+			}
+			for i, want := range tt.wantSeverities {
+				sev, present := got.Defects[i]["severity"]
+				switch {
+				case want == "" && present:
+					t.Errorf("defect %d has severity %v, want the key absent", i, sev)
+				case want != "" && sev != want:
+					t.Errorf("defect %d severity = %v, want %q", i, sev, want)
+				}
+			}
+		})
 	}
 }

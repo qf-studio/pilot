@@ -32,15 +32,34 @@ type fakeBorrowedBranchLookup struct {
 	branch   string
 	fixIssue int
 	recorded []recordedBorrowedBranch
+	// consumed counts FixIssueForBranch matches; forgotten lists the task IDs
+	// ForgetBorrowedBranch was called with (GH-5927).
+	consumed  int
+	forgotten []string
 }
 
+// FixIssueForBranch is destructive like the real registry: a match clears the
+// entry (GH-5425).
 func (f *fakeBorrowedBranchLookup) FixIssueForBranch(branch string) (int, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if branch == f.branch && f.fixIssue > 0 {
-		return f.fixIssue, true
+		fi := f.fixIssue
+		f.branch, f.fixIssue = "", 0
+		f.consumed++
+		return fi, true
 	}
 	return 0, false
+}
+
+func (f *fakeBorrowedBranchLookup) ForgetBorrowedBranch(taskID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forgotten = append(f.forgotten, taskID)
+	var fixIssue int
+	if _, err := fmt.Sscanf(taskID, "GH-%d", &fixIssue); err == nil && fixIssue == f.fixIssue {
+		f.branch, f.fixIssue = "", 0
+	}
 }
 
 func (f *fakeBorrowedBranchLookup) RecordBorrowedBranch(taskID, branch string, fromPR int) {
@@ -123,11 +142,12 @@ func TestController_ReconcileOrphanPRs_BorrowedBranchLookup_RegistersUnderFixIss
 			}
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(prs)
+		case "/repos/owner/repo/issues/200":
+			// GH-5927: the registry's fix issue is verified open and
+			// labeled before it wins.
+			_, _ = w.Write([]byte(`{"number":200,"state":"open","labels":[{"name":"pilot"},{"name":"autopilot-fix"}]}`))
 		default:
-			// The fix-issue lookup succeeds via the borrowed-branch registry
-			// before the reconciler ever needs to call GetIssue, so no
-			// /repos/owner/repo/issues/... request should reach here.
-			t.Errorf("unexpected request to %s — GetIssue should not be called when the borrowed-branch registry already found a fix issue", r.URL.Path)
+			t.Errorf("unexpected request to %s", r.URL.Path)
 			w.WriteHeader(http.StatusOK)
 		}
 	}))

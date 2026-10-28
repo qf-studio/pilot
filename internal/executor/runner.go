@@ -2271,7 +2271,8 @@ func (r *Runner) finishDeclined(task *Task, result *ExecutionResult, backendResu
 	result.Success = false
 	result.Declined = true
 	result.DeclinedReason = reason
-	result.Outcome = "declined" // TASK-358
+	result.Outcome = "declined"     // TASK-358
+	r.ForgetBorrowedBranch(task.ID) // GH-5927
 	if backendResult != nil {
 		backendResult.ErrorType = string(ErrorTypeDeclined)
 	}
@@ -4408,6 +4409,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 								// those already picked up and running elsewhere would
 								// otherwise be orphaned by this parent's terminal "declined".
 								r.sweepStalledEpicChildren(task.ID, task.ProjectPath, createdIssueTaskIDs(reconciled), gapErr.Error())
+								r.ForgetBorrowedBranch(task.ID) // GH-5927
 								return &ExecutionResult{
 									TaskID:         task.ID,
 									Success:        false,
@@ -4468,6 +4470,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 							// partial batch of real sub-issues CreateSubIssues created
 							// before this coverage gap aborted the rest of decomposition.
 							r.sweepStalledEpicChildren(task.ID, task.ProjectPath, createdIssueTaskIDs(issues), gapErr.Error())
+							r.ForgetBorrowedBranch(task.ID) // GH-5927
 							return &ExecutionResult{
 								TaskID:         task.ID,
 								Success:        false,
@@ -7645,6 +7648,10 @@ func (r *Runner) unregisterExecCancel(taskID string) {
 // cmd.Cancel override in backend_claudecode.go, so this still kills the
 // subprocess, not just the Go-level call.
 func (r *Runner) Cancel(taskID string) error {
+	// GH-5927: a cancelled fix task will never open the PR its borrowed-branch
+	// entry exists for; leaving it would let a later PR on that branch be
+	// adopted under the cancelled issue.
+	r.ForgetBorrowedBranch(taskID)
 	r.mu.Lock()
 	stack := r.execCancel[taskID]
 	cmd, cmdOK := r.running[taskID]
@@ -7791,6 +7798,25 @@ func (r *Runner) touchBorrowedBranchStart(taskID string) {
 	}
 	rec.recordedAt = time.Now()
 	r.borrowedBranch[taskID] = rec
+}
+
+// ForgetBorrowedBranch drops taskID's borrowed-branch entry (and its reverse
+// index) if it has one — GH-5927. Called when the fix issue behind the entry
+// is closed, declined at pre-flight, cancelled or unlabeled: the task will
+// never open the PR the entry exists to attribute, and a PR that later
+// appears on the same branch (a reopened PR, a manual push) must not be
+// adopted under that dead fix issue. A no-op when taskID recorded nothing.
+func (r *Runner) ForgetBorrowedBranch(taskID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.borrowedBranch[taskID]
+	if !ok {
+		return
+	}
+	delete(r.borrowedBranch, taskID)
+	if r.borrowedBranchByBranch[rec.branch] == taskID {
+		delete(r.borrowedBranchByBranch, rec.branch)
+	}
 }
 
 // BorrowedBranch returns the borrowed branch/origin-PR recorded for taskID by

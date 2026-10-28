@@ -235,7 +235,7 @@ func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeR
 	c.mu.RUnlock()
 
 	gatherCtx, cancel := context.WithTimeout(ctx, postMergeReviewGatherTimeout)
-	gathered, err := gatherPostMergeReviewInput(gatherCtx, c.ghClient, c.owner, c.repo, c.projectPath, in.prNumber, in.issueNumber, memories,
+	gathered, err := gatherPostMergeReviewInput(gatherCtx, c.ghClient, c.owner, c.repo, c.projectPath, in.prNumber, in.issueNumber, true, memories,
 		func(ctx context.Context, mergeSHA string) (string, string, error) {
 			diff, err := c.postMergeDiffFor(ctx, mergeSHA)
 			return diff, PostMergeDiffSourceLocal, err
@@ -248,6 +248,13 @@ func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeR
 		return
 	}
 
+	// GH-5927: judge, comment and file follow-ups against the issue the
+	// review actually read, not the one the PR happened to be tracked under.
+	if gathered.IssueNumber > 0 && gathered.IssueNumber != in.issueNumber {
+		c.log.Info("post-merge review: reviewing against the issue the PR closes, not the tracked one",
+			"pr", in.prNumber, "tracked_issue", in.issueNumber, "issue", gathered.IssueNumber)
+		in.issueNumber = gathered.IssueNumber
+	}
 	input := gathered.Input
 	if in.ciStatus != "" {
 		input.CIResult = fmt.Sprintf("CI status at merge time: %s", in.ciStatus)
@@ -528,7 +535,7 @@ func GatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, 
 	for _, o := range opts {
 		o(&cfg)
 	}
-	return gatherPostMergeReviewInput(ctx, gh, owner, repo, projectPath, prNumber, issueNumber, cfg.memories, nil)
+	return gatherPostMergeReviewInput(ctx, gh, owner, repo, projectPath, prNumber, issueNumber, false, cfg.memories, nil)
 }
 
 // GatherOption tunes GatherPostMergeReviewInput.
@@ -577,8 +584,11 @@ func recallPostMergeMemories(projectPath, issueTitle, issueBody, diff string) []
 
 // gatherPostMergeReviewInput is GatherPostMergeReviewInput with a seam for the
 // diff: the controller supplies its own (test override, local checkout only),
-// nil uses the default local-then-GitHub order.
-func gatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, repo, projectPath string, prNumber, issueNumber int, memories bool,
+// nil uses the default local-then-GitHub order. preferClosing makes the PR's
+// own closing-issue reference win over a non-zero issueNumber, which then only
+// serves as the fallback — GH-5927: the controller's PRState.IssueNumber can
+// be a CI-fix issue the PR was adopted under, not the issue it implements.
+func gatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, repo, projectPath string, prNumber, issueNumber int, preferClosing, memories bool,
 	diffFn func(ctx context.Context, mergeSHA string) (diff, source string, err error)) (*PostMergeGather, error) {
 	pr, err := gh.GetPullRequest(ctx, owner, repo, prNumber)
 	if err != nil {
@@ -591,6 +601,11 @@ func gatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, 
 		return nil, fmt.Errorf("merged PR has no merge commit sha")
 	}
 
+	if issueNumber > 0 && preferClosing {
+		if closing, _ := closingIssueForPR(ctx, gh, owner, repo, pr, prNumber); closing > 0 {
+			issueNumber = closing
+		}
+	}
 	if issueNumber <= 0 {
 		issueNumber, err = resolvePostMergeIssue(ctx, gh, owner, repo, pr, prNumber)
 		if err != nil {
@@ -643,14 +658,9 @@ func gatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, 
 // not name one: the first closing issue reference, else the GH-N in the head
 // branch name.
 func resolvePostMergeIssue(ctx context.Context, gh PostMergeGitHub, owner, repo string, pr *github.PullRequest, prNumber int) (int, error) {
-	var lookupErr error
-	if ci, ok := gh.(PostMergeClosingIssues); ok {
-		nums, err := ci.ClosingIssueNumbers(ctx, owner, repo, prNumber)
-		if err != nil {
-			lookupErr = err
-		} else if len(nums) > 0 {
-			return nums[0], nil
-		}
+	closing, lookupErr := closingIssueForPR(ctx, gh, owner, repo, pr, prNumber)
+	if closing > 0 {
+		return closing, nil
 	}
 	if m := postMergeBranchIssueRe.FindStringSubmatch(pr.Head.Ref); len(m) == 2 {
 		if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
@@ -662,6 +672,25 @@ func resolvePostMergeIssue(ctx context.Context, gh PostMergeGitHub, owner, repo 
 		msg += fmt.Sprintf(" (closing-issue lookup failed: %v)", lookupErr)
 	}
 	return 0, errors.New(msg)
+}
+
+// closingIssueForPR returns the first issue the PR closes: GitHub's closing
+// references when gh can list them, else the first Closes/Fixes/Resolves #N in
+// the PR body. 0 means none; err is the closing-reference lookup error, if any.
+func closingIssueForPR(ctx context.Context, gh PostMergeGitHub, owner, repo string, pr *github.PullRequest, prNumber int) (int, error) {
+	var lookupErr error
+	if ci, ok := gh.(PostMergeClosingIssues); ok {
+		nums, err := ci.ClosingIssueNumbers(ctx, owner, repo, prNumber)
+		if err != nil {
+			lookupErr = err
+		} else if len(nums) > 0 {
+			return nums[0], nil
+		}
+	}
+	if refs := closingRefs(pr.Body); len(refs) > 0 && refs[0] > 0 {
+		return refs[0], lookupErr
+	}
+	return 0, lookupErr
 }
 
 // defaultPostMergeDiff reads the merged diff from the local checkout when

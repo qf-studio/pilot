@@ -1419,6 +1419,20 @@ type BorrowedBranchLookup interface {
 	// PR is evicted — without restoring it, no later reconciler tick could
 	// ever rediscover the fix issue for this branch again.
 	RecordBorrowedBranch(taskID, branch string, fromPR int)
+	// ForgetBorrowedBranch drops taskID's entry without consuming it as a
+	// match — GH-5927: called when the fix issue is closed, unlabeled,
+	// declined or cancelled, so a PR that later appears on the branch is not
+	// adopted under that dead fix issue.
+	ForgetBorrowedBranch(taskID string)
+}
+
+// forgetBorrowedBranchForIssue drops the borrowed-branch entry of the fix
+// issue issueNum, if the registry is wired — GH-5927.
+func (c *Controller) forgetBorrowedBranchForIssue(issueNum int) {
+	if c.borrowedBranchLookup == nil || issueNum <= 0 {
+		return
+	}
+	c.borrowedBranchLookup.ForgetBorrowedBranch(fmt.Sprintf("GH-%d", issueNum))
 }
 
 // SetBorrowedBranchLookup wires the in-process borrowed-branch registry
@@ -5966,6 +5980,7 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			c.log.Warn("failed to close issue after merge", "issue", prState.IssueNumber, "error", err)
 		}
 		c.log.Info("closed issue after merge", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+		c.forgetBorrowedBranchForIssue(prState.IssueNumber) // GH-5927
 
 		// GH-2297: Post success comment so last comment isn't stale failure.
 		// GH-2345: Guard against re-entry producing duplicate comments.
@@ -9357,9 +9372,12 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 			continue
 		}
 
-		var issueNum int
-		if _, err := fmt.Sscanf(pr.Head.Ref, "pilot/GH-%d", &issueNum); err != nil {
-			c.log.Warn("reconciler: failed to parse branch name", "branch", pr.Head.Ref, "error", err)
+		// GH-5927: one resolver decides the issue — closing reference first,
+		// then a live fix issue (registry/claim), then the branch number —
+		// and drops a dead fix issue's registry entry.
+		adopted := c.resolveAdoptedIssueNumber(ctx, pr)
+		issueNum := adopted.BranchIssue
+		if adopted.Number <= 0 {
 			continue
 		}
 
@@ -9368,47 +9386,19 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 		c.log.Info("reconciler: adopting untracked open PR",
 			"pr", pr.Number,
 			"branch", pr.Head.Ref,
-			"issue", issueNum,
+			"issue", adopted.Number,
+			"source", adopted.Source,
 		)
 
-		// GH-5413: issueNum above is derived purely from the branch name, but a
-		// fix/revision issue intentionally runs on its ORIGIN issue's branch
-		// (resolveAutopilotFixBranch), so an orphaned PR here can actually
-		// belong to a fix issue F even though the branch encodes origin issue
-		// O. Prefer F when the durable spawned-fix claim (recorded
-		// synchronously by CreateFailureIssue/CreateReviewIssue, so it
-		// survives the restarts that create these orphans in the first
-		// place) names a different issue than the branch does — otherwise a
-		// merge here would close O instead of F. If the lookup itself fails,
-		// fall back to the branch-derived issue rather than blocking the
-		// sweep, but say so.
-		var fixIssue int
-		if c.stateStore != nil {
-			if fi, err := c.stateStore.HasSpawnedFixForPR(c.repoKey(), pr.Number); err != nil {
-				c.log.Warn("reconciler: spawned-fix lookup failed, will try the borrowed-branch registry",
-					"pr", pr.Number, "branch", pr.Head.Ref, "branch_issue", issueNum, "error", err)
-			} else if fi > 0 && fi != issueNum {
-				fixIssue = fi
+		if adopted.Source != adoptSourceBranch {
+			if adopted.ViaFixIssue {
+				c.log.Info("reconciler: orphan PR belongs to a fix issue on a borrowed origin branch — registering under the fix issue",
+					"pr", pr.Number, "branch", pr.Head.Ref, "origin_issue", issueNum, "fix_issue", adopted.Number,
+				)
+				c.OnPRCreatedForFixIssue(pr.Number, pr.HTMLURL, adopted.Number, issueNum, pr.Head.SHA, pr.Head.Ref, "")
+			} else {
+				c.OnPRCreated(pr.Number, pr.HTMLURL, adopted.Number, pr.Head.SHA, pr.Head.Ref, "")
 			}
-		}
-		// GH-5421: HasSpawnedFixForPR is keyed by the ORIGIN PR that CI-fix
-		// spawning closed, not by this (new) PR's own number, so it never
-		// matches the normal CI-fix flow (origin PR closed -> fix issue spawned
-		// -> fix run opens a NEW PR on the same branch). Fall back to the
-		// in-process borrowed-branch registry (SetBorrowedBranchLookup), which
-		// is keyed by branch name and populated by the exact same
-		// RecordBorrowedBranch call the primary OnPRCreated path (GH-5421)
-		// reads — catching the case that lookup misses.
-		if fixIssue == 0 && c.borrowedBranchLookup != nil {
-			if fi, ok := c.borrowedBranchLookup.FixIssueForBranch(pr.Head.Ref); ok && fi > 0 && fi != issueNum {
-				fixIssue = fi
-			}
-		}
-		if fixIssue > 0 {
-			c.log.Info("reconciler: orphan PR belongs to a fix issue on a borrowed origin branch — registering under the fix issue",
-				"pr", pr.Number, "branch", pr.Head.Ref, "origin_issue", issueNum, "fix_issue", fixIssue,
-			)
-			c.OnPRCreatedForFixIssue(pr.Number, pr.HTMLURL, fixIssue, issueNum, pr.Head.SHA, pr.Head.Ref, "")
 			if updatedAt, err := time.Parse(time.RFC3339, pr.UpdatedAt); err == nil {
 				c.seedAdoptedCIWaitClock(pr.Number, updatedAt)
 			}
@@ -10725,6 +10715,7 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 				c.log.Warn("failed to close issue after external merge", "issue", prState.IssueNumber, "error", err)
 			} else {
 				c.log.Info("closed issue after external merge", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+				c.forgetBorrowedBranchForIssue(prState.IssueNumber) // GH-5927
 
 				// GH-2297: Post success comment so last comment isn't stale failure.
 				// GH-4872: guard against re-entry producing duplicate comments — this

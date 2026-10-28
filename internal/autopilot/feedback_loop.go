@@ -447,8 +447,12 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 // number leads the scope instead: "fix(#5861): ...". The number keeps the
 // title unique per PR, which is what the exact-title dedup in
 // findExistingFixIssue needs.
-func postMergeReviewIssueTitle(prNumber int) string {
-	return fmt.Sprintf("fix(#%d): address defects found by post-merge review", prNumber)
+//
+// GH-5927: the title also names the issue the review judged the PR against, so
+// a review run against the wrong issue is visible at a glance in the issue
+// list instead of only in the body.
+func postMergeReviewIssueTitle(prNumber, issueNumber int) string {
+	return fmt.Sprintf("fix(#%d): address defects found by post-merge review against issue #%d", prNumber, issueNumber)
 }
 
 // CreatePostMergeReviewIssue files the follow-up issue for a REQUEST-CHANGES
@@ -458,7 +462,7 @@ func postMergeReviewIssueTitle(prNumber int) string {
 // title already existing (a repeat for the same PR) is reused, not duplicated.
 // The merged PR itself is never touched.
 func (f *FeedbackLoop) CreatePostMergeReviewIssue(ctx context.Context, prNumber int, prURL string, issueNumber int, review *executor.PostMergeReview) (int, error) {
-	title := postMergeReviewIssueTitle(prNumber)
+	title := postMergeReviewIssueTitle(prNumber, issueNumber)
 
 	if existing, found, err := f.findExistingFixIssue(ctx, title); err != nil {
 		f.log.Warn("existing post-merge review issue search failed, proceeding with creation",
