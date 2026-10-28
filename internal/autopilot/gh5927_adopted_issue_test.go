@@ -89,6 +89,10 @@ func TestResolveAdoptedIssueNumber(t *testing.T) {
 		wantSource    string
 		wantViaFix    bool
 		wantForgotten []string
+		// wantKept: the registry still resolves the branch afterwards — a live
+		// fix issue that lost to a closing reference keeps its entry so its
+		// own PR still attributes (GH-5932).
+		wantKept bool
 	}{
 		{
 			name:       "closing reference binds to its issue",
@@ -104,6 +108,7 @@ func TestResolveAdoptedIssueNumber(t *testing.T) {
 			registry:   5922,
 			wantIssue:  5917,
 			wantSource: adoptSourceClosingReference,
+			wantKept:   true,
 		},
 		{
 			name:       "closing reference naming the fix issue registers via the fix issue",
@@ -179,10 +184,10 @@ func TestResolveAdoptedIssueNumber(t *testing.T) {
 			if strings.Join(lookup.forgotten, ",") != strings.Join(tt.wantForgotten, ",") {
 				t.Errorf("forgotten = %v, want %v", lookup.forgotten, tt.wantForgotten)
 			}
-			// The registry read is destructive: whatever the outcome, no entry
-			// may survive the adoption.
-			if _, ok := lookup.FixIssueForBranch("pilot/GH-5917"); ok {
-				t.Error("registry entry survived the adoption")
+			// The registry read is destructive: only a live fix issue that
+			// lost to a closing reference may have its entry put back.
+			if _, ok := lookup.FixIssueForBranch("pilot/GH-5917"); ok != tt.wantKept {
+				t.Errorf("registry entry kept = %v, want %v", ok, tt.wantKept)
 			}
 		})
 	}

@@ -1,6 +1,8 @@
 package executor
 
-import "testing"
+import (
+	"testing"
+)
 
 // TestForgetBorrowedBranch is the GH-5927 registry-hygiene test: a fix task
 // that was closed, declined or cancelled must stop owning its borrowed branch.
@@ -30,14 +32,61 @@ func TestForgetBorrowedBranch(t *testing.T) {
 	}
 }
 
-// A cancelled or declined task's entry goes with it.
-func TestCancelAndDeclineForgetBorrowedBranch(t *testing.T) {
-	r := &Runner{}
-	r.RecordBorrowedBranch("GH-5922", "pilot/GH-5917", 5921)
+// Every way a fix task can end without opening its PR drops the borrowed-branch
+// entry: Cancel, the DECLINED pre-flight outcome (finishDeclined) and a model
+// refusal (Dispatcher.escalateRefusal). Each case runs the real code path on a
+// real Runner registry.
+func TestEndedFixTaskForgetsBorrowedBranch(t *testing.T) {
+	const (
+		taskID = "GH-5922"
+		branch = "pilot/GH-5917"
+	)
+	tests := []struct {
+		name string
+		end  func(t *testing.T, r *Runner)
+	}{
+		{"Cancel", func(t *testing.T, r *Runner) {
+			_ = r.Cancel(taskID) // not running: returns an error, but the entry must still go
+		}},
+		{"finishDeclined", func(t *testing.T, r *Runner) {
+			task := &Task{ID: taskID}
+			result := &ExecutionResult{TaskID: taskID}
+			r.finishDeclined(task, result, nil, nil, &progressState{}, r.log, "DECLINED: nothing to change")
+			if !result.Declined {
+				t.Fatal("finishDeclined did not mark the result declined")
+			}
+		}},
+		{"escalateRefusal", func(t *testing.T, r *Runner) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+			task := &Task{ID: taskID, ProjectPath: "/tmp/project-gh5927", SourceAdapter: "linear"} // non-GitHub: no issue comment
+			execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning, 0)
+			if err != nil {
+				t.Fatalf("setup: Begin: %v", err)
+			}
+			d := NewDispatcher(store, r, nil)
 
-	_ = r.Cancel("GH-5922") // not running: returns an error, but the entry must still go
+			d.escalateRefusal(task, "refusal: policy: declined")
 
-	if _, ok := r.FixIssueForBranch("pilot/GH-5917"); ok {
-		t.Fatal("borrowed-branch entry survived Cancel")
+			rec, err := store.GetExecution(execID)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if rec.Status != string(ExecStatusDeclined) {
+				t.Fatalf("execution status = %q, want %q", rec.Status, ExecStatusDeclined)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewRunner()
+			r.RecordBorrowedBranch(taskID, branch, 5921)
+
+			tt.end(t, r)
+
+			if fix, ok := r.FixIssueForBranch(branch); ok {
+				t.Fatalf("borrowed-branch entry survived %s: FixIssueForBranch = %d", tt.name, fix)
+			}
+		})
 	}
 }

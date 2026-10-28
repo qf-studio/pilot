@@ -602,8 +602,20 @@ func gatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, 
 	}
 
 	if issueNumber > 0 && preferClosing {
-		if closing, _ := closingIssueForPR(ctx, gh, owner, repo, pr, prNumber); closing > 0 {
+		closing, lookupErr := closingIssueForPR(ctx, gh, owner, repo, pr, prNumber)
+		switch {
+		case closing > 0:
+			if lookupErr != nil {
+				slog.Warn("post-merge review: closing-issue lookup failed, using the closing reference in the PR body",
+					"pr", prNumber, "issue", closing, "error", lookupErr)
+			}
 			issueNumber = closing
+		case lookupErr != nil:
+			// Decision: GH-5927 — falling back to the tracked issue here is
+			// exactly how a CI-fix issue got compared against the wrong diff.
+			// A failed review is cheap (the PR is merged, it can be re-run);
+			// a review against the wrong issue files a false follow-up.
+			return nil, fmt.Errorf("PR #%d: closing-issue lookup failed, refusing to review against the tracked issue #%d: %w", prNumber, issueNumber, lookupErr)
 		}
 	}
 	if issueNumber <= 0 {

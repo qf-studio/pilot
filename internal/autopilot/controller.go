@@ -1442,6 +1442,9 @@ func (c *Controller) forgetBorrowedBranchForIssue(issueNum int) {
 // nil (the default) keeps pre-GH-5421 behavior.
 func (c *Controller) SetBorrowedBranchLookup(lookup BorrowedBranchLookup) {
 	c.borrowedBranchLookup = lookup
+	if c.feedbackLoop != nil {
+		c.feedbackLoop.SetBorrowedBranchLookup(lookup) // GH-5927
+	}
 }
 
 // SetStateStore sets the persistent state store for crash recovery.

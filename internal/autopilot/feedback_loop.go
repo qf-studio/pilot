@@ -204,14 +204,15 @@ func runeSafeTailStart(s string, n int) int {
 // It closes the autonomous loop by automatically creating fix issues
 // that Pilot can pick up and execute.
 type FeedbackLoop struct {
-	ghClient     *github.Client
-	owner        string
-	repo         string
-	issueLabels  []string
-	learningLoop *memory.LearningLoop // GH-1979: optional, annotates issues with known patterns
-	stateStore   *StateStore          // GH-4307: optional, dedups fix-issue creation across retries/daemons
-	alertsEngine alertSink            // GH-4842: optional, observes owner-death (dead designated fix issue) events
-	log          *slog.Logger
+	ghClient         *github.Client
+	owner            string
+	repo             string
+	issueLabels      []string
+	learningLoop     *memory.LearningLoop // GH-1979: optional, annotates issues with known patterns
+	stateStore       *StateStore          // GH-4307: optional, dedups fix-issue creation across retries/daemons
+	alertsEngine     alertSink            // GH-4842: optional, observes owner-death (dead designated fix issue) events
+	borrowedBranches BorrowedBranchLookup // GH-5927: optional, a dead fix issue's borrowed-branch entry is dropped
+	log              *slog.Logger
 }
 
 // NewFeedbackLoop creates a feedback loop for automatic issue creation.
@@ -241,6 +242,22 @@ func (f *FeedbackLoop) SetStateStore(store *StateStore) {
 // the dedup open-state check (GH-4842) are observable, not just logged.
 func (f *FeedbackLoop) SetAlertsEngine(engine alertSink) {
 	f.alertsEngine = engine
+}
+
+// SetBorrowedBranchLookup wires the borrowed-branch registry so a fix issue
+// found dead (closed without shipping, or parked for clarification) stops
+// owning its branch — GH-5927. Optional: nil keeps adoption-time cleanup as
+// the only line of defence.
+func (f *FeedbackLoop) SetBorrowedBranchLookup(lookup BorrowedBranchLookup) {
+	f.borrowedBranches = lookup
+}
+
+// forgetBorrowedBranch drops the registry entry of fix issue n, if wired.
+func (f *FeedbackLoop) forgetBorrowedBranch(n int) {
+	if f.borrowedBranches == nil || n <= 0 {
+		return
+	}
+	f.borrowedBranches.ForgetBorrowedBranch(fmt.Sprintf("GH-%d", n))
 }
 
 // spawnedFixDedupKey identifies one failure signal for idempotent fix-issue
@@ -354,6 +371,9 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 				f.log.Warn("designated fix issue is dead (closed without shipping) — minting a replacement",
 					"pr", prState.PRNumber, "failure", failureType, "dead_issue", existing)
 				f.fireOwnerDeathAlert(existing, fmt.Sprintf("fix issue #%d closed without shipping, replacing via dedup path", existing), "replaced")
+				// GH-5927: a dead fix issue must not keep its borrowed branch,
+				// or a PR reopened on that branch is adopted under it.
+				f.forgetBorrowedBranch(existing)
 				// fall through: dedupKey stays set so RecordSpawnedFixIssue
 				// below overwrites this dead issue's row with the replacement.
 			}
