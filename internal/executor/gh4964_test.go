@@ -88,7 +88,7 @@ func newGH4964Runner(backend Backend) *Runner {
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	return runner
 }
 

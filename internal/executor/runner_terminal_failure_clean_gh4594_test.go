@@ -82,7 +82,7 @@ func TestRunner_DirectMode_TerminalFailure_LeavesCloneClean(t *testing.T) {
 	preAttemptSHA := strings.TrimSpace(headSHA(t, localRepo))
 
 	runner := NewRunnerWithBackend(&commitPlusStrayDirtBackend{})
-	runner.config = &BackendConfig{UseWorktree: false} // direct mode: no worktree isolation
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false)} // direct mode: no worktree isolation
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
 	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {

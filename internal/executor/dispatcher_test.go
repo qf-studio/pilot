@@ -1382,7 +1382,7 @@ func TestProcessQueue_MergedPRPreflight_UnmergedBranchProceedsNormally(t *testin
 	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "analysis complete"}}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	worker := NewProjectWorker(dir, store, runner, slog.Default())
 
 	worker.processQueue(context.Background())
@@ -1441,7 +1441,7 @@ func TestProcessQueue_NoCommitFailure_CardBecomesNoOp(t *testing.T) {
 	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "analysis complete"}}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	monitor := NewMonitor()
 	monitor.Register(exec.TaskID, "no-commit test task", "")
@@ -1646,7 +1646,7 @@ func TestProcessQueue_CrossTaskIDGuard(t *testing.T) {
 			backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "ok"}}
 			runner := NewRunnerWithBackend(backend)
 			runner.skipPreflightChecks = true
-			runner.config = &BackendConfig{SkipSelfReview: true}
+			runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 			worker := NewProjectWorker(projectPath, store, runner, slog.Default())
 
 			worker.processQueue(context.Background())
@@ -2050,7 +2050,7 @@ func TestQueueTask_ConcurrentDuplicate_DispatchesOnce(t *testing.T) {
 
 	runner := NewRunnerWithBackend(&blockingBackend{})
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	dispatcher := NewDispatcher(store, runner, nil)
 	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
@@ -2166,7 +2166,7 @@ func TestDispatcher_PauseAdmission_BlocksNewPickupButNotRunningTask(t *testing.T
 	release := make(chan struct{})
 	runner := NewRunnerWithBackend(&releasableBackend{release: release})
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	dispatcher := NewDispatcher(store, runner, nil)
 	if err := dispatcher.Start(context.Background()); err != nil {
@@ -2245,7 +2245,7 @@ func TestDispatcher_PauseAdmissionFor_OwnerInterleaving_SelfUpgradeAndPlatformBr
 	release := make(chan struct{})
 	runner := NewRunnerWithBackend(&releasableBackend{release: release})
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	dispatcher := NewDispatcher(store, runner, nil)
 	if err := dispatcher.Start(context.Background()); err != nil {
@@ -2350,7 +2350,7 @@ func TestProcessQueue_CrossTaskIDGuard_MalformedDetailFallsThrough(t *testing.T)
 	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "ok"}}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	worker := NewProjectWorker(projectPath, store, runner, slog.Default())
 
 	worker.processQueue(context.Background())
@@ -6809,7 +6809,7 @@ func TestProcessQueue_HeldTaskDoesNotStarveRunnableTasks(t *testing.T) {
 	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "done"}}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	worker := NewProjectWorker(projectPath, store, runner, slog.Default())
 
 	// One cycle: A is held, then B and C (runnable) are processed in the same

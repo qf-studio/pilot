@@ -40,7 +40,7 @@ func TestExecute_SinglePackageEpic_NumberedListDescription_SkipsDecomposition(t 
 	runner.log = slog.New(slog.NewTextHandler(&buf, nil))
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	// Decomposition enabled with real regex-based decomposer — if the GH-4052
 	// gate is missing, this decomposer WILL match the numbered lists below.
 	runner.EnableDecomposition(nil)

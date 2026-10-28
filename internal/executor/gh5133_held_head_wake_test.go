@@ -93,7 +93,7 @@ func TestDispatcher_HeldHeadInQuietQueue_EscalatesAndQueueAdvancesViaPeriodicWak
 	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "should only run for the second task"}}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	config := &DispatcherConfig{
 		// Long enough that neither stale-recovery pass ever reaps these rows

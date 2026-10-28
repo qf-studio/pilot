@@ -256,7 +256,7 @@ func TestRunner_DirtyWorktreeAfterNoCommitRetry_AutoPreserved(t *testing.T) {
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	task := &Task{
 		ID:          "GH-4517RETRY",

@@ -53,8 +53,8 @@ func TestRunner_NoCommitRetry_RunsInWorktree(t *testing.T) {
 
 	backend := &retryPathRecordingBackend{}
 	runner := NewRunnerWithBackend(backend)
-	runner.config = &BackendConfig{UseWorktree: true} // enable worktree isolation
-	runner.SetSkipPreflightChecks(true)               // mock backend: skip env preflight
+	runner.config = &BackendConfig{UseWorktree: boolPtr(true)} // enable worktree isolation
+	runner.SetSkipPreflightChecks(true)                        // mock backend: skip env preflight
 	runner.SetRecordingEnabled(false)
 
 	task := &Task{
@@ -151,7 +151,7 @@ func TestRunner_QualityRetry_RunsInWorktree(t *testing.T) {
 
 	backend := &commitAndRecordBackend{}
 	runner := NewRunnerWithBackend(backend)
-	runner.config = &BackendConfig{UseWorktree: true} // enable worktree isolation
+	runner.config = &BackendConfig{UseWorktree: boolPtr(true)} // enable worktree isolation
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
 	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {

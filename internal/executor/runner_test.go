@@ -62,7 +62,8 @@ func TestNewRunnerWithBackendNil(t *testing.T) {
 
 func TestNewRunnerWithConfig(t *testing.T) {
 	config := &BackendConfig{
-		Type: BackendTypeOpenCode,
+		UseWorktree: boolPtr(false),
+		Type:        BackendTypeOpenCode,
 		OpenCode: &OpenCodeConfig{
 			ServerURL: "http://localhost:5000",
 		},
@@ -83,7 +84,8 @@ func TestNewRunnerWithConfig(t *testing.T) {
 func TestSelfReviewTimeout(t *testing.T) {
 	t.Run("opencode uses longer self-review timeout", func(t *testing.T) {
 		runner, err := NewRunnerWithConfig(&BackendConfig{
-			Type: BackendTypeOpenCode,
+			UseWorktree: boolPtr(false),
+			Type:        BackendTypeOpenCode,
 			OpenCode: &OpenCodeConfig{
 				ServerURL: "http://localhost:5000",
 			},
@@ -97,7 +99,7 @@ func TestSelfReviewTimeout(t *testing.T) {
 	})
 
 	t.Run("claude-code keeps short self-review timeout", func(t *testing.T) {
-		runner, err := NewRunnerWithConfig(&BackendConfig{Type: BackendTypeClaudeCode})
+		runner, err := NewRunnerWithConfig(&BackendConfig{UseWorktree: boolPtr(false), Type: BackendTypeClaudeCode})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -116,7 +118,8 @@ func TestSelfReviewTimeout(t *testing.T) {
 
 func TestNewRunnerWithConfigInvalid(t *testing.T) {
 	config := &BackendConfig{
-		Type: "invalid-backend",
+		UseWorktree: boolPtr(false),
+		Type:        "invalid-backend",
 	}
 
 	_, err := NewRunnerWithConfig(config)
@@ -2161,7 +2164,8 @@ func TestRunner_EnableDecomposition(t *testing.T) {
 func TestNewRunnerWithConfig_Decompose(t *testing.T) {
 	// Test that NewRunnerWithConfig wires decomposer from config
 	config := &BackendConfig{
-		Type: "claude-code",
+		UseWorktree: boolPtr(false),
+		Type:        "claude-code",
 		ClaudeCode: &ClaudeCodeConfig{
 			Command: "claude",
 		},
@@ -2186,7 +2190,8 @@ func TestNewRunnerWithConfig_Decompose(t *testing.T) {
 func TestNewRunnerWithConfig_DecomposeDisabled(t *testing.T) {
 	// Test that disabled decompose config doesn't create decomposer
 	config := &BackendConfig{
-		Type: "claude-code",
+		UseWorktree: boolPtr(false),
+		Type:        "claude-code",
 		ClaudeCode: &ClaudeCodeConfig{
 			Command: "claude",
 		},
@@ -2295,7 +2300,8 @@ func TestSelfReviewSkipsTrivialTasks(t *testing.T) {
 // Test runner with SkipSelfReview config (GH-364)
 func TestNewRunnerWithConfig_SkipSelfReview(t *testing.T) {
 	config := &BackendConfig{
-		Type: "claude-code",
+		UseWorktree: boolPtr(false),
+		Type:        "claude-code",
 		ClaudeCode: &ClaudeCodeConfig{
 			Command: "claude",
 		},
@@ -2319,7 +2325,8 @@ func TestNewRunnerWithConfig_SkipSelfReview(t *testing.T) {
 func TestNewRunnerWithConfig_IntentJudgeMaxDiffChars(t *testing.T) {
 	enabled := true
 	config := &BackendConfig{
-		Type: "claude-code",
+		UseWorktree: boolPtr(false),
+		Type:        "claude-code",
 		ClaudeCode: &ClaudeCodeConfig{
 			Command: "sh", // guaranteed present on PATH so exec.LookPath succeeds
 		},
@@ -2346,7 +2353,8 @@ func TestNewRunnerWithConfig_IntentJudgeMaxDiffChars(t *testing.T) {
 func TestNewRunnerWithConfig_IntentJudgeDefaultMaxDiffChars(t *testing.T) {
 	enabled := true
 	config := &BackendConfig{
-		Type: "claude-code",
+		UseWorktree: boolPtr(false),
+		Type:        "claude-code",
 		ClaudeCode: &ClaudeCodeConfig{
 			Command: "sh",
 		},
@@ -2374,7 +2382,8 @@ func TestNewRunnerWithConfig_IntentJudgeDefaultMaxDiffChars(t *testing.T) {
 func TestNewRunnerWithConfig_IntentJudgeTimeout(t *testing.T) {
 	enabled := true
 	config := &BackendConfig{
-		Type: "claude-code",
+		UseWorktree: boolPtr(false),
+		Type:        "claude-code",
 		ClaudeCode: &ClaudeCodeConfig{
 			Command: "sh",
 		},
@@ -2402,7 +2411,8 @@ func TestNewRunnerWithConfig_IntentJudgeTimeout(t *testing.T) {
 func TestNewRunnerWithConfig_IntentJudgeDefaultTimeout(t *testing.T) {
 	enabled := true
 	config := &BackendConfig{
-		Type: "claude-code",
+		UseWorktree: boolPtr(false),
+		Type:        "claude-code",
 		ClaudeCode: &ClaudeCodeConfig{
 			Command: "sh",
 		},
@@ -3578,6 +3588,7 @@ func TestLocalModeSkipsNavigatorAutoInit(t *testing.T) {
 	backend := &mockSelfReviewBackend{output: "done"}
 	runner := NewRunnerWithBackend(backend)
 	runner.config = &BackendConfig{
+		UseWorktree: boolPtr(false),
 		Navigator: &NavigatorConfig{
 			AutoInit: true,
 		},
@@ -3634,7 +3645,7 @@ func TestNavigatorAutoInit_HonoursProjectNavigatorFlag(t *testing.T) {
 
 			backend := &mockSelfReviewBackend{output: "done"}
 			runner := NewRunnerWithBackend(backend)
-			runner.config = &BackendConfig{Navigator: &NavigatorConfig{AutoInit: true}}
+			runner.config = &BackendConfig{UseWorktree: boolPtr(false), Navigator: &NavigatorConfig{AutoInit: true}}
 			runner.SetRecordingEnabled(false)
 			runner.skipPreflightChecks = true
 
@@ -3688,7 +3699,7 @@ func TestNavigatorAutoInit_HonoursProjectNavigatorFlag(t *testing.T) {
 			},
 		}
 		runner := newGH4964Runner(backend)
-		runner.config.UseWorktree = true
+		runner.config.UseWorktree = boolPtr(true)
 		runner.config.Navigator = &NavigatorConfig{AutoInit: true, Bootstrap: "auto"}
 		var lookedUp []string
 		runner.SetNavigatorEnabledLookup(func(p string) bool {
@@ -3729,7 +3740,7 @@ func TestNavigatorAutoInit_HonoursProjectNavigatorFlag(t *testing.T) {
 			},
 		}
 		runner := newGH4964Runner(backend)
-		runner.config.UseWorktree = true
+		runner.config.UseWorktree = boolPtr(true)
 		runner.config.Navigator = &NavigatorConfig{AutoInit: true, Bootstrap: "auto"}
 		var lookedUp []string
 		runner.SetNavigatorEnabledLookup(func(p string) bool {
@@ -3764,7 +3775,7 @@ func TestLocalModeRunsQualityGates(t *testing.T) {
 
 	backend := &mockSelfReviewBackend{output: "done"}
 	runner := NewRunnerWithBackend(backend)
-	runner.config = &BackendConfig{}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false)}
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
 
@@ -4270,6 +4281,7 @@ func TestRunnerFallbackModelName(t *testing.T) {
 		{
 			name: "default model overrides everything",
 			cfg: &BackendConfig{
+				UseWorktree:  boolPtr(false),
 				Type:         BackendTypeOpenCode,
 				DefaultModel: "glm-5.1",
 				OpenCode:     &OpenCodeConfig{Model: "anthropic/claude-sonnet-4-6"},
@@ -4279,14 +4291,15 @@ func TestRunnerFallbackModelName(t *testing.T) {
 		{
 			name: "opencode falls back to OpenCode.Model",
 			cfg: &BackendConfig{
-				Type:     BackendTypeOpenCode,
-				OpenCode: &OpenCodeConfig{Model: "anthropic/claude-sonnet-4-6"},
+				UseWorktree: boolPtr(false),
+				Type:        BackendTypeOpenCode,
+				OpenCode:    &OpenCodeConfig{Model: "anthropic/claude-sonnet-4-6"},
 			},
 			want: "anthropic/claude-sonnet-4-6",
 		},
 		{
 			name: "claude-code with no DefaultModel falls back to backend type",
-			cfg:  &BackendConfig{Type: BackendTypeClaudeCode},
+			cfg:  &BackendConfig{UseWorktree: boolPtr(false), Type: BackendTypeClaudeCode},
 			want: BackendTypeClaudeCode,
 		},
 		{
@@ -4326,7 +4339,7 @@ func TestExecuteWithOptions_EmptyModelNameLogsWarn(t *testing.T) {
 	runner.log = slog.New(slog.NewTextHandler(&buf, nil))
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	task := &Task{
 		ID:          "GH-3754-model-warn",
@@ -4456,7 +4469,7 @@ func TestRunner_PRCreate_EmptyBranch_TriggersRetry(t *testing.T) {
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	task := &Task{
 		ID:          "GH-9999",
@@ -4512,7 +4525,7 @@ func TestRunner_PRCreate_HasCommits_ProceedsToCreate(t *testing.T) {
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	task := &Task{
 		ID:          "GH-9998",
@@ -4587,7 +4600,7 @@ func TestRunner_PushRetryExhausted_RecordsDeadManEvents(t *testing.T) {
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	processor := &fakeAlertProcessor{}
 	runner.SetAlertProcessor(processor)
 
@@ -4753,7 +4766,7 @@ func TestRunner_DECLINED_Path(t *testing.T) {
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	task := &Task{
 		ID:          "GH-7777",
@@ -4808,7 +4821,7 @@ func TestRunner_NoChanges_NoDecline(t *testing.T) {
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	task := &Task{
 		ID:          "GH-7778",
@@ -4966,7 +4979,7 @@ func TestMetricsRecorder_CalledOncePerExecution(t *testing.T) {
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	runner.SetMetricsRecorder(rec)
 
 	task := &Task{
@@ -5045,7 +5058,7 @@ func TestMetricsRecorder_SkipsCanaryTask(t *testing.T) {
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	runner.SetMetricsRecorder(rec)
 
 	task := &Task{

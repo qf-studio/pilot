@@ -43,7 +43,7 @@ func TestWorktreeEpicIntegration(t *testing.T) {
 			ClaudeCode: &ClaudeCodeConfig{
 				Command: mockClaudeScript,
 			},
-			UseWorktree: true,
+			UseWorktree: boolPtr(true),
 		},
 		running:           make(map[string]*exec.Cmd),
 		progressCallbacks: make(map[string]ProgressCallback),

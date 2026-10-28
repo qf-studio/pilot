@@ -762,7 +762,7 @@ git tag v2.X.Y && git push origin v2.X.Y  # GoReleaser CI handles rest
 | Sequential | Default or many file changes | One issue at a time |
 | Parallel | Few file changes, different scopes | Multiple issues concurrently |
 | Epic | >5 phases detected | Decompose into sub-issues |
-| Worktree | `use_worktree: true` | Isolated execution environment |
+| Worktree | `use_worktree` (default true) | Isolated execution environment |
 
 **Execution mode selection (v2.25.0):** Scope-based auto-switching via union-find algorithm
 

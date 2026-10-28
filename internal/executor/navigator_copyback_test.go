@@ -68,7 +68,7 @@ func TestRunner_CopiesNavigatorLearningsBackOnFinalisation(t *testing.T) {
 		},
 	}
 	runner := newGH4964Runner(backend)
-	runner.config.UseWorktree = true
+	runner.config.UseWorktree = boolPtr(true)
 	task := newGH4964Task("GH-5680", branch, dir)
 	task.CreatePR = false
 
@@ -95,7 +95,7 @@ func TestRunner_NavigatorCopyBackDisabledByConfig(t *testing.T) {
 		},
 	}
 	runner := newGH4964Runner(backend)
-	runner.config.UseWorktree = true
+	runner.config.UseWorktree = boolPtr(true)
 	off := false
 	runner.config.Navigator = &NavigatorConfig{CopyBack: &off}
 	task := newGH4964Task("GH-5680-off", branch, dir)

@@ -742,10 +742,11 @@ executor:
   #   base_url: "http://localhost:11434/v1"
   #   model: "llama3"
 
-  # Worktree isolation - execute tasks in temporary git worktree
-  # use_worktree: false        # When true, creates isolated worktree per task
+  # Worktree isolation - execute tasks in temporary git worktree (default: true)
+  use_worktree: true           # Creates an isolated worktree per task; omit the key for the same effect
                                # Allows execution even with uncommitted changes in working directory
-                               # Useful when Pilot runs in same repo as your development work
+                               # false = direct mode: tasks edit the project clone in place, and the
+                               # daemon logs at startup: "executor.use_worktree is false: tasks edit the project clone in place; a killed phase can leave the clone dirty and block later tasks (set use_worktree: true or remove the key)"
 
   # Effort routing (Opus 4.6) - controls how thoroughly Claude reasons per complexity
   # effort_routing:

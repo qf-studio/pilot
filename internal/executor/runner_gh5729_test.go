@@ -102,7 +102,7 @@ func (s *pushScenario) run(t *testing.T, id string, fromPR int, fixFromSHA strin
 	runner := NewRunnerWithBackend(&mockFixedBackend{result: &BackendResult{Success: true, Output: "implementation complete"}})
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	task := &Task{
 		ID:          id,

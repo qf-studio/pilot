@@ -42,7 +42,7 @@ func TestRunner_BackendExecute_PathIdentityGuard(t *testing.T) {
 	}{
 		{
 			name:   "worktree expected but execution path collapses to project root: guarded error",
-			config: &BackendConfig{UseWorktree: true},
+			config: &BackendConfig{UseWorktree: boolPtr(true)},
 			task: &Task{
 				ID:           "GH-4703-a",
 				ProjectPath:  projectRoot,
@@ -55,7 +55,7 @@ func TestRunner_BackendExecute_PathIdentityGuard(t *testing.T) {
 		},
 		{
 			name:   "LocalMode exception (task.Branch empty): root-scoped call allowed",
-			config: &BackendConfig{UseWorktree: true},
+			config: &BackendConfig{UseWorktree: boolPtr(true)},
 			task: &Task{
 				ID:          "GH-4703-b",
 				ProjectPath: projectRoot,
@@ -67,7 +67,7 @@ func TestRunner_BackendExecute_PathIdentityGuard(t *testing.T) {
 		},
 		{
 			name:   "DirectCommit exception: root-scoped call allowed",
-			config: &BackendConfig{UseWorktree: true},
+			config: &BackendConfig{UseWorktree: boolPtr(true)},
 			task: &Task{
 				ID:           "GH-4703-c",
 				ProjectPath:  projectRoot,
@@ -80,7 +80,7 @@ func TestRunner_BackendExecute_PathIdentityGuard(t *testing.T) {
 		},
 		{
 			name:   "correct worktree path: allowed",
-			config: &BackendConfig{UseWorktree: true},
+			config: &BackendConfig{UseWorktree: boolPtr(true)},
 			task: &Task{
 				ID:          "GH-4703-d",
 				ProjectPath: projectRoot,
@@ -92,7 +92,7 @@ func TestRunner_BackendExecute_PathIdentityGuard(t *testing.T) {
 		},
 		{
 			name:   "UseWorktree disabled entirely: root-scoped call allowed",
-			config: &BackendConfig{UseWorktree: false},
+			config: &BackendConfig{UseWorktree: boolPtr(false)},
 			task: &Task{
 				ID:          "GH-4703-e",
 				ProjectPath: projectRoot,
@@ -148,7 +148,7 @@ func TestRunner_BackendExecute_PathIdentityGuard(t *testing.T) {
 func TestRunner_BackendExecute_SetsProjectPathAuthoritatively(t *testing.T) {
 	backend := &guardRecordingBackend{}
 	runner := NewRunnerWithBackend(backend)
-	runner.config = &BackendConfig{UseWorktree: false}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false)}
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
 

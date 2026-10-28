@@ -297,6 +297,21 @@ func logNavigatorDisabledProjects(cfg *config.Config, log *slog.Logger) []string
 	return names
 }
 
+// useWorktreeDirectModeWarning is the startup warning for an explicit
+// executor.use_worktree: false (GH-5908).
+const useWorktreeDirectModeWarning = "executor.use_worktree is false: tasks edit the project clone in place; a killed phase can leave the clone dirty and block later tasks (set use_worktree: true or remove the key)"
+
+// warnUseWorktreeDisabled emits one WARN line when executor.use_worktree is
+// explicitly false (direct mode opt-out). Unset (nil) and true are silent:
+// worktree isolation is the default since GH-5908. Returns whether it warned.
+func warnUseWorktreeDisabled(cfg *config.Config, log *slog.Logger) bool {
+	if cfg == nil || cfg.Executor == nil || cfg.Executor.UseWorktree == nil || *cfg.Executor.UseWorktree {
+		return false
+	}
+	log.Warn(useWorktreeDirectModeWarning)
+	return true
+}
+
 // newProjectContractContentFetcher builds an executor.ContractContentFetcher
 // backed by the shared *github.Client (GH-5022, the activation leg of
 // GH-5009/GH-5011). *github.Client's GetFileContent method (PR#5015)

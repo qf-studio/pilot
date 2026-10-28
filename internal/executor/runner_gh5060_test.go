@@ -75,7 +75,7 @@ func TestQualityGateRetry_RecheckUsesFreshContext(t *testing.T) {
 
 	backend := &stackingAttemptBackend{}
 	runner := NewRunnerWithBackend(backend)
-	runner.config = &BackendConfig{UseWorktree: false, SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
 

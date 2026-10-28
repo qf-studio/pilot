@@ -1458,7 +1458,7 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 		config = DefaultBackendConfig()
 	} else {
 		slog.Info("NewRunnerWithConfig",
-			slog.Bool("use_worktree", config.UseWorktree),
+			slog.Bool("use_worktree", config.EffectiveUseWorktree()),
 			slog.String("type", config.Type),
 		)
 	}
@@ -3966,12 +3966,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	r.log.Info("Worktree condition check",
 		slog.Bool("allowWorktree", allowWorktree),
 		slog.Bool("configNotNil", r.config != nil),
-		slog.Bool("useWorktree", r.config != nil && r.config.UseWorktree),
+		slog.Bool("useWorktree", r.config != nil && r.config.EffectiveUseWorktree()),
 		slog.String("branch", task.Branch),
 		slog.Bool("directCommit", task.DirectCommit),
 	)
 
-	if allowWorktree && r.config != nil && r.config.UseWorktree && task.Branch != "" && !task.DirectCommit {
+	if allowWorktree && r.config != nil && r.config.EffectiveUseWorktree() && task.Branch != "" && !task.DirectCommit {
 		r.log.Info("Creating isolated worktree for execution",
 			slog.String("task_id", task.ID),
 			slog.String("branch", task.Branch),
@@ -4147,7 +4147,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// create dirty git state after our install script commits.
 	if !r.skipPreflightChecks {
 		preflightOpts := PreflightOptions{
-			SkipGitClean: task.LocalMode || (r.config != nil && r.config.UseWorktree),
+			SkipGitClean: task.LocalMode || (r.config != nil && r.config.EffectiveUseWorktree()),
 			BackendType:  r.backendType(),
 		}
 		if err := r.runPreflight(ctx, task, executionPath, preflightOpts); err != nil {
@@ -4682,7 +4682,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	// Create branch if specified (skip for direct commit mode and worktree mode)
 	// When using worktree, CreateWorktreeWithBranch already created the branch
-	useWorktree := r.config != nil && r.config.UseWorktree && task.Branch != "" && !task.DirectCommit
+	useWorktree := r.config != nil && r.config.EffectiveUseWorktree() && task.Branch != "" && !task.DirectCommit
 	if task.Branch != "" && !task.DirectCommit && !useWorktree {
 		r.reportProgress(task.ID, "Branching", 3, "Fetching base branch...")
 

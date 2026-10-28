@@ -131,7 +131,7 @@ func TestExecution_PersistsKeySourceAndReportedCost(t *testing.T) {
 	runner := NewRunnerWithBackend(&realCLIBackend{inner: NewClaudeCodeBackend(&ClaudeCodeConfig{Command: fakeCostCLI(t)})})
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	task := &Task{
 		ID:          "GH-test-keysource",

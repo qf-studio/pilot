@@ -223,7 +223,7 @@ func TestBackendTimeoutSalvage_PushFailure_PreservesWorktreeAndBranch(t *testing
 		},
 	}
 	runner := newGH4964Runner(backend)
-	runner.config.UseWorktree = true
+	runner.config.UseWorktree = boolPtr(true)
 	runner.qualityCheckerFactory = func(string, string, string) QualityChecker {
 		return &stubQualityChecker{outcome: &QualityOutcome{Passed: true}}
 	}

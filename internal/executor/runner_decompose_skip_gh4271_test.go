@@ -34,7 +34,7 @@ func TestExecute_DescriptionTooShort_LogsAndRecordsSkipEvent(t *testing.T) {
 	runner.log = slog.New(slog.NewTextHandler(&buf, nil))
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	runner.SetLogStore(store)
 	runner.EnableDecomposition(&DecomposeConfig{
 		Enabled:             true,
@@ -130,7 +130,7 @@ func TestExecute_SinglePackageEpic_RecordsUnifiedSkipEvent(t *testing.T) {
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	runner.SetLogStore(store)
 	runner.EnableDecomposition(nil)
 

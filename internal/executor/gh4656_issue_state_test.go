@@ -229,7 +229,7 @@ func TestProcessQueue_IssueOpenAtPickup_ProceedsNormally(t *testing.T) {
 	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "analysis complete"}}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	worker := NewProjectWorker(dir, store, runner, slog.Default())
 
 	worker.processQueue(context.Background())
@@ -282,7 +282,7 @@ func TestProcessQueue_IssueStateFetchError_FailsOpenAtPickup(t *testing.T) {
 	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "analysis complete"}}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	var logBuf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&logBuf, nil))

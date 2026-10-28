@@ -606,6 +606,9 @@ Examples:
 			}
 			cfg.Executor.Version = version
 
+			// GH-5908: worktree isolation is the default; flag the direct-mode opt-out once at startup
+			warnUseWorktreeDisabled(cfg, logging.WithComponent("start"))
+
 			// GH-5346: thread orchestrator.execution.finalize_timeout into the
 			// executor config so Runner.finalizeTimeout() sees it.
 			if cfg.Orchestrator != nil && cfg.Orchestrator.Execution != nil && cfg.Orchestrator.Execution.FinalizeTimeout > 0 {
@@ -815,7 +818,7 @@ Examples:
 				}
 
 				// GH-962: Clean up orphaned worktree directories from previous crashed executions
-				if cfg.Executor != nil && cfg.Executor.UseWorktree {
+				if cfg.Executor != nil && cfg.Executor.EffectiveUseWorktree() {
 					removed, freedBytes, err := executor.CleanupOrphanedWorktrees(context.Background(), projectPath)
 					if err != nil {
 						// Real failure — don't fail startup, this is best-effort cleanup.
@@ -2331,7 +2334,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	}
 
 	// GH-962: Clean up orphaned worktree directories from previous crashed executions
-	if cfg.Executor != nil && cfg.Executor.UseWorktree {
+	if cfg.Executor != nil && cfg.Executor.EffectiveUseWorktree() {
 		removed, freedBytes, err := executor.CleanupOrphanedWorktrees(ctx, projectPath)
 		if err != nil {
 			// Real failure — don't fail startup, this is best-effort cleanup.

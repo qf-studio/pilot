@@ -20,7 +20,7 @@ func TestQualityCheckerFactory_IsolatedWorktreeGetsProjectPath(t *testing.T) {
 	defer func() { _ = os.RemoveAll(remoteRepo) }()
 
 	runner := NewRunnerWithBackend(&stackingAttemptRecorderBackend{})
-	runner.config = &BackendConfig{UseWorktree: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(true)}
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
 

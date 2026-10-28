@@ -58,20 +58,33 @@ The worktree includes full context intelligence functionality:
 
 ## Configuration
 
-Enable worktree isolation in your Pilot configuration:
+Worktree isolation is **on by default**. You do not need to set anything; a config without `use_worktree` runs every branch task in its own worktree.
 
 ```yaml
 executor:
-  use_worktree: true
+  use_worktree: true   # default; may be omitted
 ```
 
-**Default**: `false` (opt-in feature for compatibility)
+To opt out and run in direct mode (tasks edit the project clone in place), set it to `false` explicitly:
+
+```yaml
+executor:
+  use_worktree: false
+```
+
+An explicit `false` makes the daemon log one warning at startup:
+
+```
+executor.use_worktree is false: tasks edit the project clone in place; a killed phase can leave the clone dirty and block later tasks (set use_worktree: true or remove the key)
+```
+
+**Default**: `true` (unset means on). Direct mode remains available as an explicit opt-out.
 
 ### Configuration Options
 
 The executor section supports these worktree-related options:
 
-- `use_worktree`: Enable/disable worktree isolation
+- `use_worktree`: Worktree isolation, on unless set to `false`
 - Standard executor options (model routing, retry logic) work the same way
 
 ## Cleanup Process

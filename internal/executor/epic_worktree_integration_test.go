@@ -43,7 +43,7 @@ func TestEpicWorktreeIsolation(t *testing.T) {
 			ClaudeCode: &ClaudeCodeConfig{
 				Command: "echo", // unused
 			},
-			UseWorktree: true, // Enable worktree isolation
+			UseWorktree: boolPtr(true), // Enable worktree isolation
 		},
 		running:             make(map[string]*exec.Cmd),
 		progressCallbacks:   make(map[string]ProgressCallback),
@@ -141,7 +141,7 @@ func TestEpicWorktreeIsolation_ExecuteWithOptionsTracking(t *testing.T) {
 			ClaudeCode: &ClaudeCodeConfig{
 				Command: "echo",
 			},
-			UseWorktree: true,
+			UseWorktree: boolPtr(true),
 		},
 		running:             make(map[string]*exec.Cmd),
 		progressCallbacks:   make(map[string]ProgressCallback),
@@ -237,7 +237,7 @@ func TestEpicWorktreeCleanup(t *testing.T) {
 	runner := &Runner{
 		config: &BackendConfig{
 			ClaudeCode:  &ClaudeCodeConfig{Command: "echo"},
-			UseWorktree: true,
+			UseWorktree: boolPtr(true),
 		},
 		running:             make(map[string]*exec.Cmd),
 		progressCallbacks:   make(map[string]ProgressCallback),
@@ -317,7 +317,7 @@ func TestNoRecursiveWorktreeInDecomposedTasks(t *testing.T) {
 	runner := &Runner{
 		config: &BackendConfig{
 			ClaudeCode:  &ClaudeCodeConfig{Command: "echo"},
-			UseWorktree: true,
+			UseWorktree: boolPtr(true),
 		},
 		running:             make(map[string]*exec.Cmd),
 		progressCallbacks:   make(map[string]ProgressCallback),
@@ -410,7 +410,7 @@ func TestWorktreeIsolationWithNavigatorCopy(t *testing.T) {
 	runner := &Runner{
 		config: &BackendConfig{
 			ClaudeCode:  &ClaudeCodeConfig{Command: "echo"},
-			UseWorktree: true,
+			UseWorktree: boolPtr(true),
 		},
 		running:             make(map[string]*exec.Cmd),
 		progressCallbacks:   make(map[string]ProgressCallback),

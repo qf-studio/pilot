@@ -111,7 +111,7 @@ func newContractGateTestRunner(t *testing.T, backend Backend) (*Runner, *Task) {
 	})
 
 	runner := NewRunnerWithBackend(backend)
-	runner.config = &BackendConfig{UseWorktree: false}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false)}
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
 

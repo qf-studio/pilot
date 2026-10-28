@@ -310,7 +310,7 @@ func TestProcessQueue_BasePresence_DualShapeHeldThenReleasedOnMerge(t *testing.T
 	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "analysis complete"}}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	worker := NewProjectWorker(dir, store, runner, slog.Default())
 
 	// Tick 1: attached PR still open -> held, no execution.
@@ -406,7 +406,7 @@ func TestProcessQueue_BasePresence_EscalatesOnceThenQueueHeadAdvances(t *testing
 	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "should only run for the second task"}}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	worker := NewProjectWorker(projectPath, store, runner, slog.Default())
 	worker.setBasePresenceHoldMaxCycles(2)
 
@@ -561,7 +561,7 @@ func TestProcessQueue_BasePresence_NeverSatisfiablePathEscalatesWithinBoundedHol
 	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "should only run for the second task"}}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	worker := NewProjectWorker(projectPath, store, runner, slog.Default())
 	worker.setBasePresenceHoldMaxCycles(2)
 
@@ -751,7 +751,7 @@ func TestProcessQueue_BasePresence_NaturalReleaseResetsCounter(t *testing.T) {
 	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "done"}}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	worker := NewProjectWorker(dir, store, runner, slog.Default())
 	worker.setBasePresenceHoldMaxCycles(20)
 
@@ -833,7 +833,7 @@ func TestProcessQueue_BasePresence_FastPathSkipsCheckWhenNothingExtracted(t *tes
 	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "analysis complete"}}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	worker := NewProjectWorker(dir, store, runner, slog.Default())
 
 	worker.processQueue(context.Background())
@@ -911,7 +911,7 @@ func TestProcessQueue_BasePresence_BodyEditRemovingPathClearsHoldAcrossTicks(t *
 	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "done"}}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	worker := NewProjectWorker(dir, store, runner, slog.Default())
 
 	// Tick 1: live body still carries the cross-repo path -> held.

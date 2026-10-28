@@ -56,7 +56,7 @@ func TestRunner_PRGuard_MergeBaseFailure_OpenPRExists_EndsCompleted(t *testing.T
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	task := &Task{
 		ID:          "GH-5359-a",
@@ -104,7 +104,7 @@ func TestRunner_PRGuard_GenuinelyEmptyBranch_StillNoOp(t *testing.T) {
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	task := &Task{
 		ID:          "GH-5359-b",
@@ -155,7 +155,7 @@ func TestRunner_PRGuard_MergeBaseFailure_NoPRFound_FailsClosedNotNoOp(t *testing
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	task := &Task{
 		ID:          "GH-5359-c",

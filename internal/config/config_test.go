@@ -2934,3 +2934,34 @@ func TestDefaultConfig_AutopilotLifecycleNotificationsOff(t *testing.T) {
 		t.Error("LifecycleNotifications must default to false")
 	}
 }
+
+// TestLoad_UseWorktreeTriState pins GH-5908: a config without
+// executor.use_worktree resolves to worktree isolation, and an explicit false
+// survives Load over DefaultConfig as the direct-mode opt-out.
+func TestLoad_UseWorktreeTriState(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{"key absent", "version: \"1.0\"\n", true},
+		{"executor section without the key", "executor:\n  type: claude-code\n", true},
+		{"explicit true", "executor:\n  use_worktree: true\n", true},
+		{"explicit false", "executor:\n  use_worktree: false\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.Executor.EffectiveUseWorktree(); got != tt.want {
+				t.Errorf("EffectiveUseWorktree() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

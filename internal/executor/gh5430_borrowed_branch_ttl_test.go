@@ -81,7 +81,7 @@ func TestExecuteWithOptions_TouchesBorrowedBranchStart(t *testing.T) {
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
-	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 
 	runner.RecordBorrowedBranch(taskID, "pilot/GH-100", 5364)
 	// Backdate recordedAt past borrowedBranchTTL, as if this task's own

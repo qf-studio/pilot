@@ -56,7 +56,7 @@ var ErrProjectPathNotIsolated = errors.New("backend execute: project path not is
 // The guard fires — returning ErrProjectPathNotIsolated instead of
 // silently proceeding — when the resolved path collapses to
 // task.ProjectPath while worktree isolation was expected
-// (r.config.UseWorktree && task.Branch != "" && !task.DirectCommit). That
+// (r.config.EffectiveUseWorktree() && task.Branch != "" && !task.DirectCommit). That
 // condition is the exact shape of the historical bug: a worktree-eligible
 // task whose execution path resolved (correctly or via upstream failure)
 // to the shared root instead of an isolated worktree.
@@ -68,7 +68,7 @@ var ErrProjectPathNotIsolated = errors.New("backend execute: project path not is
 func (r *Runner) backendExecute(ctx context.Context, task *Task, executionPath string, opts ExecuteOptions) (*BackendResult, error) {
 	opts.ProjectPath = executionPath
 
-	worktreeExpected := task != nil && r.config != nil && r.config.UseWorktree && task.Branch != "" && !task.DirectCommit
+	worktreeExpected := task != nil && r.config != nil && r.config.EffectiveUseWorktree() && task.Branch != "" && !task.DirectCommit
 	if worktreeExpected && opts.ProjectPath == task.ProjectPath {
 		return nil, fmt.Errorf("%w: task %s expected worktree isolation (use_worktree=true, branch=%q, direct_commit=false) but execution path resolved to the project root %q instead of an isolated worktree",
 			ErrProjectPathNotIsolated, task.ID, task.Branch, task.ProjectPath)

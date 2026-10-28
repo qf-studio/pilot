@@ -792,7 +792,7 @@ Examples:
 			runner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
 
 			// GH-962: Clean up orphaned worktree directories from previous crashed executions
-			if cfg.Executor != nil && cfg.Executor.UseWorktree {
+			if cfg.Executor != nil && cfg.Executor.EffectiveUseWorktree() {
 				removed, freedBytes, err := executor.CleanupOrphanedWorktrees(ctx, projectPath)
 				if err != nil {
 					// Real failure (e.g. temp dir unreadable) — don't fail startup.
@@ -1602,7 +1602,7 @@ Examples:
 			runner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
 
 			// GH-962: Clean up orphaned worktree directories from previous crashed executions
-			if cfg.Executor != nil && cfg.Executor.UseWorktree {
+			if cfg.Executor != nil && cfg.Executor.EffectiveUseWorktree() {
 				removed, freedBytes, err := executor.CleanupOrphanedWorktrees(ctx, projectPath)
 				if err != nil {
 					fmt.Printf("▸ Worktree cleanup error (%s)\n", err.Error())

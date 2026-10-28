@@ -480,8 +480,10 @@ type BackendConfig struct {
 	// UseWorktree enables git worktree isolation for execution.
 	// When true, Pilot creates a temporary worktree for each task, allowing
 	// execution even when the user has uncommitted changes in their working directory.
-	// Default: false (opt-in feature)
-	UseWorktree bool `yaml:"use_worktree,omitempty"`
+	// Tri-state: nil (key absent) means true. Default: true since GH-5908;
+	// an explicit false keeps direct mode (tasks edit the project clone in place).
+	// Read through EffectiveUseWorktree(), never the raw field.
+	UseWorktree *bool `yaml:"use_worktree,omitempty"`
 
 	// WorktreePoolSize sets the number of pre-created worktrees to pool.
 	// When > 0, worktrees are reused across tasks in sequential mode, saving 500ms-2s per task.
@@ -1268,15 +1270,27 @@ func (c *OpenCodeConfig) EffectiveRequestTimeout() time.Duration {
 	return d
 }
 
+// EffectiveUseWorktree reports whether tasks run in an isolated git worktree.
+// Unset (nil) means true: worktree isolation is the default (GH-5908), and an
+// explicit false is the opt-out that keeps direct mode.
+func (c *BackendConfig) EffectiveUseWorktree() bool {
+	if c == nil || c.UseWorktree == nil {
+		return true
+	}
+	return *c.UseWorktree
+}
+
 // DefaultBackendConfig returns default backend configuration.
 func DefaultBackendConfig() *BackendConfig {
 	autoCreatePR := true
+	useWorktree := true
 	detectEphemeral := true
 	prePushLint := true
 	acceptanceEvidenceEnabled := true
 	return &BackendConfig{
 		Type:                     "claude-code",
 		AutoCreatePR:             &autoCreatePR,
+		UseWorktree:              &useWorktree,
 		DetectEphemeral:          &detectEphemeral,
 		PrePushLint:              &prePushLint,
 		AcceptanceEvidence:       &AcceptanceEvidenceConfig{Enabled: &acceptanceEvidenceEnabled},

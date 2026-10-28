@@ -70,7 +70,7 @@ func TestRunner_QualityRetry_DirectMode_ResetsToCleanPreAttemptState(t *testing.
 
 	backend := &stackingAttemptBackend{}
 	runner := NewRunnerWithBackend(backend)
-	runner.config = &BackendConfig{UseWorktree: false} // direct mode: no worktree isolation
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false)} // direct mode: no worktree isolation
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
 	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {

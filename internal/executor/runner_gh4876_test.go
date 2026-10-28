@@ -161,7 +161,7 @@ func TestQualityGateRetry_UsesFreshContextForResetAndReinvoke(t *testing.T) {
 
 	backend := &stackingAttemptBackend{}
 	runner := NewRunnerWithBackend(backend)
-	runner.config = &BackendConfig{UseWorktree: false}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false)}
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
 
@@ -253,7 +253,7 @@ func TestQualityGateRetry_AbortsOnFailedReset(t *testing.T) {
 
 	backend := &gitRepoDeletingBackend{}
 	runner := NewRunnerWithBackend(backend)
-	runner.config = &BackendConfig{UseWorktree: false}
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false)}
 	runner.SetSkipPreflightChecks(true)
 	runner.SetRecordingEnabled(false)
 	runner.SetQualityCheckerFactory(func(taskID, projectPath, _ string) QualityChecker {
