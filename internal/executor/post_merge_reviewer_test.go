@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -177,5 +178,92 @@ func TestExtractPRBodyEvidence(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPostMergeReviewer_DiffBudget(t *testing.T) {
+	diff, big, _ := sevenFileDiff()
+	tests := []struct {
+		name        string
+		budget      int
+		wantTrimmed bool
+	}{
+		{"default budget sends whole", 0, false},
+		{"small budget trims", 10000, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var prompt string
+			r := newPostMergeReviewerWithRunner(func(ctx context.Context, args ...string) ([]byte, error) {
+				prompt = args[2]
+				return []byte("VERDICT: APPROVE\nDEFECTS:\nnone\nNOTES:\n"), nil
+			})
+			var logs strings.Builder
+			r.log = slog.New(slog.NewTextHandler(&logs, nil))
+			if tt.budget > 0 {
+				r.SetMaxDiffChars(tt.budget)
+			}
+			review, err := r.Review(context.Background(), PostMergeReviewInput{PRNumber: 7, Diff: diff})
+			if err != nil {
+				t.Fatalf("Review: %v", err)
+			}
+			if review.DiffBytes != len(diff) || review.DiffFiles != 7 || review.DiffTrimmed != tt.wantTrimmed {
+				t.Fatalf("review diff info = %d/%d/%v", review.DiffBytes, review.DiffFiles, review.DiffTrimmed)
+			}
+			hasLine := strings.Contains(prompt, "Diff trimmed: sent ")
+			if hasLine != tt.wantTrimmed {
+				t.Errorf("prompt has trim line = %v, want %v", hasLine, tt.wantTrimmed)
+			}
+			if !tt.wantTrimmed {
+				if !strings.Contains(prompt, diff) {
+					t.Error("untrimmed review must send the diff whole")
+				}
+				if len(review.TrimmedFiles) != 0 {
+					t.Errorf("TrimmedFiles = %v", review.TrimmedFiles)
+				}
+				return
+			}
+			if !strings.Contains(prompt, "trimmed files: "+big[0]+" (") || !strings.Contains(prompt, " bytes cut)") {
+				t.Errorf("prompt trim line does not name %s", big[0])
+			}
+			if strings.Index(prompt, "Diff trimmed:") > strings.Index(prompt, "## Merged Diff") {
+				t.Error("trim line must sit above the Merged Diff section")
+			}
+			for _, p := range big {
+				found := false
+				for _, f := range review.TrimmedFiles {
+					found = found || f == p
+				}
+				if !found {
+					t.Errorf("TrimmedFiles %v missing %s", review.TrimmedFiles, p)
+				}
+			}
+			for _, want := range []string{"pr=7", "budget=10000", "original_bytes=", "sent_bytes=", "trimmed_files=", big[0]} {
+				if !strings.Contains(logs.String(), want) {
+					t.Errorf("log missing %q:\n%s", want, logs.String())
+				}
+			}
+		})
+	}
+}
+
+func TestPostMergeReviewer_SystemPromptNotReviewed(t *testing.T) {
+	if !strings.Contains(postMergeReviewerSystemPrompt, `"Not reviewed" bullet`) {
+		t.Error("system prompt must tell the model to list cut files under Not reviewed")
+	}
+}
+
+func TestPostMergeReviewer_SetMaxDiffChars(t *testing.T) {
+	r := NewPostMergeReviewer("claude", "", 0)
+	if r.MaxDiffChars() != 200000 {
+		t.Fatalf("default = %d, want 200000", r.MaxDiffChars())
+	}
+	r.SetMaxDiffChars(5000)
+	if r.MaxDiffChars() != 5000 {
+		t.Fatalf("got %d", r.MaxDiffChars())
+	}
+	r.SetMaxDiffChars(0)
+	if r.MaxDiffChars() != 200000 {
+		t.Fatalf("zero must restore the default, got %d", r.MaxDiffChars())
 	}
 }

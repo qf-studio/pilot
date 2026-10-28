@@ -477,6 +477,165 @@ func buildJudgeDiffPayload(diff string, maxChars int) string {
 	return manifest.String() + body.String()
 }
 
+// diffTrimmedFile names one file whose diff body was cut and by how many bytes.
+type diffTrimmedFile struct {
+	Path     string
+	BytesCut int
+}
+
+// diffTrimReport says what buildJudgeDiffPayloadReport did to a diff.
+type diffTrimReport struct {
+	OriginalBytes int
+	SentBytes     int
+	Files         int
+	Trimmed       []diffTrimmedFile
+}
+
+// Paths returns the trimmed file paths in diff order.
+func (r diffTrimReport) Paths() []string {
+	paths := make([]string, 0, len(r.Trimmed))
+	for _, f := range r.Trimmed {
+		paths = append(paths, f.Path)
+	}
+	return paths
+}
+
+// diffSectionHead returns the part of a file section that is never trimmed:
+// the "diff --git" header, index/mode lines, ---/+++ and the first hunk header
+// (through the end of the first "@@" line). A section with no hunk (binary,
+// rename, mode change) is all head.
+func diffSectionHead(body string) int {
+	idx := 0
+	for idx < len(body) {
+		end := strings.IndexByte(body[idx:], '\n')
+		lineEnd := len(body)
+		if end >= 0 {
+			lineEnd = idx + end
+		}
+		if strings.HasPrefix(body[idx:lineEnd], "@@") {
+			return lineEnd
+		}
+		if end < 0 {
+			break
+		}
+		idx = lineEnd + 1
+	}
+	return len(body)
+}
+
+func diffTruncMarker(cut int, path string) string {
+	return fmt.Sprintf("\n...[truncated: %d more bytes of %s omitted for length, see manifest above for full file list]", cut, path)
+}
+
+// renderDiffSection renders one section with at most limit bytes (a trailing
+// newline included). It returns the text and the bytes cut from the body.
+// The head always survives, so the result can exceed limit only when the head
+// itself does.
+func renderDiffSection(s diffFileSection, head, limit int) (string, int) {
+	full := len(s.body) + 1
+	if full <= limit {
+		return s.body + "\n", 0
+	}
+	tail := len(s.body) - head
+	keep := limit - head - len(diffTruncMarker(tail, s.path)) - 1
+	if keep < 0 {
+		keep = 0
+	}
+	if keep > tail {
+		keep = tail
+	}
+	cut := tail - keep
+	if cut <= 0 {
+		return s.body + "\n", 0
+	}
+	return s.body[:head+keep] + diffTruncMarker(cut, s.path) + "\n", cut
+}
+
+// buildJudgeDiffPayloadReport is the hard-capped, largest-first variant of
+// buildJudgeDiffPayload used by the post-merge reviewer. Diffs within maxChars
+// are returned whole. Over the cap, file bodies are trimmed largest-first:
+// every file is cut down to one common size, chosen as the biggest that makes
+// the total fit, so small files are never cut to subsidise large ones and
+// slack from small files goes to the large ones. Each file keeps its diff
+// header, --- and +++ lines and first hunk header, and the result never
+// exceeds maxChars. The report lists what was cut.
+func buildJudgeDiffPayloadReport(diff string, maxChars int) (string, diffTrimReport) {
+	report := diffTrimReport{OriginalBytes: len(diff)}
+	sections := splitDiffByFile(diff)
+	report.Files = len(sections)
+	if len(diff) <= maxChars {
+		report.SentBytes = len(diff)
+		return diff, report
+	}
+
+	heads := make([]int, len(sections))
+	maxSize := 0
+	for i, s := range sections {
+		heads[i] = diffSectionHead(s.body)
+		if len(s.body)+1 > maxSize {
+			maxSize = len(s.body) + 1
+		}
+	}
+
+	var manifest strings.Builder
+	fmt.Fprintf(&manifest, "## Changed Files (%d total, full list — not truncated)\n", len(sections))
+	for _, s := range sections {
+		fmt.Fprintf(&manifest, "- %s (+%d/-%d)\n", s.path, s.added, s.removed)
+	}
+	manifest.WriteString("\n## Diff Content (per-file, may be truncated for length — see manifest above for the full file list)\n")
+
+	render := func(prefix string, level int) (string, []diffTrimmedFile) {
+		var out strings.Builder
+		out.WriteString(prefix)
+		var trimmed []diffTrimmedFile
+		for i, s := range sections {
+			text, cut := renderDiffSection(s, heads[i], level)
+			out.WriteString(text)
+			if cut > 0 {
+				trimmed = append(trimmed, diffTrimmedFile{Path: s.path, BytesCut: cut})
+			}
+		}
+		return out.String(), trimmed
+	}
+
+	// Biggest per-file size whose total fits. The total is monotone in the
+	// level, so binary search; level 0 is the floor (heads and markers only).
+	finish := func(prefix string) (string, []diffTrimmedFile, bool) {
+		if floor, _ := render(prefix, 0); len(floor) > maxChars {
+			return "", nil, false
+		}
+		lo, hi := 0, maxSize
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			if out, _ := render(prefix, mid); len(out) <= maxChars {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		out, trimmed := render(prefix, lo)
+		return out, trimmed, true
+	}
+
+	out, trimmed, ok := finish(manifest.String())
+	if !ok {
+		// The manifest plus the untouchable heads exceed the cap; drop the
+		// manifest, and as a last resort cut the tail of the heads.
+		out, trimmed, ok = finish("")
+		if !ok {
+			out, _ = render("", 0)
+			out = out[:maxChars]
+			trimmed = trimmed[:0]
+			for i, s := range sections {
+				trimmed = append(trimmed, diffTrimmedFile{Path: s.path, BytesCut: len(s.body) - heads[i]})
+			}
+		}
+	}
+	report.SentBytes = len(out)
+	report.Trimmed = trimmed
+	return out, report
+}
+
 // JudgeIssue evaluates whether a GitHub issue is actionable before dispatching to a worker.
 // Returns a PreFlightVerdict with decision, reason, and confidence.
 // Empty body is treated as vague (returns reject_vague, not an error).

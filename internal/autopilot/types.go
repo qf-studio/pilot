@@ -322,6 +322,11 @@ type PostMergeReviewConfig struct {
 	DailyCap int `yaml:"daily_cap"`
 	// Timeout bounds one review. Zero uses the reviewer default (5m).
 	Timeout time.Duration `yaml:"timeout"`
+	// MaxDiffChars is the reviewer's own diff budget in characters; it is
+	// independent of executor.intent_judge.max_diff_chars. Zero uses
+	// executor.DefaultPostMergeReviewMaxDiffChars (200000); negative is
+	// rejected by validation.
+	MaxDiffChars int `yaml:"max_diff_chars"`
 }
 
 // PostMergeReviewEnabled reports whether the post-merge reviewer is on.

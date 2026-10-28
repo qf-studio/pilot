@@ -397,8 +397,39 @@ func buildPostMergeReviewComment(review *executor.PostMergeReview) string {
 		sb.WriteString(notes)
 		sb.WriteString("\n\n")
 	}
+	if review.DiffBytes > 0 || review.DiffFiles > 0 {
+		sb.WriteString(postMergeDiffLine(review))
+		sb.WriteString("\n\n")
+	}
 	sb.WriteString("<sub>Automated post-merge review — an input to human review of this merge, not a substitute for it.</sub>")
 	return sb.String()
+}
+
+// maxPostMergeDiffLineFiles caps the trimmed paths named in the Diff line.
+const maxPostMergeDiffLineFiles = 10
+
+// postMergeDiffLine reports how much of the diff the reviewer saw, so a reader
+// can tell a trimmed review from a thorough one.
+func postMergeDiffLine(review *executor.PostMergeReview) string {
+	line := fmt.Sprintf("Diff: %d bytes, %d files, trimmed: ", review.DiffBytes, review.DiffFiles)
+	if !review.DiffTrimmed {
+		return line + "no"
+	}
+	files := review.TrimmedFiles
+	extra := 0
+	if len(files) > maxPostMergeDiffLineFiles {
+		extra = len(files) - maxPostMergeDiffLineFiles
+		files = files[:maxPostMergeDiffLineFiles]
+	}
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		names = append(names, plainPostMergeField(f, 200))
+	}
+	list := strings.Join(names, ", ")
+	if extra > 0 {
+		list += fmt.Sprintf(", and %d more", extra)
+	}
+	return line + fmt.Sprintf("yes (%d files: %s)", len(review.TrimmedFiles), list)
 }
 
 // postMergeDiffFor returns the merged diff of mergeSHA. It uses the

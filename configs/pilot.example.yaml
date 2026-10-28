@@ -619,6 +619,10 @@ orchestrator:
       daily_cap: 20
       # Bound on one review. Default 5m.
       timeout: 5m
+      # Diff budget in characters, separate from executor.intent_judge.max_diff_chars.
+      # Over the budget the largest files are trimmed first (headers always
+      # kept) and the verdict comment says what was trimmed. 0 = 200000.
+      max_diff_chars: 0
 
     # Cross-PR platform-outage breaker (GH-4791, TASK-458 part 1). The
     # per-PR circuit breaker above is deliberately scoped to one PR at a

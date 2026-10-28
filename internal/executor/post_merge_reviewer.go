@@ -35,6 +35,12 @@ const (
 // ledger so bench defect-rate tracking can tell this pass from human reviews.
 const PostMergeReviewerID = "post-merge-reviewer"
 
+// DefaultPostMergeReviewMaxDiffChars is the reviewer's own diff budget when
+// post_merge_review.max_diff_chars is unset. It is independent of the intent
+// judge's cap: one model pass reads far more than 32 KB, and the reviewer's
+// job is the whole diff.
+const DefaultPostMergeReviewMaxDiffChars = 200000
+
 // defaultPostMergeReviewTimeout bounds one review subprocess. Larger than the
 // intent judge's 60s: this prompt carries the whole checklist and a full diff.
 const defaultPostMergeReviewTimeout = 5 * time.Minute
@@ -54,6 +60,15 @@ type PostMergeReview struct {
 	Verdict PostMergeVerdict
 	Defects []PostMergeDefect
 	Notes   string
+
+	// DiffBytes is the size of the merged diff before any trimming.
+	DiffBytes int
+	// DiffFiles is the number of files the diff touches.
+	DiffFiles int
+	// DiffTrimmed is true when the reviewer was shown a trimmed diff.
+	DiffTrimmed bool
+	// TrimmedFiles lists the files whose diff body was cut.
+	TrimmedFiles []string
 }
 
 // PostMergeReviewInput is everything the reviewer sees about one merged PR.
@@ -89,11 +104,26 @@ func NewPostMergeReviewer(claudeCmd, model string, timeout time.Duration) *PostM
 	return &PostMergeReviewer{
 		model:        model,
 		timeout:      timeout,
-		maxDiffChars: maxDiffCharsDefault,
+		maxDiffChars: DefaultPostMergeReviewMaxDiffChars,
 		log:          slog.Default().With("component", "post-merge-reviewer"),
 		cmdRunner:    NewIntentJudge(claudeCmd).cmdRunner,
 	}
 }
+
+// SetMaxDiffChars sets the reviewer's diff budget; zero or negative keeps the
+// default (DefaultPostMergeReviewMaxDiffChars).
+func (r *PostMergeReviewer) SetMaxDiffChars(n int) {
+	if n <= 0 {
+		n = DefaultPostMergeReviewMaxDiffChars
+	}
+	r.maxDiffChars = n
+}
+
+// MaxDiffChars returns the reviewer's diff budget.
+func (r *PostMergeReviewer) MaxDiffChars() int { return r.maxDiffChars }
+
+// Model returns the model passed to the CLI; empty means the CLI's default.
+func (r *PostMergeReviewer) Model() string { return r.model }
 
 // newPostMergeReviewerWithRunner builds a reviewer with a fake command runner.
 func newPostMergeReviewerWithRunner(runner func(ctx context.Context, args ...string) ([]byte, error)) *PostMergeReviewer {
@@ -111,7 +141,7 @@ Checklist:
 4) Migrations: is there a down path, can any data be lost, is row-level security (RLS) handled?
 5) Anything the issue's out-of-scope section forbids.
 
-IMPORTANT — truncation handling: A "## Changed Files" manifest lists every file the diff touches and is never truncated. A "...[truncated: ..." marker only means that content was cut for length; it is NOT evidence that anything is missing. Never cite a truncation marker as a defect. Only report a defect you can anchor to a file and line you can see, or to a counterpart file you can name.
+IMPORTANT — truncation handling: A "## Changed Files" manifest lists every file the diff touches and is never truncated. A "...[truncated: ..." marker only means that content was cut for length; it is NOT evidence that anything is missing. Never cite a truncation marker as a defect. When content you needed was cut, list the affected files in NOTES under a "Not reviewed" bullet and do not guess at what the cut part contains. Only report a defect you can anchor to a file and line you can see, or to a counterpart file you can name.
 
 Output exactly this format and nothing before it:
 VERDICT: <APPROVE|APPROVE-WITH-NOTES|REQUEST-CHANGES>
@@ -132,8 +162,18 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 
 	maxChars := r.maxDiffChars
 	if maxChars <= 0 {
-		maxChars = maxDiffCharsDefault
+		maxChars = DefaultPostMergeReviewMaxDiffChars
 	}
+
+	payload, report := buildJudgeDiffPayloadReport(in.Diff, maxChars)
+	r.log.Info("post-merge review diff",
+		slog.Int("pr", in.PRNumber),
+		slog.Int("budget", maxChars),
+		slog.Int("original_bytes", report.OriginalBytes),
+		slog.Int("sent_bytes", report.SentBytes),
+		slog.Int("files", report.Files),
+		slog.Any("trimmed_files", report.Paths()),
+	)
 
 	var sb strings.Builder
 	sb.WriteString(postMergeReviewerSystemPrompt)
@@ -144,7 +184,14 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 	if evidence := ExtractPRBodyEvidence(in.PRBody); evidence != "" {
 		fmt.Fprintf(&sb, "\n## PR Evidence (from the PR body)\n%s\n", truncatePreflightBody(evidence))
 	}
-	fmt.Fprintf(&sb, "\n## Merged Diff (PR #%d)\n```diff\n%s\n```", in.PRNumber, buildJudgeDiffPayload(in.Diff, maxChars))
+	if len(report.Trimmed) > 0 {
+		parts := make([]string, 0, len(report.Trimmed))
+		for _, f := range report.Trimmed {
+			parts = append(parts, fmt.Sprintf("%s (%d bytes cut)", f.Path, f.BytesCut))
+		}
+		fmt.Fprintf(&sb, "\nDiff trimmed: sent %d of %d bytes; trimmed files: %s\n", report.SentBytes, report.OriginalBytes, strings.Join(parts, ", "))
+	}
+	fmt.Fprintf(&sb, "\n## Merged Diff (PR #%d)\n```diff\n%s\n```", in.PRNumber, payload)
 
 	reviewCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
@@ -158,7 +205,12 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 	if err != nil {
 		return nil, fmt.Errorf("post-merge reviewer subprocess: %w", err)
 	}
-	return parsePostMergeReview(string(output)), nil
+	review := parsePostMergeReview(string(output))
+	review.DiffBytes = report.OriginalBytes
+	review.DiffFiles = report.Files
+	review.DiffTrimmed = len(report.Trimmed) > 0
+	review.TrimmedFiles = report.Paths()
+	return review, nil
 }
 
 var (

@@ -1407,6 +1407,9 @@ func (c *Config) Validate() error {
 				if pmr.Timeout < 0 {
 					return fmt.Errorf("orchestrator.autopilot.post_merge_review.timeout must be >= 0, got %s", pmr.Timeout)
 				}
+				if pmr.MaxDiffChars < 0 {
+					return fmt.Errorf("orchestrator.autopilot.post_merge_review.max_diff_chars must be >= 0 (0 uses the default of %d), got %d", executor.DefaultPostMergeReviewMaxDiffChars, pmr.MaxDiffChars)
+				}
 			}
 
 			if release := c.Orchestrator.Autopilot.Release; release != nil {

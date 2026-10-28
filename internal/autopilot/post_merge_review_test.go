@@ -645,3 +645,64 @@ func (b *lockedBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+func TestPostMergeReviewCommentDiffLine_Trimmed(t *testing.T) {
+	got := buildPostMergeReviewComment(&executor.PostMergeReview{
+		Verdict:      executor.PostMergeApprove,
+		DiffBytes:    32127,
+		DiffFiles:    7,
+		DiffTrimmed:  true,
+		TrimmedFiles: []string{"cmd/a.go", "internal/b.go", "internal/c.go"},
+	})
+	want := "Diff: 32127 bytes, 7 files, trimmed: yes (3 files: cmd/a.go, internal/b.go, internal/c.go)"
+	if !strings.Contains(got, want) {
+		t.Fatalf("comment missing %q:\n%s", want, got)
+	}
+	if strings.Index(got, want) > strings.Index(got, "<sub>") {
+		t.Errorf("Diff line must come before the footer:\n%s", got)
+	}
+}
+
+func TestPostMergeReviewCommentDiffLine(t *testing.T) {
+	many := make([]string, 12)
+	for i := range many {
+		many[i] = fmt.Sprintf("f%02d.go", i)
+	}
+	tests := []struct {
+		name   string
+		review *executor.PostMergeReview
+		want   string
+		absent string
+	}{
+		{
+			name:   "untrimmed",
+			review: &executor.PostMergeReview{Verdict: executor.PostMergeApprove, DiffBytes: 32127, DiffFiles: 7},
+			want:   "Diff: 32127 bytes, 7 files, trimmed: no",
+			absent: "trimmed: yes",
+		},
+		{
+			name:   "trimmed lists are capped",
+			review: &executor.PostMergeReview{Verdict: executor.PostMergeApprove, DiffBytes: 900000, DiffFiles: 40, DiffTrimmed: true, TrimmedFiles: many},
+			want:   "trimmed: yes (12 files: f00.go, f01.go, f02.go, f03.go, f04.go, f05.go, f06.go, f07.go, f08.go, f09.go, and 2 more)",
+		},
+		{
+			name:   "no diff info omits the line",
+			review: &executor.PostMergeReview{Verdict: executor.PostMergeApprove},
+			absent: "Diff:",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildPostMergeReviewComment(tt.review)
+			if tt.want != "" && !strings.Contains(got, tt.want) {
+				t.Errorf("comment missing %q:\n%s", tt.want, got)
+			}
+			if tt.absent != "" && strings.Contains(got, tt.absent) {
+				t.Errorf("comment unexpectedly contains %q:\n%s", tt.absent, got)
+			}
+			if tt.want != "" && !strings.HasSuffix(strings.TrimSpace(got), "not a substitute for it.</sub>") {
+				t.Errorf("footer must stay last:\n%s", got)
+			}
+		})
+	}
+}

@@ -37,7 +37,9 @@ func buildPostMergeReviewer(cfg *config.Config, log *slog.Logger) *executor.Post
 	if model == "" {
 		model = cfg.Executor.ResolveModel("")
 	}
-	return executor.NewPostMergeReviewer(claudeCmd, model, pmr.Timeout)
+	r := executor.NewPostMergeReviewer(claudeCmd, model, pmr.Timeout)
+	r.SetMaxDiffChars(pmr.MaxDiffChars)
+	return r
 }
 
 // wirePostMergeReviewer installs the post-merge reviewer on every controller
@@ -55,8 +57,13 @@ func wirePostMergeReviewer(cfg *config.Config, log *slog.Logger, controllers ...
 		c.SetPostMergeReviewer(r)
 		c.SetPostMergeReviewBudget(budget)
 	}
+	model := r.Model()
+	if model == "" {
+		model = "cli-default"
+	}
 	log.Info("autopilot post-merge reviewer enabled",
 		slog.Int("daily_cap", pmr.EffectiveDailyCap()),
-		slog.String("model", pmr.Model),
+		slog.String("model", model),
+		slog.Int("max_diff_chars", r.MaxDiffChars()),
 	)
 }
