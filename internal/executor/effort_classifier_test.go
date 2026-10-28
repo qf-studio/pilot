@@ -29,6 +29,7 @@ func mockEffortRunnerError(err error) func(ctx context.Context, args ...string) 
 }
 
 func TestEffortClassifier_LowEffort(t *testing.T) {
+	t.Parallel()
 	classifier := newEffortClassifierWithRunner(mockEffortRunner("low", "Simple typo fix"))
 	task := &Task{
 		ID:          "GH-100",
@@ -43,6 +44,7 @@ func TestEffortClassifier_LowEffort(t *testing.T) {
 }
 
 func TestEffortClassifier_MediumEffort(t *testing.T) {
+	t.Parallel()
 	classifier := newEffortClassifierWithRunner(mockEffortRunner("medium", "Standard work with clear requirements"))
 	task := &Task{
 		ID:    "GH-200",
@@ -61,6 +63,7 @@ func TestEffortClassifier_MediumEffort(t *testing.T) {
 }
 
 func TestEffortClassifier_HighEffort(t *testing.T) {
+	t.Parallel()
 	classifier := newEffortClassifierWithRunner(mockEffortRunner("high", "Security-sensitive with multiple considerations"))
 	task := &Task{
 		ID:          "GH-300",
@@ -75,6 +78,7 @@ func TestEffortClassifier_HighEffort(t *testing.T) {
 }
 
 func TestEffortClassifier_CachesResult(t *testing.T) {
+	t.Parallel()
 	callCount := 0
 	runner := func(ctx context.Context, args ...string) ([]byte, error) {
 		callCount++
@@ -102,6 +106,7 @@ func TestEffortClassifier_CachesResult(t *testing.T) {
 }
 
 func TestEffortClassifier_ReturnsEmptyOnError(t *testing.T) {
+	t.Parallel()
 	classifier := newEffortClassifierWithRunner(mockEffortRunnerError(errors.New("subprocess failed")))
 	task := &Task{
 		ID:          "GH-500",
@@ -117,6 +122,7 @@ func TestEffortClassifier_ReturnsEmptyOnError(t *testing.T) {
 }
 
 func TestEffortClassifier_NilTask(t *testing.T) {
+	t.Parallel()
 	classifier := newEffortClassifierWithRunner(mockEffortRunner("medium", "n/a"))
 	result := classifier.Classify(context.Background(), nil)
 	if result != "" {
@@ -125,6 +131,7 @@ func TestEffortClassifier_NilTask(t *testing.T) {
 }
 
 func TestNewEffortClassifier(t *testing.T) {
+	t.Parallel()
 	classifier := NewEffortClassifier()
 	if classifier == nil {
 		t.Fatal("expected non-nil classifier")
@@ -143,6 +150,7 @@ func TestNewEffortClassifier(t *testing.T) {
 }
 
 func TestParseEffortResponse(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -216,6 +224,7 @@ func TestParseEffortResponse(t *testing.T) {
 }
 
 func TestEffortClassifier_TaskWithoutID(t *testing.T) {
+	t.Parallel()
 	callCount := 0
 	runner := func(ctx context.Context, args ...string) ([]byte, error) {
 		callCount++
@@ -258,6 +267,7 @@ func newTestEffortClassifier(t *testing.T, serverURL, apiKey string, runner func
 }
 
 func TestEffortClassifier_OAuthTokenUsesBearerAndBetaHeader(t *testing.T) {
+	t.Parallel()
 	var gotXAPIKey, gotAuth, gotBeta string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotXAPIKey = r.Header.Get("x-api-key")
@@ -287,6 +297,7 @@ func TestEffortClassifier_OAuthTokenUsesBearerAndBetaHeader(t *testing.T) {
 }
 
 func TestEffortClassifier_APIKeyUsesXAPIKeyHeader(t *testing.T) {
+	t.Parallel()
 	var gotXAPIKey, gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotXAPIKey = r.Header.Get("x-api-key")
@@ -312,6 +323,7 @@ func TestEffortClassifier_APIKeyUsesXAPIKeyHeader(t *testing.T) {
 }
 
 func TestEffortClassifier_OAuth401DisablesDirectModeForSubsequentCalls(t *testing.T) {
+	t.Parallel()
 	var apiHits int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&apiHits, 1)
@@ -357,6 +369,7 @@ func TestEffortClassifier_OAuth401DisablesDirectModeForSubsequentCalls(t *testin
 }
 
 func TestEffortClassifier_APIKey401DoesNotDisableDirectMode(t *testing.T) {
+	t.Parallel()
 	// A rejected API key (not an OAuth token) is not the "OAuth token can
 	// never work" case this latch targets — direct mode should keep being
 	// attempted (e.g. a misconfigured key could be fixed via env reload in
@@ -406,6 +419,7 @@ func (h *infoCounter) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *infoCounter) WithGroup(string) slog.Handler      { return h }
 
 func TestEffortClassifier_429DirectModeLatch(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		token        string
@@ -459,6 +473,7 @@ func TestEffortClassifier_429DirectModeLatch(t *testing.T) {
 }
 
 func TestParseStructuredEffortResponse(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string

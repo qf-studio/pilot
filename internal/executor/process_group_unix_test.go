@@ -86,7 +86,7 @@ func TestKillProcessGroupKillsGrandchild(t *testing.T) {
 // minus an explicit kill — this is what happens on a clean exit too).
 func TestConfigureProcessGroupWaitDelayBoundsCmdWait(t *testing.T) {
 	if testing.Short() {
-		t.Skip("end-to-end: real git/gh, skipped under -short")
+		t.Skip("skipping process-group integration test in short mode")
 	}
 
 	// The direct child backgrounds a long sleep — inheriting the stdout

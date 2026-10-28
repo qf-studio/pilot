@@ -21,6 +21,7 @@ func mockClaudeRunnerError(err error) func(ctx context.Context, args ...string) 
 }
 
 func TestComplexityClassifier_SimpleTask(t *testing.T) {
+	t.Parallel()
 	classifier := newComplexityClassifierWithRunner(mockClaudeRunner("SIMPLE", "Single field addition"))
 	task := &Task{
 		ID:          "GH-100",
@@ -35,6 +36,7 @@ func TestComplexityClassifier_SimpleTask(t *testing.T) {
 }
 
 func TestComplexityClassifier_MediumDetailedTask(t *testing.T) {
+	t.Parallel()
 	// This is the key test: a detailed but well-scoped issue should be MEDIUM, not COMPLEX
 	classifier := newComplexityClassifierWithRunner(mockClaudeRunner("MEDIUM", "Detailed instructions but single-scope feature"))
 	task := &Task{
@@ -59,6 +61,7 @@ Follow the patterns in internal/api/handlers.go.`,
 }
 
 func TestComplexityClassifier_ComplexTask(t *testing.T) {
+	t.Parallel()
 	classifier := newComplexityClassifierWithRunner(mockClaudeRunner("COMPLEX", "Requires architectural changes across multiple systems"))
 	task := &Task{
 		ID:          "GH-300",
@@ -73,6 +76,7 @@ func TestComplexityClassifier_ComplexTask(t *testing.T) {
 }
 
 func TestComplexityClassifier_CachesResult(t *testing.T) {
+	t.Parallel()
 	callCount := 0
 	runner := func(ctx context.Context, args ...string) ([]byte, error) {
 		callCount++
@@ -100,6 +104,7 @@ func TestComplexityClassifier_CachesResult(t *testing.T) {
 }
 
 func TestComplexityClassifier_FallsBackOnError(t *testing.T) {
+	t.Parallel()
 	classifier := newComplexityClassifierWithRunner(mockClaudeRunnerError(errors.New("subprocess failed")))
 	task := &Task{
 		ID:          "GH-500",
@@ -115,6 +120,7 @@ func TestComplexityClassifier_FallsBackOnError(t *testing.T) {
 }
 
 func TestComplexityClassifier_NilTask(t *testing.T) {
+	t.Parallel()
 	classifier := newComplexityClassifierWithRunner(mockClaudeRunner("MEDIUM", "n/a"))
 	result := classifier.Classify(context.Background(), nil)
 	if result != ComplexityMedium {
@@ -123,6 +129,7 @@ func TestComplexityClassifier_NilTask(t *testing.T) {
 }
 
 func TestNewComplexityClassifier(t *testing.T) {
+	t.Parallel()
 	// No API key needed anymore - uses Claude Code subscription
 	classifier := NewComplexityClassifier()
 	if classifier == nil {
@@ -142,6 +149,7 @@ func TestNewComplexityClassifier(t *testing.T) {
 }
 
 func TestParseClassificationResponse(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -200,6 +208,7 @@ func TestParseClassificationResponse(t *testing.T) {
 }
 
 func TestParseStructuredClassification(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -294,6 +303,7 @@ func TestParseStructuredClassification(t *testing.T) {
 }
 
 func TestHasLabel(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		task     *Task
@@ -343,6 +353,7 @@ func TestHasLabel(t *testing.T) {
 }
 
 func TestDetectComplexity_NoDecomposePreventsEpic(t *testing.T) {
+	t.Parallel()
 	task := &Task{
 		Title:       "[epic] Large refactor across multiple systems",
 		Description: "Phase 1: update models. Phase 2: rewrite API. Phase 3: migrate data. Phase 4: update frontend. Phase 5: integration tests.",
@@ -367,6 +378,7 @@ func TestDetectComplexity_NoDecomposePreventsEpic(t *testing.T) {
 }
 
 func TestDecomposer_NoDecomposeLabel(t *testing.T) {
+	t.Parallel()
 	config := &DecomposeConfig{
 		Enabled:             true,
 		MinComplexity:       "complex",
@@ -397,6 +409,7 @@ func TestDecomposer_NoDecomposeLabel(t *testing.T) {
 }
 
 func TestDecomposer_WithLLMClassifier(t *testing.T) {
+	t.Parallel()
 	// LLM says MEDIUM → should NOT decompose (threshold is complex)
 	config := &DecomposeConfig{
 		Enabled:             true,
@@ -433,6 +446,7 @@ Follow existing patterns in internal/webhooks/handler.go.`,
 }
 
 func TestDecomposer_LLMClassifierFallback(t *testing.T) {
+	t.Parallel()
 	// LLM returns error → falls back to heuristic
 	config := &DecomposeConfig{
 		Enabled:             true,

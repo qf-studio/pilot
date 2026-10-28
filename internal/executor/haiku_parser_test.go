@@ -209,7 +209,6 @@ func TestHaikuParser_ParsePlanning_HTTPError(t *testing.T) {
 }
 
 func TestHaikuParser_ParsePlanning_Timeout(t *testing.T) {
-	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Sleep longer than client timeout
 		time.Sleep(200 * time.Millisecond)
@@ -276,7 +275,6 @@ func TestHaikuParser_ParsePlanning_EmptySubtaskArray(t *testing.T) {
 }
 
 func TestHaikuParser_ParsePlanning_ContextCancelled(t *testing.T) {
-	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)

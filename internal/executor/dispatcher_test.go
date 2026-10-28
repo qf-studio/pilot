@@ -432,7 +432,7 @@ func TestDispatcher_MultipleProjects(t *testing.T) {
 			t.Fatalf("failed to queue task %d: %v", i, err)
 		}
 		// Small delay to let SQLite WAL settle between rapid queue operations
-		time.Sleep(50 * time.Millisecond)
+		shortSleep(50 * time.Millisecond)
 	}
 
 	// Wait for the workers to start (GH-5924: poll instead of a fixed sleep).
@@ -2134,22 +2134,36 @@ func (b *releasableBackend) Execute(ctx context.Context, _ ExecuteOptions) (*Bac
 	return &BackendResult{Success: true, Output: "releasable success"}, nil
 }
 
-// waitForExecStatus polls until execID's stored status equals want or
-// timeout elapses.
-// pollUntil polls cond every 10ms until it returns true or timeout elapses,
-// then reports a test error (GH-5924: replaces fixed "give it a beat" sleeps).
+// shortSleep sleeps for d, or a third of d (floor 10ms) under -short. It is for
+// sleeps that model a settle window or a negative "nothing happens" check, which
+// have no condition to poll for (GH-5924). Sleeps whose duration is a
+// correctness input (e.g. SQLite's 1 s created_at resolution) must not use it.
+func shortSleep(d time.Duration) {
+	if testing.Short() {
+		d /= 3
+		if d < 10*time.Millisecond {
+			d = 10 * time.Millisecond
+		}
+	}
+	time.Sleep(d)
+}
+
+// pollUntil polls cond every 10ms until it returns true, or fails the test
+// fatally once timeout elapses so later assertions never run on unready state
+// (GH-5924: replaces fixed "give it a beat" sleeps).
 func pollUntil(t *testing.T, timeout time.Duration, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for !cond() {
 		if time.Now().After(deadline) {
-			t.Errorf("timed out after %v waiting for %s", timeout, what)
-			return
+			t.Fatalf("timed out after %v waiting for %s", timeout, what)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 }
 
+// waitForExecStatus polls until execID's stored status equals want or
+// timeout elapses.
 func waitForExecStatus(t *testing.T, store *memory.Store, execID, want string, timeout time.Duration) *memory.Execution {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -2215,7 +2229,7 @@ func TestDispatcher_PauseAdmission_BlocksNewPickupButNotRunningTask(t *testing.T
 
 	// Give the worker a beat in case a bug lets it wrongly pick up task B
 	// while task A is still running.
-	time.Sleep(150 * time.Millisecond)
+	shortSleep(150 * time.Millisecond)
 	if exec, gErr := store.GetExecution(execIDB); gErr != nil {
 		t.Fatalf("failed to get execution B: %v", gErr)
 	} else if exec.Status != "queued" {
@@ -2229,7 +2243,7 @@ func TestDispatcher_PauseAdmission_BlocksNewPickupButNotRunningTask(t *testing.T
 	// Admission is still paused — task B must stay queued even though the
 	// worker is now idle (this is the exact deadlock-avoidance behavior: the
 	// worker's loop returns instead of picking up the next queued row).
-	time.Sleep(150 * time.Millisecond)
+	shortSleep(150 * time.Millisecond)
 	if exec, gErr := store.GetExecution(execIDB); gErr != nil {
 		t.Fatalf("failed to get execution B: %v", gErr)
 	} else if exec.Status != "queued" {
@@ -2302,7 +2316,7 @@ func TestDispatcher_PauseAdmissionFor_OwnerInterleaving_SelfUpgradeAndPlatformBr
 	if !dispatcher.IsAdmissionPaused() {
 		t.Fatal("expected IsAdmissionPaused to still report true — platform-breaker owner has not resumed yet")
 	}
-	time.Sleep(150 * time.Millisecond)
+	shortSleep(150 * time.Millisecond)
 	if exec, gErr := store.GetExecution(execIDB); gErr != nil {
 		t.Fatalf("failed to get execution B: %v", gErr)
 	} else if exec.Status != "queued" {
@@ -2575,7 +2589,7 @@ func TestWaitForExecution_DecomposedParentGuard_ResolvesAsSuccess(t *testing.T) 
 	// Let the waiter observe the "running" row at least once before it's
 	// deleted out from under it, mirroring the real race (recoverStaleRunningTasks'
 	// decomposed-parent guard branch deletes the row once children are seen complete).
-	time.Sleep(30 * time.Millisecond)
+	shortSleep(30 * time.Millisecond)
 	if err := store.DeleteExecution(orphanID); err != nil {
 		t.Fatalf("DeleteExecution: %v", err)
 	}
@@ -3080,7 +3094,7 @@ func TestWaitForExecution_RowDeletedAfterCompletion_ResolvesAsSuccess(t *testing
 	// Let the waiter observe the "running" row at least once (capturing its
 	// task/project identity) before it's deleted out from under it — this
 	// mirrors the real race, where the row exists when the wait starts.
-	time.Sleep(30 * time.Millisecond)
+	shortSleep(30 * time.Millisecond)
 	if err := store.DeleteExecution(orphanID); err != nil {
 		t.Fatalf("DeleteExecution: %v", err)
 	}
@@ -3145,8 +3159,11 @@ func TestDispatcher_AdoptQueuedProjectsOnRestart(t *testing.T) {
 			}
 			defer dispatcher.Stop()
 
-			// Give the adoption + worker goroutines time to spin up.
-			time.Sleep(150 * time.Millisecond)
+			// Wait for the adoption + worker goroutines to spin up (GH-5924:
+			// poll instead of a fixed sleep).
+			pollUntil(t, 2*time.Second, "re-adopted workers to start", func() bool {
+				return len(dispatcher.GetWorkerStatus()) >= len(tc.projects)
+			})
 
 			status := dispatcher.GetWorkerStatus()
 			for _, proj := range tc.projects {
