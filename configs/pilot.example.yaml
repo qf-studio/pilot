@@ -611,6 +611,11 @@ orchestrator:
     # read with git). PRs without a GitHub issue are not reviewed. Default off.
     # To run the reviewer offline on any merged PR and read the verdict without
     # posting it, use `pilot review-merge` (docs: CLI reference, pilot review-merge).
+    # The review prompt also carries up to 5 ranked project memories (pitfalls,
+    # patterns, decisions) from .agent/knowledge/graph.json, matched on the issue
+    # and the files the diff touches; the executor's memory_injection block
+    # (executor.memory_injection.enabled) gates this review context too, and the
+    # posted Diff line ends with "memories: N".
     post_merge_review:
       enabled: false
       # Model for the review. Empty uses the executor's configured model

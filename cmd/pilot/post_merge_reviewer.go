@@ -73,6 +73,7 @@ func wirePostMergeReviewer(cfg *config.Config, log *slog.Logger, controllers ...
 	for _, c := range controllers {
 		c.SetPostMergeReviewer(r)
 		c.SetPostMergeReviewBudget(budget)
+		c.SetPostMergeMemoryInjection(memoryInjectionEnabled(cfg))
 	}
 	model := r.Model()
 	if model == "" {
@@ -83,4 +84,10 @@ func wirePostMergeReviewer(cfg *config.Config, log *slog.Logger, controllers ...
 		slog.String("model", model),
 		slog.Int("max_diff_chars", r.MaxDiffChars()),
 	)
+}
+
+// memoryInjectionEnabled reports executor.memory_injection.enabled, the one
+// switch for knowledge-graph memories in executor prompts and review context.
+func memoryInjectionEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.Executor != nil && cfg.Executor.MemoryInjection != nil && cfg.Executor.MemoryInjection.Enabled
 }

@@ -457,27 +457,32 @@ func (r *Runner) buildMemoryInjectionBlock(task *Task, executionPath string, has
 		return ""
 	}
 
-	const header = "## Known pitfalls from project memory\n\n"
-	const footer = "\nHeed these before implementing.\n"
+	block, _ := renderMemoryBlock("## Known pitfalls from project memory\n\n", "\nHeed these before implementing.\n", recalled)
+	return block
+}
 
+// renderMemoryBlock renders header, one "- [type] summary (confidence c)"
+// line per memory, then footer, within memoryInjectionCharCap. It is the one
+// renderer behind the executor's prompt block and the post-merge reviewer's
+// context block, so their entry format and cap cannot drift. Entries that
+// would push the block past the cap are dropped whole. It returns the block
+// and the number of entries rendered; with no entry it returns "" and 0.
+func renderMemoryBlock(header, footer string, memories []graphrecall.MemorySummary) (string, int) {
 	var list strings.Builder
+	n := 0
 	budget := memoryInjectionCharCap - len(header) - len(footer)
-	for _, m := range recalled {
+	for _, m := range memories {
 		entry := fmt.Sprintf("- [%s] %s (confidence %.2f)\n", m.Type, m.Summary, m.Confidence)
 		if list.Len()+len(entry) > budget {
 			break
 		}
 		list.WriteString(entry)
+		n++
 	}
-	if list.Len() == 0 {
-		return ""
+	if n == 0 {
+		return "", 0
 	}
-
-	var sb strings.Builder
-	sb.WriteString(header)
-	sb.WriteString(list.String())
-	sb.WriteString(footer)
-	return sb.String()
+	return header + list.String() + footer, n
 }
 
 // buildLocalModePrompt constructs a problem-solving prompt for local execution (GH-2103).
