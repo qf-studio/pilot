@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-mocks check-destructive check-graph test-bench bench-bootstrap-report pentest gate check-integration test-prepush-fastpath auto-fix test-short test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard watch-git-config
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-mocks check-destructive check-graph test-bench bench-bootstrap-report pentest gate check-integration test-prepush-fastpath auto-fix test-short test-changed test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard watch-git-config
 
 # Variables
 BINARY_NAME=pilot
@@ -170,6 +170,22 @@ check-graph:
 # Run short tests (for pre-push gate)
 test-short:
 	go test -short -race ./...
+
+# Changed-package test gate (GH-5926). The quality gate runner exports
+# PILOT_CHANGED_PACKAGES (space-separated import paths), PILOT_CHANGED_FULL (0|1)
+# and PILOT_CHANGED_REASON. Full suite on any blind spot (FULL=1, or an empty list
+# that is not docs-only); "no Go changes" for docs-only; otherwise only the listed
+# packages. No -race here: CI keeps the full `go test -v -race ./...` as the merge gate.
+test-changed:
+	@if [ "$$PILOT_CHANGED_FULL" != "1" ] && [ "$$PILOT_CHANGED_REASON" = "docs-only" ]; then \
+		echo "no Go changes"; \
+	elif [ "$$PILOT_CHANGED_FULL" = "1" ] || [ -z "$$PILOT_CHANGED_PACKAGES" ]; then \
+		echo "test-changed: full suite ($${PILOT_CHANGED_REASON:-no scope exported})"; \
+		go test -short ./...; \
+	else \
+		echo "test-changed: $$PILOT_CHANGED_PACKAGES"; \
+		go test -short $$PILOT_CHANGED_PACKAGES; \
+	fi
 
 # Run integration tests (build tag separated from unit tests)
 test-integration:

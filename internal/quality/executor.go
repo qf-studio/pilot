@@ -15,6 +15,10 @@ type ExecutorConfig struct {
 	Config      *Config
 	ProjectPath string
 	TaskID      string
+	// BaseBranch is the project's branch the task diverges from (BranchFrom);
+	// the changed-package test scope is computed against it. Empty means every
+	// gate sees a full-suite scope.
+	BaseBranch string
 }
 
 // Executor manages quality gate enforcement in task execution pipeline
@@ -27,8 +31,10 @@ type Executor struct {
 
 // NewExecutor creates a quality gate executor for a task
 func NewExecutor(cfg *ExecutorConfig) *Executor {
+	runner := NewRunner(cfg.Config, cfg.ProjectPath)
+	runner.baseBranch = cfg.BaseBranch
 	return &Executor{
-		runner: NewRunner(cfg.Config, cfg.ProjectPath),
+		runner: runner,
 		config: cfg.Config,
 		taskID: cfg.TaskID,
 		log:    logging.WithComponent("quality"),
@@ -40,6 +46,9 @@ func (e *Executor) Config() *Config { return e.config }
 
 // ProjectDir returns the working directory the gates execute in.
 func (e *Executor) ProjectDir() string { return e.runner.projectDir }
+
+// BaseBranch returns the branch the changed-package scope is computed against.
+func (e *Executor) BaseBranch() string { return e.runner.baseBranch }
 
 // CheckResult represents the quality gate check outcome
 type ExecutionOutcome struct {

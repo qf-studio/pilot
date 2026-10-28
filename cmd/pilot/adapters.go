@@ -228,6 +228,9 @@ func newProjectQualityCheckerFactory(cfg *config.Config) executor.QualityChecker
 				Config:      resolved,
 				ProjectPath: executionPath,
 				TaskID:      taskID,
+				// GH-5926: the changed-package test scope diffs against the
+				// project's base branch; an unregistered project gets "" (full suite).
+				BaseBranch: proj.ResolveBaseBranch(),
 			}),
 		}
 	}

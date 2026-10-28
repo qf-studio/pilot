@@ -1052,6 +1052,15 @@ quality:
       command: "make test"
       required: true
       timeout: 10m
+      # Changed-package test gate (GH-5926): set `command: "make test-changed"` to
+      # run only the Go packages the task's diff affects (go test -short, no -race).
+      # Pilot computes the set against the project's branch_from/default_branch and
+      # exports PILOT_CHANGED_PACKAGES, PILOT_CHANGED_FULL and PILOT_CHANGED_REASON
+      # to every gate. A change to go.mod/go.sum, Makefile, scripts, .github,
+      # configs, .golangci.yml, a file outside any Go package, any git/go list
+      # error, or an affected set over 70% of the packages runs the full suite; a
+      # diff of only docs/.agent passes without running. CI still runs the full
+      # `go test -v -race ./...` and stays the merge gate of record.
     - name: lint
       type: lint
       command: "make lint"

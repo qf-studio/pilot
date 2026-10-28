@@ -74,3 +74,36 @@ func TestQualityCheckerFactory_WorktreePathDoesNotMatchProject(t *testing.T) {
 		t.Errorf("command = %q, want global %q when the lookup path matches no project", got, "make build")
 	}
 }
+
+// TestQualityCheckerFactory_BaseBranchFromProject guards GH-5926: the
+// changed-package test scope is computed against the project's base branch
+// (branch_from, then default_branch); an unregistered path gets none, which
+// makes every gate see a full-suite scope.
+func TestQualityCheckerFactory_BaseBranchFromProject(t *testing.T) {
+	projectPath := t.TempDir()
+	worktreePath := t.TempDir()
+	cfg := &config.Config{
+		Quality: &quality.Config{Enabled: true},
+		Projects: []*config.ProjectConfig{
+			{Name: "p", Path: projectPath, DefaultBranch: "main", BranchFrom: "develop"},
+		},
+	}
+	factory := newProjectQualityCheckerFactory(cfg)
+
+	tests := []struct {
+		name        string
+		projectPath string
+		want        string
+	}{
+		{"branch_from wins", projectPath, "develop"},
+		{"unregistered path has no base", worktreePath, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wrapper := factory("GH-1", tt.projectPath, worktreePath).(*qualityCheckerWrapper)
+			if got := wrapper.executor.BaseBranch(); got != tt.want {
+				t.Errorf("BaseBranch() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

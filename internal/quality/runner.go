@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -23,8 +24,18 @@ type ProgressCallback func(gateName string, status GateStatus, message string)
 type Runner struct {
 	config     *Config
 	projectDir string
+	// baseBranch is the branch the task diverged from; the changed-package
+	// scope (GH-5926) is computed against it. Empty forces the full suite.
+	baseBranch string
 	log        *slog.Logger
 	onProgress ProgressCallback
+
+	// scopeFn computes the changed-package scope; ChangedGoPackages unless a test overrides it.
+	scopeFn func(ctx context.Context, dir, baseBranch string) ([]string, bool, string)
+	// runScope is the scope RunAll computed for the current run, reused by every
+	// gate and retry in it; nil outside RunAll.
+	scopeMu  sync.Mutex
+	runScope *changeScope
 
 	// lookPath resolves a binary on PATH; exec.LookPath unless a test overrides it.
 	lookPath func(string) (string, error)
@@ -40,7 +51,47 @@ func NewRunner(config *Config, projectDir string) *Runner {
 		projectDir: projectDir,
 		log:        logging.WithComponent("quality"),
 		lookPath:   exec.LookPath,
+		scopeFn:    ChangedGoPackages,
 	}
+}
+
+// changeScope is the changed-package scope exported to gate commands.
+type changeScope struct {
+	packages []string
+	full     bool
+	reason   string
+}
+
+// env returns the PILOT_CHANGED_* assignments for a gate command.
+func (s *changeScope) env() []string {
+	full := "0"
+	pkgs := strings.Join(s.packages, " ")
+	if s.full {
+		full = "1"
+		pkgs = ""
+	}
+	return []string{
+		EnvChangedPackages + "=" + pkgs,
+		EnvChangedFull + "=" + full,
+		EnvChangedReason + "=" + s.reason,
+	}
+}
+
+func (r *Runner) computeScope(ctx context.Context) *changeScope {
+	pkgs, full, reason := r.scopeFn(ctx, r.projectDir, r.baseBranch)
+	return &changeScope{packages: pkgs, full: full, reason: reason}
+}
+
+// gateScope returns the scope RunAll computed for this run, or computes one
+// for a gate run on its own (RunGate).
+func (r *Runner) gateScope(ctx context.Context) *changeScope {
+	r.scopeMu.Lock()
+	s := r.runScope
+	r.scopeMu.Unlock()
+	if s != nil {
+		return s
+	}
+	return r.computeScope(ctx)
 }
 
 // OnProgress sets the progress callback
@@ -65,6 +116,18 @@ func (r *Runner) RunAll(ctx context.Context, taskID string) (*CheckResults, erro
 		StartedAt: time.Now(),
 		Results:   make([]*Result, len(r.config.Gates)),
 	}
+
+	// Compute the changed-package scope once: every gate and every retry of it
+	// sees the same diff, and go list over the module is not free.
+	scope := r.computeScope(ctx)
+	r.scopeMu.Lock()
+	r.runScope = scope
+	r.scopeMu.Unlock()
+	defer func() {
+		r.scopeMu.Lock()
+		r.runScope = nil
+		r.scopeMu.Unlock()
+	}()
 
 	parallel := r.config.IsParallel()
 	mode := "parallel"
@@ -144,6 +207,14 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 
 	r.reportProgress(gate.Name, StatusRunning, fmt.Sprintf("Running %s gate...", gate.Name))
 
+	scope := r.gateScope(ctx)
+	r.log.Info("Quality gate changed-package scope",
+		slog.String("gate", gate.Name),
+		slog.Int("package_count", len(scope.packages)),
+		slog.Bool("full", scope.full),
+		slog.String("reason", scope.reason),
+	)
+
 	maxAttempts := gate.MaxRetries + 1
 	if maxAttempts < 1 {
 		maxAttempts = 1
@@ -175,7 +246,7 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 			slog.Int("attempt", attempt+1),
 		)
 
-		exitCode, output, err := r.executeCommand(ctx, gate, command)
+		exitCode, output, err := r.executeCommand(ctx, gate, command, scope)
 
 		result.ExitCode = exitCode
 		result.Output = output
@@ -283,8 +354,9 @@ func nativeFallbackCommand(projectDir string, gate *Gate) string {
 	}
 }
 
-// executeCommand runs the gate command
-func (r *Runner) executeCommand(ctx context.Context, gate *Gate, command string) (int, string, error) {
+// executeCommand runs the gate command with the daemon environment plus the
+// PILOT_CHANGED_* scope variables.
+func (r *Runner) executeCommand(ctx context.Context, gate *Gate, command string, scope *changeScope) (int, string, error) {
 	timeout := gate.DefaultTimeout()
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -292,6 +364,8 @@ func (r *Runner) executeCommand(ctx context.Context, gate *Gate, command string)
 	// Use shell to execute command (supports pipes, redirects, etc.)
 	cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
 	cmd.Dir = r.projectDir
+	// Later entries win over inherited duplicates (os/exec dedups keeping the last).
+	cmd.Env = append(os.Environ(), scope.env()...)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
