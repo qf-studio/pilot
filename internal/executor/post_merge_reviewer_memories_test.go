@@ -68,7 +68,7 @@ func TestPostMergeReviewPromptMemories_RendersBlockAndChecklist(t *testing.T) {
 	}
 	// Block sits between the issue and the diff.
 	issueAt, blockAt, diffAt := strings.Index(prompt, "ISSUE-BODY"), strings.Index(prompt, memBlockHeading), strings.Index(prompt, "## Merged Diff")
-	if !(issueAt < blockAt && blockAt < diffAt) {
+	if issueAt >= blockAt || blockAt >= diffAt {
 		t.Errorf("block order wrong: issue=%d block=%d diff=%d", issueAt, blockAt, diffAt)
 	}
 	// The checklist line follows item 5 and precedes the data below the checklist.
