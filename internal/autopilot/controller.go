@@ -3827,23 +3827,25 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 		liveSmokeBullets = executor.LiveSmokeNotVerifiedBullets(ghPR.Body)
 		preReviewReason = PreReviewReason(c.log, ghPR.Body)
 	}
+	// TASK-620 L5: a pre-PR review that ended REQUEST-CHANGES (and was not
+	// fixed) needs a human decision before the merge. Escalate-only and
+	// fail-open, from the PR body already fetched above. Appended BEFORE the
+	// live-smoke segment: liveSmokeBulletsFromReason treats everything after
+	// liveSmokeReasonPrefix as bullets, so the live-smoke segment must stay last.
+	if preReviewReason != "" {
+		if escalateReason != "" {
+			escalateReason += "; " + preReviewReason
+		} else {
+			escalateReason = preReviewReason
+		}
+	}
+
 	if len(liveSmokeBullets) > 0 {
 		reason := liveSmokeReasonPrefix + strings.Join(liveSmokeBullets, "; ")
 		if escalateReason != "" {
 			escalateReason += "; " + reason
 		} else {
 			escalateReason = reason
-		}
-	}
-
-	// TASK-620 L5: a pre-PR review that ended REQUEST-CHANGES (and was not
-	// fixed) needs a human decision before the merge. Escalate-only and
-	// fail-open, from the PR body already fetched above.
-	if preReviewReason != "" {
-		if escalateReason != "" {
-			escalateReason += "; " + preReviewReason
-		} else {
-			escalateReason = preReviewReason
 		}
 	}
 
@@ -3923,12 +3925,17 @@ func isLiveSmokeHold(prState *PRState) bool {
 }
 
 // liveSmokeBulletsFromReason recovers the bullet list from an EscalationReason
-// built by handleCIPassed (the live-smoke segment is always appended last).
-// Returns nil when the reason carries no live-smoke segment.
+// built by handleCIPassed (the live-smoke segment is appended last). As a
+// guard against a later segment leaking in as a fake bullet, the remainder is
+// also cut at a following Pre-PR review segment. Returns nil when the reason
+// carries no live-smoke segment.
 func liveSmokeBulletsFromReason(reason string) []string {
 	_, after, found := strings.Cut(reason, liveSmokeReasonPrefix)
 	if !found {
 		return nil
+	}
+	if before, _, ok := strings.Cut(after, "; "+preReviewReasonPrefix); ok {
+		after = before
 	}
 	return strings.Split(after, "; ")
 }

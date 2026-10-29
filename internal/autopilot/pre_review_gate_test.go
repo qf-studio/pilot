@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/qf-studio/pilot/internal/memory"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
@@ -119,6 +120,119 @@ func TestHandleCIPassed_PreReview(t *testing.T) {
 			}
 			if mergeAttempted.Load() {
 				t.Error("handleCIPassed must not merge")
+			}
+		})
+	}
+}
+
+// bothHoldsBody carries a live-smoke Not-verified bullet AND an unfixed
+// REQUEST-CHANGES pre-PR review section.
+const bothHoldsBody = "## Summary\n\nx\n\n## Not verified\n\n- Live smoke on four labelled excerpts\n\n" +
+	"## Pre-PR review\n\nMode: shadow\nVerdict: REQUEST-CHANGES\nFix: none\n\nDefects:\n- [high] at a.go:1 — broken\n"
+
+// TestHandleCIPassed_PreReviewAndLiveSmoke covers GH-5967: with both holds on
+// one PR the live-smoke segment stays last in EscalationReason, so the pre-PR
+// text never parses as a live-smoke bullet.
+func TestHandleCIPassed_PreReviewAndLiveSmoke(t *testing.T) {
+	var mergeAttempted atomic.Bool
+	server := preReviewServer(bothHoldsBody, false, &mergeAttempted)
+	defer server.Close()
+	c := newLiveSmokeController(server)
+
+	prState := &PRState{PRNumber: 5561, HeadSHA: "sha5561", Stage: StageCIPassed, TargetBranch: "main"}
+	if err := c.handleCIPassed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIPassed: %v", err)
+	}
+	if prState.Stage != StageAwaitApproval {
+		t.Fatalf("Stage = %s, want %s", prState.Stage, StageAwaitApproval)
+	}
+	if !strings.Contains(prState.EscalationReason, preReviewReasonPrefix) {
+		t.Errorf("EscalationReason = %q, want pre-PR review segment", prState.EscalationReason)
+	}
+	if !strings.Contains(prState.EscalationReason, liveSmokeReasonPrefix) {
+		t.Errorf("EscalationReason = %q, want live-smoke segment", prState.EscalationReason)
+	}
+	bullets := liveSmokeBulletsFromReason(prState.EscalationReason)
+	if len(bullets) != 1 || bullets[0] != "Live smoke on four labelled excerpts" {
+		t.Errorf("liveSmokeBulletsFromReason = %q, want exactly the one smoke bullet", bullets)
+	}
+	for _, b := range bullets {
+		if strings.Contains(b, "Pre-PR review") {
+			t.Errorf("bullet %q leaked the pre-PR segment", b)
+		}
+	}
+	if mergeAttempted.Load() {
+		t.Error("handleCIPassed must not merge")
+	}
+}
+
+// TestHandleCIPassed_PreReviewRecordsHoldEvent covers the pre_pr_review_hold
+// execution event, which needs a real memory store (recordExecutionEvent is a
+// no-op on nil).
+func TestHandleCIPassed_PreReviewRecordsHoldEvent(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const projectPath = "/proj/pilot"
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-pr-5561", TaskID: "PR-5561", ProjectPath: projectPath, Status: "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	var mergeAttempted atomic.Bool
+	server := preReviewServer(preReviewBody("REQUEST-CHANGES", "none"), false, &mergeAttempted)
+	defer server.Close()
+	c := newLiveSmokeController(server)
+	c.projectPath = projectPath
+	c.SetMemoryStore(store)
+
+	prState := &PRState{PRNumber: 5561, HeadSHA: "sha5561", Stage: StageCIPassed, TargetBranch: "main"}
+	if err := c.handleCIPassed(context.Background(), prState); err != nil {
+		t.Fatalf("handleCIPassed: %v", err)
+	}
+	if prState.Stage != StageAwaitApproval {
+		t.Fatalf("Stage = %s, want %s", prState.Stage, StageAwaitApproval)
+	}
+
+	events, err := store.ListExecutionEvents("exec-pr-5561")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1: %+v", len(events), events)
+	}
+	if !strings.HasPrefix(events[0].Detail, "pre_pr_review_hold:") {
+		t.Errorf("event detail = %q, want prefix %q", events[0].Detail, "pre_pr_review_hold:")
+	}
+	if events[0].Stage != memory.StageAwaitingApproval {
+		t.Errorf("event stage = %s, want %s", events[0].Stage, memory.StageAwaitingApproval)
+	}
+}
+
+// TestLiveSmokeBulletsFromReason_StopsAtPreReviewSegment pins the step-2 cut: a
+// pre-PR segment placed after the live-smoke one (the pre-GH-5967 order) must
+// not leak into the bullets.
+func TestLiveSmokeBulletsFromReason_StopsAtPreReviewSegment(t *testing.T) {
+	preReason := preReviewReasonPrefix + " verdict REQUEST-CHANGES, fix outcome \"none\" (review mode shadow)"
+	tests := []struct {
+		name   string
+		reason string
+		want   []string
+	}{
+		{"live-smoke last", preReason + "; " + liveSmokeReasonPrefix + "a; b", []string{"a", "b"}},
+		{"pre-PR after live-smoke", liveSmokeReasonPrefix + "a; b; " + preReason, []string{"a", "b"}},
+		{"live-smoke only", liveSmokeReasonPrefix + "a", []string{"a"}},
+		{"no live-smoke segment", preReason, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := liveSmokeBulletsFromReason(tt.reason)
+			if strings.Join(got, "|") != strings.Join(tt.want, "|") || (got == nil) != (tt.want == nil) {
+				t.Errorf("liveSmokeBulletsFromReason = %q, want %q", got, tt.want)
 			}
 		})
 	}
