@@ -396,9 +396,32 @@ var liveSmokePatterns = []struct {
 // every gate-rendered bullet that carries it regardless of its text.
 const liveSmokeHoldNote = "a check the gate cannot run; PR is held for human approval, which means you ran it"
 
+// mutationFailsEndRe matches a right-hand side that ends with the word "fails"
+// and an optional trailing period.
+var mutationFailsEndRe = regexp.MustCompile(`(?i)\bfails\.?$`)
+
+// isMutationFormBullet reports whether the first line of text is a mutation
+// acceptance item ("<change> -> <Test> fails"). GH-5971: such a bullet names a
+// code change and a test that must fail, never a key-gated or live-service
+// check, so a keyword in it ("live-smoke segment", "API key") is not a live
+// smoke. A rendered bullet's "- **" / "**" wrapping is ignored.
+func isMutationFormBullet(text string) bool {
+	first, _, _ := strings.Cut(text, "\n")
+	first = strings.Trim(strings.TrimSpace(first), "-* \t")
+	m := mutationArrowRe.FindStringSubmatch(first)
+	if m == nil || strings.TrimSpace(m[1]) == "" {
+		return false
+	}
+	return mutationFailsEndRe.MatchString(strings.TrimSpace(m[2]))
+}
+
 // IsLiveSmokeBullet reports whether text names a key-gated or live-service
-// check per liveSmokePatterns.
+// check per liveSmokePatterns. A mutation-form first line is never one, so its
+// reason line is not consulted either (GH-5971).
 func IsLiveSmokeBullet(text string) bool {
+	if isMutationFormBullet(text) {
+		return false
+	}
 	for _, p := range liveSmokePatterns {
 		if p.re.MatchString(text) {
 			return true

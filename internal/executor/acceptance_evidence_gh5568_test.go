@@ -177,3 +177,77 @@ func TestAcceptanceEvidence_LiveSmokeNotVerifiedHoldsPR(t *testing.T) {
 		}
 	})
 }
+
+// GH-5971: PR#5969 was held because its mutation bullet mentioned "live-smoke".
+const gh5971MutationBullet = "restore the pre-PR append after the live-smoke append and drop the step-2 cut -> TestHandleCIPassed_PreReviewAndLiveSmoke fails"
+
+func TestIsLiveSmokeBullet_MutationFormIsNotLiveSmoke(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{"live-smoke in the change", gh5971MutationBullet},
+		{"API key in the change", "read the API key from the env instead of config -> TestLoadKey fails"},
+		{"unicode arrow, trailing period", "drop the live smoke call → TestRun fails."},
+		{"rendered bold bullet", "- **" + gh5971MutationBullet + "**"},
+		{"reason names a live service", "drop the retry -> TestRetry fails\nReason: needs a real API key against the box"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if IsLiveSmokeBullet(tt.text) {
+				t.Errorf("mutation-form bullet must not be live smoke: %q", tt.text)
+			}
+		})
+	}
+}
+
+func TestIsLiveSmokeBullet_PlainLiveSmokeStillHeld(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{"plain live smoke", "Live smoke on four labelled excerpts"},
+		{"arrow but no fails outcome", "run the live smoke -> prints ok"},
+		{"fails not at the end", "live smoke -> fails when the API key is missing, then recovers"},
+		{"empty change half", "-> live smoke fails"},
+		{"api key bullet", "needs a real API key"},
+		{"reason names a live service", "Replay the corpus\nReason: needs a real API key"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !IsLiveSmokeBullet(tt.text) {
+				t.Errorf("must still be held: %q", tt.text)
+			}
+		})
+	}
+}
+
+func TestLiveSmokeNotVerifiedBullets_MutationFormNotHeld(t *testing.T) {
+	t.Run("PR#5969 rendered body yields no bullets", func(t *testing.T) {
+		section := RenderAcceptanceEvidenceSections([]AcceptanceEvidenceResult{{
+			Item:              AcceptanceItem{Text: gh5971MutationBullet, Kind: AcceptanceItemMutation},
+			NotVerifiedReason: "freeform mutation, run manually",
+		}})
+		if strings.Contains(section, liveSmokeHoldNote) {
+			t.Errorf("mutation bullet must not carry the hold note, got:\n%s", section)
+		}
+		if got := LiveSmokeNotVerifiedBullets("## Summary\n\nx\n\n" + section); len(got) != 0 {
+			t.Fatalf("unexpected hold: %v", got)
+		}
+	})
+
+	t.Run("hand-written mutation bullet next to a plain one", func(t *testing.T) {
+		body := "## Not verified\n\n- " + gh5971MutationBullet + "\n- Live smoke on four labelled excerpts\n"
+		got := LiveSmokeNotVerifiedBullets(body)
+		if len(got) != 1 || got[0] != "Live smoke on four labelled excerpts" {
+			t.Fatalf("got %v", got)
+		}
+	})
+
+	t.Run("mutation text with a live-service reason line is not held", func(t *testing.T) {
+		body := "## Not verified\n\n- **drop the retry -> TestRetry fails**\n  Reason: needs a real API key against the box\n"
+		if got := LiveSmokeNotVerifiedBullets(body); len(got) != 0 {
+			t.Fatalf("unexpected hold: %v", got)
+		}
+	})
+}
