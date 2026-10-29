@@ -30,7 +30,8 @@ type reviewFixBackend struct {
 	dirty  bool   // write a file and leave it uncommitted
 	output string // BackendResult.Output
 	err    error
-	execAt string // the path the file edits land in; defaults to opts.ProjectPath
+	delay  time.Duration // sleep before editing, like a real session that takes a while
+	execAt string        // the path the file edits land in; defaults to opts.ProjectPath
 }
 
 func (b *reviewFixBackend) Name() string      { return "review-fix" }
@@ -45,6 +46,9 @@ func (b *reviewFixBackend) Execute(ctx context.Context, opts ExecuteOptions) (*B
 	b.deadlines = append(b.deadlines, dl)
 	b.hadDeadline = append(b.hadDeadline, ok)
 
+	if b.delay > 0 {
+		time.Sleep(b.delay)
+	}
 	dir := b.execAt
 	if dir == "" {
 		dir = opts.ProjectPath
@@ -197,6 +201,29 @@ func TestReviewFix_UsesResumeSessionAndExecutionPath(t *testing.T) {
 	}
 	if e.outcome.Verdict != PostMergeRequestChanges {
 		t.Errorf("verdict = %q, want REQUEST-CHANGES to stay", e.outcome.Verdict)
+	}
+}
+
+// A fix session outlives the per-call git timeout (30s in production against a
+// session of up to fix_timeout): the post-fix HEAD read must not reuse a
+// context spent before the session, or a valid fix is rolled back as failed.
+// Real git repo and real GetCurrentCommitSHA; only the session is faked.
+func TestReviewFix_SessionOutlivingGitTimeoutKeepsFix(t *testing.T) {
+	old := reviewFixGitTimeout
+	reviewFixGitTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { reviewFixGitTimeout = old })
+
+	e := newReviewFixEnv(t)
+	e.backend.commit = true
+	e.backend.delay = 3 * reviewFixGitTimeout
+
+	fix := e.run(ctxWithin(t, 30*time.Minute), false)
+
+	if fix == nil || fix.Status != ReviewFixFixed {
+		t.Fatalf("outcome = %+v, want fixed (a session longer than the git timeout must not fail the round)", fix)
+	}
+	if got := e.headSHA(t); got == e.head || fix.PostFixSHA != got {
+		t.Errorf("HEAD = %q post = %q pre = %q: the fix commit was rolled back or unread", got, fix.PostFixSHA, e.head)
 	}
 }
 

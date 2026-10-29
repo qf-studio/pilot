@@ -29,6 +29,10 @@ const (
 	reviewFixMaxListed = 10
 )
 
+// reviewFixGitTimeout bounds each HEAD read and reset of a fix round. It is a
+// var so a test can shrink it below the duration of a fake fix session.
+var reviewFixGitTimeout = selfReviewHygieneTimeout
+
 // ReviewFixStatus is how a pre-PR fix round ended.
 type ReviewFixStatus string
 
@@ -139,11 +143,7 @@ func (r *Runner) runReviewFix(taskCtx context.Context, taskCtxWasDone bool, task
 		return finish(ReviewFixSkippedBudget)
 	}
 
-	// Git calls here run on a fresh context: the task context is usually the
-	// thing that is about to expire.
-	gitCtx, gitCancel := context.WithTimeout(context.Background(), selfReviewHygieneTimeout)
-	defer gitCancel()
-	preSHA, err := git.GetCurrentCommitSHA(gitCtx)
+	preSHA, err := readReviewFixHead(git)
 	if err != nil {
 		// Without a SHA to roll back to, a fix cannot be undone: do not start one.
 		log.Warn("Pre-PR review fix skipped: HEAD unreadable", slog.Any("error", err))
@@ -173,7 +173,7 @@ func (r *Runner) runReviewFix(taskCtx context.Context, taskCtxWasDone bool, task
 	// worktree mode too, because the worktree is what gets pushed.
 	r.reviewPhaseTreeHygiene(task, git, reviewFixPhase, phase)
 
-	postSHA, headErr := git.GetCurrentCommitSHA(gitCtx)
+	postSHA, headErr := readReviewFixHead(git)
 	if headErr == nil {
 		fix.PostFixSHA = postSHA
 	}
@@ -221,13 +221,23 @@ func (r *Runner) runReviewFix(taskCtx context.Context, taskCtxWasDone bool, task
 	return finish(ReviewFixFixed)
 }
 
+// readReviewFixHead reads HEAD on a fresh context per call: the task context is
+// usually the thing that is about to expire, and a context shared between the
+// pre-fix and post-fix reads would be spent by the fix session itself (up to
+// fix_timeout), failing the post-fix read and rolling back a valid fix.
+func readReviewFixHead(git *GitOperations) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), reviewFixGitTimeout)
+	defer cancel()
+	return git.GetCurrentCommitSHA(ctx)
+}
+
 // resetReviewFix puts HEAD back on the SHA the round started from (G4). It does
 // nothing when moved is false.
 func (r *Runner) resetReviewFix(log *slog.Logger, git *GitOperations, fix *ReviewFixOutcome, moved bool) {
 	if !moved {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), selfReviewHygieneTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), reviewFixGitTimeout)
 	defer cancel()
 	if err := git.ResetHardToCommit(ctx, fix.PreFixSHA); err != nil {
 		log.Error("Pre-PR review fix: reset to the pre-fix SHA failed; the tree still carries the fix",
