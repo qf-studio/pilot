@@ -811,3 +811,37 @@ func TestPostMergeReview_UnknownLogsRawOutput(t *testing.T) {
 		})
 	}
 }
+
+// GH-5947: a checkout review that read no file is counted under its own metric
+// label, and the result line carries the turns used and files read.
+func TestPostMergeReview_NoFilesReadMetricAndResultLine(t *testing.T) {
+	mock, gh := newPMRGitHub(t)
+	review := &executor.PostMergeReview{
+		Verdict: executor.PostMergeApproveWithNotes, NoFilesRead: true, Checkout: true, Turns: 4,
+		Notes: "reviewer read no files from the checkout; findings rest on the diff only",
+	}
+	c := newPMRController(t, gh, &pmrFakeReviewer{review: review}, true)
+	var logs lockedBuffer
+	c.log = slog.New(slog.NewTextHandler(&logs, nil))
+
+	if err := c.handleMerged(context.Background(), mergedPRState(77, 10)); err != nil {
+		t.Fatalf("handleMerged: %v", err)
+	}
+	c.waitPostMergeReviews()
+
+	if got := c.metrics.PostMergeReviewVerdicts["no_files_read"]; got != 1 {
+		t.Errorf("no_files_read metric = %d, want 1", got)
+	}
+	if got := c.metrics.PostMergeReviewVerdicts[string(executor.PostMergeApproveWithNotes)]; got != 1 {
+		t.Errorf("verdict metric = %d, want 1", got)
+	}
+	out := logs.String()
+	for _, want := range []string{`msg="post-merge review"`, "turns=4", "files_read=0"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("result line missing %q:\n%s", want, out)
+		}
+	}
+	if mock.issueCount() != 0 {
+		t.Errorf("a downgraded review filed %d follow-up issues, want 0", mock.issueCount())
+	}
+}

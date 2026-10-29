@@ -96,6 +96,12 @@ type PostMergeReview struct {
 	// Downgraded is true when the model said REQUEST-CHANGES without a
 	// [blocking] defect and the verdict was lowered to APPROVE-WITH-NOTES.
 	Downgraded bool
+	// NoFilesRead is true when the reviewer had a checkout, opened no file in
+	// it, and the verdict was therefore posted as APPROVE-WITH-NOTES (GH-5947).
+	NoFilesRead bool
+	// Untraced is the number of "met" lines the daemon moved to NOT-VERIFIED
+	// because they carried no path:line citation (GH-5947).
+	Untraced int
 	// RawOutput is the model text the review was parsed from, set on every
 	// parse. It is for logs and the CLI only: callers never post it to GitHub.
 	RawOutput string
@@ -386,6 +392,16 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 	review.Checkout = workDir != ""
 	review.FilesRead = stream.FilesRead
 	review.Turns = stream.Turns
+	if review.Checkout && review.Verdict.Postable() {
+		// GH-5947: the contract holds even when the model ignores the tracing
+		// rules. Diff-only reviews are exempt: there a diff line is the evidence.
+		enforcePostMergeCitations(review)
+		if review.FilesRead == 0 {
+			downgradePostMergeNoFilesRead(review)
+			r.log.Warn("post-merge review: no files read from the checkout, posted as APPROVE-WITH-NOTES",
+				slog.Int("pr", in.PRNumber), slog.Int("turns", review.Turns))
+		}
+	}
 	review.DiffBytes = report.OriginalBytes
 	review.DiffFiles = report.Files
 	review.Memories = memoriesRendered
@@ -482,6 +498,119 @@ func parsePostMergeReview(text string) *PostMergeReview {
 	review.Verdict = verdict
 	review.Notes = strings.Join(notes, "\n")
 	return review
+}
+
+// postMergeNoFilesReadNote is the first note of a checkout review that opened
+// no file.
+const postMergeNoFilesReadNote = "reviewer read no files from the checkout; findings rest on the diff only"
+
+// postMergeNotTraced is the NOT-VERIFIED reason of a requirement marked met
+// without a checkout citation.
+const postMergeNotTraced = "not traced"
+
+var (
+	// checkoutCitationRe is the shape of a checkout citation: a file name with an
+	// extension, then ":line" or ":line-line" — "internal/a/b.go:42", "x.ts:10-20".
+	checkoutCitationRe = regexp.MustCompile(`[\w@./-]*[\w-]\.[A-Za-z][A-Za-z0-9]{0,7}:\d+(?:[-–]\d+)?\b`)
+	// postMetClaimRe finds the word "met"; a match whose group 1 is set is a
+	// negation ("not met", "never met", "isn't met") and does not count.
+	postMetClaimRe = regexp.MustCompile(`(?i)(\bnot\s+|\bnever\s+|n't\s+)?\bmet\b`)
+)
+
+// claimsMet reports whether line asserts a requirement is met.
+func claimsMet(line string) bool {
+	// A bare "Met:" label heading a sub-list asserts nothing by itself.
+	if label := strings.ToLower(strings.TrimRight(stripPostMergeMarkup(line), ": ")); label == "met" {
+		return false
+	}
+	for _, m := range postMetClaimRe.FindAllStringSubmatch(line, -1) {
+		if m[1] == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// enforcePostMergeCitations rewrites every DEFECTS or NOTES line that says
+// "met" without a path:line citation into a NOT-VERIFIED entry with the reason
+// "not traced" (GH-5947). Entries beyond MaxPostMergeNotVerified collapse into
+// one count line. The verdict is re-derived by the contract's own rules: a
+// REQUEST-CHANGES left with no [blocking] defect, or an APPROVE with a
+// non-empty NOT-VERIFIED, becomes APPROVE-WITH-NOTES.
+func enforcePostMergeCitations(review *PostMergeReview) {
+	var untraced []string
+
+	kept := review.Defects[:0:0]
+	for _, d := range review.Defects {
+		text := strings.Join(nonEmpty(d.Location, d.Claim, d.Evidence), " - ")
+		if claimsMet(text) && !checkoutCitationRe.MatchString(text) {
+			untraced = append(untraced, text)
+			continue
+		}
+		kept = append(kept, d)
+	}
+
+	var notes []string
+	for _, line := range strings.Split(review.Notes, "\n") {
+		if claimsMet(line) && !checkoutCitationRe.MatchString(line) {
+			if item := strings.TrimSpace(strings.TrimLeft(line, "-*• \t")); item != "" {
+				untraced = append(untraced, item)
+				continue
+			}
+		}
+		notes = append(notes, line)
+	}
+	if len(untraced) == 0 {
+		return
+	}
+
+	review.Defects = kept
+	review.Notes = strings.Join(notes, "\n")
+	review.Untraced = len(untraced)
+	slots := MaxPostMergeNotVerified - len(review.NotVerified)
+	switch {
+	case slots <= 0:
+		// No room: the count replaces the last entry's slot rather than the cap.
+		review.NotVerified[len(review.NotVerified)-1] = fmt.Sprintf("%d requirements marked met without a path:line citation: %s", len(untraced), postMergeNotTraced)
+	case len(untraced) <= slots:
+		for _, u := range untraced {
+			review.NotVerified = append(review.NotVerified, u+" — "+postMergeNotTraced)
+		}
+	default:
+		for _, u := range untraced[:slots-1] {
+			review.NotVerified = append(review.NotVerified, u+" — "+postMergeNotTraced)
+		}
+		review.NotVerified = append(review.NotVerified, fmt.Sprintf("%d more requirements marked met without a path:line citation: %s", len(untraced)-slots+1, postMergeNotTraced))
+	}
+
+	switch {
+	case review.Verdict == PostMergeRequestChanges && len(review.BlockingDefects()) == 0:
+		review.Verdict = PostMergeApproveWithNotes
+		review.Downgraded = true
+	case review.Verdict == PostMergeApprove:
+		review.Verdict = PostMergeApproveWithNotes
+	}
+}
+
+// downgradePostMergeNoFilesRead posts a checkout review that opened no file as
+// APPROVE-WITH-NOTES, never REQUEST-CHANGES, with the reason as its first note.
+// The PR is merged already, so the lowered verdict blocks nothing; it only stops
+// a diff-only judgement from filing a follow-up issue as if it had been traced.
+func downgradePostMergeNoFilesRead(review *PostMergeReview) {
+	review.NoFilesRead = true
+	review.Verdict = PostMergeApproveWithNotes
+	review.Notes = strings.TrimSpace(postMergeNoFilesReadNote + "\n" + review.Notes)
+}
+
+// nonEmpty returns the non-blank strings of in, in order.
+func nonEmpty(in ...string) []string {
+	var out []string
+	for _, s := range in {
+		if strings.TrimSpace(s) != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // postMergeDefectSeparators are the field separators of a defect line.

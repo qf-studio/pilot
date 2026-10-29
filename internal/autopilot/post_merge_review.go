@@ -49,6 +49,10 @@ const (
 	// Verdict label for reviews that never produced a verdict because the
 	// subprocess or an input fetch failed.
 	postMergeReviewError = "error"
+	// postMergeReviewNoFilesRead counts checkout reviews that opened no file and
+	// were posted as APPROVE-WITH-NOTES (GH-5947). It is recorded in addition to
+	// the verdict, so the verdict labels still sum to the number of reviews.
+	postMergeReviewNoFilesRead = "no_files_read"
 
 	// These bounds keep a runaway model answer from producing a megabyte
 	// comment or issue body.
@@ -275,8 +279,12 @@ func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeR
 		"memories", review.Memories,
 		"checkout", review.Checkout,
 		"files_read", review.FilesRead,
+		"turns", review.Turns,
 		"duration", time.Since(start),
 	)
+	if review.NoFilesRead {
+		c.metrics.RecordPostMergeReview(postMergeReviewNoFilesRead)
+	}
 	if !review.Verdict.Postable() {
 		// Output broke the contract, or the CLI ran out of turns: post nothing
 		// rather than guess. The raw text goes to the log only, never to GitHub.

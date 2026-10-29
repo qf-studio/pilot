@@ -423,8 +423,8 @@ func TestPostMergeCheckoutMaxTurns_Exhausted(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Review: %v", err)
 			}
-			if v, _ := flagValue(gotArgs, "--max-turns"); v != "12" {
-				t.Errorf("--max-turns = %q, want 12", v)
+			if v, _ := flagValue(gotArgs, "--max-turns"); v != "30" {
+				t.Errorf("--max-turns = %q, want 30", v)
 			}
 			if got.Verdict != PostMergeExhausted || got.Verdict.Postable() {
 				t.Errorf("verdict = %q, want exhausted and not postable", got.Verdict)
