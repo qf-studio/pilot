@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/comms"
@@ -76,6 +77,10 @@ func isApprovalCallback(actionID, callbackID string) bool {
 type API struct {
 	handler   *comms.Handler
 	messenger *WebMessenger
+
+	// inflight tracks the HandleMessage goroutines Dispatch starts, so Wait
+	// can join them (GH-5929).
+	inflight sync.WaitGroup
 }
 
 // NewAPI wraps a comms.Handler and the WebMessenger it was built with. The
@@ -130,9 +135,32 @@ func (a *API) Dispatch(dispatchCtx context.Context, req DispatchRequest) (seq in
 
 	seq = a.messenger.LatestSeq(contextID)
 
-	go a.handler.HandleMessage(dispatchCtx, msg)
+	a.inflight.Add(1)
+	go func() {
+		defer a.inflight.Done()
+		a.handler.HandleMessage(dispatchCtx, msg)
+	}()
 
 	return seq, nil
+}
+
+// Wait blocks until every HandleMessage goroutine started by Dispatch has
+// returned, or timeout elapses (reported as false). Dispatch is fire and
+// forget, so a caller that owns resources the handler writes into (a test's
+// project directory) uses this to know the handler is done, including a
+// message accepted but not yet inside the executor (GH-5929).
+func (a *API) Wait(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		a.inflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // Events returns events for conversationID with seq > after, in seq order,

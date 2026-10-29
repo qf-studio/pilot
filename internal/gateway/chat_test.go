@@ -564,9 +564,16 @@ func newChatHarness(t *testing.T, backend *chatTestBackend) *chatHarness {
 	const token = "chat-composed-secret"
 	port := freeLoopbackPort(t)
 	server := NewServerWithAuth(&Config{Host: "127.0.0.1", Port: port}, &AuthConfig{Type: AuthTypeAPIToken, Token: token})
-	server.SetChatAPI(web.NewAPI(handler, messenger))
+	api := web.NewAPI(handler, messenger)
+	server.SetChatAPI(api)
 
 	t.Cleanup(func() {
+		// Join every dispatched HandleMessage goroutine first: that covers a
+		// message accepted with 202 but not yet inside Execute, which the
+		// backend counters below can't see (GH-5929).
+		if !api.Wait(15 * time.Second) {
+			t.Error("chat handler still running after 15s; it outlived the test")
+		}
 		if err := backend.waitIdle(runner, 15*time.Second); err != nil {
 			t.Errorf("background task outlived the test: %v", err)
 		}

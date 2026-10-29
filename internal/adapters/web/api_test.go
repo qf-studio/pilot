@@ -272,3 +272,56 @@ func TestAPI_ProjectsListsSource(t *testing.T) {
 		t.Errorf("Projects() without a source = %#v, want empty non-nil slice", got)
 	}
 }
+
+// gateMessenger blocks every SendText until release is closed, signalling on
+// entered first, so a test can hold comms.Handler.HandleMessage mid-flight.
+type gateMessenger struct {
+	*WebMessenger
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gateMessenger) SendText(ctx context.Context, contextID, threadID, text string) error {
+	select {
+	case g.entered <- struct{}{}:
+	default:
+	}
+	<-g.release
+	return g.WebMessenger.SendText(ctx, contextID, threadID, text)
+}
+
+// TestAPI_Wait_JoinsDispatchedHandler pins GH-5929: Wait must not report done
+// while a dispatched HandleMessage goroutine is still running, and must report
+// done once it returns. It runs the real comms.Handler; only the messenger is
+// gated.
+func TestAPI_Wait_JoinsDispatchedHandler(t *testing.T) {
+	wm := NewMessenger()
+	gate := &gateMessenger{WebMessenger: wm, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	h := comms.NewHandler(&comms.HandlerConfig{Messenger: gate, TaskIDPrefix: "WEB"})
+	api := NewAPI(h, wm)
+
+	if !api.Wait(time.Second) {
+		t.Fatal("Wait with nothing dispatched = false, want true")
+	}
+
+	if _, err := api.Dispatch(context.Background(), DispatchRequest{ConversationID: "c1", Text: "hello"}); err != nil {
+		t.Fatalf("Dispatch error: %v", err)
+	}
+	select {
+	case <-gate.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never reached the messenger")
+	}
+
+	if api.Wait(50 * time.Millisecond) {
+		t.Fatal("Wait = true while HandleMessage is still in flight")
+	}
+
+	close(gate.release)
+	if !api.Wait(5 * time.Second) {
+		t.Fatal("Wait = false after HandleMessage was released")
+	}
+	if events, _ := wm.Events("web:c1", 0); len(events) == 0 {
+		t.Error("no event recorded by the time Wait returned")
+	}
+}
