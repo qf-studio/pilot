@@ -526,20 +526,21 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 	repoOwner, repoName := repoParts[0], repoParts[1]
 	repoLog := log.With(slog.String("repo", target.repoFullName))
 
-	// TASK-441 L2 (GH-4709): register the self-review dead-man tracker here
-	// (deps.AlertsEngine is in scope), even though the actual
-	// attempt/success/failure recording happens in runSelfReview
-	// (internal/executor/runner.go), which relays through the
+	// TASK-441 L2 (GH-4709), TASK-620 L3: register the review-fix dead-man
+	// tracker here (deps.AlertsEngine is in scope), even though the actual
+	// attempt/success/failure recording happens in runReviewFix
+	// (internal/executor/pre_pr_fix.go) and runSelfReview
+	// (internal/executor/runner.go), which relay through the
 	// AlertEventTypeDeadMan{Attempt,Success,Failure} events — runner.go
 	// cannot import internal/alerts directly. Registration name matches
-	// executor.SelfReviewDeadManTrackerName exactly so the relay resolves
+	// executor.ReviewFixDeadManTrackerName exactly so the relay resolves
 	// to this tracker. RegisterDeadManTracker memoizes by name, so calling
 	// this once per repo poller start (this function runs per repo) is
 	// safe — every call after the first returns the same shared tracker.
-	// Guards the GH-4702 incident class (self-review silently dead for
+	// Guards the GH-4702 incident class (a review phase silently dead for
 	// months).
 	deps.AlertsEngine.RegisterDeadManTracker(
-		executor.SelfReviewDeadManTrackerName,
+		executor.ReviewFixDeadManTrackerName,
 		alerts.AlertTypeSelfReviewFailureStreak,
 		alerts.DefaultDeadManFailureThreshold,
 		alerts.DefaultDeadManWindow,

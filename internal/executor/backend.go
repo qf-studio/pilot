@@ -848,7 +848,8 @@ const (
 	// PrePRReviewModeShadow runs the review after the gates, records the
 	// verdict and writes nothing to GitHub.
 	PrePRReviewModeShadow = "shadow"
-	// PrePRReviewModeEnforce is shadow plus acting on the verdict (later legs).
+	// PrePRReviewModeEnforce is shadow plus acting on the verdict: a REQUEST-CHANGES
+	// with a blocking defect gets one fix round before the push (runReviewFix).
 	PrePRReviewModeEnforce = "enforce"
 )
 
@@ -880,7 +881,7 @@ type PrePRReviewConfig struct {
 	// Timeout bounds one review. Default: 6m.
 	Timeout time.Duration `yaml:"timeout,omitempty"`
 
-	// FixTimeout bounds one fix round (used by a later leg). Default: 10m.
+	// FixTimeout bounds one fix round (enforce mode). Default: 10m.
 	FixTimeout time.Duration `yaml:"fix_timeout,omitempty"`
 
 	// MaxFixRounds is the number of fix rounds a REQUEST-CHANGES may start

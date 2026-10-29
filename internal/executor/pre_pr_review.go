@@ -51,6 +51,11 @@ type PrePRReviewOutcome struct {
 	Duration time.Duration
 	// FilesRead is the number of files the reviewer opened in the checkout.
 	FilesRead int
+	// Fix is the fix round started on this verdict (TASK-620 L3); nil when none
+	// applied. The verdict itself is never changed by it.
+	Fix *ReviewFixOutcome
+	// FixRounds counts the fix sessions started, checked against max_fix_rounds.
+	FixRounds int
 }
 
 // defectCounts returns the blocking and minor defect counts of the review.

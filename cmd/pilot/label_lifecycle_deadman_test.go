@@ -54,9 +54,9 @@ func TestStartGithubSDKPollerForRepo_RegistersPerRepoLabelLifecycleTracker(t *te
 		t.Error("startGithubSDKPollerForRepo must register the label-lifecycle dead-man tracker at startup under labelLifecycleDeadManTrackerName(target.repoFullName), mirroring the self-review tracker registration in the same function (GH-4866)")
 	}
 
-	selfReviewIdx := strings.Index(body, "executor.SelfReviewDeadManTrackerName")
+	reviewFixIdx := strings.Index(body, "executor.ReviewFixDeadManTrackerName")
 	labelLifecycleIdx := strings.Index(body, "labelLifecycleDeadManTrackerName(target.repoFullName)")
-	if selfReviewIdx < 0 || labelLifecycleIdx < 0 {
-		t.Fatal("expected both the self-review and label-lifecycle tracker registrations in startGithubSDKPollerForRepo")
+	if reviewFixIdx < 0 || labelLifecycleIdx < 0 {
+		t.Fatal("expected both the review-fix and label-lifecycle tracker registrations in startGithubSDKPollerForRepo")
 	}
 }

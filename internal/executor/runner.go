@@ -6758,6 +6758,14 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		// GH-5900: leave the direct-mode clone clean on every self-review exit.
 		result.SelfReviewTerminated = r.afterSelfReview(task, git, state, runSelfReview, useWorktree)
 
+		// TASK-620 L3: enforce mode gives a REQUEST-CHANGES with a blocking defect
+		// one session-resumed fix and one gate re-check before the push. It runs on
+		// the task ctx's remaining time (taskCtx, not the finalize window) and only
+		// reads the finalize window for what comes after.
+		if fix := r.runReviewFix(taskCtx, taskCtxWasDone, task, executionPath, git, state, result.PrePRReview); fix != nil && fix.Status == ReviewFixFixed {
+			r.stampQualityGatesHead(ctx, git, result.QualityGates, log)
+		}
+
 		// Handle intent judge result
 		if runIntentJudge {
 			if intentErr != nil {
@@ -7496,6 +7504,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		}
 		if result.PrePRReview != nil && result.PrePRReview.Verdict != "" {
 			completedMsg += "; Pre-PR review: " + string(result.PrePRReview.Verdict)
+			if fix := result.PrePRReview.Fix; fix != nil {
+				completedMsg += " (fix: " + string(fix.Status) + ")"
+			}
 		}
 		r.saveLogEntry(task.LogExecutionID(), "info", completedMsg)
 
@@ -8214,11 +8225,11 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath st
 	// (GH-4702: self-review silently dead for months). Relayed through
 	// AlertEventTypeDeadManAttempt since this package cannot import
 	// internal/alerts directly; the tracker itself is registered in
-	// cmd/pilot/poller_github.go under executor.SelfReviewDeadManTrackerName.
+	// cmd/pilot/poller_github.go under executor.ReviewFixDeadManTrackerName.
 	r.emitAlertEvent(AlertEvent{
 		Type:      AlertEventTypeDeadManAttempt,
 		TaskID:    task.ID,
-		Metadata:  map[string]string{"tracker": SelfReviewDeadManTrackerName},
+		Metadata:  map[string]string{"tracker": ReviewFixDeadManTrackerName},
 		Timestamp: time.Now(),
 	})
 
@@ -8272,7 +8283,7 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath st
 			Type:      AlertEventTypeDeadManFailure,
 			TaskID:    task.ID,
 			Error:     err.Error(),
-			Metadata:  map[string]string{"tracker": SelfReviewDeadManTrackerName},
+			Metadata:  map[string]string{"tracker": ReviewFixDeadManTrackerName},
 			Timestamp: time.Now(),
 		})
 		return nil
@@ -8280,7 +8291,7 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath st
 	r.emitAlertEvent(AlertEvent{
 		Type:      AlertEventTypeDeadManSuccess,
 		TaskID:    task.ID,
-		Metadata:  map[string]string{"tracker": SelfReviewDeadManTrackerName},
+		Metadata:  map[string]string{"tracker": ReviewFixDeadManTrackerName},
 		Timestamp: time.Now(),
 	})
 

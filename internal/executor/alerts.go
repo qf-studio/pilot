@@ -119,14 +119,15 @@ const (
 	AlertEventTypeUsageLimitPause AlertEventType = "usage_limit_pause"
 )
 
-// SelfReviewDeadManTrackerName is the alerts.DeadManTracker registration
-// name (TASK-441 L2, GH-4709) shared between runSelfReview (runner.go,
-// which records attempts/successes/failures via the AlertEventTypeDeadMan*
-// relay above) and startGithubSDKPollerForRepo (cmd/pilot/poller_github.go,
-// which registers the tracker against AlertTypeSelfReviewFailureStreak at
-// startup) — guards the GH-4702 incident class (self-review silently dead
-// for months).
-const SelfReviewDeadManTrackerName = "self_review"
+// ReviewFixDeadManTrackerName is the alerts.DeadManTracker registration
+// name (TASK-441 L2, GH-4709; TASK-620 L3) shared between runReviewFix
+// (pre_pr_fix.go, the pre-PR review fix round), runSelfReview (runner.go, the
+// legacy phase it replaces until L4 retires it), which record attempts/successes/
+// failures via the AlertEventTypeDeadMan* relay above, and
+// startGithubSDKPollerForRepo (cmd/pilot/poller_github.go), which registers the
+// tracker against AlertTypeSelfReviewFailureStreak at startup — guards the
+// GH-4702 incident class (a review phase silently dead for months).
+const ReviewFixDeadManTrackerName = "review_fix"
 
 // LabelStripDeadManTrackerName is the alerts.DeadManTracker registration
 // name (GH-4866) for stripInProgressLabelOnTerminalFailure (lifecycle.go) —

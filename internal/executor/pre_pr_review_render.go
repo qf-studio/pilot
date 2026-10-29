@@ -15,7 +15,8 @@ import (
 // prePRReviewHeading is the H2 heading that opens the section.
 const prePRReviewHeading = "## Pre-PR review"
 
-// PrePRFixNone is the Fix line value until the fix round exists (L3).
+// PrePRFixNone is the Fix line value when no fix round ran. Otherwise the line
+// carries the round's ReviewFixStatus.
 const PrePRFixNone = "none"
 
 const (
@@ -50,7 +51,11 @@ func RenderPrePRReviewSection(out *PrePRReviewOutcome) string {
 	fmt.Fprintf(&sb, "\n\n%s\n\n", prePRReviewHeading)
 	fmt.Fprintf(&sb, "Mode: %s\n", prePRField(out.Mode, 40))
 	fmt.Fprintf(&sb, "Verdict: %s\n", out.Verdict)
-	fmt.Fprintf(&sb, "Fix: %s\n", PrePRFixNone)
+	fix := PrePRFixNone
+	if out.Fix != nil && out.Fix.Status != "" {
+		fix = string(out.Fix.Status)
+	}
+	fmt.Fprintf(&sb, "Fix: %s\n", fix)
 
 	if defects := out.Review.Defects; len(defects) > 0 {
 		sb.WriteString("\nDefects:\n")
@@ -78,6 +83,11 @@ func RenderPrePRReviewSection(out *PrePRReviewOutcome) string {
 		for _, item := range notVerified {
 			fmt.Fprintf(&sb, "- %s\n", item)
 		}
+	}
+	// A killed fix session is mentioned on its own line: the parser ignores lines
+	// it does not know.
+	if out.Fix != nil && out.Fix.Terminated > 0 {
+		fmt.Fprintf(&sb, "\nReview fix round was terminated after %ds; its edits were discarded.\n", int(out.Fix.Terminated.Seconds()))
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }

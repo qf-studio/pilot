@@ -594,6 +594,38 @@ func (r *Runner) buildRetryPrompt(task *Task, feedback string, attempt int) (pro
 	return sb.String()
 }
 
+// buildReviewFixPrompt constructs the prompt of the pre-PR review fix round
+// (TASK-620 L3). It resumes the conversation that wrote the change, so it is
+// narrow: it names the blocking defects and nothing else. Unlike
+// buildRetryPrompt it never tells the model to discard its approach.
+func (r *Runner) buildReviewFixPrompt(blocking []PostMergeDefect) (prompt string) {
+	defer sanitizePromptReturn("buildReviewFixPrompt", &prompt)
+	var sb strings.Builder
+
+	sb.WriteString("## Pre-PR Review: Blocking Defects\n\n")
+	sb.WriteString("A reviewer read your change against the issue and found the blocking defects below. ")
+	sb.WriteString("Fix them in the working tree you are in. The rest of your change stays as it is.\n\n")
+
+	for i, d := range blocking {
+		fmt.Fprintf(&sb, "%d. %s\n", i+1, prePRField(d.Location, 200))
+		fmt.Fprintf(&sb, "   Claim: %s\n", prePRField(d.Claim, prePRMaxFieldChars))
+		if ev := prePRField(d.Evidence, prePRMaxFieldChars); ev != "" {
+			fmt.Fprintf(&sb, "   Evidence: %s\n", ev)
+		}
+	}
+
+	sb.WriteString("\n## Rules\n\n")
+	sb.WriteString("- Fix only these defects; no refactor and no unrelated edits.\n")
+	sb.WriteString("- No new files unless a defect needs one.\n")
+	sb.WriteString("- Do not delete tests.\n")
+	sb.WriteString("- Check each claim against the code first; if one is wrong or cannot be fixed, leave it and say why.\n")
+	sb.WriteString("- Build and run the tests that cover your edit, then commit.\n\n")
+	sb.WriteString("End your reply with one line: `REVIEW_FIXED: <what you fixed, separated by ;>` ")
+	sb.WriteString("or `REVIEW_UNFIXABLE: <reason>`.\n")
+
+	return sb.String()
+}
+
 // buildSelfReviewPrompt constructs the prompt for self-review phase.
 // The prompt instructs Claude to examine its changes for common issues
 // and fix them before PR creation.
