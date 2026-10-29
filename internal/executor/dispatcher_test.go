@@ -3094,7 +3094,7 @@ func TestWaitForExecution_RowDeletedAfterCompletion_ResolvesAsSuccess(t *testing
 	// Let the waiter observe the "running" row at least once (capturing its
 	// task/project identity) before it's deleted out from under it — this
 	// mirrors the real race, where the row exists when the wait starts.
-	shortSleep(30 * time.Millisecond)
+	shortSleep(300 * time.Millisecond)
 	if err := store.DeleteExecution(orphanID); err != nil {
 		t.Fatalf("DeleteExecution: %v", err)
 	}
