@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/qf-studio/pilot/internal/executor"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
@@ -217,6 +218,38 @@ func SizeFloorReason(files []*github.PRFile) string {
 		return fmt.Sprintf("PR adds %d net lines (> %d threshold)", production, SizeFloorThreshold)
 	}
 	return ""
+}
+
+// preReviewReasonPrefix starts the EscalationReason segment for a Pre-PR review
+// that ended REQUEST-CHANGES (TASK-620 L5).
+const preReviewReasonPrefix = "Pre-PR review requested changes:"
+
+// PreReviewReason returns a non-empty escalation reason when the PR body's
+// "Pre-PR review" section (executor.ParsePrePRReviewSection) says
+// REQUEST-CHANGES and its Fix line does not say fixed — a human must decide
+// before the merge. Like the other gates it only escalates. It fails open: a
+// missing section, a parse failure, any other verdict or a fixed outcome all
+// return "". Decision: a clean fix round merges on green and the post-merge
+// audit samples it (founder decision, GH-5962).
+func PreReviewReason(logger *slog.Logger, prBody string) string {
+	mode, verdict, fix, ok := executor.ParsePrePRReviewSection(prBody)
+	if !ok {
+		return ""
+	}
+	if verdict != executor.PostMergeRequestChanges {
+		return ""
+	}
+	if f := strings.Fields(strings.ToLower(fix)); len(f) > 0 && f[0] == "fixed" {
+		return ""
+	}
+	if fix == "" {
+		fix = executor.PrePRFixNone
+	}
+	if logger != nil {
+		logger.Info("pre-PR review gate: REQUEST-CHANGES without a fix, escalating",
+			"mode", mode, "fix", fix)
+	}
+	return fmt.Sprintf("%s verdict REQUEST-CHANGES, fix outcome %q (review mode %s)", preReviewReasonPrefix, fix, mode)
 }
 
 // ciFixSizeGuardAnnotationExemptionMax caps how many real compiler/lint

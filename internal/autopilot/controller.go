@@ -3819,11 +3819,13 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 	// earlier escalations (their approval does not cover this check) and fails
 	// open on a GetPullRequest error, like the gates above.
 	var liveSmokeBullets []string
+	var preReviewReason string
 	if ghPR, prErr := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber); prErr != nil {
 		c.log.Warn("handleCIPassed: GetPullRequest failed, skipping live-smoke hold (fail-open)",
 			"pr", prState.PRNumber, "error", prErr)
 	} else if ghPR != nil {
 		liveSmokeBullets = executor.LiveSmokeNotVerifiedBullets(ghPR.Body)
+		preReviewReason = PreReviewReason(c.log, ghPR.Body)
 	}
 	if len(liveSmokeBullets) > 0 {
 		reason := liveSmokeReasonPrefix + strings.Join(liveSmokeBullets, "; ")
@@ -3831,6 +3833,17 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 			escalateReason += "; " + reason
 		} else {
 			escalateReason = reason
+		}
+	}
+
+	// TASK-620 L5: a pre-PR review that ended REQUEST-CHANGES (and was not
+	// fixed) needs a human decision before the merge. Escalate-only and
+	// fail-open, from the PR body already fetched above.
+	if preReviewReason != "" {
+		if escalateReason != "" {
+			escalateReason += "; " + preReviewReason
+		} else {
+			escalateReason = preReviewReason
 		}
 	}
 
@@ -3859,6 +3872,10 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 		if len(liveSmokeBullets) > 0 && !liveSmokeAlreadyAnnounced {
 			c.postLiveSmokeHoldComment(ctx, prState, liveSmokeBullets)
 			prState.LiveSmokeHoldAnnounced = true
+		}
+		if preReviewReason != "" {
+			c.recordExecutionEvent(prState, StageCIPassed, memory.StageAwaitingApproval,
+				fmt.Sprintf("pre_pr_review_hold: %s", preReviewReason))
 		}
 		if testEvidenceHeld {
 			c.postTestEvidenceHoldComment(ctx, prState, escalateReason)
