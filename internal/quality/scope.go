@@ -374,7 +374,11 @@ func listPackages(ctx context.Context, dir string) ([]*goListPackage, error) {
 	}
 
 	var pkgs []*goListPackage
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	// Decision: never trim the whole output or individual lines. The last
+	// package's line can end in empty columns (no test imports, no test
+	// files), which trimming would strip, leaving fewer than five columns.
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSuffix(line, "\r")
 		if line == "" {
 			continue
 		}

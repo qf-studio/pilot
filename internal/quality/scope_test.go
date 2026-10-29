@@ -12,10 +12,11 @@ import (
 
 const scopeMod = "example.com/m"
 
-// scopeFiles is the tiny module every scope test starts from (10 packages):
+// scopeFiles is the tiny module every scope test starts from (11 packages):
 //
 //	m (root)   leaf <- dep   low <- a, b   testuser (test imports low)
 //	viatest (test imports testuser)   mem   exec (test reads ../mem/store.go)
+//	zz (sorts last, no imports and no test files)
 var scopeFiles = map[string]string{
 	"go.mod":               "module " + scopeMod + "\n\ngo 1.21\n",
 	"m.go":                 "package m\n",
@@ -31,6 +32,7 @@ var scopeFiles = map[string]string{
 	"mem/store.go":         "package mem\n",
 	"exec/exec.go":         "package exec\n",
 	"exec/exec_test.go":    "package exec\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestX(t *testing.T) { _, _ = os.ReadFile(\"../mem/store.go\") }\n",
+	"zz/zz.go":             "package zz\n\nconst Z = 1\n",
 	"docs/guide.md":        "docs\n",
 	".agent/tasks/note.md": "note\n",
 }
@@ -79,6 +81,32 @@ func imp(names ...string) []string {
 		out[i] = scopeMod + "/" + n
 	}
 	return out
+}
+
+// The last package in go list order has empty test-import and test-file
+// columns; its line must still parse as five columns.
+func TestListPackages_LastLineEmptyTrailingColumns(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, scopeFiles)
+	pkgs, err := listPackages(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("listPackages: %v", err)
+	}
+	var zz *goListPackage
+	for _, p := range pkgs {
+		if p.importPath == scopeMod+"/zz" {
+			zz = p
+		}
+	}
+	if zz == nil {
+		t.Fatalf("package %s/zz missing from %d packages", scopeMod, len(pkgs))
+	}
+	if pkgs[len(pkgs)-1] != zz {
+		t.Errorf("zz is not last in go list order: %s", pkgs[len(pkgs)-1].importPath)
+	}
+	if len(zz.imports) != 0 || len(zz.testImports) != 0 || len(zz.testFiles) != 0 {
+		t.Errorf("zz columns not empty: imports=%v testImports=%v testFiles=%v", zz.imports, zz.testImports, zz.testFiles)
+	}
 }
 
 func TestChangedGoPackages(t *testing.T) {
