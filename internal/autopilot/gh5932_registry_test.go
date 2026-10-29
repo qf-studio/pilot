@@ -105,7 +105,7 @@ func TestFeedbackLoop_DeadFixIssueDropsBorrowedBranch(t *testing.T) {
 		wantIssue int
 	}{
 		{"closed without shipping drops the entry", &github.Issue{Number: 5922, State: github.StateClosed}, false, 555},
-		{"open and live keeps the entry", &github.Issue{Number: 5922, State: github.StateOpen}, true, 5922},
+		{"open and live keeps the entry", &github.Issue{Number: 5922, State: github.StateOpen, Labels: []github.Label{{Name: "autopilot-fix"}}}, true, 5922},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

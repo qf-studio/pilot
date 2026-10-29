@@ -341,6 +341,12 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 				// must never be re-designated as the recovery owner via
 				// dedup; fall through and mint a replacement instead.
 				existingIssue, err := f.ghClient.GetIssue(ctx, f.owner, f.repo, existing)
+				if err == nil {
+					// GH-5937: any observation of the fix issue closed or
+					// unlabeled drops its borrowed-branch entry, not only the
+					// replace-it branch below.
+					forgetBorrowedBranchIfDead(f.borrowedBranches, existingIssue)
+				}
 				health := classifyOwnerHealth(existingIssue)
 				switch {
 				case err != nil:
@@ -807,6 +813,9 @@ func (f *FeedbackLoop) CreateReviewIssue(ctx context.Context, prState *PRState, 
 				// spawnReviewIssue would set TerminalLabel pointing at a
 				// corpse.
 				existingIssue, err := f.ghClient.GetIssue(ctx, f.owner, f.repo, existing)
+				if err == nil {
+					forgetBorrowedBranchIfDead(f.borrowedBranches, existingIssue) // GH-5937
+				}
 				health := classifyOwnerHealth(existingIssue)
 				switch {
 				case err != nil:

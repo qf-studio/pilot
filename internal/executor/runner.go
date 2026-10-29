@@ -7865,11 +7865,20 @@ func (r *Runner) BorrowedBranch(taskID string) (branch string, fromPR int, ok bo
 // is instead treated as an expired, never-consumed entry: also deleted, but
 // reported as not found.
 func (r *Runner) FixIssueForBranch(branch string) (fixIssue int, ok bool) {
+	fixIssue, _, ok = r.ConsumeBorrowedBranch(branch)
+	return fixIssue, ok
+}
+
+// ConsumeBorrowedBranch is FixIssueForBranch that also reports the origin PR
+// number the entry was recorded with (RecordBorrowedBranch's fromPR), so a
+// caller that has to put a consumed entry back can re-record it unchanged —
+// GH-5937. Same destructive-read and TTL semantics as FixIssueForBranch.
+func (r *Runner) ConsumeBorrowedBranch(branch string) (fixIssue, fromPR int, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	taskID, found := r.borrowedBranchByBranch[branch]
 	if !found {
-		return 0, false
+		return 0, 0, false
 	}
 	rec, recOK := r.borrowedBranch[taskID]
 	if !recOK {
@@ -7877,7 +7886,7 @@ func (r *Runner) FixIssueForBranch(branch string) (fixIssue int, ok bool) {
 		// not happen — RecordBorrowedBranch keeps both in lockstep — but
 		// clean up the dangling reverse entry defensively.
 		delete(r.borrowedBranchByBranch, branch)
-		return 0, false
+		return 0, 0, false
 	}
 	expired := time.Since(rec.recordedAt) > borrowedBranchTTL
 	if _, err := fmt.Sscanf(taskID, "GH-%d", &fixIssue); err != nil || expired {
@@ -7887,11 +7896,11 @@ func (r *Runner) FixIssueForBranch(branch string) (fixIssue int, ok bool) {
 		// found.
 		delete(r.borrowedBranch, taskID)
 		delete(r.borrowedBranchByBranch, branch)
-		return 0, false
+		return 0, 0, false
 	}
 	delete(r.borrowedBranch, taskID)
 	delete(r.borrowedBranchByBranch, branch)
-	return fixIssue, true
+	return fixIssue, rec.fromPR, true
 }
 
 // recordLearning records the execution outcome for pattern learning.

@@ -1410,6 +1410,10 @@ func (c *Controller) SetLaneQueueStatus(s LaneQueueStatus) {
 // above.
 type BorrowedBranchLookup interface {
 	FixIssueForBranch(branch string) (fixIssue int, ok bool)
+	// ConsumeBorrowedBranch is FixIssueForBranch that also returns the origin
+	// PR number the entry was recorded with, so restoreBorrowedBranch can put
+	// the entry back unchanged — GH-5937. Destructive like FixIssueForBranch.
+	ConsumeBorrowedBranch(branch string) (fixIssue, fromPR int, ok bool)
 	// RecordBorrowedBranch (re-)records that taskID's branch/fix-issue
 	// pairing should be reported by a later FixIssueForBranch(branch) call —
 	// satisfied by *executor.Runner's RecordBorrowedBranch. GH-5430:
@@ -7721,6 +7725,7 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 			c.log.Warn("handleMergeConflict: failed to fetch issue state, falling through to rebase ladder",
 				"pr", prState.PRNumber, "issue", prState.IssueNumber, "error", err)
 		} else if strings.EqualFold(issue.State, github.StateClosed) {
+			c.forgetBorrowedBranchForIssue(issue.Number) // GH-5937
 			return c.closeConflictSourceIssueClosed(ctx, prState, issue)
 		}
 	}
@@ -11184,7 +11189,10 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 		issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber)
 		if err != nil {
 			c.log.Warn("failed to fetch issue for label check", "issue", prState.IssueNumber, "error", err)
-		} else if github.HasLabel(issue, github.LabelDone) {
+		} else {
+			c.forgetBorrowedBranchIfDeadIssue(issue) // GH-5937
+		}
+		if err == nil && github.HasLabel(issue, github.LabelDone) {
 			c.log.Info("skipping pilot-retry-ready: issue already pilot-done", "issue", prState.IssueNumber, "pr", prState.PRNumber)
 			// GH-3806: pilot-done here means an earlier PR for this issue already
 			// shipped — the label is intentionally left untouched, but this PR's
@@ -11254,6 +11262,9 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 				// cannot fire for an already-closed, untracked issue —
 				// permanent strand. Health-check before trusting it.
 				fixGH, ghErr := c.ghClient.GetIssue(ctx, c.owner, c.repo, fixIssue)
+				if ghErr == nil {
+					c.forgetBorrowedBranchIfDeadIssue(fixGH) // GH-5937
+				}
 				switch {
 				case ghErr != nil:
 					// Fail open: trust the claim, mirroring the GH-4842

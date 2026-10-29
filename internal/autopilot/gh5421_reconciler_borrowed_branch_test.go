@@ -31,6 +31,7 @@ type fakeBorrowedBranchLookup struct {
 	mu       sync.Mutex
 	branch   string
 	fixIssue int
+	fromPR   int
 	recorded []recordedBorrowedBranch
 	// forgotten lists the task IDs ForgetBorrowedBranch was called with (GH-5927).
 	forgotten []string
@@ -39,14 +40,20 @@ type fakeBorrowedBranchLookup struct {
 // FixIssueForBranch is destructive like the real registry: a match clears the
 // entry (GH-5425).
 func (f *fakeBorrowedBranchLookup) FixIssueForBranch(branch string) (int, bool) {
+	fi, _, ok := f.ConsumeBorrowedBranch(branch)
+	return fi, ok
+}
+
+// ConsumeBorrowedBranch is the destructive read that also reports fromPR (GH-5937).
+func (f *fakeBorrowedBranchLookup) ConsumeBorrowedBranch(branch string) (int, int, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if branch == f.branch && f.fixIssue > 0 {
-		fi := f.fixIssue
-		f.branch, f.fixIssue = "", 0
-		return fi, true
+		fi, fromPR := f.fixIssue, f.fromPR
+		f.branch, f.fixIssue, f.fromPR = "", 0, 0
+		return fi, fromPR, true
 	}
-	return 0, false
+	return 0, 0, false
 }
 
 func (f *fakeBorrowedBranchLookup) ForgetBorrowedBranch(taskID string) {
@@ -67,6 +74,7 @@ func (f *fakeBorrowedBranchLookup) RecordBorrowedBranch(taskID, branch string, f
 	if _, err := fmt.Sscanf(taskID, "GH-%d", &fixIssue); err == nil {
 		f.branch = branch
 		f.fixIssue = fixIssue
+		f.fromPR = fromPR
 	}
 }
 

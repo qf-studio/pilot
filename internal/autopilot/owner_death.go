@@ -445,6 +445,8 @@ func (c *Controller) ReactToDeclinedFixIssue(ctx context.Context, issueNumber in
 // to its source via the body convention, and either re-arm the source for
 // retry or escalate to needs-human if retries are already exhausted.
 func (c *Controller) reactToDeadFixIssue(ctx context.Context, deadIssue *github.Issue, detail string) {
+	// GH-5937: the issue is dead whether or not it traces back to a source.
+	c.forgetBorrowedBranchForIssue(deadIssue.Number)
 	sourceNum, ok := parseFixIssueSource(deadIssue.Body)
 	if !ok {
 		// Not a Pilot-spawned fix issue (or body doesn't carry the

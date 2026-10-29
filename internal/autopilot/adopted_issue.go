@@ -66,7 +66,7 @@ func (c *Controller) resolveAdoptedIssueNumber(ctx context.Context, pr *github.P
 	// PR on pilot/GH-O may belong to fix issue F. The durable spawned-fix
 	// claim survives restarts; if that lookup fails, say so and try the
 	// registry.
-	var fixIssue int
+	var fixIssue, fixFromPR int
 	fixSource := ""
 	if c.stateStore != nil {
 		if fi, err := c.stateStore.HasSpawnedFixForPR(c.repoKey(), pr.Number); err != nil {
@@ -81,8 +81,8 @@ func (c *Controller) resolveAdoptedIssueNumber(ctx context.Context, pr *github.P
 	// keyed by branch. FixIssueForBranch consumes its entry (GH-5425), so it
 	// is called even when the claim already named a fix issue.
 	if c.borrowedBranchLookup != nil {
-		if fi, ok := c.borrowedBranchLookup.FixIssueForBranch(pr.Head.Ref); ok && fi > 0 && fi != branchIssue && fixIssue == 0 {
-			fixIssue, fixSource = fi, adoptSourceBorrowedBranch
+		if fi, fromPR, ok := c.borrowedBranchLookup.ConsumeBorrowedBranch(pr.Head.Ref); ok && fi > 0 && fi != branchIssue && fixIssue == 0 {
+			fixIssue, fixFromPR, fixSource = fi, fromPR, adoptSourceBorrowedBranch
 		}
 	}
 
@@ -104,7 +104,7 @@ func (c *Controller) resolveAdoptedIssueNumber(ctx context.Context, pr *github.P
 			if state == targetLive {
 				if fixIssue > 0 && fixIssue != refs[0] {
 					if fixState, _ := c.adoptionTargetState(ctx, pr, fixIssue, true); fixState != targetDead {
-						c.restoreBorrowedBranch(pr, fixIssue, fixSource)
+						c.restoreBorrowedBranch(pr, fixIssue, fixFromPR, fixSource)
 					} else {
 						c.log.Info("reconciler: dead fix issue lost to the closing reference — registry entry dropped",
 							"pr", pr.Number, "branch", pr.Head.Ref, "fix_issue", fixIssue, "source", fixSource)
@@ -131,7 +131,7 @@ func (c *Controller) resolveAdoptedIssueNumber(ctx context.Context, pr *github.P
 			// is kept so a later PR can still resolve it.
 			c.log.Warn("reconciler: fix issue state unverifiable for adopted PR — not binding it",
 				"pr", pr.Number, "branch", pr.Head.Ref, "fix_issue", fixIssue, "source", fixSource, "reason", why)
-			c.restoreBorrowedBranch(pr, fixIssue, fixSource)
+			c.restoreBorrowedBranch(pr, fixIssue, fixFromPR, fixSource)
 		}
 	}
 
@@ -193,9 +193,45 @@ func (c *Controller) adoptionTargetState(ctx context.Context, pr *github.PullReq
 // restoreBorrowedBranch puts back the registry entry FixIssueForBranch
 // consumed for fixIssue when the PR was adopted under another issue. Only
 // registry-sourced entries are restored; a spawned-fix claim is durable.
-func (c *Controller) restoreBorrowedBranch(pr *github.PullRequest, fixIssue int, source string) {
+// fromPR is the origin PR number the consumed entry carried: the dispatch-time
+// registration passes it (> 0), and githubOnPRCreatedHandler's BorrowedBranch
+// gate requires fromPR > 0, so re-recording 0 would silently disarm the entry
+// for the fix issue's own PR-created hook — GH-5937.
+func (c *Controller) restoreBorrowedBranch(pr *github.PullRequest, fixIssue, fromPR int, source string) {
 	if c.borrowedBranchLookup == nil || source != adoptSourceBorrowedBranch || fixIssue <= 0 {
 		return
 	}
-	c.borrowedBranchLookup.RecordBorrowedBranch(fmt.Sprintf("GH-%d", fixIssue), pr.Head.Ref, 0)
+	c.borrowedBranchLookup.RecordBorrowedBranch(fmt.Sprintf("GH-%d", fixIssue), pr.Head.Ref, fromPR)
+}
+
+// fixIssueStillAdoptable reports whether issue may still own a borrowed
+// branch: open and carrying the autopilot-fix label — the same rule
+// adoptionTargetState applies at adoption time.
+func fixIssueStillAdoptable(issue *github.Issue) bool {
+	if strings.EqualFold(issue.State, github.StateClosed) {
+		return false
+	}
+	for _, l := range issue.Labels {
+		if strings.EqualFold(l.Name, labelAutopilotFix) {
+			return true
+		}
+	}
+	return false
+}
+
+// forgetBorrowedBranchIfDead drops issue's borrowed-branch entry when the
+// issue has been observed closed (by hand or otherwise) or unlabeled, so the
+// entry does not wait for an adoption-time check to be cleaned up — GH-5937.
+// A nil lookup or issue is a no-op.
+func forgetBorrowedBranchIfDead(lookup BorrowedBranchLookup, issue *github.Issue) {
+	if lookup == nil || issue == nil || issue.Number <= 0 || fixIssueStillAdoptable(issue) {
+		return
+	}
+	lookup.ForgetBorrowedBranch(fmt.Sprintf("GH-%d", issue.Number))
+}
+
+// forgetBorrowedBranchIfDeadIssue is forgetBorrowedBranchIfDead over the
+// controller's registry — GH-5937.
+func (c *Controller) forgetBorrowedBranchIfDeadIssue(issue *github.Issue) {
+	forgetBorrowedBranchIfDead(c.borrowedBranchLookup, issue)
 }
