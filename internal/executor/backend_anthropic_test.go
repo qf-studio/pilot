@@ -163,7 +163,7 @@ func TestAnthropicBackend_CtxCancelDuring429Backoff(t *testing.T) {
 	// time.After, the test would time out (5s >> test budget).
 	longWait := 5 * time.Second
 
-	readyCh := make(chan struct{}) // server signals it sent 429
+	readyCh := make(chan struct{}, 1) // server signals it sent 429
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		// Signal that the 429 has been written so the test can cancel ctx.
@@ -215,7 +215,7 @@ func TestAnthropicBackend_CtxCancelDuring429Backoff(t *testing.T) {
 func TestAnthropicBackend_CtxCancelDuringOverloadedBackoff(t *testing.T) {
 	longWait := 5 * time.Second
 
-	readyCh := make(chan struct{})
+	readyCh := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
