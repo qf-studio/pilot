@@ -1203,6 +1203,14 @@ const (
 	// with a preceding StageWorkPreserved on the same execution. Detail is a
 	// human-readable line naming the short SHA, branch and gate result.
 	StageWorkAdopted Stage = "work_adopted"
+	// StagePrePRReview records the pre-PR review (TASK-620): one event per
+	// run of the reviewer or per skip. Detail is a JSON object: {"mode",
+	// "verdict","blocking","minor","files_read","duration_ms"} plus "skipped"
+	// or "error" when no verdict came back.
+	StagePrePRReview Stage = "pre_pr_review"
+	// StagePrePRFix records a fix round started on a pre-PR REQUEST-CHANGES
+	// (reserved for the enforce leg; shadow mode never writes it).
+	StagePrePRFix Stage = "pre_pr_fix"
 	// StageGithubSideEffect records a GH-4670 post-run audit hit: a GitHub
 	// issue in the task's own repo was closed or reopened during the run
 	// window OTHER than the issue the session was dispatched to fix — the

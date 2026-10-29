@@ -1277,6 +1277,33 @@ func validateUsageLimitPause(p *executor.UsageLimitPauseConfig) error {
 	return nil
 }
 
+// validatePrePRReview checks executor.pre_pr_review (TASK-620): the mode must
+// be one of off, shadow, enforce (empty = off) and the durations and counts
+// must not be negative (0 = default).
+func validatePrePRReview(p *executor.PrePRReviewConfig) error {
+	if p == nil {
+		return nil
+	}
+	switch p.Mode {
+	case "", executor.PrePRReviewModeOff, executor.PrePRReviewModeShadow, executor.PrePRReviewModeEnforce:
+	default:
+		return fmt.Errorf("invalid executor.pre_pr_review.mode: %q (must be off, shadow or enforce)", p.Mode)
+	}
+	if p.Timeout < 0 {
+		return fmt.Errorf("invalid executor.pre_pr_review.timeout: %s (must be >= 0; 0 = default)", p.Timeout)
+	}
+	if p.FixTimeout < 0 {
+		return fmt.Errorf("invalid executor.pre_pr_review.fix_timeout: %s (must be >= 0; 0 = default)", p.FixTimeout)
+	}
+	if p.MaxFixRounds < 0 {
+		return fmt.Errorf("invalid executor.pre_pr_review.max_fix_rounds: %d (must be >= 0; 0 = default)", p.MaxFixRounds)
+	}
+	if p.MaxDiffChars < 0 {
+		return fmt.Errorf("invalid executor.pre_pr_review.max_diff_chars: %d (must be >= 0; 0 = reviewer default)", p.MaxDiffChars)
+	}
+	return nil
+}
+
 // validateDailyTicketCapTimezone checks executor.daily_ticket_cap_timezone.
 // Empty means UTC. "Local" is rejected even though time.LoadLocation accepts
 // it: the cap's day boundary must not depend on the host's timezone.
@@ -1341,6 +1368,9 @@ func (c *Config) Validate() error {
 			return err
 		}
 		if err := validateUsageLimitPause(c.Executor.UsageLimitPause); err != nil {
+			return err
+		}
+		if err := validatePrePRReview(c.Executor.PrePRReview); err != nil {
 			return err
 		}
 		// GH-5900: 0 = per-backend default (2m Claude Code, 10m OpenCode); negative is a config mistake.

@@ -1013,6 +1013,9 @@ type ExecutionResult struct {
 	// killed (timeout or cancellation); zero when it was not terminated. Its
 	// edits were discarded by selfReviewTreeHygiene. GH-5900.
 	SelfReviewTerminated time.Duration
+	// PrePRReview is the outcome of the pre-PR review (TASK-620); nil when the
+	// mode is off. Shadow mode records it and acts on nothing.
+	PrePRReview *PrePRReviewOutcome
 	// IntentWarning contains the reason if the intent judge flagged a mismatch.
 	// When set, the PR was created despite intent misalignment (after retry failed).
 	IntentWarning string
@@ -1251,6 +1254,7 @@ type Runner struct {
 	subIssueMergeWait      SubIssueMergeWaitFn                                             // Optional fn to block between sub-issues until PR is merged (GH-2178)
 	subIssuePRStateCheck   SubIssuePRStateFn                                               // Optional override for querying a sub-issue PR's state before close (GH-4697); nil uses the gh CLI default
 	subIssuePollerSkip     SubIssuePollerSkipFn                                            // GH-3240: marks sub-issues in poller so they aren't re-dispatched
+	prePRReviewer          PrePRReviewer                                                   // Optional pre-PR reviewer, nil when pre_pr_review.mode is off (TASK-620)
 	intentJudge            *IntentJudge                                                    // Optional intent judge for diff-vs-ticket alignment (GH-624)
 	teamChecker            TeamChecker                                                     // Optional team RBAC checker (GH-633)
 	executeFunc            func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
@@ -1580,6 +1584,35 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 		}
 	} else if config != nil && config.IntentJudge == nil {
 		runner.log.Debug("Intent judge disabled: no config")
+	}
+
+	// Initialize the pre-PR reviewer (TASK-620): the post-merge reviewer run over
+	// the full diff before the push. Built only when the mode is not off.
+	if config != nil && config.PrePRReviewMode() != PrePRReviewModeOff {
+		claudeCmd := ""
+		if config.ClaudeCode != nil {
+			claudeCmd = config.ClaudeCode.Command
+		}
+		if claudeCmd == "" {
+			claudeCmd = "claude"
+		}
+		if _, err := exec.LookPath(claudeCmd); err != nil {
+			runner.log.Warn("Pre-PR review disabled: claude binary not found", slog.String("command", claudeCmd))
+		} else {
+			model := config.PrePRReview.Model
+			if model == "" {
+				model = config.ResolveModel("")
+			}
+			reviewer := NewPostMergeReviewer(claudeCmd, model, config.PrePRReview.EffectiveTimeout())
+			reviewer.SetMaxDiffChars(config.PrePRReview.MaxDiffChars)
+			runner.prePRReviewer = reviewer
+			runner.log.Info("Pre-PR review initialized",
+				slog.String("mode", config.PrePRReviewMode()),
+				slog.String("model", reviewer.Model()),
+				slog.Duration("timeout", reviewer.Timeout()),
+				slog.Int("max_diff_chars", reviewer.MaxDiffChars()),
+			)
+		}
 	}
 
 	// Initialize smart retrier (GH-920)
@@ -1947,6 +1980,11 @@ func (r *Runner) HasPRCreator(key string) bool {
 // (warn-level log only) — the text "Parent: GH-N" body marker remains as fallback.
 func (r *Runner) SetSubIssueLinker(linker SubIssueLinker) {
 	r.subIssueLinker = linker
+}
+
+// SetPrePRReviewer sets the pre-PR reviewer (TASK-620).
+func (r *Runner) SetPrePRReviewer(reviewer PrePRReviewer) {
+	r.prePRReviewer = reviewer
 }
 
 // SetIntentJudge sets the intent judge for diff-vs-ticket alignment verification (GH-624).
@@ -6624,10 +6662,14 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		var intentBaseBranch string
 
 		// Determine if intent judge should run
-		runIntentJudge := r.intentJudge != nil && task.CreatePR && !task.DirectCommit && task.Branch != ""
+		// TASK-620: the pre-PR review replaces the in-run intent judge.
+		prePRMode := r.config.PrePRReviewMode()
+		runIntentJudge := r.intentJudge != nil && prePRMode == PrePRReviewModeOff && task.CreatePR && !task.DirectCommit && task.Branch != ""
 
 		// Log skip reasons for intent judge
-		if r.intentJudge == nil {
+		if prePRMode != PrePRReviewModeOff {
+			log.Debug("Intent judge skipped: replaced by the pre-PR review")
+		} else if r.intentJudge == nil {
 			log.Debug("Intent judge skipped: not initialized")
 		} else if !task.CreatePR {
 			log.Debug("Intent judge skipped: CreatePR=false")
@@ -6703,6 +6745,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		}
 
 		wg.Wait()
+
+		// TASK-620: pre-PR review after the gates; shadow mode only records.
+		result.PrePRReview = r.runPrePRReview(ctx, task, executionPath, git, state, result.QualityGates)
 
 		// Handle self-review result
 		if runSelfReview && selfReviewErr != nil {
@@ -8112,8 +8157,8 @@ func (r *Runner) IsRunning(taskID string) bool {
 // This catches issues like unwired config, undefined methods, or incomplete implementations.
 // Returns nil if review passes or is skipped, error only for critical failures.
 func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath string, state *progressState) error {
-	// Skip self-review if disabled in config
-	if r.config != nil && r.config.SkipSelfReview {
+	// Skip self-review if disabled in config or replaced by the pre-PR review
+	if r.config != nil && r.config.EffectiveSkipSelfReview() {
 		r.log.Debug("Self-review skipped (disabled in config)", slog.String("task_id", task.ID))
 		return nil
 	}

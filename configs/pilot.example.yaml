@@ -828,6 +828,19 @@ executor:
   # A backticked allowlisted command followed by passes / succeeds / is green / exits 0 is run and pasted.
   # A paste-output command identical to a quality gate that passed in this run reuses the
   # gate's captured output ("(from the quality-gate run)") instead of running again.
+  # pre_pr_review:             # Pre-PR review (TASK-620): the post-merge reviewer's checklist run over the
+  #                            # full diff, in a read-only checkout of the worktree HEAD, after the quality
+  #                            # gates and before the push. Same place as intent_judge in the pipeline.
+  #   mode: off                # off    = not run; self-review and the intent judge run as today (default)
+  #                            # shadow = run, record the verdict (execution event + log), write nothing to GitHub
+  #                            # enforce = shadow plus acting on the verdict (later legs)
+  #                            # Any mode but off replaces the self-review phase and the in-run intent judge.
+  #   model: ""                # Empty = the executor's default model
+  #   timeout: 6m              # Bound on one review (must be >= 0)
+  #   fix_timeout: 10m         # Bound on one fix round (used by a later leg)
+  #   max_fix_rounds: 1        # Fix rounds a REQUEST-CHANGES may start (used by a later leg)
+  #   max_diff_chars: 0        # Diff budget in characters; 0 = 200000
+  #   skip_complexity: [trivial]  # Task complexities that skip the review
   # self_review_timeout: 5m   # Budget for the self-review phase (must be >= 0). Unset/0 keeps the
   #                           # per-backend defaults (2m claude-code, 10m opencode); a set value applies
   #                           # to every backend. History: the old hard-coded 2m killed ~77 of ~150

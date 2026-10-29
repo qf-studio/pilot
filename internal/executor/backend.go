@@ -422,6 +422,10 @@ type BackendConfig struct {
 	// IntentJudge contains intent alignment settings for diff-vs-ticket verification
 	IntentJudge *IntentJudgeConfig `yaml:"intent_judge,omitempty"`
 
+	// PrePRReview configures the pre-PR reviewer that runs after the quality
+	// gates and before the push (TASK-620). Default off.
+	PrePRReview *PrePRReviewConfig `yaml:"pre_pr_review,omitempty"`
+
 	// PreFlightJudge contains pre-flight issue quality judge settings (GH-2802).
 	// When enabled, each issue is evaluated by Haiku before dispatch; vague/question/
 	// conflicting/stale/out-of-scope issues are declined without burning a worker slot.
@@ -834,6 +838,137 @@ func DefaultIntentJudgeConfig() *IntentJudgeConfig {
 		MaxDiffChars: 32000,
 		Timeout:      "60s",
 	}
+}
+
+// Pre-PR review modes (executor.pre_pr_review.mode).
+const (
+	// PrePRReviewModeOff runs no pre-PR review; self-review and the intent
+	// judge run as before.
+	PrePRReviewModeOff = "off"
+	// PrePRReviewModeShadow runs the review after the gates, records the
+	// verdict and writes nothing to GitHub.
+	PrePRReviewModeShadow = "shadow"
+	// PrePRReviewModeEnforce is shadow plus acting on the verdict (later legs).
+	PrePRReviewModeEnforce = "enforce"
+)
+
+const (
+	defaultPrePRReviewTimeout    = 6 * time.Minute
+	defaultPrePRReviewFixTimeout = 10 * time.Minute
+	defaultPrePRReviewFixRounds  = 1
+)
+
+// PrePRReviewConfig configures the pre-PR review: the post-merge reviewer's
+// checklist run over the full diff inside the executor, after the quality
+// gates and before the push. When mode is not off it replaces the self-review
+// phase and the in-run intent judge.
+//
+// Example YAML configuration:
+//
+//	executor:
+//	  pre_pr_review:
+//	    mode: shadow
+//	    timeout: 6m
+type PrePRReviewConfig struct {
+	// Mode is off (default), shadow (review, record the verdict, write nothing
+	// to GitHub) or enforce (shadow plus acting on the verdict).
+	Mode string `yaml:"mode,omitempty"`
+
+	// Model is the reviewer model. Empty uses the executor's default model.
+	Model string `yaml:"model,omitempty"`
+
+	// Timeout bounds one review. Default: 6m.
+	Timeout time.Duration `yaml:"timeout,omitempty"`
+
+	// FixTimeout bounds one fix round (used by a later leg). Default: 10m.
+	FixTimeout time.Duration `yaml:"fix_timeout,omitempty"`
+
+	// MaxFixRounds is the number of fix rounds a REQUEST-CHANGES may start
+	// (used by a later leg). Default: 1.
+	MaxFixRounds int `yaml:"max_fix_rounds,omitempty"`
+
+	// MaxDiffChars is the reviewer's diff budget; 0 keeps the reviewer default
+	// (DefaultPostMergeReviewMaxDiffChars).
+	MaxDiffChars int `yaml:"max_diff_chars,omitempty"`
+
+	// SkipComplexity lists task complexities that skip the review. Unset
+	// defaults to [trivial]; an explicit empty list skips none.
+	SkipComplexity []string `yaml:"skip_complexity,omitempty"`
+}
+
+// DefaultPrePRReviewConfig returns the default pre-PR review configuration:
+// off, with the documented defaults for everything else.
+func DefaultPrePRReviewConfig() *PrePRReviewConfig {
+	return &PrePRReviewConfig{
+		Mode:           PrePRReviewModeOff,
+		Timeout:        defaultPrePRReviewTimeout,
+		FixTimeout:     defaultPrePRReviewFixTimeout,
+		MaxFixRounds:   defaultPrePRReviewFixRounds,
+		SkipComplexity: []string{string(ComplexityTrivial)},
+	}
+}
+
+// EffectiveMode returns the mode, off when unset.
+func (c *PrePRReviewConfig) EffectiveMode() string {
+	if c == nil || c.Mode == "" {
+		return PrePRReviewModeOff
+	}
+	return c.Mode
+}
+
+// EffectiveTimeout returns the review timeout, 6m when unset.
+func (c *PrePRReviewConfig) EffectiveTimeout() time.Duration {
+	if c == nil || c.Timeout <= 0 {
+		return defaultPrePRReviewTimeout
+	}
+	return c.Timeout
+}
+
+// EffectiveFixTimeout returns the fix-round timeout, 10m when unset.
+func (c *PrePRReviewConfig) EffectiveFixTimeout() time.Duration {
+	if c == nil || c.FixTimeout <= 0 {
+		return defaultPrePRReviewFixTimeout
+	}
+	return c.FixTimeout
+}
+
+// EffectiveMaxFixRounds returns the fix-round bound, 1 when unset.
+func (c *PrePRReviewConfig) EffectiveMaxFixRounds() int {
+	if c == nil || c.MaxFixRounds <= 0 {
+		return defaultPrePRReviewFixRounds
+	}
+	return c.MaxFixRounds
+}
+
+// SkipsComplexity reports whether tasks of complexity cx skip the review.
+func (c *PrePRReviewConfig) SkipsComplexity(cx Complexity) bool {
+	skip := []string{string(ComplexityTrivial)}
+	if c != nil && c.SkipComplexity != nil {
+		skip = c.SkipComplexity
+	}
+	for _, s := range skip {
+		if strings.EqualFold(strings.TrimSpace(s), string(cx)) {
+			return true
+		}
+	}
+	return false
+}
+
+// PrePRReviewMode returns the effective pre-PR review mode of the config.
+func (c *BackendConfig) PrePRReviewMode() string {
+	if c == nil {
+		return PrePRReviewModeOff
+	}
+	return c.PrePRReview.EffectiveMode()
+}
+
+// EffectiveSkipSelfReview reports whether the self-review phase is skipped:
+// skip_self_review is set, or the pre-PR review replaces it.
+func (c *BackendConfig) EffectiveSkipSelfReview() bool {
+	if c == nil {
+		return false
+	}
+	return c.SkipSelfReview || c.PrePRReviewMode() != PrePRReviewModeOff
 }
 
 // PreFlightJudgeConfig configures the pre-flight issue quality judge (GH-2802).
@@ -1319,6 +1454,7 @@ func DefaultBackendConfig() *BackendConfig {
 		EffortClassifier: DefaultEffortClassifierConfig(),
 		Decompose:        DefaultDecomposeConfig(),
 		IntentJudge:      DefaultIntentJudgeConfig(),
+		PrePRReview:      DefaultPrePRReviewConfig(),
 		Navigator:        DefaultNavigatorConfig(),
 		Hooks:            DefaultHooksConfig(),
 		MemoryInjection:  DefaultMemoryInjectionConfig(),

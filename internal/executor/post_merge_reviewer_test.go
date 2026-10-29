@@ -521,3 +521,60 @@ func TestPostMergeReviewer_UnknownKeepsRawOutput(t *testing.T) {
 		t.Errorf("verdict=%q raw=%q, want unknown with the model text", got.Verdict, got.RawOutput)
 	}
 }
+
+// TestPostMergeReviewerPrompt_PreMergeVariant pins the pre-merge prompt: the
+// merged sentence is swapped, the PR body paragraph and section are gone, CI
+// result is headed "Gate Results", and nothing else differs from the post-merge
+// prompt of the same input (calibration still applies).
+func TestPostMergeReviewerPrompt_PreMergeVariant(t *testing.T) {
+	prompt := func(t *testing.T, in PostMergeReviewInput) string {
+		t.Helper()
+		var got string
+		r := newPostMergeReviewerWithRunner(func(_ context.Context, args ...string) ([]byte, error) {
+			got = args[2]
+			return []byte("VERDICT: APPROVE\nDEFECTS:\nnone\nNOT-VERIFIED:\nnone\nNOTES:\n"), nil
+		})
+		if _, err := r.Review(context.Background(), in); err != nil {
+			t.Fatalf("Review: %v", err)
+		}
+		return got
+	}
+	base := PostMergeReviewInput{
+		IssueTitle: "ISSUE-TITLE", IssueBody: "ISSUE-BODY",
+		Diff:     "diff --git a/x b/x\n+DIFF-LINE",
+		CIResult: "build: passed (3s)\ntest: passed (9s)",
+		PRBody:   "## Summary\nPR-BODY-TEXT\n\n## Evidence\n\n$ go test ./...\nok",
+	}
+
+	post := prompt(t, base)
+	preIn := base
+	preIn.PreMerge = true
+	pre := prompt(t, preIn)
+
+	if !strings.Contains(post, postMergeAlreadyMergedSentence) || !strings.Contains(post, "## CI Result\n"+base.CIResult) || !strings.Contains(post, "## PR Body") || !strings.Contains(post, postMergePRBodyParagraph) {
+		t.Fatalf("post-merge prompt changed shape:\n%s", post)
+	}
+
+	for _, want := range []string{preMergeAboutToPushSentence, "## Gate Results\n" + base.CIResult, "ISSUE-BODY", "DIFF-LINE"} {
+		if !strings.Contains(pre, want) {
+			t.Errorf("pre-merge prompt missing %q", want)
+		}
+	}
+	for _, banned := range []string{"ALREADY merged", "PR body: it is supplied", "## PR Body", "PR-BODY-TEXT", "## PR Evidence", "## CI Result"} {
+		if strings.Contains(pre, banned) {
+			t.Errorf("pre-merge prompt still contains %q", banned)
+		}
+	}
+
+	// Byte-identical apart from the three documented changes.
+	want := strings.Replace(post, postMergeAlreadyMergedSentence, preMergeAboutToPushSentence, 1)
+	want = strings.Replace(want, "\n\n"+postMergePRBodyParagraph, "", 1)
+	want = strings.Replace(want, "## CI Result", "## Gate Results", 1)
+	if i := strings.Index(want, "\n## PR Body\n"); i >= 0 {
+		j := strings.Index(want[i+1:], "\n## Merged Diff")
+		want = want[:i] + want[i+1+j:]
+	}
+	if pre != want {
+		t.Errorf("pre-merge prompt differs from the post-merge prompt beyond the documented changes:\n--- want\n%s\n--- got\n%s", want, pre)
+	}
+}
