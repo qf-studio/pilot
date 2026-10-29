@@ -124,6 +124,9 @@ type reviewMergeResult struct {
 	Defects        []reviewMergeDefect `json:"defects"`
 	NotVerified    []string            `json:"not_verified"`
 	Notes          string              `json:"notes"`
+	FilesRead      int                 `json:"files_read"`
+	Checkout       bool                `json:"checkout"`
+	RawOutput      string              `json:"raw_output,omitempty"`
 	DiffBytes      int                 `json:"diff_bytes"`
 	DiffFiles      int                 `json:"diff_files"`
 	DiffTrimmed    bool                `json:"diff_trimmed"`
@@ -140,9 +143,9 @@ type reviewMergeResult struct {
 }
 
 // runReviewMerge gathers a merged PR's inputs, runs the reviewer and prints
-// the outcome to out. It posts the verdict comment only when opts.Post is set
+// the outcome to out (errOut gets the raw model text of an unusable review). It posts the verdict comment only when opts.Post is set
 // and the verdict is usable, and does nothing else outward-facing.
-func runReviewMerge(ctx context.Context, opts reviewMergeOptions, env *reviewMergeEnv, out io.Writer) error {
+func runReviewMerge(ctx context.Context, opts reviewMergeOptions, env *reviewMergeEnv, out, errOut io.Writer) error {
 	owner, repo, err := splitOwnerRepo(opts.Repo)
 	if err != nil {
 		return err
@@ -179,6 +182,8 @@ func runReviewMerge(ctx context.Context, opts reviewMergeOptions, env *reviewMer
 		Defects:        make([]reviewMergeDefect, 0, len(review.Defects)),
 		NotVerified:    append([]string{}, review.NotVerified...),
 		Notes:          review.Notes,
+		FilesRead:      review.FilesRead,
+		Checkout:       review.Checkout,
 		DiffBytes:      review.DiffBytes,
 		DiffFiles:      review.DiffFiles,
 		DiffTrimmed:    review.DiffTrimmed,
@@ -192,6 +197,11 @@ func runReviewMerge(ctx context.Context, opts reviewMergeOptions, env *reviewMer
 	}
 	if res.Model == "" {
 		res.Model = "cli-default"
+	}
+	if !review.Verdict.Postable() {
+		// An unusable review keeps the model text so the failure can be diagnosed;
+		// it goes to stderr and the JSON object, never to GitHub.
+		res.RawOutput = review.RawOutput
 	}
 	for _, d := range review.Defects {
 		res.Defects = append(res.Defects, splitDefect(d))
@@ -221,6 +231,9 @@ func runReviewMerge(ctx context.Context, opts reviewMergeOptions, env *reviewMer
 		}
 	} else {
 		printReviewMerge(out, res, opts)
+	}
+	if !usable {
+		_, _ = fmt.Fprintf(errOut, "verdict %s\n%s\n", terminalSafe(res.Verdict), terminalSafe(res.RawOutput))
 	}
 	if postErr != nil {
 		return postErr
@@ -290,7 +303,13 @@ func printReviewMerge(out io.Writer, res *reviewMergeResult, opts reviewMergeOpt
 		p("\n")
 	}
 
-	p("%s\n", terminalSafe(res.diffLine))
+	// The shared Diff line names the checkout and files read only when there was
+	// one; the command always states both.
+	diffLine := terminalSafe(res.diffLine)
+	if !res.Checkout {
+		diffLine += fmt.Sprintf(", checkout: no, files read: %d", res.FilesRead)
+	}
+	p("%s\n", diffLine)
 	p("Model: %s\n", terminalSafe(res.Model))
 	p("Duration: %s\n", (time.Duration(res.DurationMS) * time.Millisecond).Round(time.Millisecond))
 	switch {

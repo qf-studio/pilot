@@ -69,7 +69,7 @@ func TestParsePostMergeReview(t *testing.T) {
 		{"leading blank lines and lowercase", "\n\nverdict: approve\nDEFECTS: none\nNOTES:", PostMergeApprove, 0},
 		{"pipe separator", "VERDICT: REQUEST-CHANGES\nDEFECTS:\n[blocking] a.go:1 | c | e\nNOTES:", PostMergeRequestChanges, 1},
 		{"empty output", "", PostMergeUnknown, 0},
-		{"prose before verdict", "Sure, here is my review.\nVERDICT: APPROVE", PostMergeUnknown, 0},
+		{"prose with no verdict line", "Sure, here is my review.\nLooks fine.", PostMergeUnknown, 0},
 		{"unknown verdict word", "VERDICT: LGTM\nDEFECTS:\nnone", PostMergeUnknown, 0},
 		{"verdict with trailing text", "VERDICT: APPROVE because fine\nDEFECTS:\nnone", PostMergeUnknown, 0},
 		{"request changes without defects downgrades", "VERDICT: REQUEST-CHANGES\nDEFECTS:\nnone\nNOTES:", PostMergeApproveWithNotes, 0},
@@ -423,11 +423,101 @@ func TestPostMergeReviewer_PromptContract(t *testing.T) {
 	for _, want := range []string{
 		"[blocking]", "[minor]", "NOT-VERIFIED:", "at most three", "supplied in full under \"## PR Body\"",
 		"REQUEST-CHANGES only when at least one defect is [blocking]", "\"could not\"", "\"please verify\"", "\"I assume\"",
-		"a requirement of the issue is not met", "a wire field has no producer", "\"Not in the diff\" is never a reason",
+		"a requirement of the issue is not met", "a wire field has no producer",
+		"bullet about pasted build, test or lint output is [minor] unless the pasted output shows a failing test or build for code the diff changed",
+		"pre-existing failure in an unrelated package is [minor], naming the package", "\"Not in the diff\" is never a reason",
 		"## PR Body\n", "## PR Evidence (from the PR body)\n## Evidence\n\nEVIDENCE-LINE",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q", want)
 		}
+	}
+}
+
+func TestParsePostMergeReviewTolerant_MarkdownWrapped(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want PostMergeVerdict
+	}{
+		{"bold", "**VERDICT: APPROVE-WITH-NOTES**\nDEFECTS:\nnone", PostMergeApproveWithNotes},
+		{"heading", "# VERDICT: APPROVE\nDEFECTS:\nnone", PostMergeApprove},
+		{"backticks", "`VERDICT: APPROVE`\nDEFECTS:\nnone", PostMergeApprove},
+		{"bullet and underscores", "- __VERDICT: APPROVE__\nDEFECTS:\nnone", PostMergeApprove},
+		{"bold request changes", "**VERDICT: REQUEST-CHANGES**\nDEFECTS:\n[blocking] a.go:1 - c - e", PostMergeRequestChanges},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parsePostMergeReview(tt.text); got.Verdict != tt.want {
+				t.Errorf("verdict = %q, want %q", got.Verdict, tt.want)
+			}
+		})
+	}
+}
+
+func TestParsePostMergeReviewTolerant_Headers(t *testing.T) {
+	text := "**VERDICT: REQUEST-CHANGES**\n**DEFECTS:**\n- [blocking] a.go:1 - claim - ev\n### NOT-VERIFIED:\n- x.go not in the diff\n**NOTES**:\nreq 1 met"
+	got := parsePostMergeReview(text)
+	if got.Verdict != PostMergeRequestChanges || len(got.Defects) != 1 || len(got.NotVerified) != 1 || got.Notes != "req 1 met" {
+		t.Errorf("got verdict=%q defects=%d notVerified=%v notes=%q", got.Verdict, len(got.Defects), got.NotVerified, got.Notes)
+	}
+}
+
+func TestParsePostMergeReviewTolerant_PreambleLine(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want PostMergeVerdict
+	}{
+		{"one sentence", "Here is my review of the merged diff.\nVERDICT: APPROVE\nDEFECTS:\nnone", PostMergeApprove},
+		{"preamble and wrapped verdict", "I read the checkout.\n\n**VERDICT: APPROVE-WITH-NOTES**\nDEFECTS:\nnone", PostMergeApproveWithNotes},
+		{"verdict on tenth non-empty line", strings.Repeat("prose\n\n", 9) + "VERDICT: APPROVE", PostMergeApprove},
+		{"verdict beyond tenth non-empty line", strings.Repeat("prose\n", 10) + "VERDICT: APPROVE", PostMergeUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parsePostMergeReview(tt.text); got.Verdict != tt.want {
+				t.Errorf("verdict = %q, want %q", got.Verdict, tt.want)
+			}
+		})
+	}
+}
+
+func TestParsePostMergeReviewTolerant_PreambleNotParsedAsSections(t *testing.T) {
+	got := parsePostMergeReview("NOTES: this is preamble\nVERDICT: APPROVE\nDEFECTS:\nnone\nNOTES:\nreal")
+	if got.Verdict != PostMergeApprove || got.Notes != "real" {
+		t.Errorf("verdict=%q notes=%q, want APPROVE and only the notes after the verdict", got.Verdict, got.Notes)
+	}
+}
+
+func TestParsePostMergeReviewTolerant_RawOutput(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want PostMergeVerdict
+	}{
+		{"good parse", "**VERDICT: APPROVE**\nDEFECTS:\nnone", PostMergeApprove},
+		{"unknown", "I could not review this.", PostMergeUnknown},
+		{"empty", "", PostMergeUnknown},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parsePostMergeReview(tt.text)
+			if got.Verdict != tt.want || got.RawOutput != tt.text {
+				t.Errorf("verdict=%q raw=%q, want %q and the input text", got.Verdict, got.RawOutput, tt.want)
+			}
+		})
+	}
+}
+
+func TestPostMergeReviewer_UnknownKeepsRawOutput(t *testing.T) {
+	const raw = "I could not review this diff."
+	r := newPostMergeReviewerWithRunner(mockJudgeRunner(raw))
+	got, err := r.Review(context.Background(), PostMergeReviewInput{Diff: "diff --git a/x b/x\n+x"})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if got.Verdict != PostMergeUnknown || got.RawOutput != raw {
+		t.Errorf("verdict=%q raw=%q, want unknown with the model text", got.Verdict, got.RawOutput)
 	}
 }

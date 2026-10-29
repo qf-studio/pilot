@@ -3572,7 +3572,7 @@ of the merge commit's first parent to the merge commit; the output says which.`,
 			if err != nil {
 				return err
 			}
-			return runReviewMerge(cmd.Context(), opts, env, cmd.OutOrStdout())
+			return runReviewMerge(cmd.Context(), opts, env, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 

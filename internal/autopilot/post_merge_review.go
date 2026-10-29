@@ -279,11 +279,26 @@ func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeR
 	)
 	if !review.Verdict.Postable() {
 		// Output broke the contract, or the CLI ran out of turns: post nothing
-		// rather than guess.
+		// rather than guess. The raw text goes to the log only, never to GitHub.
+		if review.Verdict == executor.PostMergeUnknown {
+			c.log.Warn("post-merge review: verdict unknown, raw output follows",
+				"pr", in.prNumber, "raw_output", truncatePostMergeRaw(review.RawOutput))
+		}
 		return
 	}
 
 	c.postPostMergeReview(ctx, in, review)
+}
+
+// maxPostMergeRawLogChars caps the raw reviewer output logged for an unknown verdict.
+const maxPostMergeRawLogChars = 2000
+
+// truncatePostMergeRaw returns the first maxPostMergeRawLogChars characters of s.
+func truncatePostMergeRaw(s string) string {
+	if r := []rune(s); len(r) > maxPostMergeRawLogChars {
+		return string(r[:maxPostMergeRawLogChars])
+	}
+	return s
 }
 
 // postPostMergeReview posts the verdict comment, records it in the ledger and,

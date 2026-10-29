@@ -766,3 +766,48 @@ func TestPostMergeReviewCommentDiffLine(t *testing.T) {
 		})
 	}
 }
+
+// GH-5946: an unknown verdict keeps the model text in the log (first 2000
+// characters, Warn, with the PR number), counts in the unknown metric and posts
+// nothing.
+func TestPostMergeReview_UnknownLogsRawOutput(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantLog string
+		notLog  string
+	}{
+		{"short", "no verdict here", "no verdict here", ""},
+		{"truncated to 2000", strings.Repeat("a", 2000) + "TAIL-MARKER", strings.Repeat("a", 2000), "TAIL-MARKER"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock, gh := newPMRGitHub(t)
+			review := &executor.PostMergeReview{Verdict: executor.PostMergeUnknown, RawOutput: tt.raw}
+			c := newPMRController(t, gh, &pmrFakeReviewer{review: review}, true)
+			var logs lockedBuffer
+			c.log = slog.New(slog.NewTextHandler(&logs, nil))
+
+			if err := c.handleMerged(context.Background(), mergedPRState(77, 10)); err != nil {
+				t.Fatalf("handleMerged: %v", err)
+			}
+			c.waitPostMergeReviews()
+
+			out := logs.String()
+			for _, want := range []string{"level=WARN", "verdict unknown", "pr=77", tt.wantLog} {
+				if !strings.Contains(out, want) {
+					t.Errorf("log missing %q:\n%s", want, out)
+				}
+			}
+			if tt.notLog != "" && strings.Contains(out, tt.notLog) {
+				t.Errorf("log carries more than 2000 characters of raw output")
+			}
+			if got := c.metrics.PostMergeReviewVerdicts[string(executor.PostMergeUnknown)]; got != 1 {
+				t.Errorf("unknown metric = %d, want 1", got)
+			}
+			if mock.commentCount(77) != 0 || mock.issueCount() != 0 {
+				t.Errorf("raw output reached GitHub")
+			}
+		})
+	}
+}

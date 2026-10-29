@@ -96,6 +96,9 @@ type PostMergeReview struct {
 	// Downgraded is true when the model said REQUEST-CHANGES without a
 	// [blocking] defect and the verdict was lowered to APPROVE-WITH-NOTES.
 	Downgraded bool
+	// RawOutput is the model text the review was parsed from, set on every
+	// parse. It is for logs and the CLI only: callers never post it to GitHub.
+	RawOutput string
 
 	// DiffBytes is the size of the merged diff before any trimming.
 	DiffBytes int
@@ -245,7 +248,7 @@ IMPORTANT — truncation handling: A "## Changed Files" manifest lists every fil
 
 PR body: it is supplied in full under "## PR Body". Its "## Evidence" block is where build, test, lint and adapter bullets of the issue are checked — read it for each such bullet. "Not in the diff" is never a reason to skip one of them.
 
-Severity. Tag every defect [blocking] or [minor]. Blocking means exactly one of: a requirement of the issue is not met; a wire field has no producer; a test proves nothing about the contract it guards; a migration loses data; an out-of-scope change alters behaviour. Everything else is [minor].
+Severity. Tag every defect [blocking] or [minor]. Blocking means exactly one of: a requirement of the issue is not met; a wire field has no producer; a test proves nothing about the contract it guards; a migration loses data; an out-of-scope change alters behaviour. Everything else is [minor]. An acceptance bullet about pasted build, test or lint output is [minor] unless the pasted output shows a failing test or build for code the diff changed; a pre-existing failure in an unrelated package is [minor], naming the package.
 
 Output exactly this format and nothing before it:
 VERDICT: <APPROVE|APPROVE-WITH-NOTES|REQUEST-CHANGES>
@@ -371,7 +374,7 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 	review := parsePostMergeReview(text)
 	if stream.Exhausted {
 		// GH-5920: out of turns without an answer. The narration is not parsed.
-		review = &PostMergeReview{Verdict: PostMergeExhausted}
+		review = &PostMergeReview{Verdict: PostMergeExhausted, RawOutput: text}
 		r.log.Warn("post-merge review exhausted",
 			slog.Int("pr", in.PRNumber), slog.Int("turns", stream.Turns),
 			slog.Int("files_read", stream.FilesRead), slog.Int("max_turns", postMergeReviewMaxTurns))
@@ -393,7 +396,7 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 
 var (
 	postMergeVerdictRegex  = regexp.MustCompile(`(?i)^VERDICT:\s*(APPROVE-WITH-NOTES|APPROVE|REQUEST-CHANGES)\s*$`)
-	postMergeHeaderRegex   = regexp.MustCompile(`(?i)^(DEFECTS|NOT[- ]VERIFIED|NOTES):\s*(.*)$`)
+	postMergeHeaderRegex   = regexp.MustCompile(`(?i)^(DEFECTS|NOT[- ]VERIFIED|NOTES)[*_` + "`" + `]*:[*_` + "`" + `]*\s*(.*)$`)
 	postMergeSeverityRegex = regexp.MustCompile(`(?i)^\[(blocking|minor)\]\s*`)
 	// postMergeEvidenceHeadingRegex matches the "## Evidence" PR-body section
 	// (and "## Evidence (manual pins)") rendered by RenderAcceptanceEvidenceSections.
@@ -401,23 +404,38 @@ var (
 	nextH2Regex                   = regexp.MustCompile(`(?m)^##\s`)
 )
 
-// parsePostMergeReview parses the reviewer's output contract. The verdict must
-// be the first non-empty line; anything else is a contract violation and yields
-// PostMergeUnknown. A REQUEST-CHANGES with no [blocking] defect (none at all
-// included) is not a violation: it is lowered to APPROVE-WITH-NOTES and flagged
-// Downgraded.
+// postMergeVerdictSearchLines bounds how many non-empty lines may precede the
+// VERDICT line; text before it is preamble and ignored.
+const postMergeVerdictSearchLines = 10
+
+// stripPostMergeMarkup drops the markdown emphasis, heading and bullet markers
+// a model wraps around a contract line, plus surrounding whitespace.
+func stripPostMergeMarkup(line string) string {
+	return strings.TrimSpace(strings.Trim(strings.TrimSpace(line), "*_`# \t-•>"))
+}
+
+// parsePostMergeReview parses the reviewer's output contract. The VERDICT line
+// must be among the first ten non-empty lines, after leading markdown markers
+// are stripped from each; text before it is preamble and ignored. Anything else
+// is a contract violation and yields PostMergeUnknown. A REQUEST-CHANGES with
+// no [blocking] defect (none at all included) is not a violation: it is lowered
+// to APPROVE-WITH-NOTES and flagged Downgraded. RawOutput is set on every parse.
 func parsePostMergeReview(text string) *PostMergeReview {
-	review := &PostMergeReview{Verdict: PostMergeUnknown}
+	review := &PostMergeReview{Verdict: PostMergeUnknown, RawOutput: text}
 
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
-	i := 0
-	for i < len(lines) && strings.TrimSpace(lines[i]) == "" {
-		i++
+	i, seen := 0, 0
+	var m []string
+	for ; i < len(lines) && seen < postMergeVerdictSearchLines; i++ {
+		stripped := stripPostMergeMarkup(lines[i])
+		if stripped == "" {
+			continue
+		}
+		seen++
+		if m = postMergeVerdictRegex.FindStringSubmatch(stripped); m != nil {
+			break
+		}
 	}
-	if i == len(lines) {
-		return review
-	}
-	m := postMergeVerdictRegex.FindStringSubmatch(strings.TrimSpace(lines[i]))
 	if m == nil {
 		return review
 	}
@@ -428,7 +446,9 @@ func parsePostMergeReview(text string) *PostMergeReview {
 	section := ""
 	for _, line := range lines[i+1:] {
 		trimmed := strings.TrimSpace(line)
-		if h := postMergeHeaderRegex.FindStringSubmatch(trimmed); h != nil {
+		// Section headers get the same markup stripping as the verdict line; body
+		// lines keep theirs (a defect line's bullet and brackets are parsed later).
+		if h := postMergeHeaderRegex.FindStringSubmatch(stripPostMergeMarkup(trimmed)); h != nil {
 			section = strings.ToUpper(strings.ReplaceAll(h[1], " ", "-"))
 			trimmed = strings.TrimSpace(h[2])
 			if trimmed == "" {

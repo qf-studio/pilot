@@ -56,6 +56,11 @@ type rmFakeReviewer struct {
 	notes   string
 	// notVerified is returned as PostMergeReview.NotVerified (GH-5927).
 	notVerified []string
+	// rawOutput, filesRead and checkout are returned as the review's raw text and
+	// checkout counters (GH-5946).
+	rawOutput string
+	filesRead int
+	checkout  bool
 }
 
 func (f *rmFakeReviewer) Review(_ context.Context, in executor.PostMergeReviewInput) (*executor.PostMergeReview, error) {
@@ -68,11 +73,21 @@ func (f *rmFakeReviewer) Review(_ context.Context, in executor.PostMergeReviewIn
 		DiffBytes:   len(in.Diff),
 		DiffFiles:   strings.Count(in.Diff, "diff --git"),
 		DiffTrimmed: false,
+		RawOutput:   f.rawOutput,
+		FilesRead:   f.filesRead,
+		Checkout:    f.checkout,
 	}, nil
 }
 
 // runRM executes the command with fakes installed and returns its stdout.
 func runRM(t *testing.T, gh *rmFakeGitHub, rev *rmFakeReviewer, args ...string) (string, error) {
+	t.Helper()
+	out, _, err := runRMStreams(t, gh, rev, args...)
+	return out, err
+}
+
+// runRMStreams is runRM that also returns stderr.
+func runRMStreams(t *testing.T, gh *rmFakeGitHub, rev *rmFakeReviewer, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	old := reviewMergeEnvFactory
 	t.Cleanup(func() { reviewMergeEnvFactory = old })
@@ -86,11 +101,11 @@ func runRM(t *testing.T, gh *rmFakeGitHub, rev *rmFakeReviewer, args ...string) 
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
 	cmd.SetArgs(args)
-	err := cmd.ExecuteContext(context.Background())
+	err = cmd.ExecuteContext(context.Background())
 	if err == nil && gotRepo == "" {
 		t.Error("environment factory never called with the --repo value")
 	}
-	return out.String(), err
+	return out.String(), errOut.String(), err
 }
 
 func newRMFakes() (*rmFakeGitHub, *rmFakeReviewer) {
@@ -161,7 +176,7 @@ func TestReviewMergeCommand_JSONShape(t *testing.T) {
 		t.Fatalf("output is not JSON: %v\n%s", err, out)
 	}
 	for _, key := range []string{"verdict", "defects", "notes", "diff_bytes", "diff_files", "diff_trimmed", "model", "duration_ms",
-		"input_diff_bytes", "input_issue_bytes", "input_pr_body_bytes", "diff_source", "issue", "pr"} {
+		"input_diff_bytes", "input_issue_bytes", "input_pr_body_bytes", "diff_source", "issue", "pr", "files_read", "checkout"} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("JSON missing key %q:\n%s", key, out)
 		}
@@ -399,5 +414,64 @@ func TestReviewMergeJSONSeverityFields(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestReviewMergeUnknownKeepsRaw(t *testing.T) {
+	const raw = "I reviewed the diff and it looks fine, no verdict line though."
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"text", nil},
+		{"json", []string{"--json"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh, rev := newRMFakes()
+			rev.verdict = executor.PostMergeUnknown
+			rev.rawOutput = raw
+			rev.filesRead, rev.checkout = 7, true
+			args := append([]string{"--repo", "o/r", "--pr", "7"}, tt.args...)
+			stdout, stderr, err := runRMStreams(t, gh, rev, args...)
+			if err == nil || !strings.Contains(err.Error(), "verdict unknown") {
+				t.Fatalf("err = %v, want the contract-broken error (non-zero exit)", err)
+			}
+			if !strings.Contains(stderr, "verdict unknown") || !strings.Contains(stderr, raw) {
+				t.Errorf("stderr should carry %q and the raw output:\n%s", "verdict unknown", stderr)
+			}
+			if len(gh.comments) != 0 {
+				t.Errorf("raw output reached GitHub: %v", gh.comments)
+			}
+			if tt.name == "json" {
+				var got map[string]any
+				// cobra appends its usage text to the same writer on an error, so
+				// decode the first JSON value only.
+				if err := json.NewDecoder(strings.NewReader(stdout)).Decode(&got); err != nil {
+					t.Fatalf("output is not JSON: %v\n%s", err, stdout)
+				}
+				if got["raw_output"] != raw || got["files_read"] != float64(7) || got["checkout"] != true {
+					t.Errorf("raw_output/files_read/checkout = %v/%v/%v, want %q/7/true", got["raw_output"], got["files_read"], got["checkout"], raw)
+				}
+				return
+			}
+			if strings.Contains(stdout, raw) {
+				t.Errorf("raw output belongs on stderr, not stdout:\n%s", stdout)
+			}
+			if !strings.Contains(stdout, "files read: 7") {
+				t.Errorf("Diff line should report files read:\n%s", stdout)
+			}
+		})
+	}
+}
+
+func TestReviewMergeCommand_DiffLineChecksOutNo(t *testing.T) {
+	gh, rev := newRMFakes()
+	out, err := runRM(t, gh, rev, "--repo", "o/r", "--pr", "7")
+	if err != nil {
+		t.Fatalf("command: %v", err)
+	}
+	if !strings.Contains(out, "checkout: no, files read: 0") {
+		t.Errorf("Diff line should state no checkout:\n%s", out)
 	}
 }
