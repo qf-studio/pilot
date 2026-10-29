@@ -26,12 +26,11 @@ type reviewFixBackend struct {
 	deadlines   []time.Time
 	hadDeadline []bool
 
-	commit  bool   // write a file and commit it in opts.ProjectPath
-	dirty   bool   // write a file and leave it uncommitted
-	output  string // BackendResult.Output
-	err     error
-	execAt  string // the path the file edits land in; defaults to opts.ProjectPath
-	started int
+	commit bool   // write a file and commit it in opts.ProjectPath
+	dirty  bool   // write a file and leave it uncommitted
+	output string // BackendResult.Output
+	err    error
+	execAt string // the path the file edits land in; defaults to opts.ProjectPath
 }
 
 func (b *reviewFixBackend) Name() string      { return "review-fix" }
