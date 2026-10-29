@@ -193,6 +193,7 @@ func (r *Runner) runPrePRReview(ctx context.Context, task *Task, executionPath s
 		// unknown and exhausted reviews followed no contract: no verdict.
 		if review.Verdict.Postable() {
 			out.Verdict = review.Verdict
+			RecordPrePRReview(out.Verdict)
 		}
 	}
 

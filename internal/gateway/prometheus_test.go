@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -833,9 +834,11 @@ func TestPrometheusExporter_EvalMetrics_SetEvalMetricsSourceBeforeMetricsSource(
 }
 
 // TASK-620 L2: the pre-PR review families are always exported, the verdict
-// labels at zero before any review and counting once one is recorded.
+// labels at zero before any review. The review counter is incremented only by
+// the executor's real review path (covered in the executor package), so this
+// test never records a review itself: it asserts the exporter reports whatever
+// the executor counter holds.
 func TestPrometheusExporter_PrePRReviewFamilies(t *testing.T) {
-	executor.RecordPrePRReview(executor.PostMergeRequestChanges)
 	executor.RecordPrePRFix("reserved-test")
 
 	exporter := NewPrometheusExporter(autopilot.NewMetrics())
@@ -859,7 +862,10 @@ func TestPrometheusExporter_PrePRReviewFamilies(t *testing.T) {
 			t.Errorf("output missing %q", want)
 		}
 	}
-	if strings.Contains(output, `pilot_pre_pr_reviews_total{verdict="REQUEST-CHANGES"} 0`) {
-		t.Error("REQUEST-CHANGES counter should be non-zero after a recorded review")
+	for verdict, n := range executor.PrePRReviewsTotal() {
+		want := fmt.Sprintf(`pilot_pre_pr_reviews_total{verdict=%q} %d`, verdict, n)
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q", want)
+		}
 	}
 }

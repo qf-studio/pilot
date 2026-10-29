@@ -148,6 +148,7 @@ func TestRunPrePRReview_Shadow_RecordsOutcomeNoFix(t *testing.T) {
 	task := prePRTask(otherRoot)
 	task.ExecutionID = execID
 
+	countBefore := PrePRReviewsTotal()[string(PostMergeApproveWithNotes)]
 	out := r.runPrePRReview(context.Background(), task, dir, NewGitOperations(dir), &progressState{}, prePRGates())
 
 	if n := fake.calls(); n != 1 {
@@ -180,6 +181,10 @@ func TestRunPrePRReview_Shadow_RecordsOutcomeNoFix(t *testing.T) {
 
 	if out == nil || out.Mode != PrePRReviewModeShadow || out.Verdict != PostMergeApproveWithNotes || out.Skipped != "" || out.Err != nil || out.FilesRead != 4 || out.Review == nil {
 		t.Fatalf("outcome = %+v, want a shadow APPROVE-WITH-NOTES with 4 files read", out)
+	}
+
+	if got := PrePRReviewsTotal()[string(PostMergeApproveWithNotes)]; got != countBefore+1 {
+		t.Errorf("pilot_pre_pr_reviews_total{APPROVE-WITH-NOTES} = %d, want %d", got, countBefore+1)
 	}
 
 	events, err := store.ListExecutionEvents(execID)
@@ -352,7 +357,13 @@ func TestRunPrePRReview_NoVerdictOutcomes(t *testing.T) {
 			fake := &fakePrePRReviewer{review: tt.review, err: tt.err}
 			r := prePRRunner(PrePRReviewModeShadow, fake)
 
+			countBefore := PrePRReviewsTotal()
 			out := r.runPrePRReview(context.Background(), prePRTask(dir), dir, NewGitOperations(dir), &progressState{}, prePRGates())
+			for k, v := range PrePRReviewsTotal() {
+				if v != countBefore[k] {
+					t.Errorf("reviews counter %q moved %d -> %d without a verdict", k, countBefore[k], v)
+				}
+			}
 
 			if fake.calls() != 1 {
 				t.Fatalf("reviewer called %d times, want 1", fake.calls())

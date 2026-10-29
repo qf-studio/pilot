@@ -36,7 +36,8 @@ var (
 	prePRFixes   prePRCounter
 )
 
-// RecordPrePRReview counts one pre-PR review that ended with verdict.
+// RecordPrePRReview counts one pre-PR review that ended with verdict. Called by
+// runPrePRReview for every review that returned a postable verdict.
 func RecordPrePRReview(verdict PostMergeVerdict) { prePRReviews.inc(string(verdict)) }
 
 // RecordPrePRFix counts one pre-PR fix round that ended with outcome. The
