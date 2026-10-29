@@ -7349,6 +7349,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
 				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates)
+				prBody += RenderPrePRReviewSection(result.PrePRReview)  // TASK-620
 				prBody += selfReviewPRNote(result.SelfReviewTerminated) // GH-5900
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
@@ -7390,6 +7391,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// for gitlab-sourced tasks (see mrSourceSuffix).
 				prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, mrSourceSuffix(task, creatorKind), task.Description)
 				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates)
+				prBody += RenderPrePRReviewSection(result.PrePRReview)  // TASK-620
 				prBody += selfReviewPRNote(result.SelfReviewTerminated) // GH-5900
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
@@ -7427,6 +7429,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
 				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates)
+				prBody += RenderPrePRReviewSection(result.PrePRReview)  // TASK-620
 				prBody += selfReviewPRNote(result.SelfReviewTerminated) // GH-5900
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
@@ -7462,6 +7465,8 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 			result.PRUrl = prURL
 			log.Info("Pull request created", slog.String("pr_url", prURL))
+			// TASK-620: label and ledger row for the pre-PR verdict, best-effort.
+			r.publishPrePRReview(ctx, task, git.ProjectPath(), prURL, result.PrePRReview)
 			r.reportProgress(task.ID, "Completed", 100, fmt.Sprintf("PR created: %s", prURL))
 			r.saveLogEntry(task.LogExecutionID(), "info", "PR created: "+prURL)
 			// GH-3846: record the PR-created milestone to the execution-events audit trail.
@@ -7488,6 +7493,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				slog.String("task_id", task.ID),
 				slog.Duration("self_review_terminated_after", result.SelfReviewTerminated),
 			)
+		}
+		if result.PrePRReview != nil && result.PrePRReview.Verdict != "" {
+			completedMsg += "; Pre-PR review: " + string(result.PrePRReview.Verdict)
 		}
 		r.saveLogEntry(task.LogExecutionID(), "info", completedMsg)
 

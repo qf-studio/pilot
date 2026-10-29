@@ -10,6 +10,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -828,5 +829,37 @@ func TestPrometheusExporter_EvalMetrics_SetEvalMetricsSourceBeforeMetricsSource(
 	}
 	if !strings.Contains(w.Body.String(), `pilot_eval_pass_ratio 1`) {
 		t.Errorf("pilot_eval_pass_ratio not found:\n%s", w.Body.String())
+	}
+}
+
+// TASK-620 L2: the pre-PR review families are always exported, the verdict
+// labels at zero before any review and counting once one is recorded.
+func TestPrometheusExporter_PrePRReviewFamilies(t *testing.T) {
+	executor.RecordPrePRReview(executor.PostMergeRequestChanges)
+	executor.RecordPrePRFix("reserved-test")
+
+	exporter := NewPrometheusExporter(autopilot.NewMetrics())
+	var buf bytes.Buffer
+	if err := exporter.WritePrometheus(&buf); err != nil {
+		t.Fatalf("WritePrometheus() error = %v", err)
+	}
+	output := buf.String()
+
+	for _, want := range []string{
+		"# HELP pilot_pre_pr_reviews_total",
+		"# TYPE pilot_pre_pr_reviews_total counter",
+		`pilot_pre_pr_reviews_total{verdict="APPROVE"}`,
+		`pilot_pre_pr_reviews_total{verdict="APPROVE-WITH-NOTES"}`,
+		`pilot_pre_pr_reviews_total{verdict="REQUEST-CHANGES"}`,
+		"# HELP pilot_pre_pr_fixes_total",
+		"# TYPE pilot_pre_pr_fixes_total counter",
+		`pilot_pre_pr_fixes_total{outcome="reserved-test"}`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q", want)
+		}
+	}
+	if strings.Contains(output, `pilot_pre_pr_reviews_total{verdict="REQUEST-CHANGES"} 0`) {
+		t.Error("REQUEST-CHANGES counter should be non-zero after a recorded review")
 	}
 }

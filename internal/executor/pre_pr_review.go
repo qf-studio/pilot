@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -232,4 +234,64 @@ func (r *Runner) recordPrePRReviewEvent(task *Task, out *PrePRReviewOutcome) {
 		return
 	}
 	r.recordExecutionEvent(task.LogExecutionID(), memory.StagePrePRReview, string(b))
+}
+
+// PrePRReviewRCLabel is the PR label a REQUEST-CHANGES pre-PR verdict adds.
+const PrePRReviewRCLabel = "pilot-review-rc"
+
+// prePRReviewID is the pr_reviews key of a pre-PR review: the negated 62-bit
+// FNV-64 of the execution id plus ":pre-pr".
+//
+// Decision: review_id is the table's primary key and normally a GitHub review
+// id; post-merge rows negate their comment id. A pre-PR review has no GitHub
+// object, so the key is derived from the execution instead. Negative, so it can
+// never collide with a real (positive) review id; masked to 62 bits so it is
+// safe wherever an int64 id is expected.
+func prePRReviewID(executionID string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(executionID + ":pre-pr"))
+	id := int64(h.Sum64() & (1<<62 - 1))
+	if id == 0 {
+		id = 1
+	}
+	return -id
+}
+
+// publishPrePRReview makes the verdict visible once the PR exists: the
+// pilot-review-rc label on a REQUEST-CHANGES, and a pr_reviews row under
+// PrePRReviewerID. It never fails the run. Shadow mode adds no other effect, and
+// a PR URL without a PR number (a GitLab MR) gets neither.
+func (r *Runner) publishPrePRReview(ctx context.Context, task *Task, projectPath, prURL string, out *PrePRReviewOutcome) {
+	if out == nil || out.Verdict == "" {
+		return
+	}
+	log := r.log.With(slog.String("task_id", task.ID))
+	prNumber, ok := extractPRNumberFromURL(prURL)
+	if !ok {
+		return
+	}
+
+	if out.Verdict == PostMergeRequestChanges {
+		if err := ghAddLabels(ctx, projectPath, strconv.Itoa(prNumber), []string{PrePRReviewRCLabel}); err != nil {
+			log.Warn("Pre-PR review: failed to label PR", slog.Int("pr", prNumber), slog.Any("error", err))
+		}
+	}
+
+	execID := task.LogExecutionID()
+	if r.logStore == nil || execID == "" {
+		return
+	}
+	rec := &memory.PRReview{
+		ReviewID:    prePRReviewID(execID),
+		ProjectPath: task.ProjectPath,
+		PRNumber:    prNumber,
+		ExecutionID: execID,
+		Reviewer:    PrePRReviewerID,
+		State:       "COMMENTED",
+		Verdict:     LedgerVerdict(out.Verdict),
+		SubmittedAt: time.Now(),
+	}
+	if err := r.logStore.UpsertPRReview(rec); err != nil {
+		log.Warn("Pre-PR review: ledger upsert failed", slog.Int("pr", prNumber), slog.Any("error", err))
+	}
 }

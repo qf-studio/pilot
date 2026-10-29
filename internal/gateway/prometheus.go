@@ -602,6 +602,26 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	writeType(w, "pilot_executor_result_exit_grace_kills_total", "counter")
 	writeCounter(w, "pilot_executor_result_exit_grace_kills_total", executor.ResultExitGraceKillsTotal())
 
+	// pilot_pre_pr_reviews_total / pilot_pre_pr_fixes_total (TASK-620): pre-PR
+	// review verdicts and fix-round outcomes. The verdict labels are always
+	// emitted; fix outcome labels are reserved for the fix round.
+	writeHelp(w, "pilot_pre_pr_reviews_total", "Total pre-PR reviews that ended with a verdict, by verdict. Resets to 0 on restart")
+	writeType(w, "pilot_pre_pr_reviews_total", "counter")
+	reviews := executor.PrePRReviewsTotal()
+	for _, v := range []string{"APPROVE", "APPROVE-WITH-NOTES", "REQUEST-CHANGES"} {
+		writeCounter(w, "pilot_pre_pr_reviews_total", reviews[v], "verdict", v)
+		delete(reviews, v)
+	}
+	for _, v := range sortedKeys(reviews) {
+		writeCounter(w, "pilot_pre_pr_reviews_total", reviews[v], "verdict", v)
+	}
+	writeHelp(w, "pilot_pre_pr_fixes_total", "Total pre-PR fix rounds, by outcome. Resets to 0 on restart")
+	writeType(w, "pilot_pre_pr_fixes_total", "counter")
+	fixes := executor.PrePRFixesTotal()
+	for _, o := range sortedKeys(fixes) {
+		writeCounter(w, "pilot_pre_pr_fixes_total", fixes[o], "outcome", o)
+	}
+
 	// pilot_chat_turns_rejected_total: web chat turns refused by the org-wide
 	// daily turn cap (adapters.chat.daily_turn_cap).
 	writeHelp(w, "pilot_chat_turns_rejected_total", "Total web chat turns rejected because the org-wide daily chat-turn cap was reached. Resets to 0 on restart")
@@ -698,6 +718,16 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 }
 
 // writeHelp writes a HELP line for a metric.
+// sortedKeys returns the keys of m in ascending order.
+func sortedKeys(m map[string]int64) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func writeHelp(w io.Writer, name, help string) {
 	_, _ = fmt.Fprintf(w, "# HELP %s %s\n", name, help)
 }

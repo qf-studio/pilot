@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/memory/graphrecall"
 )
 
@@ -49,6 +50,25 @@ func (v PostMergeVerdict) Postable() bool {
 // PostMergeReviewerID is the reviewer identity recorded in the pr_reviews
 // ledger so bench defect-rate tracking can tell this pass from human reviews.
 const PostMergeReviewerID = "post-merge-reviewer"
+
+// PrePRReviewerID is the reviewer identity of the pre-PR review's pr_reviews
+// rows (TASK-620), distinct from PostMergeReviewerID so a shadow run can be
+// compared with the post-merge reviewer's rows on the same PR.
+const PrePRReviewerID = "pre-pr-reviewer"
+
+// LedgerVerdict maps the reviewer's verdict onto the pr_reviews vocabulary;
+// "" for a verdict that follows no contract (unknown, exhausted).
+func LedgerVerdict(v PostMergeVerdict) string {
+	switch v {
+	case PostMergeApprove:
+		return memory.VerdictApprove
+	case PostMergeApproveWithNotes:
+		return memory.VerdictApproveWNotes
+	case PostMergeRequestChanges:
+		return memory.VerdictRequestChanges
+	}
+	return ""
+}
 
 // DefaultPostMergeReviewMaxDiffChars is the reviewer's own diff budget when
 // post_merge_review.max_diff_chars is unset. It is independent of the intent

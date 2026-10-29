@@ -369,17 +369,7 @@ func (c *Controller) recordPostMergeReview(in postMergeReviewInputs, review *exe
 }
 
 // ledgerVerdict maps the reviewer's verdict onto the pr_reviews vocabulary.
-func ledgerVerdict(v executor.PostMergeVerdict) string {
-	switch v {
-	case executor.PostMergeApprove:
-		return memory.VerdictApprove
-	case executor.PostMergeApproveWithNotes:
-		return memory.VerdictApproveWNotes
-	case executor.PostMergeRequestChanges:
-		return memory.VerdictRequestChanges
-	}
-	return ""
-}
+func ledgerVerdict(v executor.PostMergeVerdict) string { return executor.LedgerVerdict(v) }
 
 // sanitizePostMergeField strips invisible Unicode and bounds a model-produced
 // field. The reviewer reads attacker-influenceable text (issue and PR bodies,
