@@ -3,7 +3,9 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -323,5 +325,73 @@ func TestAPI_Wait_JoinsDispatchedHandler(t *testing.T) {
 	}
 	if events, _ := wm.Events("web:c1", 0); len(events) == 0 {
 		t.Error("no event recorded by the time Wait returned")
+	}
+}
+
+// TestAPI_Wait_RacingDispatch runs Dispatch and Wait concurrently from a zero
+// counter, the pattern sync.WaitGroup forbids (GH-5940). Under -race it fails
+// on a WaitGroup-based Wait; here every Dispatch that returned must be joined.
+func TestAPI_Wait_RacingDispatch(t *testing.T) {
+	api, wm := newTestAPI()
+
+	const n = 20
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := api.Dispatch(context.Background(), DispatchRequest{ConversationID: fmt.Sprintf("race-%d", i), Text: "hello"}); err != nil {
+				t.Errorf("Dispatch error: %v", err)
+			}
+		}(i)
+		go func() {
+			defer wg.Done()
+			api.Wait(time.Millisecond)
+		}()
+	}
+	wg.Wait()
+
+	if !api.Wait(10 * time.Second) {
+		t.Fatal("Wait = false after every Dispatch returned")
+	}
+	for i := 0; i < n; i++ {
+		if events, _ := wm.Events(fmt.Sprintf("web:race-%d", i), 0); len(events) == 0 {
+			t.Errorf("conversation race-%d: no event by the time Wait returned", i)
+		}
+	}
+}
+
+// TestAPI_Wait_TimeoutLeaksNoGoroutines pins GH-5940: a Wait that times out on
+// a hung handler must not leave a goroutine parked behind it.
+func TestAPI_Wait_TimeoutLeaksNoGoroutines(t *testing.T) {
+	wm := NewMessenger()
+	gate := &gateMessenger{WebMessenger: wm, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	h := comms.NewHandler(&comms.HandlerConfig{Messenger: gate, TaskIDPrefix: "WEB"})
+	api := NewAPI(h, wm)
+
+	if _, err := api.Dispatch(context.Background(), DispatchRequest{ConversationID: "c1", Text: "hello"}); err != nil {
+		t.Fatalf("Dispatch error: %v", err)
+	}
+	select {
+	case <-gate.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never reached the messenger")
+	}
+
+	before := runtime.NumGoroutine()
+	const waits = 50
+	for i := 0; i < waits; i++ {
+		if api.Wait(time.Millisecond) {
+			t.Fatal("Wait = true while HandleMessage is still in flight")
+		}
+	}
+	// Each leaked waiter would add one goroutine; allow slack for runtime noise.
+	if after := runtime.NumGoroutine(); after-before > waits/2 {
+		t.Errorf("goroutines grew from %d to %d across %d timed-out Waits", before, after, waits)
+	}
+
+	close(gate.release)
+	if !api.Wait(5 * time.Second) {
+		t.Fatal("Wait = false after HandleMessage was released")
 	}
 }

@@ -78,9 +78,15 @@ type API struct {
 	handler   *comms.Handler
 	messenger *WebMessenger
 
-	// inflight tracks the HandleMessage goroutines Dispatch starts, so Wait
-	// can join them (GH-5929).
-	inflight sync.WaitGroup
+	// inflightMu guards inflight and idle. They replace a sync.WaitGroup
+	// because Wait runs concurrently with Dispatch, and WaitGroup forbids an
+	// Add from a zero counter racing a Wait (GH-5940).
+	inflightMu sync.Mutex
+	// inflight counts the HandleMessage goroutines Dispatch has started and
+	// not yet seen return, so Wait can join them (GH-5929).
+	inflight int
+	// idle is closed when inflight drops to zero; non-nil while inflight > 0.
+	idle chan struct{}
 }
 
 // NewAPI wraps a comms.Handler and the WebMessenger it was built with. The
@@ -135,13 +141,28 @@ func (a *API) Dispatch(dispatchCtx context.Context, req DispatchRequest) (seq in
 
 	seq = a.messenger.LatestSeq(contextID)
 
-	a.inflight.Add(1)
+	a.inflightMu.Lock()
+	if a.inflight == 0 {
+		a.idle = make(chan struct{})
+	}
+	a.inflight++
+	a.inflightMu.Unlock()
 	go func() {
-		defer a.inflight.Done()
+		defer a.handlerDone()
 		a.handler.HandleMessage(dispatchCtx, msg)
 	}()
 
 	return seq, nil
+}
+
+// handlerDone records that one dispatched HandleMessage goroutine returned.
+func (a *API) handlerDone() {
+	a.inflightMu.Lock()
+	defer a.inflightMu.Unlock()
+	a.inflight--
+	if a.inflight == 0 {
+		close(a.idle)
+	}
 }
 
 // Wait blocks until every HandleMessage goroutine started by Dispatch has
@@ -149,16 +170,24 @@ func (a *API) Dispatch(dispatchCtx context.Context, req DispatchRequest) (seq in
 // forget, so a caller that owns resources the handler writes into (a test's
 // project directory) uses this to know the handler is done, including a
 // message accepted but not yet inside the executor (GH-5929).
+//
+// A Dispatch that has returned is always joined: its count is taken before
+// Dispatch returns. Wait spawns no goroutine, so a timeout leaks nothing.
 func (a *API) Wait(timeout time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		a.inflight.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
+	a.inflightMu.Lock()
+	idle := a.idle
+	n := a.inflight
+	a.inflightMu.Unlock()
+	if n == 0 {
 		return true
-	case <-time.After(timeout):
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-idle:
+		return true
+	case <-timer.C:
 		return false
 	}
 }

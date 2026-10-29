@@ -536,6 +536,7 @@ type chatHarness struct {
 	runner     *executor.Runner
 	creator    *chatIssueCreator
 	projectDir string
+	api        *web.API
 }
 
 // newChatHarness builds the harness. The project directory is created first
@@ -543,6 +544,14 @@ type chatHarness struct {
 // RemoveAll (cleanups run last-in-first-out): the server stops, then the
 // background task finishes writing, then the directory is removed (GH-5923).
 func newChatHarness(t *testing.T, backend *chatTestBackend) *chatHarness {
+	t.Helper()
+	return newChatHarnessWith(t, backend, nil)
+}
+
+// newChatHarnessWith is newChatHarness with an optional wrap applied to the
+// WebMessenger the handler talks to, so a test can hold the real handler at a
+// chosen point. The API still reads events from the unwrapped messenger.
+func newChatHarnessWith(t *testing.T, backend *chatTestBackend, wrap func(*web.WebMessenger) comms.Messenger) *chatHarness {
 	t.Helper()
 	projectDir := t.TempDir()
 
@@ -552,8 +561,12 @@ func newChatHarness(t *testing.T, backend *chatTestBackend) *chatHarness {
 
 	creator := &chatIssueCreator{}
 	messenger := web.NewMessenger()
+	var handlerMessenger comms.Messenger = messenger
+	if wrap != nil {
+		handlerMessenger = wrap(messenger)
+	}
 	handler := comms.BuildHandler(comms.HandlerDeps{
-		Messenger:    messenger,
+		Messenger:    handlerMessenger,
 		Runner:       runner,
 		ProjectPath:  projectDir,
 		Projects:     chatProjectSource{p: &comms.ProjectInfo{Name: "alpha", Path: projectDir}},
@@ -587,6 +600,84 @@ func newChatHarness(t *testing.T, backend *chatTestBackend) *chatHarness {
 		runner:     runner,
 		creator:    creator,
 		projectDir: projectDir,
+		api:        api,
+	}
+}
+
+// chatGateMessenger holds the first SendText until release is closed,
+// closing entered when it gets there, so the real handler is parked after the
+// 202 with nothing yet sent to the backend. The test drives an operational
+// query because a chat turn sends nothing to the messenger before it calls the
+// Runner, leaving no seam to park it ahead of Execute.
+type chatGateMessenger struct {
+	*web.WebMessenger
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (g *chatGateMessenger) SendText(ctx context.Context, contextID, threadID, text string) error {
+	g.once.Do(func() {
+		close(g.entered)
+		<-g.release
+	})
+	return g.WebMessenger.SendText(ctx, contextID, threadID, text)
+}
+
+// TestChatAPI_WaitJoinsHandlerBeforeExecute pins GH-5929/GH-5940 through the
+// real gateway, API, comms.Handler and Runner: a message accepted with 202
+// whose handler has not reached the backend is invisible to the backend
+// counters (waitIdle reports idle), and only API.Wait still sees it.
+func TestChatAPI_WaitJoinsHandlerBeforeExecute(t *testing.T) {
+	gate := &chatGateMessenger{entered: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(gate.release) }) }
+	backend := &chatTestBackend{}
+	h := newChatHarnessWith(t, backend, func(m *web.WebMessenger) comms.Messenger {
+		gate.WebMessenger = m
+		return gate
+	})
+	t.Cleanup(release) // runs before the harness cleanup, which joins the handler
+
+	req, err := http.NewRequest(http.MethodPost, h.baseURL+"/api/v1/chat/messages",
+		strings.NewReader(`{"conversationId":"gate-conv","text":"queue status"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+h.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST status = %d, want 202", resp.StatusCode)
+	}
+
+	select {
+	case <-gate.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler never reached the messenger")
+	}
+
+	// The blind spot: the handler is mid-flight yet the backend looks idle.
+	if !backend.idle(h.runner) {
+		t.Fatal("backend not idle while the handler is parked; the test no longer holds it ahead of the backend")
+	}
+	if h.api.Wait(50 * time.Millisecond) {
+		t.Fatal("API.Wait = true while the accepted handler is still running")
+	}
+
+	release()
+	if !h.api.Wait(10 * time.Second) {
+		t.Fatal("API.Wait = false after the handler was released")
+	}
+	if err := backend.waitIdle(h.runner, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if events, _ := h.api.Events("gate-conv", 0); len(events) == 0 {
+		t.Error("no event recorded by the time Wait returned")
 	}
 }
 
