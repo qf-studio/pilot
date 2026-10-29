@@ -2579,7 +2579,7 @@ func TestWaitForExecution_DecomposedParentGuard_ResolvesAsSuccess(t *testing.T) 
 		err  error
 	}
 	resultCh := make(chan result, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	go func() {
 		exec, err := dispatcher.WaitForExecution(ctx, orphanID, 10*time.Millisecond)
@@ -2589,7 +2589,9 @@ func TestWaitForExecution_DecomposedParentGuard_ResolvesAsSuccess(t *testing.T) 
 	// Let the waiter observe the "running" row at least once before it's
 	// deleted out from under it, mirroring the real race (recoverStaleRunningTasks'
 	// decomposed-parent guard branch deletes the row once children are seen complete).
-	shortSleep(30 * time.Millisecond)
+	// The sleep spans many poll ticks so a loaded CI box that delays goroutine
+	// scheduling still lets the waiter record the row before it vanishes.
+	shortSleep(300 * time.Millisecond)
 	if err := store.DeleteExecution(orphanID); err != nil {
 		t.Fatalf("DeleteExecution: %v", err)
 	}
