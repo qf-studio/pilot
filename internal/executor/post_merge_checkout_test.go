@@ -102,8 +102,8 @@ func TestPostMergeReviewCheckout_ReadOnlyTools(t *testing.T) {
 			}
 		}
 	}
-	if v, _ := flagValue(gotArgs, "--max-turns"); v != "30" {
-		t.Errorf("--max-turns = %q, want 30", v)
+	if v, _ := flagValue(gotArgs, "--max-turns"); v != "40" {
+		t.Errorf("--max-turns = %q, want 40", v)
 	}
 	if v, _ := flagValue(gotArgs, "--output-format"); v != "stream-json" {
 		t.Errorf("--output-format = %q, want stream-json", v)

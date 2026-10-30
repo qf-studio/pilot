@@ -31,7 +31,10 @@ func TestPostMergeReviewCitation_PromptCarriesTracingRules(t *testing.T) {
 		"the diff alone does not count",
 		`the reason "not traced"`,
 		"must quote the line it rests on",
-		"at most 30 tool turns",
+		"at most 40 tool turns",
+		"read the sibling functions that touch the same state, fields or flags",
+		"read the pre-existing branches and early returns around it that the diff did not change",
+		"naming the input or state under which the cited line would fail and why it does not",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("checkout prompt lacks %q", want)
@@ -52,10 +55,10 @@ func TestPostMergeReviewCitation_PromptCarriesTracingRules(t *testing.T) {
 	}
 }
 
-func TestPostMergeCheckoutArgs_MaxTurns30(t *testing.T) {
+func TestPostMergeCheckoutArgs_MaxTurns40(t *testing.T) {
 	v, ok := flagValue(postMergeCheckoutArgs(), "--max-turns")
-	if !ok || v != "30" {
-		t.Errorf("--max-turns = %q (present %v), want 30", v, ok)
+	if !ok || v != "40" {
+		t.Errorf("--max-turns = %q (present %v), want 40", v, ok)
 	}
 	if defaultPostMergeReviewTimeout.Minutes() != 5 {
 		t.Errorf("review timeout = %v, want it unchanged at 5m", defaultPostMergeReviewTimeout)
@@ -383,4 +386,55 @@ func TestPostMergeReviewNoFilesReadDowngrade(t *testing.T) {
 			t.Errorf("verdict=%q noFiles=%v, want REQUEST-CHANGES untouched", got.Verdict, got.NoFilesRead)
 		}
 	})
+}
+
+// TestPostMergeReviewerPrompt_AdjacentItemInBothVariants pins GH-5974: the
+// adjacent-code checklist item follows item 2 in the post-merge prompt and in
+// the pre-merge (pre-PR reviewer) prompt, and diff-only reviews do not carry it.
+func TestPostMergeReviewerPrompt_AdjacentItemInBothVariants(t *testing.T) {
+	repo, sha := initCheckoutRepo(t)
+	prompt := func(t *testing.T, in PostMergeReviewInput) string {
+		t.Helper()
+		var got string
+		r := newPostMergeReviewerWithDirRunner(func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			got, _ = flagValue(args, "-p")
+			return []byte(streamLine(t, map[string]any{"type": "result", "result": "VERDICT: APPROVE\nDEFECTS:\nnone\nNOT-VERIFIED:\nnone\nNOTES:\n"})), nil
+		})
+		if _, err := r.Review(context.Background(), in); err != nil {
+			t.Fatalf("Review: %v", err)
+		}
+		return got
+	}
+
+	post := checkoutInput(repo, sha)
+	pre := post
+	pre.PreMerge = true
+	for name, in := range map[string]PostMergeReviewInput{"post-merge": post, "pre-merge": pre} {
+		got := prompt(t, in)
+		if !strings.Contains(got, postMergeChecklistItemAdjacent) {
+			t.Errorf("%s prompt lacks the adjacent checklist item", name)
+		}
+		i2, iAdj, i3 := strings.Index(got, "\n2) "), strings.Index(got, "\n2b) "), strings.Index(got, "\n3) ")
+		if i2 < 0 || iAdj < i2 || i3 < iAdj {
+			t.Errorf("%s prompt: adjacent item is not between items 2 and 3 (%d, %d, %d)", name, i2, iAdj, i3)
+		}
+		for _, want := range []string{`say "no adjacent path found" with the files read`, "preflight or guard that runs before the changed call"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s prompt lacks %q", name, want)
+			}
+		}
+	}
+
+	// No checkout, no file reads: the diff-only prompt omits the item.
+	var diffOnly string
+	r := newPostMergeReviewerWithRunner(func(_ context.Context, args ...string) ([]byte, error) {
+		diffOnly, _ = flagValue(args, "-p")
+		return []byte("VERDICT: APPROVE\nDEFECTS:\nnone\n"), nil
+	})
+	if _, err := r.Review(context.Background(), PostMergeReviewInput{PRNumber: 1, Diff: checkoutDiff}); err != nil {
+		t.Fatalf("diff-only Review: %v", err)
+	}
+	if strings.Contains(diffOnly, "2b)") {
+		t.Error("diff-only prompt carries the adjacent checklist item")
+	}
 }

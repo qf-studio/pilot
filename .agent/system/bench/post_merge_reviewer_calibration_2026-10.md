@@ -169,3 +169,7 @@ Same 14 PRs, same rules, same scorer prompt. Raw: `run4/` (14 JSONs + `scoring.m
 2. The remaining 6 points to the bar are in adjacent-code behaviour. Candidate next prompt step: for each changed function, open its *siblings in the same file* and the *pre-existing branch the diff did not touch* (the `ratelimit.go` / `git_clean` class), and name one adjacent path per defect-bearing file. Measure on the same 14.
 3. Opus stays (founder 10-29). Cost 68 s/review mean; the daily cap of 20 is the bound.
 4. This run is also the first calibration of the **pre-PR reviewer** (TASK-620): same prompt, one sentence swapped, same budget. Shadow-mode evidence on live PRs today: 2 of 2 pre-PR runs missed the expired-git-context blocking defect on PR#5966 that post-merge caught — consistent with 44 % recall, not with enforce mode yet.
+
+## Run 5 recipe
+
+Same 14 PRs, same scorer rules, compare against run 4 (recall 44.2 %, false 0.07, over-escalation 3). Prompt under test: checklist item 2b (adjacent code — sibling functions in the changed file, untouched branches and preflights beside each hunk, one named pre-existing path per requirement) and the "met" rule that needs one sentence naming the input or state under which the cited line would fail; `--max-turns` 40, review timeout unchanged at 5 min (GH-5974). Also record mean review time; above 120 s is a finding.

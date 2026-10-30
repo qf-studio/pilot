@@ -360,7 +360,7 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 			defer co.cleanup()
 			defer confine.cleanup()
 			workDir, home = co.path, confine.home
-			systemPrompt = strings.Replace(systemPrompt, postMergeChecklistItem2, postMergeChecklistItem2Checkout, 1)
+			systemPrompt = strings.Replace(systemPrompt, postMergeChecklistItem2, postMergeChecklistItem2Checkout+"\n"+postMergeChecklistItemAdjacent, 1)
 			systemPrompt = strings.Replace(systemPrompt, "\n\nIMPORTANT — truncation handling", "\n\n"+postMergeCheckoutPrompt+"\n\nIMPORTANT — truncation handling", 1)
 		}
 	}
