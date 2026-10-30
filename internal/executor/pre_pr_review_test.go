@@ -202,11 +202,12 @@ func TestRunPrePRReview_Shadow_RecordsOutcomeNoFix(t *testing.T) {
 				Blocking  int    `json:"blocking"`
 				Minor     int    `json:"minor"`
 				FilesRead int    `json:"files_read"`
+				Passes    int    `json:"passes"`
 			}
 			if err := json.Unmarshal([]byte(e.Detail), &d); err != nil {
 				t.Fatalf("event detail %q: %v", e.Detail, err)
 			}
-			if d.Mode != "shadow" || d.Verdict != "APPROVE-WITH-NOTES" || d.Blocking != 0 || d.Minor != 1 || d.FilesRead != 4 {
+			if d.Mode != "shadow" || d.Verdict != "APPROVE-WITH-NOTES" || d.Blocking != 0 || d.Minor != 1 || d.FilesRead != 4 || d.Passes != 1 {
 				t.Errorf("event detail = %+v", d)
 			}
 		case memory.StagePrePRFix:

@@ -3551,7 +3551,7 @@ func newReviewMergeCmd() *cobra.Command {
 print its verdict. It gathers the same inputs the autopilot does (the PR, its
 merged diff and the issue it implements) and uses the reviewer exactly as
 orchestrator.autopilot.post_merge_review configures it (model, timeout,
-max_diff_chars), whether or not post_merge_review.enabled is set.
+max_diff_chars, passes; --passes overrides the last), whether or not post_merge_review.enabled is set.
 
 It is diagnostic: nothing is posted unless --post is given, and even then only
 the verdict comment is posted. It never files a follow-up issue and never
@@ -3580,6 +3580,7 @@ of the merge commit's first parent to the merge commit; the output says which.`,
 	cmd.Flags().IntVar(&opts.PR, "pr", 0, "Merged pull request number")
 	cmd.Flags().IntVar(&opts.Issue, "issue", 0, "Issue the PR implements (default: closing reference, else GH-N in the branch name)")
 	cmd.Flags().BoolVar(&opts.JSON, "json", false, "Output as JSON")
+	cmd.Flags().IntVar(&opts.Passes, "passes", 0, "Reviewer passes, 1 or 2 (default: post_merge_review.passes); 2 runs a hunk pass and an adjacent pass and unites their defects")
 	cmd.Flags().BoolVar(&opts.Post, "post", false, "Also post the verdict comment on the PR (never files an issue)")
 	return cmd
 }

@@ -872,7 +872,7 @@ pilot brief --weekly
 Run the post-merge reviewer on any merged PR and print the verdict.
 
 ```bash
-pilot review-merge --repo owner/name --pr N [--issue M] [--json] [--post]
+pilot review-merge --repo owner/name --pr N [--issue M] [--json] [--post] [--passes 1|2]
 ```
 
 Runs the same gather-and-review the autopilot runs after a merge
@@ -906,13 +906,16 @@ JSON) says which was used.
 | `--issue` | Issue the PR implements; default: closing reference, else `GH-N` in the branch name |
 | `--json` | Output as JSON |
 | `--post` | Also post the verdict comment on the PR, the same comment the autopilot posts. Off by default |
+| `--passes` | Reviewer passes, `1` or `2`; default `post_merge_review.passes`. `2` runs a hunk pass and an adjacent pass on one checkout and unites their defects by location |
 
 The text output shows the verdict, the defect list (file, line, claim and
 evidence), the notes, the `Diff:` line (bytes, files, trimmed), the model and
 the duration of the review. `--json` carries `verdict`, `defects` (each with
 `file`, `line`, `claim`, `evidence`), `notes`, `diff_bytes`, `diff_files`,
 `diff_trimmed`, `trimmed_files`, `model` and `duration_ms`, plus the input
-sizes `input_diff_bytes`, `input_issue_bytes` and `input_pr_body_bytes`.
+sizes `input_diff_bytes`, `input_issue_bytes` and `input_pr_body_bytes`, and the
+pass stats `passes`, `files_read_by_pass`, `duration_ms_by_pass`,
+`defects_by_pass`, `pass_failed` and `overlap`.
 
 The exit status is non-zero when the run fails or the reviewer's output broke
 its contract (verdict `unknown`, which is never posted), so a calibration loop

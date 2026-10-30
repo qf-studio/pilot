@@ -630,6 +630,11 @@ orchestrator:
       # Over the budget the largest files are trimmed first (headers always
       # kept) and the verdict comment says what was trimmed. 0 = 200000.
       max_diff_chars: 0
+      # Reviewer passes per review (GH-5977): 1 (default) or 2. With 2, a hunk
+      # pass and an adjacent pass (sibling functions, untouched branches, guards)
+      # run on one checkout, share `timeout` and their defects are united by
+      # location; the verdict is derived from the union. Needs a local checkout.
+      passes: 1
 
     # Cross-PR platform-outage breaker (GH-4791, TASK-458 part 1). The
     # per-PR circuit breaker above is deliberately scoped to one PR at a
@@ -840,6 +845,8 @@ executor:
   #   fix_timeout: 10m         # Bound on one fix round (used by a later leg)
   #   max_fix_rounds: 1        # Fix rounds a REQUEST-CHANGES may start (used by a later leg)
   #   max_diff_chars: 0        # Diff budget in characters; 0 = 200000
+  #   passes: 1                # 1 (default) or 2: a hunk pass then an adjacent pass on one checkout,
+  #                            # defects united by location, verdict from the union; timeout is shared
   #   skip_complexity: [trivial]  # Task complexities that skip the review
   # self_review_timeout: 5m   # Budget for the self-review phase (must be >= 0). Unset/0 keeps the
   #                           # per-backend defaults (2m claude-code, 10m opencode); a set value applies

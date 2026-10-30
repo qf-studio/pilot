@@ -26,6 +26,9 @@ func TestPrePRReviewConfig_Validate(t *testing.T) {
 		{name: "negative timeout", cfg: &executor.PrePRReviewConfig{Mode: "shadow", Timeout: -time.Second}, errSubstr: "pre_pr_review.timeout"},
 		{name: "negative fix_timeout", cfg: &executor.PrePRReviewConfig{FixTimeout: -time.Second}, errSubstr: "pre_pr_review.fix_timeout"},
 		{name: "negative max_fix_rounds", cfg: &executor.PrePRReviewConfig{MaxFixRounds: -1}, errSubstr: "pre_pr_review.max_fix_rounds"},
+		{name: "two passes", cfg: &executor.PrePRReviewConfig{Mode: "shadow", Passes: 2}},
+		{name: "three passes", cfg: &executor.PrePRReviewConfig{Passes: 3}, errSubstr: "pre_pr_review.passes"},
+		{name: "negative passes", cfg: &executor.PrePRReviewConfig{Passes: -1}, errSubstr: "pre_pr_review.passes"},
 		{name: "negative max_diff_chars", cfg: &executor.PrePRReviewConfig{MaxDiffChars: -1}, errSubstr: "pre_pr_review.max_diff_chars"},
 	}
 	for _, tt := range tests {
@@ -48,7 +51,7 @@ func TestPrePRReviewConfig_Validate(t *testing.T) {
 
 func TestPrePRReviewConfig_Load(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	body := "executor:\n  pre_pr_review:\n    mode: shadow\n    model: test-model\n    timeout: 7m\n    fix_timeout: 11m\n    max_fix_rounds: 2\n    max_diff_chars: 1234\n    skip_complexity: [trivial, simple]\n"
+	body := "executor:\n  pre_pr_review:\n    mode: shadow\n    model: test-model\n    timeout: 7m\n    fix_timeout: 11m\n    max_fix_rounds: 2\n    max_diff_chars: 1234\n    passes: 2\n    skip_complexity: [trivial, simple]\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +63,7 @@ func TestPrePRReviewConfig_Load(t *testing.T) {
 	if p == nil {
 		t.Fatal("executor.pre_pr_review did not load")
 	}
-	if p.Mode != "shadow" || p.Model != "test-model" || p.Timeout != 7*time.Minute || p.FixTimeout != 11*time.Minute || p.MaxFixRounds != 2 || p.MaxDiffChars != 1234 {
+	if p.Mode != "shadow" || p.Model != "test-model" || p.Timeout != 7*time.Minute || p.FixTimeout != 11*time.Minute || p.MaxFixRounds != 2 || p.MaxDiffChars != 1234 || p.Passes != 2 {
 		t.Errorf("loaded = %+v", p)
 	}
 	if !p.SkipsComplexity(executor.ComplexitySimple) || !p.SkipsComplexity(executor.ComplexityTrivial) || p.SkipsComplexity(executor.ComplexityMedium) {

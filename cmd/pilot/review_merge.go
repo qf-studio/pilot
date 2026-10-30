@@ -44,6 +44,9 @@ type reviewMergeOptions struct {
 	Issue int // 0 = resolve from the PR
 	JSON  bool
 	Post  bool
+	// Passes overrides the configured reviewer passes: 1 or 2; 0 keeps the
+	// value from post_merge_review.passes.
+	Passes int
 }
 
 // reviewMergeEnvFactory builds the real environment for repo from config. A
@@ -60,6 +63,9 @@ func (o reviewMergeOptions) validate() error {
 	}
 	if o.Issue < 0 {
 		return errors.New("--issue must be a positive issue number")
+	}
+	if o.Passes < 0 || o.Passes > 2 {
+		return fmt.Errorf("--passes must be 1 or 2, got %d", o.Passes)
 	}
 	return nil
 }
@@ -125,6 +131,12 @@ type reviewMergeResult struct {
 	NotVerified    []string            `json:"not_verified"`
 	Notes          string              `json:"notes"`
 	FilesRead      int                 `json:"files_read"`
+	Passes         int                 `json:"passes"`
+	FilesReadBy    []int               `json:"files_read_by_pass,omitempty"`
+	DurationMSBy   []int64             `json:"duration_ms_by_pass,omitempty"`
+	DefectsBy      []int               `json:"defects_by_pass,omitempty"`
+	PassFailed     []bool              `json:"pass_failed,omitempty"`
+	Overlap        int                 `json:"overlap"`
 	Checkout       bool                `json:"checkout"`
 	RawOutput      string              `json:"raw_output,omitempty"`
 	DiffBytes      int                 `json:"diff_bytes"`
@@ -162,6 +174,12 @@ func runReviewMerge(ctx context.Context, opts reviewMergeOptions, env *reviewMer
 		return err
 	}
 
+	if opts.Passes > 0 {
+		if ps, ok := env.Reviewer.(interface{ SetPasses(int) }); ok {
+			ps.SetPasses(opts.Passes)
+		}
+	}
+
 	start := time.Now()
 	review, err := env.Reviewer.Review(ctx, gathered.Input)
 	if err != nil {
@@ -183,6 +201,11 @@ func runReviewMerge(ctx context.Context, opts reviewMergeOptions, env *reviewMer
 		NotVerified:    append([]string{}, review.NotVerified...),
 		Notes:          review.Notes,
 		FilesRead:      review.FilesRead,
+		Passes:         review.EffectivePasses(),
+		FilesReadBy:    append([]int(nil), review.FilesReadByPass...),
+		DefectsBy:      append([]int(nil), review.DefectsByPass...),
+		PassFailed:     append([]bool(nil), review.PassFailed...),
+		Overlap:        review.Overlap,
 		Checkout:       review.Checkout,
 		DiffBytes:      review.DiffBytes,
 		DiffFiles:      review.DiffFiles,
@@ -197,6 +220,9 @@ func runReviewMerge(ctx context.Context, opts reviewMergeOptions, env *reviewMer
 	}
 	if res.Model == "" {
 		res.Model = "cli-default"
+	}
+	for _, d := range review.DurationByPass {
+		res.DurationMSBy = append(res.DurationMSBy, d.Milliseconds())
 	}
 	if !review.Verdict.Postable() {
 		// An unusable review keeps the model text so the failure can be diagnosed;
@@ -310,6 +336,9 @@ func printReviewMerge(out io.Writer, res *reviewMergeResult, opts reviewMergeOpt
 		diffLine += fmt.Sprintf(", checkout: no, files read: %d", res.FilesRead)
 	}
 	p("%s\n", diffLine)
+	if res.Passes > 1 {
+		p("Passes: %d (files read %v, defects %v, overlap %d)\n", res.Passes, res.FilesReadBy, res.DefectsBy, res.Overlap)
+	}
 	p("Model: %s\n", terminalSafe(res.Model))
 	p("Duration: %s\n", (time.Duration(res.DurationMS) * time.Millisecond).Round(time.Millisecond))
 	switch {

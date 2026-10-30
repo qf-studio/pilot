@@ -141,6 +141,20 @@ type PostMergeReview struct {
 	// Turns is the number of CLI turns the checkout review used; zero without
 	// a checkout.
 	Turns int
+	// Passes is the number of passes the review ran (GH-5977): 2 for a
+	// two-pass checkout review, 0 for the single-pass review. The per-pass
+	// slices below are set only when it is 2, index 0 = hunk, 1 = adjacent.
+	Passes int
+	// PassFailed marks a pass that errored or produced no usable verdict; such
+	// a pass contributes nothing to the united review.
+	PassFailed      []bool
+	FilesReadByPass []int
+	TurnsByPass     []int
+	DurationByPass  []time.Duration
+	// DefectsByPass is the number of defects each pass reported before the union.
+	DefectsByPass []int
+	// Overlap is the number of defects both passes reported at one location.
+	Overlap int
 	// DiffTrimmed is true when the reviewer was shown a trimmed diff.
 	DiffTrimmed bool
 	// TrimmedFiles lists the files whose diff body was cut.
@@ -191,7 +205,10 @@ type PostMergeReviewer struct {
 	model        string
 	timeout      time.Duration
 	maxDiffChars int
-	log          *slog.Logger
+	// passes is the number of claude invocations per checkout review: 1 (the
+	// default) or 2 (hunk pass, then adjacent pass; GH-5977).
+	passes int
+	log    *slog.Logger
 	// cmdRunner runs the CLI with args in dir ("" = the daemon's directory).
 	// A non-empty home is the review's own HOME (GH-5920): the runner builds
 	// the CLI environment from it with postMergeReviewEnviron.
@@ -212,6 +229,7 @@ func NewPostMergeReviewer(claudeCmd, model string, timeout time.Duration) *PostM
 		model:        model,
 		timeout:      timeout,
 		maxDiffChars: DefaultPostMergeReviewMaxDiffChars,
+		passes:       1,
 		log:          slog.Default().With("component", "post-merge-reviewer"),
 		cmdRunner:    NewIntentJudge(claudeCmd).runCmdInHome,
 		checkout:     createPostMergeCheckout,
@@ -226,6 +244,19 @@ func (r *PostMergeReviewer) SetMaxDiffChars(n int) {
 	}
 	r.maxDiffChars = n
 }
+
+// SetPasses sets the number of review passes of a checkout review: 2 runs a
+// hunk pass and an adjacent pass and unites them; anything else keeps the
+// default single pass (GH-5977).
+func (r *PostMergeReviewer) SetPasses(n int) {
+	if n != 2 {
+		n = 1
+	}
+	r.passes = n
+}
+
+// Passes returns the configured number of review passes.
+func (r *PostMergeReviewer) Passes() int { return r.passes }
 
 // MaxDiffChars returns the reviewer's diff budget.
 func (r *PostMergeReviewer) MaxDiffChars() int { return r.maxDiffChars }
@@ -332,9 +363,7 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 		slog.Any("trimmed_files", report.Paths()),
 	)
 
-	var sb strings.Builder
 	memoriesBlock, memoriesRendered := renderMemoryBlock(postMergeMemoriesHeader, "", in.Memories)
-	systemPrompt := postMergeReviewerSystemPrompt
 
 	reviewCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
@@ -360,18 +389,12 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 			defer co.cleanup()
 			defer confine.cleanup()
 			workDir, home = co.path, confine.home
-			systemPrompt = strings.Replace(systemPrompt, postMergeChecklistItem2, postMergeChecklistItem2Checkout+"\n"+postMergeChecklistItemAdjacent, 1)
-			systemPrompt = strings.Replace(systemPrompt, "\n\nIMPORTANT — truncation handling", "\n\n"+postMergeCheckoutPrompt+"\n\nIMPORTANT — truncation handling", 1)
 		}
 	}
-	if memoriesRendered > 0 {
-		systemPrompt = strings.Replace(systemPrompt, postMergeChecklistItem5, postMergeChecklistItem5+"\n"+postMergeMemoryChecklistLine, 1)
-	}
-	if in.PreMerge {
-		systemPrompt = strings.Replace(systemPrompt, postMergeAlreadyMergedSentence, preMergeAboutToPushSentence, 1)
-		systemPrompt = strings.Replace(systemPrompt, "\n\n"+postMergePRBodyParagraph, "", 1)
-	}
-	sb.WriteString(systemPrompt)
+	hasCheckout := workDir != ""
+
+	// everything after the system prompt is the same for every pass
+	var sb strings.Builder
 	fmt.Fprintf(&sb, "\n\n## Issue Title\n%s\n\n## Issue Description\n%s\n", in.IssueTitle, truncatePreflightBody(in.IssueBody))
 	if memoriesBlock != "" {
 		sb.WriteString("\n" + memoriesBlock)
@@ -400,8 +423,39 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 		fmt.Fprintf(&sb, "\nDiff trimmed: sent %d of %d bytes; trimmed files: %s\n", report.SentBytes, report.OriginalBytes, strings.Join(parts, ", "))
 	}
 	fmt.Fprintf(&sb, "\n## Merged Diff (PR #%d)\n```diff\n%s\n```", in.PRNumber, payload)
+	tail := sb.String()
 
-	args := []string{"--print", "-p", sb.String()}
+	promptFor := func(kind postMergePassKind) string {
+		return postMergeSystemPrompt(kind, hasCheckout, memoriesRendered > 0, in.PreMerge) + tail
+	}
+
+	var review *PostMergeReview
+	var err error
+	if hasCheckout && r.passes >= 2 {
+		review, err = r.reviewTwoPass(reviewCtx, in, promptFor, workDir, home, confine)
+	} else {
+		review, err = r.reviewPass(reviewCtx, in, promptFor(postMergePassCombined), workDir, home)
+		if confine != nil {
+			logPostMergeDenials(r.log, confine.denyLog, in.PRNumber)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	review.DiffBytes = report.OriginalBytes
+	review.DiffFiles = report.Files
+	review.Memories = memoriesRendered
+	review.DiffTrimmed = len(report.Trimmed) > 0
+	review.TrimmedFiles = report.Paths()
+	return review, nil
+}
+
+// reviewPass runs one claude invocation with prompt and parses, cites-checks
+// and downgrades its answer as a single review. A subprocess failure is an
+// error; output that breaks the contract is a review with a non-postable
+// verdict.
+func (r *PostMergeReviewer) reviewPass(ctx context.Context, in PostMergeReviewInput, prompt, workDir, home string) (*PostMergeReview, error) {
+	args := []string{"--print", "-p", prompt}
 	if r.model != "" {
 		args = append(args, "--model", r.model)
 	}
@@ -411,10 +465,7 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 	} else {
 		args = append(args, "--output-format", "text")
 	}
-	output, err := r.cmdRunner(reviewCtx, workDir, home, args...)
-	if confine != nil {
-		logPostMergeDenials(r.log, confine.denyLog, in.PRNumber)
-	}
+	output, err := r.cmdRunner(ctx, workDir, home, args...)
 	if err != nil {
 		return nil, fmt.Errorf("post-merge reviewer subprocess: %w", err)
 	}
@@ -449,11 +500,6 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 				slog.Int("pr", in.PRNumber), slog.Int("turns", review.Turns))
 		}
 	}
-	review.DiffBytes = report.OriginalBytes
-	review.DiffFiles = report.Files
-	review.Memories = memoriesRendered
-	review.DiffTrimmed = len(report.Trimmed) > 0
-	review.TrimmedFiles = report.Paths()
 	return review, nil
 }
 
@@ -713,4 +759,13 @@ func ExtractPRBodyEvidence(body string) string {
 		rest = rest[:next[0]]
 	}
 	return strings.TrimSpace(body[loc[0]:loc[1]] + rest)
+}
+
+// EffectivePasses is the number of passes the review ran, 1 for the single-pass
+// review.
+func (r *PostMergeReview) EffectivePasses() int {
+	if r.Passes > 1 {
+		return r.Passes
+	}
+	return 1
 }

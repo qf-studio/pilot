@@ -22,6 +22,9 @@ func TestConfig_Validate_PostMergeReview(t *testing.T) {
 		{name: "negative cap", pmr: &autopilot.PostMergeReviewConfig{DailyCap: -1}, errSubstr: "post_merge_review.daily_cap must be >= 0"},
 		{name: "negative timeout", pmr: &autopilot.PostMergeReviewConfig{Timeout: -time.Second}, errSubstr: "post_merge_review.timeout must be >= 0"},
 		{name: "max diff chars", pmr: &autopilot.PostMergeReviewConfig{Enabled: true, MaxDiffChars: 50000}},
+		{name: "two passes", pmr: &autopilot.PostMergeReviewConfig{Enabled: true, Passes: 2}},
+		{name: "three passes", pmr: &autopilot.PostMergeReviewConfig{Passes: 3}, errSubstr: "post_merge_review.passes must be 1 or 2"},
+		{name: "negative passes", pmr: &autopilot.PostMergeReviewConfig{Passes: -1}, errSubstr: "post_merge_review.passes must be 1 or 2"},
 		{name: "negative max diff chars", pmr: &autopilot.PostMergeReviewConfig{MaxDiffChars: -1}, errSubstr: "post_merge_review.max_diff_chars must be >= 0"},
 	}
 	for _, tt := range tests {
@@ -44,12 +47,12 @@ func TestConfig_Validate_PostMergeReview(t *testing.T) {
 
 func TestPostMergeReviewConfig_YAML(t *testing.T) {
 	var cfg autopilot.Config
-	doc := "post_merge_review:\n  enabled: true\n  model: some-model\n  daily_cap: 7\n  timeout: 90s\n  max_diff_chars: 123456\n"
+	doc := "post_merge_review:\n  enabled: true\n  model: some-model\n  daily_cap: 7\n  timeout: 90s\n  max_diff_chars: 123456\n  passes: 2\n"
 	if err := yaml.Unmarshal([]byte(doc), &cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	pmr := cfg.PostMergeReview
-	if pmr == nil || !pmr.Enabled || pmr.Model != "some-model" || pmr.DailyCap != 7 || pmr.Timeout != 90*time.Second || pmr.MaxDiffChars != 123456 {
+	if pmr == nil || !pmr.Enabled || pmr.Model != "some-model" || pmr.DailyCap != 7 || pmr.Timeout != 90*time.Second || pmr.MaxDiffChars != 123456 || pmr.Passes != 2 {
 		t.Fatalf("post_merge_review = %+v", pmr)
 	}
 }

@@ -51,6 +51,8 @@ type PrePRReviewOutcome struct {
 	Duration time.Duration
 	// FilesRead is the number of files the reviewer opened in the checkout.
 	FilesRead int
+	// Passes is the number of reviewer passes the review ran; 0 when no review ran.
+	Passes int
 	// Fix is the fix round started on this verdict (TASK-620 L3); nil when none
 	// applied. The verdict itself is never changed by it.
 	Fix *ReviewFixOutcome
@@ -195,6 +197,7 @@ func (r *Runner) runPrePRReview(ctx context.Context, task *Task, executionPath s
 	case review != nil:
 		out.Review = review
 		out.FilesRead = review.FilesRead
+		out.Passes = review.EffectivePasses()
 		// unknown and exhausted reviews followed no contract: no verdict.
 		if review.Verdict.Postable() {
 			out.Verdict = review.Verdict
@@ -209,6 +212,7 @@ func (r *Runner) runPrePRReview(ctx context.Context, task *Task, executionPath s
 		slog.Int("blocking", blocking),
 		slog.Int("minor", minor),
 		slog.Int("files_read", out.FilesRead),
+		slog.Int("passes", out.Passes),
 		slog.Duration("duration", out.Duration),
 	}
 	if out.Err != nil {
@@ -228,10 +232,11 @@ func (r *Runner) recordPrePRReviewEvent(task *Task, out *PrePRReviewOutcome) {
 		Blocking   int    `json:"blocking"`
 		Minor      int    `json:"minor"`
 		FilesRead  int    `json:"files_read"`
+		Passes     int    `json:"passes,omitempty"`
 		DurationMS int64  `json:"duration_ms"`
 		Skipped    string `json:"skipped,omitempty"`
 		Error      string `json:"error,omitempty"`
-	}{out.Mode, out.verdictLabel(), blocking, minor, out.FilesRead, out.Duration.Milliseconds(), out.Skipped, ""}
+	}{out.Mode, out.verdictLabel(), blocking, minor, out.FilesRead, out.Passes, out.Duration.Milliseconds(), out.Skipped, ""}
 	if out.Err != nil {
 		detail.Error = out.Err.Error()
 	}

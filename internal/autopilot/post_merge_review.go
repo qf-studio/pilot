@@ -280,6 +280,8 @@ func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeR
 		"checkout", review.Checkout,
 		"files_read", review.FilesRead,
 		"turns", review.Turns,
+		"passes", review.EffectivePasses(),
+		"overlap", review.Overlap,
 		"duration", time.Since(start),
 	)
 	if review.NoFilesRead {

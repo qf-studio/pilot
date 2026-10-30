@@ -59,6 +59,7 @@ func newPostMergeReviewer(cfg *config.Config) (*executor.PostMergeReviewer, erro
 	}
 	r := executor.NewPostMergeReviewer(claudeCmd, model, pmr.Timeout)
 	r.SetMaxDiffChars(pmr.MaxDiffChars)
+	r.SetPasses(pmr.Passes)
 	return r, nil
 }
 
@@ -87,6 +88,7 @@ func wirePostMergeReviewer(cfg *config.Config, log *slog.Logger, controllers ...
 		slog.Int("daily_cap", pmr.EffectiveDailyCap()),
 		slog.String("model", model),
 		slog.Int("max_diff_chars", r.MaxDiffChars()),
+		slog.Int("passes", r.Passes()),
 	)
 }
 

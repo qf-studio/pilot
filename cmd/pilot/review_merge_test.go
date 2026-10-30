@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/executor"
@@ -61,7 +62,18 @@ type rmFakeReviewer struct {
 	rawOutput string
 	filesRead int
 	checkout  bool
+	// two-pass stats returned on the review, and the value --passes set (GH-5977)
+	passes          int
+	filesReadByPass []int
+	defectsByPass   []int
+	durationByPass  []time.Duration
+	passFailed      []bool
+	overlap         int
+	setPasses       []int
 }
+
+// SetPasses records the --passes override the command applied.
+func (f *rmFakeReviewer) SetPasses(n int) { f.setPasses = append(f.setPasses, n) }
 
 func (f *rmFakeReviewer) Review(_ context.Context, in executor.PostMergeReviewInput) (*executor.PostMergeReview, error) {
 	f.got = append(f.got, in)
@@ -76,6 +88,13 @@ func (f *rmFakeReviewer) Review(_ context.Context, in executor.PostMergeReviewIn
 		RawOutput:   f.rawOutput,
 		FilesRead:   f.filesRead,
 		Checkout:    f.checkout,
+
+		Passes:          f.passes,
+		FilesReadByPass: f.filesReadByPass,
+		DefectsByPass:   f.defectsByPass,
+		DurationByPass:  f.durationByPass,
+		PassFailed:      f.passFailed,
+		Overlap:         f.overlap,
 	}, nil
 }
 
@@ -473,5 +492,82 @@ func TestReviewMergeCommand_DiffLineChecksOutNo(t *testing.T) {
 	}
 	if !strings.Contains(out, "checkout: no, files read: 0") {
 		t.Errorf("Diff line should state no checkout:\n%s", out)
+	}
+}
+
+func TestReviewMergePasses_JSONCarriesPerPassFields(t *testing.T) {
+	gh, rev := newRMFakes()
+	rev.checkout, rev.passes, rev.overlap = true, 2, 1
+	rev.filesReadByPass, rev.defectsByPass = []int{4, 6}, []int{2, 3}
+	rev.durationByPass = []time.Duration{70 * time.Second, 90 * time.Second}
+	rev.passFailed = []bool{false, true}
+
+	out, err := runRM(t, gh, rev, "--repo", "qf-studio/pilot", "--pr", "5921", "--issue", "5917", "--json")
+	if err != nil {
+		t.Fatalf("command: %v", err)
+	}
+	var got struct {
+		Passes          int     `json:"passes"`
+		FilesReadByPass []int   `json:"files_read_by_pass"`
+		DurationMSBy    []int64 `json:"duration_ms_by_pass"`
+		DefectsByPass   []int   `json:"defects_by_pass"`
+		PassFailed      []bool  `json:"pass_failed"`
+		Overlap         int     `json:"overlap"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out)
+	}
+	if got.Passes != 2 || got.Overlap != 1 {
+		t.Errorf("passes=%d overlap=%d, want 2 and 1:\n%s", got.Passes, got.Overlap, out)
+	}
+	if fmt.Sprint(got.FilesReadByPass) != "[4 6]" || fmt.Sprint(got.DefectsByPass) != "[2 3]" || fmt.Sprint(got.DurationMSBy) != "[70000 90000]" || fmt.Sprint(got.PassFailed) != "[false true]" {
+		t.Errorf("per-pass fields = files %v defects %v duration_ms %v failed %v", got.FilesReadByPass, got.DefectsByPass, got.DurationMSBy, got.PassFailed)
+	}
+}
+
+func TestReviewMergePasses_SinglePassJSON(t *testing.T) {
+	gh, rev := newRMFakes()
+	out, err := runRM(t, gh, rev, "--repo", "qf-studio/pilot", "--pr", "5921", "--issue", "5917", "--json")
+	if err != nil {
+		t.Fatalf("command: %v", err)
+	}
+	if !strings.Contains(out, `"passes": 1`) || strings.Contains(out, "files_read_by_pass") {
+		t.Errorf("single-pass JSON should report passes 1 and no per-pass slices:\n%s", out)
+	}
+	if len(rev.setPasses) != 0 {
+		t.Errorf("SetPasses called %v without --passes; the configured value must stand", rev.setPasses)
+	}
+}
+
+func TestReviewMergePasses_FlagOverridesConfig(t *testing.T) {
+	gh, rev := newRMFakes()
+	if _, err := runRM(t, gh, rev, "--repo", "qf-studio/pilot", "--pr", "5921", "--issue", "5917", "--passes", "2"); err != nil {
+		t.Fatalf("command: %v", err)
+	}
+	if len(rev.setPasses) != 1 || rev.setPasses[0] != 2 {
+		t.Errorf("SetPasses calls = %v, want [2]", rev.setPasses)
+	}
+}
+
+func TestReviewMergePasses_FlagValidation(t *testing.T) {
+	for _, bad := range []string{"3", "-1"} {
+		gh, rev := newRMFakes()
+		_, err := runRM(t, gh, rev, "--repo", "qf-studio/pilot", "--pr", "5921", "--issue", "5917", "--passes", bad)
+		if err == nil || !strings.Contains(err.Error(), "--passes") {
+			t.Errorf("--passes %s: err = %v, want a --passes error", bad, err)
+		}
+	}
+}
+
+func TestReviewMergePasses_TextShowsPasses(t *testing.T) {
+	gh, rev := newRMFakes()
+	rev.checkout, rev.passes, rev.overlap = true, 2, 1
+	rev.filesReadByPass, rev.defectsByPass = []int{4, 6}, []int{2, 3}
+	out, err := runRM(t, gh, rev, "--repo", "qf-studio/pilot", "--pr", "5921", "--issue", "5917")
+	if err != nil {
+		t.Fatalf("command: %v", err)
+	}
+	if !strings.Contains(out, "Passes: 2") {
+		t.Errorf("text output lacks the Passes line:\n%s", out)
 	}
 }

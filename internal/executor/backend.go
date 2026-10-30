@@ -892,6 +892,11 @@ type PrePRReviewConfig struct {
 	// (DefaultPostMergeReviewMaxDiffChars).
 	MaxDiffChars int `yaml:"max_diff_chars,omitempty"`
 
+	// Passes is the number of reviewer passes per review: 1 (default; 0 means 1)
+	// or 2 — a hunk pass and an adjacent pass on one checkout, defects united by
+	// location (GH-5977). The Timeout is shared between the passes.
+	Passes int `yaml:"passes,omitempty"`
+
 	// SkipComplexity lists task complexities that skip the review. Unset
 	// defaults to [trivial]; an explicit empty list skips none.
 	SkipComplexity []string `yaml:"skip_complexity,omitempty"`

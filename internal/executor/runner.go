@@ -1605,12 +1605,14 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 			}
 			reviewer := NewPostMergeReviewer(claudeCmd, model, config.PrePRReview.EffectiveTimeout())
 			reviewer.SetMaxDiffChars(config.PrePRReview.MaxDiffChars)
+			reviewer.SetPasses(config.PrePRReview.Passes)
 			runner.prePRReviewer = reviewer
 			runner.log.Info("Pre-PR review initialized",
 				slog.String("mode", config.PrePRReviewMode()),
 				slog.String("model", reviewer.Model()),
 				slog.Duration("timeout", reviewer.Timeout()),
 				slog.Int("max_diff_chars", reviewer.MaxDiffChars()),
+				slog.Int("passes", reviewer.Passes()),
 			)
 		}
 	}

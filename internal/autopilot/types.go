@@ -327,6 +327,10 @@ type PostMergeReviewConfig struct {
 	// executor.DefaultPostMergeReviewMaxDiffChars (200000); negative is
 	// rejected by validation.
 	MaxDiffChars int `yaml:"max_diff_chars"`
+	// Passes is the number of reviewer passes per review: 1 (default; 0 means
+	// 1) or 2 — a hunk pass and an adjacent pass on one checkout, defects
+	// united by location (GH-5977). Timeout is shared between the passes.
+	Passes int `yaml:"passes"`
 }
 
 // PostMergeReviewEnabled reports whether the post-merge reviewer is on.

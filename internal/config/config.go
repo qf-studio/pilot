@@ -1301,6 +1301,9 @@ func validatePrePRReview(p *executor.PrePRReviewConfig) error {
 	if p.MaxDiffChars < 0 {
 		return fmt.Errorf("invalid executor.pre_pr_review.max_diff_chars: %d (must be >= 0; 0 = reviewer default)", p.MaxDiffChars)
 	}
+	if p.Passes < 0 || p.Passes > 2 {
+		return fmt.Errorf("invalid executor.pre_pr_review.passes: %d (must be 1 or 2; 0 = default of 1)", p.Passes)
+	}
 	return nil
 }
 
@@ -1439,6 +1442,9 @@ func (c *Config) Validate() error {
 				}
 				if pmr.MaxDiffChars < 0 {
 					return fmt.Errorf("orchestrator.autopilot.post_merge_review.max_diff_chars must be >= 0 (0 uses the default of %d), got %d", executor.DefaultPostMergeReviewMaxDiffChars, pmr.MaxDiffChars)
+				}
+				if pmr.Passes < 0 || pmr.Passes > 2 {
+					return fmt.Errorf("orchestrator.autopilot.post_merge_review.passes must be 1 or 2 (0 uses the default of 1), got %d", pmr.Passes)
 				}
 			}
 
