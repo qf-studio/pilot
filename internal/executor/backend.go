@@ -894,7 +894,7 @@ type PrePRReviewConfig struct {
 
 	// Passes is the number of reviewer passes per review: 1 (default; 0 means 1)
 	// or 2 — a hunk pass and an adjacent pass on one checkout, defects united by
-	// location (GH-5977). The Timeout is shared between the passes.
+	// location (GH-5977). Each pass gets the full Timeout (GH-5980).
 	Passes int `yaml:"passes,omitempty"`
 
 	// SkipComplexity lists task complexities that skip the review. Unset
@@ -928,6 +928,14 @@ func (c *PrePRReviewConfig) EffectiveTimeout() time.Duration {
 		return defaultPrePRReviewTimeout
 	}
 	return c.Timeout
+}
+
+// EffectivePasses returns the number of reviewer passes: 2 or the default 1.
+func (c *PrePRReviewConfig) EffectivePasses() int {
+	if c != nil && c.Passes == 2 {
+		return 2
+	}
+	return 1
 }
 
 // EffectiveFixTimeout returns the fix-round timeout, 10m when unset.

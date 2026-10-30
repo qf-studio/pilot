@@ -315,8 +315,8 @@ func TestPostMergeReviewTwoPass_PassBTimeout(t *testing.T) {
 	if got.Passes != 2 || len(got.PassFailed) != 2 || got.PassFailed[0] || !got.PassFailed[1] {
 		t.Errorf("passes=%d failed=%v, want 2 with only pass B failed", got.Passes, got.PassFailed)
 	}
-	if len(got.Defects) != 2 || got.Verdict != PostMergeApprove {
-		t.Errorf("defects=%d verdict=%q, want pass A's result alone", len(got.Defects), got.Verdict)
+	if len(got.Defects) != 2 || got.Verdict != PostMergeApproveWithNotes {
+		t.Errorf("defects=%d verdict=%q, want pass A's defects alone under the derived APPROVE-WITH-NOTES", len(got.Defects), got.Verdict)
 	}
 	if got.Overlap != 0 {
 		t.Errorf("overlap = %d, want 0", got.Overlap)
@@ -346,7 +346,7 @@ func TestPostMergeReviewTwoPass_UnusablePassContributesNothing(t *testing.T) {
 	}
 }
 
-func TestPostMergeReviewTwoPass_TimeoutShare(t *testing.T) {
+func TestPostMergeReviewTwoPass_FullTimeoutPerPass(t *testing.T) {
 	r, s, _, in := twoPassReviewer(t,
 		fixed(passAnswer(t, answerApproveMinorA, 1)), fixed(passAnswer(t, answerApproveMinorA, 1)))
 	r.timeout = 10 * time.Minute
@@ -354,9 +354,215 @@ func TestPostMergeReviewTwoPass_TimeoutShare(t *testing.T) {
 	if _, err := r.Review(context.Background(), in); err != nil {
 		t.Fatalf("Review: %v", err)
 	}
-	a, b := s.deadline[0].Sub(start), s.deadline[1].Sub(start)
-	if a < 4*time.Minute || a > 5*time.Minute+30*time.Second || b < 9*time.Minute {
-		t.Errorf("deadlines after start: pass A %s, pass B %s, want about half and the full timeout", a, b)
+	for i, dl := range s.deadline {
+		if left := dl.Sub(start); left < 9*time.Minute+30*time.Second || left > 10*time.Minute+30*time.Second {
+			t.Errorf("pass %d deadline = %s after start, want the full 10m timeout", i+1, left)
+		}
+	}
+}
+
+func TestPostMergeReviewTwoPass_PassContextBoundedByParent(t *testing.T) {
+	r, s, _, in := twoPassReviewer(t,
+		fixed(passAnswer(t, answerApproveMinorA, 1)), fixed(passAnswer(t, answerApproveMinorA, 1)))
+	r.timeout = 10 * time.Minute
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	start := time.Now()
+	if _, err := r.Review(ctx, in); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	for i, dl := range s.deadline {
+		if left := dl.Sub(start); left > 3*time.Minute+30*time.Second {
+			t.Errorf("pass %d deadline = %s after start, want it bounded by the caller's 3m", i+1, left)
+		}
+	}
+}
+
+func TestPostMergeReviewTwoPass_KeyNormalisesLocation(t *testing.T) {
+	forms := []string{"a.go:589 - the claim", "a.go:589-590", "a.go:L589", "a.go:589 (func X)", "a.go:589,590", "./a.go:589", "`a.go:589`", "/co/a.go:589 (func X)"}
+	want := defectKey(PostMergeDefect{Location: "a.go:589", Claim: "c1"}, "/co")
+	if want != "a.go:589" {
+		t.Fatalf("key of a.go:589 = %q", want)
+	}
+	for _, loc := range forms {
+		if got := defectKey(PostMergeDefect{Location: loc, Claim: "other claim"}, "/co"); got != want {
+			t.Errorf("defectKey(%q) = %q, want %q", loc, got, want)
+		}
+	}
+	if got := defectKey(PostMergeDefect{Location: "a.go:590"}, "/co"); got == want {
+		t.Errorf("defectKey(a.go:590) = %q, must differ from %q", got, want)
+	}
+	t.Run("no line falls back to path and claim", func(t *testing.T) {
+		a := defectKey(PostMergeDefect{Location: "a.go (whole file)", Claim: "Missing  guard"}, "")
+		b := defectKey(PostMergeDefect{Location: "a.go", Claim: "missing guard"}, "")
+		c := defectKey(PostMergeDefect{Location: "a.go", Claim: "something else"}, "")
+		if a != b || a == c || a != "a.go|missing guard" {
+			t.Errorf("keys = %q, %q, %q", a, b, c)
+		}
+	})
+}
+
+func TestPostMergeReviewTwoPass_UnionUnitesLocationForms(t *testing.T) {
+	r, _, _, in := twoPassReviewer(t,
+		fixed(passAnswer(t, "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\n- [minor] a.go:589 (func X) - claim - ev\nNOT-VERIFIED:\nnone\nNOTES:\n", 1)),
+		fixed(passAnswer(t, "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\n- [minor] a.go:L589 - claim again - longer evidence\nNOT-VERIFIED:\nnone\nNOTES:\n", 1)))
+	got, err := r.Review(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if len(got.Defects) != 1 || got.Overlap != 1 {
+		t.Fatalf("defects=%+v overlap=%d, want one united defect and overlap 1", got.Defects, got.Overlap)
+	}
+	if got.Defects[0].Location != "a.go:589" || got.Defects[0].Evidence != "longer evidence" {
+		t.Errorf("kept defect = %+v, want location a.go:589 with the longer evidence", got.Defects[0])
+	}
+}
+
+func TestPostMergeReviewTwoPass_NotVerifiedCapped(t *testing.T) {
+	r, _, _, in := twoPassReviewer(t,
+		fixed(passAnswer(t, "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\nnone\nNOT-VERIFIED:\na1 not in the diff\na2 truncated\na3 cut\nNOTES:\n", 1)),
+		fixed(passAnswer(t, "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\nnone\nNOT-VERIFIED:\nb1 not in the diff\nb2 truncated\nb3 cut\nNOTES:\n", 1)))
+	got, err := r.Review(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	want := []string{"a1 not in the diff", "a2 truncated", "4 more items the passes could not verify (capped at 3)"}
+	if len(got.NotVerified) != MaxPostMergeNotVerified || strings.Join(got.NotVerified, "|") != strings.Join(want, "|") {
+		t.Errorf("not-verified = %q, want %q", got.NotVerified, want)
+	}
+	if got.Verdict != PostMergeApproveWithNotes {
+		t.Errorf("verdict = %q", got.Verdict)
+	}
+}
+
+func TestPostMergeReviewTwoPass_SinglePassDerivedVerdict(t *testing.T) {
+	// Pass B fails; pass A says APPROVE but lists two minor defects. The verdict
+	// is derived from the defects, not the VERDICT line.
+	r, _, _, in := twoPassReviewer(t,
+		fixed(passAnswer(t, answerApproveMinorA, 1)),
+		func(string) ([]byte, error) { return nil, context.DeadlineExceeded })
+	got, err := r.Review(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if len(got.Defects) != 2 || got.Verdict != PostMergeApproveWithNotes {
+		t.Errorf("defects=%d verdict=%q, want 2 and APPROVE-WITH-NOTES", len(got.Defects), got.Verdict)
+	}
+	if got.PassFailReason[1] != "error" || got.PassFailReason[0] != "" {
+		t.Errorf("fail reasons = %q", got.PassFailReason)
+	}
+}
+
+func TestDerivePostMergeVerdict(t *testing.T) {
+	blocking := PostMergeDefect{Severity: PostMergeSeverityBlocking}
+	minor := PostMergeDefect{Severity: PostMergeSeverityMinor}
+	tests := []struct {
+		name   string
+		review PostMergeReview
+		want   PostMergeVerdict
+	}{
+		{"clean", PostMergeReview{}, PostMergeApprove},
+		{"minor", PostMergeReview{Defects: []PostMergeDefect{minor}}, PostMergeApproveWithNotes},
+		{"not verified", PostMergeReview{NotVerified: []string{"x"}}, PostMergeApproveWithNotes},
+		{"blocking", PostMergeReview{Defects: []PostMergeDefect{minor, blocking}}, PostMergeRequestChanges},
+		{"blocking but no files", PostMergeReview{Defects: []PostMergeDefect{blocking}, NoFilesRead: true}, PostMergeApproveWithNotes},
+		{"no files, no defects", PostMergeReview{NoFilesRead: true}, PostMergeApproveWithNotes},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := derivePostMergeVerdict(&tt.review); got != tt.want {
+				t.Errorf("verdict = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPostMergeReviewTwoPass_NoFilesBlockingDemoted(t *testing.T) {
+	t.Run("arrives as minor", func(t *testing.T) {
+		r, _, _, in := twoPassReviewer(t, fixed(passAnswer(t, answerApproveMinorA, 1)), fixed(passAnswer(t, answerBlockingB, 0)))
+		got, err := r.Review(context.Background(), in)
+		if err != nil {
+			t.Fatalf("Review: %v", err)
+		}
+		if n := len(got.BlockingDefects()); n != 0 {
+			t.Errorf("blocking defects = %d, want 0 (the no-files pass's blocking is demoted)", n)
+		}
+		var c *PostMergeDefect
+		for i := range got.Defects {
+			if strings.HasPrefix(got.Defects[i].Location, "c.go") {
+				c = &got.Defects[i]
+			}
+		}
+		if c == nil || c.Severity != PostMergeSeverityMinor || !strings.HasSuffix(c.Evidence, "(pass read no files)") {
+			t.Errorf("c.go defect = %+v, want [minor] with the no-files evidence suffix", c)
+		}
+		if got.Verdict != PostMergeApproveWithNotes {
+			t.Errorf("verdict = %q, want APPROVE-WITH-NOTES", got.Verdict)
+		}
+	})
+	t.Run("does not raise a kept defect", func(t *testing.T) {
+		minorA := "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\n- [minor] c.go:7 - claim - ev\nNOT-VERIFIED:\nnone\nNOTES:\n"
+		r, _, _, in := twoPassReviewer(t, fixed(passAnswer(t, minorA, 1)), fixed(passAnswer(t, answerBlockingB, 0)))
+		got, err := r.Review(context.Background(), in)
+		if err != nil {
+			t.Fatalf("Review: %v", err)
+		}
+		if len(got.Defects) != 1 || got.Defects[0].Severity != PostMergeSeverityMinor || got.Defects[0].Evidence != "ev" {
+			t.Errorf("defects = %+v, want pass A's [minor] kept untouched", got.Defects)
+		}
+		if got.Verdict != PostMergeApproveWithNotes {
+			t.Errorf("verdict = %q", got.Verdict)
+		}
+	})
+	t.Run("single usable no-files pass", func(t *testing.T) {
+		r, _, _, in := twoPassReviewer(t, fixed(passAnswer(t, answerBlockingB, 0)), func(string) ([]byte, error) { return nil, errors.New("boom") })
+		got, err := r.Review(context.Background(), in)
+		if err != nil {
+			t.Fatalf("Review: %v", err)
+		}
+		if len(got.BlockingDefects()) != 0 || got.Verdict != PostMergeApproveWithNotes {
+			t.Errorf("defects=%+v verdict=%q, want the blocking demoted under APPROVE-WITH-NOTES", got.Defects, got.Verdict)
+		}
+	})
+}
+
+func TestPostMergeReviewTwoPass_PreMergeSkipsPassBUnderBudget(t *testing.T) {
+	slowA := func(string) ([]byte, error) {
+		time.Sleep(150 * time.Millisecond)
+		return passAnswer(t, answerApproveMinorA, 1), nil
+	}
+	tests := []struct {
+		name      string
+		preMerge  bool
+		wantCalls int
+	}{
+		{"pre-merge skips pass B", true, 1},
+		{"post-merge still runs pass B", false, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, s, _, in := twoPassReviewer(t, slowA, fixed(passAnswer(t, answerApproveMinorA, 1)))
+			r.timeout = 200 * time.Millisecond
+			in.PreMerge = tt.preMerge
+			// The caller leaves 300ms: after pass A's 150ms, less than one timeout remains.
+			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			defer cancel()
+			got, err := r.Review(ctx, in)
+			if err != nil {
+				t.Fatalf("Review: %v", err)
+			}
+			if len(s.dirs) != tt.wantCalls {
+				t.Fatalf("invocations = %d, want %d", len(s.dirs), tt.wantCalls)
+			}
+			if tt.preMerge {
+				if !got.PassFailed[1] || got.PassFailReason[1] != "budget" || got.PassFailed[0] {
+					t.Errorf("failed=%v reasons=%q, want only pass B failed with reason budget", got.PassFailed, got.PassFailReason)
+				}
+				if got.Verdict != PostMergeApproveWithNotes || len(got.Defects) != 2 {
+					t.Errorf("verdict=%q defects=%d, want pass A's result under the derived verdict", got.Verdict, len(got.Defects))
+				}
+			}
+		})
 	}
 }
 

@@ -175,7 +175,8 @@ func (r *Runner) runPrePRReview(ctx context.Context, task *Task, executionPath s
 		memories = graphrecall.RecallRelevant(executionPath, text, prePRMemoryLimit)
 	}
 
-	reviewCtx, cancel := context.WithTimeout(ctx, r.config.PrePRReview.EffectiveTimeout())
+	// GH-5980: every pass gets the full timeout, so the context holds passes of them.
+	reviewCtx, cancel := context.WithTimeout(ctx, time.Duration(r.config.PrePRReview.EffectivePasses())*r.config.PrePRReview.EffectiveTimeout())
 	defer cancel()
 
 	r.reportProgress(task.ID, "Pre-PR Review", 96, "Reviewing the change against the system...")
@@ -217,6 +218,13 @@ func (r *Runner) runPrePRReview(ctx context.Context, task *Task, executionPath s
 	}
 	if out.Err != nil {
 		attrs = append(attrs, slog.Any("error", out.Err))
+	}
+	if out.Review != nil {
+		for i, reason := range out.Review.PassFailReason {
+			if reason != "" {
+				attrs = append(attrs, slog.String(fmt.Sprintf("pass_%d_failed", i+1), reason))
+			}
+		}
 	}
 	log.Info("Pre-PR review", attrs...)
 	r.recordPrePRReviewEvent(task, out)

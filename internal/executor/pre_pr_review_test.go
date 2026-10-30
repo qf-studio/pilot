@@ -1,9 +1,11 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -418,4 +420,62 @@ func TestPrePRReviewConfig_Effective(t *testing.T) {
 			t.Error("an explicit empty skip_complexity skips nothing")
 		}
 	})
+}
+
+// deadlineRecordingReviewer records the time left on the context it is given.
+type deadlineRecordingReviewer struct {
+	left   time.Duration
+	hadDL  bool
+	review *PostMergeReview
+}
+
+func (d *deadlineRecordingReviewer) Review(ctx context.Context, _ PostMergeReviewInput) (*PostMergeReview, error) {
+	var dl time.Time
+	if dl, d.hadDL = ctx.Deadline(); d.hadDL {
+		d.left = time.Until(dl)
+	}
+	return d.review, nil
+}
+
+func TestPrePRReview_ContextHoldsOneTimeoutPerPass(t *testing.T) {
+	tests := []struct {
+		passes   int
+		wantMin  time.Duration
+		wantMax  time.Duration
+		testName string
+	}{
+		{0, 9 * time.Minute, 10*time.Minute + 5*time.Second, "default is one pass"},
+		{1, 9 * time.Minute, 10*time.Minute + 5*time.Second, "one pass"},
+		{2, 19 * time.Minute, 20*time.Minute + 5*time.Second, "two passes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.testName, func(t *testing.T) {
+			dir, _ := prePRRepo(t)
+			rec := &deadlineRecordingReviewer{review: approveWithNotes()}
+			r := prePRRunner(PrePRReviewModeShadow, rec)
+			r.config.PrePRReview.Timeout = 10 * time.Minute
+			r.config.PrePRReview.Passes = tt.passes
+			ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+			defer cancel()
+			r.runPrePRReview(ctx, prePRTask(dir), dir, NewGitOperations(dir), &progressState{}, prePRGates())
+			if !rec.hadDL || rec.left < tt.wantMin || rec.left > tt.wantMax {
+				t.Errorf("review context has %s left, want between %s and %s", rec.left, tt.wantMin, tt.wantMax)
+			}
+		})
+	}
+}
+
+func TestPrePRReview_LogsSkippedPassReason(t *testing.T) {
+	dir, _ := prePRRepo(t)
+	review := approveWithNotes()
+	review.Passes = 2
+	review.PassFailed = []bool{false, true}
+	review.PassFailReason = []string{"", "budget"}
+	r := prePRRunner(PrePRReviewModeShadow, &fakePrePRReviewer{review: review})
+	var buf bytes.Buffer
+	r.log = slog.New(slog.NewTextHandler(&buf, nil))
+	r.runPrePRReview(context.Background(), prePRTask(dir), dir, NewGitOperations(dir), &progressState{}, prePRGates())
+	if line := buf.String(); !strings.Contains(line, "pass_2_failed=budget") || strings.Contains(line, "pass_1_failed") {
+		t.Errorf("log = %q, want pass_2_failed=budget and no pass_1_failed", line)
+	}
 }

@@ -147,7 +147,11 @@ type PostMergeReview struct {
 	Passes int
 	// PassFailed marks a pass that errored or produced no usable verdict; such
 	// a pass contributes nothing to the united review.
-	PassFailed      []bool
+	PassFailed []bool
+	// PassFailReason says why a pass did not run or contribute: "budget" when
+	// the pre-PR review skipped it for lack of time, "error" for a subprocess
+	// failure, "unusable" for output that broke the contract; empty otherwise.
+	PassFailReason  []string
 	FilesReadByPass []int
 	TurnsByPass     []int
 	DurationByPass  []time.Duration
@@ -264,6 +268,16 @@ func (r *PostMergeReviewer) MaxDiffChars() int { return r.maxDiffChars }
 // Timeout returns the wall-clock bound of one review subprocess.
 func (r *PostMergeReviewer) Timeout() time.Duration { return r.timeout }
 
+// reviewBudget is the wall-clock bound of one whole review: the timeout per
+// pass times the passes a review of in can run (GH-5980). Two passes need a
+// checkout, which only a review with a project path and a commit can make.
+func (r *PostMergeReviewer) reviewBudget(in PostMergeReviewInput) time.Duration {
+	if r.passes >= 2 && in.ProjectPath != "" && in.MergeCommitSHA != "" {
+		return 2 * r.timeout
+	}
+	return r.timeout
+}
+
 // Model returns the model passed to the CLI; empty means the CLI's default.
 func (r *PostMergeReviewer) Model() string { return r.model }
 
@@ -365,7 +379,9 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 
 	memoriesBlock, memoriesRendered := renderMemoryBlock(postMergeMemoriesHeader, "", in.Memories)
 
-	reviewCtx, cancel := context.WithTimeout(ctx, r.timeout)
+	// GH-5980: every pass gets the full timeout, so the context holds passes of
+	// them. Without a checkout there is one pass; it is bounded below.
+	reviewCtx, cancel := context.WithTimeout(ctx, r.reviewBudget(in))
 	defer cancel()
 
 	// GH-5916: with a local checkout holding the merge commit, review inside a
@@ -434,7 +450,9 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 	if hasCheckout && r.passes >= 2 {
 		review, err = r.reviewTwoPass(reviewCtx, in, promptFor, workDir, home, confine)
 	} else {
-		review, err = r.reviewPass(reviewCtx, in, promptFor(postMergePassCombined), workDir, home)
+		passCtx, passCancel := context.WithTimeout(reviewCtx, r.timeout)
+		review, err = r.reviewPass(passCtx, in, promptFor(postMergePassCombined), workDir, home)
+		passCancel()
 		if confine != nil {
 			logPostMergeDenials(r.log, confine.denyLog, in.PRNumber)
 		}
