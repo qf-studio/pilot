@@ -1762,6 +1762,71 @@ func TestCleaner_StartupRecover_StalledRowWithoutPRStripsLabel(t *testing.T) {
 	}
 }
 
+// TestCleaner_StartupRecover_NoExactRowStripsLabel covers GH-5996: an issue
+// whose only matching row belongs to another task number (GH-150 for GH-15) has
+// no row of its own, so it must not borrow that row's done status.
+func TestCleaner_StartupRecover_NoExactRowStripsLabel(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-other-task",
+		TaskID:      "GH-150",
+		ProjectPath: "/test/project",
+		Status:      "completed",
+		PRUrl:       "https://github.com/owner/repo/pull/7150",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	issues := []*Issue{{
+		Number:    15,
+		Title:     "Crash orphan",
+		State:     StateOpen,
+		Labels:    []Label{{Name: LabelInProgress}},
+		UpdatedAt: time.Now().Add(-3 * time.Hour),
+	}}
+
+	var mu sync.Mutex
+	var removeLabelCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues":
+			_ = json.NewEncoder(w).Encode(issues)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/pulls":
+			_ = json.NewEncoder(w).Encode([]*PullRequest{})
+		case r.Method == http.MethodDelete && r.URL.Path == "/repos/owner/repo/issues/15/labels/"+LabelInProgress:
+			removeLabelCalled = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled: true, Interval: 30 * time.Minute, Threshold: 1 * time.Hour,
+	})
+
+	n, err := cleaner.StartupRecover(context.Background())
+	if err != nil {
+		t.Fatalf("StartupRecover() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !removeLabelCalled {
+		t.Error("RemoveLabel not called; GH-15 must not borrow the done status of GH-150")
+	}
+	if n != 1 {
+		t.Errorf("StartupRecover() returned %d, want 1", n)
+	}
+}
+
 // runStartupRecoverKeepsLabel drives StartupRecover over a stuck issue 5984
 // whose only execution row (if rowStatus != "") is backdated past the 30-minute
 // live floor, and asserts the label stays and the callbacks are not invoked.

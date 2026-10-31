@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/memory/graphrecall"
@@ -94,6 +95,33 @@ const (
 // comment. The review itself keeps the full set (GH-5986), which the CLI JSON
 // and the pr_reviews.not_verified column carry.
 const MaxPostMergeNotVerified = 3
+
+// postMergeNoClaim reports whether a defect's claim is empty once trimmed. A
+// location-only defect line parses with an empty Claim; the renderers then print
+// no dash, and the union never lets it replace a real claim (GH-5996).
+func postMergeNoClaim(claim string) bool { return strings.TrimSpace(claim) == "" }
+
+// PostMergeNotVerifiedCountLine is the one extra bullet after the
+// MaxPostMergeNotVerified rendered entries: hidden counts the entries left out,
+// untraced the "not traced" ones among them (GH-5996). It is "" when nothing is
+// hidden.
+func PostMergeNotVerifiedCountLine(hidden, untraced int) string {
+	return postMergeNotVerifiedCountLine(hidden, untraced)
+}
+
+func postMergeNotVerifiedCountLine(hidden, untraced int) string {
+	var parts []string
+	if other := hidden - untraced; other > 0 {
+		parts = append(parts, fmt.Sprintf("%d more not-verified items", other))
+	}
+	if untraced > 0 {
+		parts = append(parts, fmt.Sprintf("%d requirements marked met but not traced to a file read", untraced))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("- … %s omitted (capped at %d)\n", strings.Join(parts, "; "), MaxPostMergeNotVerified)
+}
 
 // PostMergeDefect is one finding of a review.
 type PostMergeDefect struct {
@@ -504,10 +532,7 @@ func (r *PostMergeReviewer) reviewPass(ctx context.Context, in PostMergeReviewIn
 			slog.Int("pr", in.PRNumber), slog.Int("turns", stream.Turns),
 			slog.Int("files_read", stream.FilesRead), slog.Int("max_turns", postMergeReviewMaxTurns))
 	}
-	if review.Downgraded {
-		r.log.Info("post-merge review: REQUEST-CHANGES without a [blocking] defect, downgraded to APPROVE-WITH-NOTES",
-			slog.Int("pr", in.PRNumber), slog.Int("defects", len(review.Defects)))
-	}
+	parseDowngraded := review.Downgraded
 	review.Checkout = workDir != ""
 	review.FilesRead = stream.FilesRead
 	review.Turns = stream.Turns
@@ -520,6 +545,15 @@ func (r *PostMergeReviewer) reviewPass(ctx context.Context, in PostMergeReviewIn
 			r.log.Warn("post-merge review: no files read from the checkout, posted as APPROVE-WITH-NOTES",
 				slog.Int("pr", in.PRNumber), slog.Int("turns", review.Turns))
 		}
+	}
+	// GH-5996: logged after the citation rule so a citation downgrade is seen too.
+	if review.Downgraded {
+		reason := "no [blocking] defect"
+		if !parseDowngraded {
+			reason = "citation rule moved a requirement marked met to NOT-VERIFIED"
+		}
+		r.log.Info("post-merge review: REQUEST-CHANGES downgraded to APPROVE-WITH-NOTES",
+			slog.Int("pr", in.PRNumber), slog.Int("defects", len(review.Defects)), slog.Int("untraced", review.Untraced), slog.String("reason", reason))
 	}
 	return review, nil
 }
@@ -722,8 +756,21 @@ func nonEmpty(in ...string) []string {
 }
 
 // postMergeLocationParenRegex matches a path:line token with a parenthesised
-// hint directly after it, as in "x.go:7 (func Foo)".
-var postMergeLocationParenRegex = regexp.MustCompile(`^(\S+:\d+:?)\s*\([^()]*\)`)
+// hint directly after it, as in "x.go:7 (func Foo)"; group 1 is the token and
+// group 2 the hint with its parentheses.
+var postMergeLocationParenRegex = regexp.MustCompile(`^(\S+:\d+:?)\s*(\([^()]*\))`)
+
+// splitPostMergeLocationHint removes the parenthesised hint that follows a
+// leading path:line token and returns it apart. The hint may hold a separator
+// ("(func Foo, Bar)"), so it must leave the line before the separator split; it
+// is the start of the claim, not part of the location (GH-5996).
+func splitPostMergeLocationHint(line string) (rest, hint string) {
+	m := postMergeLocationParenRegex.FindStringSubmatch(line)
+	if m == nil {
+		return line, ""
+	}
+	return m[1] + line[len(m[0]):], m[2]
+}
 
 // postMergeDefectSeparators are the field separators of a defect line.
 var postMergeDefectSeparators = []string{",", " | ", " - ", " — ", " – ", ": "}
@@ -761,13 +808,10 @@ func parsePostMergeDefect(line string) (PostMergeDefect, bool) {
 	if line == "" || strings.EqualFold(strings.TrimRight(line, "."), "none") {
 		return PostMergeDefect{}, false
 	}
-	// GH-5991: a parenthesised hint right after path:line belongs to the
-	// location, not the claim, and may itself hold a separator ("(func Foo, Bar)");
-	// drop it before the separator split, as the location rule drops everything
-	// after the first token.
-	if m := postMergeLocationParenRegex.FindStringSubmatch(line); m != nil {
-		line = m[1] + line[len(m[0]):]
-	}
+	// GH-5991: a parenthesised hint right after path:line may itself hold a
+	// separator ("(func Foo, Bar)"), so it leaves the line before the separator
+	// split. GH-5996: it then joins the front of the claim, which it qualifies.
+	line, hint := splitPostMergeLocationHint(line)
 	sep, first := "", -1
 	for _, candidate := range postMergeDefectSeparators {
 		if i := strings.Index(line, candidate); i >= 0 && (first < 0 || i < first) {
@@ -796,18 +840,25 @@ func parsePostMergeDefect(line string) (PostMergeDefect, bool) {
 	if d.Location == "" {
 		return PostMergeDefect{}, false
 	}
+	if hint != "" {
+		d.Claim = strings.TrimSpace(hint + " " + d.Claim)
+	}
 	return d, true
 }
 
-// postMergeTruncatedMarker ends every field cutAtBoundary shortened.
-const postMergeTruncatedMarker = " (truncated)"
+// PostMergeTruncatedMarker ends every field cutAtBoundary shortened. It leads
+// with a space; the space is dropped only when the marker is the whole result.
+const PostMergeTruncatedMarker = " (truncated)"
 
 // cutAtBoundary bounds s to max bytes without cutting a sentence, a word or a
 // rune in half (GH-5986). A string within max is returned unchanged. Otherwise
 // it is cut after the last sentence end (". ", "; " or a newline) that lies
-// within max, else at the last space, and " (truncated)" is appended; the marker
-// comes on top of max. A first word longer than max leaves nothing to keep, and
-// the result is the marker alone.
+// within max, else at the last space, and PostMergeTruncatedMarker is appended;
+// the marker comes on top of max. A first word longer than max has no boundary
+// to cut at: its first max minus len(marker) bytes are kept at a rune boundary
+// before the marker, so the content is never replaced by the marker alone; only
+// when max leaves no room for a byte is the result the marker alone, without
+// its leading space (GH-5996).
 func cutAtBoundary(s string, max int) string {
 	if len(s) <= max {
 		return s
@@ -832,9 +883,16 @@ func cutAtBoundary(s string, max int) string {
 		cut = strings.LastIndexAny(window, " \t\n")
 	}
 	if cut <= 0 {
-		return strings.TrimSpace(postMergeTruncatedMarker)
+		keep := max - len(PostMergeTruncatedMarker)
+		for keep > 0 && !utf8.RuneStart(s[keep]) {
+			keep--
+		}
+		if keep <= 0 {
+			return strings.TrimSpace(PostMergeTruncatedMarker)
+		}
+		return s[:keep] + PostMergeTruncatedMarker
 	}
-	return strings.TrimRight(s[:cut], " \t\n") + postMergeTruncatedMarker
+	return strings.TrimRight(s[:cut], " \t\n") + PostMergeTruncatedMarker
 }
 
 // CutAtBoundary is cutAtBoundary for the renderers outside this package.

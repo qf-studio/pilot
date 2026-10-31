@@ -701,3 +701,96 @@ func TestPostMergeReviewTwoPass_EmDashLineSameOnBothPaths(t *testing.T) {
 		t.Errorf("one-pass defects = %+v, want [%+v]", got.Defects, want)
 	}
 }
+
+func TestPostMergeReviewTwoPass_UnionLineTolerance(t *testing.T) {
+	d := func(loc string) PostMergeDefect {
+		return PostMergeDefect{Severity: PostMergeSeverityMinor, Location: loc, Claim: "claim " + loc, Evidence: "ev"}
+	}
+	tests := []struct {
+		name      string
+		a, b      []PostMergeDefect
+		wantUnion int
+		wantOver  int
+	}{
+		{"two lines apart unite", []PostMergeDefect{d("a.go:589")}, []PostMergeDefect{d("a.go:591")}, 1, 1},
+		{"adjacent lines unite", []PostMergeDefect{d("a.go:589")}, []PostMergeDefect{d("a.go:590")}, 1, 1},
+		{"exactly the tolerance unites", []PostMergeDefect{d("a.go:589")}, []PostMergeDefect{d("a.go:593")}, 1, 1},
+		{"one past the tolerance stays two", []PostMergeDefect{d("a.go:589")}, []PostMergeDefect{d("a.go:594")}, 2, 0},
+		{"path case is folded", []PostMergeDefect{d("A.go:589")}, []PostMergeDefect{d("a.go:589")}, 1, 1},
+		{"other path stays two", []PostMergeDefect{d("a.go:589")}, []PostMergeDefect{d("b.go:589")}, 2, 0},
+		{"two defects of one pass stay separate", []PostMergeDefect{d("a.go:10"), d("a.go:13")}, nil, 2, 0},
+		{"anchor does not chain", []PostMergeDefect{d("a.go:10")}, []PostMergeDefect{d("a.go:13"), d("a.go:17")}, 2, 1},
+		{"nearest anchor wins", []PostMergeDefect{d("a.go:10"), d("a.go:14")}, []PostMergeDefect{d("a.go:13")}, 2, 1},
+		{"no line keeps path plus claim", []PostMergeDefect{{Location: "a.go", Claim: "same"}}, []PostMergeDefect{{Location: "A.go", Claim: "same"}}, 1, 1},
+		{"no line, other claim", []PostMergeDefect{{Location: "a.go", Claim: "one"}}, []PostMergeDefect{{Location: "a.go", Claim: "two"}}, 2, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reviews := [2]*PostMergeReview{
+				{Verdict: PostMergeApproveWithNotes, Defects: tt.a},
+				{Verdict: PostMergeApproveWithNotes, Defects: tt.b},
+			}
+			got := uniteTwoPassReviews(reviews, "")
+			if len(got.Defects) != tt.wantUnion {
+				t.Errorf("united defects = %+v, want %d", got.Defects, tt.wantUnion)
+			}
+			if over := overlapCount(reviews, ""); over != tt.wantOver {
+				t.Errorf("overlap = %d, want %d", over, tt.wantOver)
+			}
+		})
+	}
+}
+
+func TestPostMergeReviewTwoPass_SinglePassDedupes(t *testing.T) {
+	answer := "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\n- [minor] a.go:10 - first wording - short\n- [minor] a.go:10-12 - second wording - a much longer evidence string\n- [minor] a.go:13 - a different line - ev\nNOT-VERIFIED:\nnone\nNOTES:\n"
+	r, _, _, in := twoPassReviewer(t, fixed(passAnswer(t, answer, 1)),
+		func(string) ([]byte, error) { return nil, errors.New("pass B died") })
+	got, err := r.Review(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if len(got.Defects) != 2 {
+		t.Fatalf("defects = %+v, want the two a.go:10 reports united and a.go:13 kept apart", got.Defects)
+	}
+	if got.Defects[0].Evidence != "a much longer evidence string" {
+		t.Errorf("evidence = %q, want the longer one", got.Defects[0].Evidence)
+	}
+}
+
+func TestPostMergeReviewTwoPass_UnionKeepsNonEmptyClaim(t *testing.T) {
+	tests := []struct {
+		name      string
+		a, b      PostMergeDefect
+		wantClaim string
+		wantSev   PostMergeSeverity
+		wantLoc   string
+	}{
+		{"blocking with an empty claim keeps the kept claim",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:10", Claim: "real claim"},
+			PostMergeDefect{Severity: PostMergeSeverityBlocking, Location: "a.go:11"},
+			"real claim", PostMergeSeverityBlocking, "a.go:11"},
+		{"blocking with a claim replaces it",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:10", Claim: "old"},
+			PostMergeDefect{Severity: PostMergeSeverityBlocking, Location: "a.go:10", Claim: "new"},
+			"new", PostMergeSeverityBlocking, "a.go:10"},
+		{"an empty kept claim is filled",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:10"},
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:10", Claim: "filled"},
+			"filled", PostMergeSeverityMinor, "a.go:10"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reviews := [2]*PostMergeReview{
+				{Verdict: PostMergeApproveWithNotes, Defects: []PostMergeDefect{tt.a}},
+				{Verdict: PostMergeRequestChanges, Defects: []PostMergeDefect{tt.b}},
+			}
+			got := uniteTwoPassReviews(reviews, "")
+			if len(got.Defects) != 1 {
+				t.Fatalf("defects = %+v, want 1", got.Defects)
+			}
+			if d := got.Defects[0]; d.Claim != tt.wantClaim || d.Severity != tt.wantSev || d.Location != tt.wantLoc {
+				t.Errorf("defect = %+v, want claim %q severity %s location %s", d, tt.wantClaim, tt.wantSev, tt.wantLoc)
+			}
+		})
+	}
+}

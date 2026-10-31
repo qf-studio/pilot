@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -135,9 +136,7 @@ func (r *PostMergeReviewer) reviewTwoPass(ctx context.Context, in PostMergeRevie
 		// The passes knob promises a verdict derived from the defects, so the
 		// pass's own VERDICT line is not trusted here either (GH-5980).
 		review = reviews[usable[0]]
-		for j := range review.Defects {
-			review.Defects[j] = demoteNoFilesDefect(normalisePostMergeDefect(review.Defects[j], workDir), review.NoFilesRead)
-		}
+		review.Defects = dedupePostMergeDefects(review.Defects, review.NoFilesRead, workDir)
 		review.Verdict = derivePostMergeVerdict(review)
 	default:
 		review = uniteTwoPassReviews(reviews, workDir)
@@ -238,12 +237,18 @@ func normalisePostMergeDefect(d PostMergeDefect, checkoutDir string) PostMergeDe
 	return d
 }
 
-// defectKey is the identity of a defect for the union: the path and the first
-// line of its location, so ":589", ":589-590", ":L589" and ":589 (func X)" are
-// one key; for a location without a line, the path plus the first 40
-// characters of the claim.
+// postMergeLineTolerance is how many lines apart two defects of different passes
+// may sit on one path and still be one finding: the same defect is anchored at
+// a.go:589 by one pass and a.go:590 by the other (GH-5996).
+const postMergeLineTolerance = 4
+
+// defectKey is the identity of a defect for the union: the case-folded path and
+// the first line of its location, so ":589", ":589-590", ":L589" and
+// ":589 (func X)" are one key; for a location without a line, the case-folded
+// path plus the first 40 characters of the claim.
 func defectKey(d PostMergeDefect, checkoutDir string) string {
 	path, line := normalisePostMergeLocation(d.Location, checkoutDir)
+	path = strings.ToLower(path)
 	if line != "" {
 		return path + ":" + line
 	}
@@ -254,22 +259,120 @@ func defectKey(d PostMergeDefect, checkoutDir string) string {
 	return path + "|" + string(claim)
 }
 
-// overlapCount is the number of distinct keys both passes reported.
-func overlapCount(reviews [2]*PostMergeReview, checkoutDir string) int {
-	first := map[string]bool{}
-	for _, d := range reviews[0].Defects {
-		first[defectKey(d, checkoutDir)] = true
+// postMergeAnchor is a kept defect a later defect of another pass may unite with.
+type postMergeAnchor struct {
+	group, pass, line int
+}
+
+// groupPostMergeDefects assigns every defect of every pass to a group; defects
+// of one group are one finding. Group ids are dense and numbered in order of
+// first appearance, pass by pass. A defect with a line joins, in this order:
+// the group with the same exact key; else the nearest group from another pass
+// on the same case-folded path whose anchor line is within
+// postMergeLineTolerance, the earliest on a tie. The anchor is the line of the
+// group's first defect, so a chain of near lines does not grow a group. A defect
+// of the same pass unites on an exact key only, and one without a line on its
+// path-plus-claim key only (GH-5996). overlapCount and the union both use it, so
+// the overlap is the number of groups both passes reached.
+func groupPostMergeDefects(passes [][]PostMergeDefect, checkoutDir string) [][]int {
+	ids := make([][]int, len(passes))
+	exact := map[string]int{}
+	byPath := map[string][]postMergeAnchor{}
+	groups := 0
+	for pass, defects := range passes {
+		ids[pass] = make([]int, len(defects))
+		for i, d := range defects {
+			key := defectKey(d, checkoutDir)
+			if g, ok := exact[key]; ok {
+				ids[pass][i] = g
+				continue
+			}
+			path, lineText := normalisePostMergeLocation(d.Location, checkoutDir)
+			line, err := strconv.Atoi(lineText)
+			if lineText == "" || err != nil {
+				exact[key] = groups
+				ids[pass][i] = groups
+				groups++
+				continue
+			}
+			path = strings.ToLower(path)
+			best, bestDist := -1, postMergeLineTolerance+1
+			for _, a := range byPath[path] {
+				dist := line - a.line
+				if dist < 0 {
+					dist = -dist
+				}
+				if a.pass != pass && dist < bestDist {
+					best, bestDist = a.group, dist
+				}
+			}
+			if best >= 0 {
+				ids[pass][i] = best
+				continue
+			}
+			exact[key] = groups
+			byPath[path] = append(byPath[path], postMergeAnchor{group: groups, pass: pass, line: line})
+			ids[pass][i] = groups
+			groups++
+		}
 	}
-	seen := map[string]bool{}
+	return ids
+}
+
+// overlapCount is the number of findings both passes reported: the groups of
+// groupPostMergeDefects that hold a defect of each pass.
+func overlapCount(reviews [2]*PostMergeReview, checkoutDir string) int {
+	ids := groupPostMergeDefects([][]PostMergeDefect{reviews[0].Defects, reviews[1].Defects}, checkoutDir)
+	first := map[int]bool{}
+	for _, g := range ids[0] {
+		first[g] = true
+	}
+	seen := map[int]bool{}
 	n := 0
-	for _, d := range reviews[1].Defects {
-		k := defectKey(d, checkoutDir)
-		if first[k] && !seen[k] {
-			seen[k] = true
+	for _, g := range ids[1] {
+		if first[g] && !seen[g] {
+			seen[g] = true
 			n++
 		}
 	}
 	return n
+}
+
+// mergePostMergeDefect folds d, a later report of the finding kept holds. The
+// higher severity wins, with its location, and so does its claim unless that
+// claim is empty; an empty kept claim is filled from d. The longer evidence
+// wins, except from a pass that read no files: its suffix would land on a defect
+// the other pass traced.
+func mergePostMergeDefect(kept, d PostMergeDefect, noFiles bool) PostMergeDefect {
+	if d.Severity == PostMergeSeverityBlocking && kept.Severity != PostMergeSeverityBlocking {
+		kept.Severity, kept.Location = d.Severity, d.Location
+		if !postMergeNoClaim(d.Claim) {
+			kept.Claim = d.Claim
+		}
+	}
+	if postMergeNoClaim(kept.Claim) && !postMergeNoClaim(d.Claim) {
+		kept.Claim = d.Claim
+	}
+	if !noFiles && len(d.Evidence) > len(kept.Evidence) {
+		kept.Evidence = d.Evidence
+	}
+	return kept
+}
+
+// dedupePostMergeDefects normalises the defects of one pass and unites those
+// with an exact key, as the union does within a pass (GH-5996).
+func dedupePostMergeDefects(defects []PostMergeDefect, noFiles bool, checkoutDir string) []PostMergeDefect {
+	ids := groupPostMergeDefects([][]PostMergeDefect{defects}, checkoutDir)[0]
+	out := make([]PostMergeDefect, 0, len(defects))
+	for i, d := range defects {
+		d = demoteNoFilesDefect(normalisePostMergeDefect(d, checkoutDir), noFiles)
+		if ids[i] == len(out) {
+			out = append(out, d)
+			continue
+		}
+		out[ids[i]] = mergePostMergeDefect(out[ids[i]], d, noFiles)
+	}
+	return out
 }
 
 // postMergeNoFilesEvidenceSuffix marks a defect whose pass read no files.
@@ -304,9 +407,11 @@ func derivePostMergeVerdict(review *PostMergeReview) PostMergeVerdict {
 	}
 }
 
-// uniteTwoPassReviews unites two usable pass reviews. Defects are keyed by
-// path and first line; on a collision the higher severity and the longer
-// evidence win, and the kept location reads path:line. A [blocking] defect from
+// uniteTwoPassReviews unites two usable pass reviews. Defects are grouped by
+// groupPostMergeDefects: the same case-folded path and a first line within
+// postMergeLineTolerance across passes. On a collision the higher severity and
+// the longer evidence win, a non-empty claim is never replaced by an empty one,
+// and the kept location reads path:line. A [blocking] defect from
 // a pass that read no files enters as [minor] and never raises a kept one.
 // NOT-VERIFIED lines are united as a set, pass A's first, and
 // never capped (GH-5986); notes are concatenated with a pass
@@ -314,10 +419,10 @@ func derivePostMergeVerdict(review *PostMergeReview) PostMergeVerdict {
 // per-pass VERDICT lines survive only in RawOutput.
 func uniteTwoPassReviews(reviews [2]*PostMergeReview, checkoutDir string) *PostMergeReview {
 	out := &PostMergeReview{Checkout: true}
-	index := map[string]int{}
 	seenNV := map[string]bool{}
 	var raws, notes, notVerified []string
 	allDowngraded, allNoFiles := true, true
+	ids := groupPostMergeDefects([][]PostMergeDefect{reviews[0].Defects, reviews[1].Defects}, checkoutDir)
 
 	for i, rv := range reviews {
 		raws = append(raws, fmt.Sprintf("=== %s ===\n%s", postMergePassLabels[i], rv.RawOutput))
@@ -328,25 +433,13 @@ func uniteTwoPassReviews(reviews [2]*PostMergeReview, checkoutDir string) *PostM
 		allNoFiles = allNoFiles && rv.NoFilesRead
 		out.Untraced += rv.Untraced
 
-		for _, d := range rv.Defects {
-			k := defectKey(d, checkoutDir)
+		for j, d := range rv.Defects {
 			d = demoteNoFilesDefect(normalisePostMergeDefect(d, checkoutDir), rv.NoFilesRead)
-			j, dup := index[k]
-			if !dup {
-				index[k] = len(out.Defects)
+			if g := ids[i][j]; g < len(out.Defects) {
+				out.Defects[g] = mergePostMergeDefect(out.Defects[g], d, rv.NoFilesRead)
+			} else {
 				out.Defects = append(out.Defects, d)
-				continue
 			}
-			kept := out.Defects[j]
-			if d.Severity == PostMergeSeverityBlocking && kept.Severity != PostMergeSeverityBlocking {
-				kept.Severity, kept.Location, kept.Claim = d.Severity, d.Location, d.Claim
-			}
-			// A no-files pass never overwrites evidence: its suffix would land on a
-			// defect the other pass traced.
-			if !rv.NoFilesRead && len(d.Evidence) > len(kept.Evidence) {
-				kept.Evidence = d.Evidence
-			}
-			out.Defects[j] = kept
 		}
 		for _, nv := range rv.NotVerified {
 			k := strings.ToLower(strings.TrimSpace(nv))

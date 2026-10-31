@@ -324,6 +324,11 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	for verdict, count := range snap.PostMergeReviewVerdicts {
 		writeCounter(w, "pilot_post_merge_reviews_total", count, "verdict", verdict)
 	}
+	// GH-5996: reviews that read no file are counted apart from the verdicts, so
+	// the verdict series sums to the number of reviews.
+	writeHelp(w, "pilot_post_merge_reviews_no_files_read_total", "Total post-merge checkout reviews that read no file (also counted under their verdict)")
+	writeType(w, "pilot_post_merge_reviews_no_files_read_total", "counter")
+	writeCounter(w, "pilot_post_merge_reviews_no_files_read_total", snap.PostMergeReviewNoFilesRead)
 
 	// pilot_label_cleanups_total
 	writeHelp(w, "pilot_label_cleanups_total", "Total label cleanup operations")

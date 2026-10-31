@@ -531,7 +531,7 @@ func TestPostMergeReview_LedgerRecordsFullNotVerified(t *testing.T) {
 	}
 }
 
-func TestPostMergeReviewComment_UntracedCountIsLastSlot(t *testing.T) {
+func TestFormatPostMergeNotVerified_CountNamesUntraced(t *testing.T) {
 	tests := []struct {
 		name        string
 		notVerified []string
@@ -547,24 +547,31 @@ func TestPostMergeReviewComment_UntracedCountIsLastSlot(t *testing.T) {
 			wantBullets: 3,
 		},
 		{
-			name:        "untraced entries behind two model items stay counted",
+			name:        "untraced entries behind the model items stay counted",
 			notVerified: []string{"nv-1", "nv-2", "nv-3", "A: met. — not traced", "B: met. — not traced"},
-			want:        []string{"- nv-1", "- nv-2", "1 more not-verified items; 2 requirements marked met but not traced to a file read omitted"},
-			notWant:     []string{"- nv-3"},
-			wantBullets: 3,
+			want:        []string{"- nv-1", "- nv-2", "- nv-3", "- … 2 requirements marked met but not traced to a file read omitted"},
+			notWant:     []string{"A: met", "B: met"},
+			wantBullets: 4,
 		},
 		{
 			name:        "only untraced entries",
 			notVerified: []string{"A: met. — not traced", "B: met. — not traced", "C: met. — not traced", "D: met. — not traced"},
-			want:        []string{"- … 4 requirements marked met but not traced to a file read omitted"},
-			wantBullets: 1,
+			want:        []string{"- A: met. — not traced", "- C: met. — not traced", "- … 1 requirements marked met but not traced to a file read omitted"},
+			notWant:     []string{"D: met"},
+			wantBullets: 4,
 		},
 		{
 			name:        "no untraced entries",
-			notVerified: []string{"nv-1", "nv-2", "nv-3", "nv-4"},
-			want:        []string{"- nv-1", "- nv-2", "- … 2 more not-verified items omitted"},
-			notWant:     []string{"not traced"},
-			wantBullets: 3,
+			notVerified: []string{"nv-1", "nv-2", "nv-3", "nv-4", "nv-5"},
+			want:        []string{"- nv-1", "- nv-2", "- nv-3", "- … 2 more not-verified items omitted"},
+			notWant:     []string{"not traced", "nv-4"},
+			wantBullets: 4,
+		},
+		{
+			name:        "an entry that sanitises to empty is neither written nor counted",
+			notVerified: []string{"nv-1", "\u200b", "nv-2", "nv-3", "nv-4"},
+			want:        []string{"- nv-1", "- nv-2", "- nv-3", "- … 1 more not-verified items omitted"},
+			wantBullets: 4,
 		},
 	}
 	for _, tt := range tests {
@@ -584,8 +591,8 @@ func TestPostMergeReviewComment_UntracedCountIsLastSlot(t *testing.T) {
 			if len(lines) != tt.wantBullets {
 				t.Errorf("rendered %d slots, want %d:\n%s", len(lines), tt.wantBullets, got)
 			}
-			if len(tt.notVerified) > executor.MaxPostMergeNotVerified && !strings.HasPrefix(lines[len(lines)-1], "- … ") {
-				t.Errorf("last slot is not the count line: %q", lines[len(lines)-1])
+			if tt.wantBullets > executor.MaxPostMergeNotVerified && !strings.HasPrefix(lines[len(lines)-1], "- … ") {
+				t.Errorf("last bullet is not the count line: %q", lines[len(lines)-1])
 			}
 		})
 	}
@@ -814,10 +821,10 @@ func TestBuildPostMergeReviewComment_NotVerifiedCapAtRender(t *testing.T) {
 		NotVerified: []string{"one", "two", "three", "four", "five"},
 	}
 	got := buildPostMergeReviewComment(review)
-	if !strings.Contains(got, "- one\n") || !strings.Contains(got, "- two\n") || strings.Contains(got, "- three\n") {
-		t.Errorf("comment should show two entries and a count line:\n%s", got)
+	if !strings.Contains(got, "- one\n") || !strings.Contains(got, "- two\n") || !strings.Contains(got, "- three\n") || strings.Contains(got, "- four\n") {
+		t.Errorf("comment should show three entries and a count line:\n%s", got)
 	}
-	if !strings.Contains(got, "3 more not-verified items omitted") {
+	if !strings.Contains(got, "2 more not-verified items omitted") {
 		t.Errorf("comment lacks the count line:\n%s", got)
 	}
 	if len(review.NotVerified) != 5 {
@@ -1088,8 +1095,11 @@ func TestPostMergeReview_NoFilesReadMetricAndResultLine(t *testing.T) {
 	}
 	c.waitPostMergeReviews()
 
-	if got := c.metrics.PostMergeReviewVerdicts["no_files_read"]; got != 1 {
+	if got := c.metrics.PostMergeReviewNoFilesRead; got != 1 {
 		t.Errorf("no_files_read metric = %d, want 1", got)
+	}
+	if got := c.metrics.PostMergeReviewVerdicts["no_files_read"]; got != 0 {
+		t.Errorf("no_files_read must not be a verdict label, got %d", got)
 	}
 	if got := c.metrics.PostMergeReviewVerdicts[string(executor.PostMergeApproveWithNotes)]; got != 1 {
 		t.Errorf("verdict metric = %d, want 1", got)
@@ -1102,5 +1112,71 @@ func TestPostMergeReview_NoFilesReadMetricAndResultLine(t *testing.T) {
 	}
 	if mock.issueCount() != 0 {
 		t.Errorf("a downgraded review filed %d follow-up issues, want 0", mock.issueCount())
+	}
+}
+
+func TestFormatPostMergeNotVerified_CountIsExtraBullet(t *testing.T) {
+	got := formatPostMergeNotVerified([]string{"nv-1", "nv-2", "nv-3", "A: met. — not traced"})
+	lines := strings.Split(strings.TrimSpace(got), "\n")
+	want := []string{
+		"- nv-1", "- nv-2", "- nv-3",
+		"- … 1 requirements marked met but not traced to a file read omitted (capped at 3)",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("rendered %d bullets, want %d:\n%s", len(lines), len(want), got)
+	}
+	for i := range want {
+		if lines[i] != want[i] {
+			t.Errorf("bullet %d = %q, want %q", i, lines[i], want[i])
+		}
+	}
+}
+
+func TestFormatPostMergeDefects_EmptyClaimNoDash(t *testing.T) {
+	defects := []executor.PostMergeDefect{
+		{Severity: executor.PostMergeSeverityMinor, Location: "a.go:3", Evidence: "see b.go:9"},
+		{Severity: executor.PostMergeSeverityBlocking, Location: "c.go:4"},
+		{Severity: executor.PostMergeSeverityMinor, Location: "d.go:5", Claim: "real claim", Evidence: "ev"},
+	}
+	got := formatPostMergeDefects(defects, true)
+	want := "- [minor] at a.go:3\n  Evidence: see b.go:9\n" +
+		"- [blocking] at c.go:4\n" +
+		"- [minor] at d.go:5 — real claim\n  Evidence: ev\n"
+	if got != want {
+		t.Errorf("formatPostMergeDefects =\n%q\nwant\n%q", got, want)
+	}
+	issue := formatPostMergeIssueDefects(defects[:2])
+	if strings.Contains(issue, "—") {
+		t.Errorf("issue defects carry a dash for an empty claim:\n%s", issue)
+	}
+}
+
+func TestCutPostMergeDefects_MarkerOnce(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		max  int
+	}{
+		{"cut at a word end", strings.Repeat("word ", 40), 50},
+		{"no boundary keeps the leading content", strings.Repeat("x", 200), 60},
+		{"no room for content leaves the marker alone", strings.Repeat("x", 200), 5},
+		{"cut inside a details block", "- at a.go:1 — c\n  <details><summary>s</summary>\n\n  " + strings.Repeat("evidence ", 30), 80},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cutPostMergeDefects(tt.in, tt.max)
+			if n := strings.Count(got, "(truncated)"); n != 1 {
+				t.Errorf("marker appears %d times in %q", n, got)
+			}
+			if !strings.HasSuffix(got, executor.PostMergeTruncatedMarker+"\n") {
+				t.Errorf("section does not end in the marker and a newline: %q", got)
+			}
+			if strings.Contains(got, "<details>") && strings.Count(got, "<details>") != strings.Count(got, "</details>") {
+				t.Errorf("details block left open: %q", got)
+			}
+		})
+	}
+	if got := cutPostMergeDefects("short", 50); got != "short" {
+		t.Errorf("a section within max changed: %q", got)
 	}
 }

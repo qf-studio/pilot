@@ -426,7 +426,8 @@ func (c *Cleaner) cleanupLabel(ctx context.Context, label string, threshold time
 				continue
 			}
 
-			latest, latestErr := c.store.GetLatestExecutionByTaskID(taskID, "")
+			// GH-5996: the exact lookup, so GH-15 never borrows the status of GH-150.
+			latest, latestErr := c.store.GetLatestExecutionByExactTaskID(taskID, "")
 			switch {
 			case latestErr == nil && isPilotTerminalStatus(latest.Status):
 				c.logger.Debug("Issue's latest execution is terminal, leaving stale pilot-in-progress label alone",
@@ -684,7 +685,9 @@ func (c *Cleaner) StartupRecover(ctx context.Context) (int, error) {
 // done would keep the label on a crash orphan forever (GH-5991). Lookup errors
 // report false so a transient failure keeps the strip behaviour.
 func (c *Cleaner) startupRowIsDone(taskID string) bool {
-	latest, err := c.store.GetLatestExecutionByTaskID(taskID, "")
+	// GH-5996: exact task id, so an issue with no row of its own does not borrow
+	// the done status of GH-150 (or another repo's row) and keep its orphan label.
+	latest, err := c.store.GetLatestExecutionByExactTaskID(taskID, "")
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			c.logger.Warn("startup recover: failed to look up latest execution",

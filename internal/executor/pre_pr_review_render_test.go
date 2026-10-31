@@ -331,3 +331,28 @@ func TestLedgerVerdict(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderPrePRReviewSection_EmptyClaimAndNotVerifiedCap(t *testing.T) {
+	out := prePROutcome(PostMergeRequestChanges)
+	out.Review.Defects = []PostMergeDefect{
+		{Severity: PostMergeSeverityMinor, Location: "a.go:3"},
+		{Severity: PostMergeSeverityMinor, Location: "b.go:4", Claim: "real claim"},
+	}
+	out.Review.NotVerified = []string{"nv-1", "nv-2", "nv-3", "A: met. — not traced", "  ", "B: met. — not traced"}
+	got := RenderPrePRReviewSection(out)
+
+	for _, want := range []string{
+		"- [minor] at a.go:3\n", "- [minor] at b.go:4 — real claim",
+		"- nv-1", "- nv-2", "- nv-3",
+		"- … 2 requirements marked met but not traced to a file read omitted (capped at 3)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("section missing %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"a.go:3 —", "- A: met", "- B: met"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("section contains %q:\n%s", bad, got)
+		}
+	}
+}
