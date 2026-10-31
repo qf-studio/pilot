@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -463,6 +464,28 @@ func (d *Dispatcher) reconcileOrphanedExecutions() int {
 				}
 				continue
 			}
+
+			// GH-5984: the sibling of the merged-PR heal above for a PR that is
+			// still open. The runner records pr_created and then runs a tail
+			// (pre-PR review label, webhook, Navigator sync) before ProjectWorker
+			// persists the row's pr_url, so a restart in that window leaves a
+			// running row whose deliverable is already in CI. Stalling it hands
+			// nextRetryGeneration a generation+1 and the dispatcher re-runs a task
+			// that has a PR. Adoption of the PR itself stays with the autopilot's
+			// reconcileOrphanPRs sweep.
+			if prURL := d.healOpenPRExecution(exec); prURL != "" {
+				durationMs := time.Since(exec.CreatedAt).Milliseconds()
+				if err := d.store.MarkExecutionCompleted(exec.ID, prURL, "", durationMs); err != nil {
+					d.log.Error("Failed to heal boot orphan with open PR to completed", slog.String("id", exec.ID), slog.Any("error", err))
+				} else {
+					d.log.Info("Boot orphan has an open PR; healed to completed instead of stalled",
+						slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID),
+						slog.String("branch", mergedPRCheckBranch(exec)), slog.String("pr_url", prURL))
+					d.recordExecutionEvent(exec.ID, memory.StageCompleted,
+						fmt.Sprintf("boot orphan healed to completed after restart (open PR: %s, GH-5984)", prURL))
+					continue
+				}
+			}
 		}
 
 		d.log.Warn("Reconciling dead-owner execution found at boot — transitioning to stalled to free its claim for retry",
@@ -501,6 +524,37 @@ func (d *Dispatcher) reconcileOrphanedExecutions() int {
 	}
 	return reconciled
 }
+
+// healOpenPRExecution returns the URL of the open PR a claimed running row has
+// already shipped, or "" if there is none (GH-5984). Evidence, in order: an
+// open PR on the row's task branch (staleRunningOpenPRCheck), then a
+// pr_created execution event, whose PR URL is read from the event detail.
+// A pr_created event without a parseable URL yields "" — MarkExecutionCompleted
+// needs a pr_url for HasTerminalCompletion to count the row as done.
+func (d *Dispatcher) healOpenPRExecution(exec *memory.Execution) string {
+	if openURL, err := staleRunningOpenPRCheck(d.ctx, exec.ProjectPath, mergedPRCheckBranch(exec)); err == nil && openURL != "" {
+		return openURL
+	}
+	events, err := d.store.ListExecutionEvents(exec.ID)
+	if err != nil {
+		d.log.Warn("Failed to read execution events for boot open-PR heal",
+			slog.String("execution_id", exec.ID), slog.Any("error", err))
+		return ""
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Stage != memory.StagePRCreated {
+			continue
+		}
+		if u := prURLInEventDetail.FindString(events[i].Detail); u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+// prURLInEventDetail extracts the PR URL from a pr_created event detail such
+// as "pr created: https://github.com/o/r/pull/7".
+var prURLInEventDetail = regexp.MustCompile(`https?://\S+`)
 
 // adoptQueuedProjects recreates a worker for every project that still has
 // queued (or pending) executions in SQLite. Called once at Start, before the

@@ -3547,6 +3547,137 @@ func TestDispatcher_BootOrphanReconciliation_EnablesGenerationRetry(t *testing.T
 	}
 }
 
+// TestDispatcher_ReconcileOrphanedExecutions_OpenPRHealsToCompleted is the
+// GH-5984 regression test: a claimed running row left by a dead daemon whose
+// task branch already has an open PR heals to completed with that pr_url, so
+// nextRetryGeneration grants no generation+1 retry. A row with no PR evidence
+// at all still stalls (GH-4392).
+func TestDispatcher_ReconcileOrphanedExecutions_OpenPRHealsToCompleted(t *testing.T) {
+	const prURL = "https://github.com/qf-studio/pilot/pull/5984"
+
+	tests := []struct {
+		name       string
+		openPR     bool
+		eventStage memory.Stage
+		eventText  string
+		wantStatus string
+		wantPRURL  string
+		wantRetry  bool
+	}{
+		{name: "open PR on task branch", openPR: true, wantStatus: "completed", wantPRURL: prURL},
+		{name: "no PR evidence stalls", wantStatus: "stalled", wantRetry: true},
+		{name: "unrelated event stalls", eventStage: memory.StageStalled, eventText: "x", wantStatus: "stalled", wantRetry: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			task := &Task{ID: "GH-5984-OPEN", ProjectPath: "/project-open-pr-boot"}
+			execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+			if err != nil {
+				t.Fatalf("setup Begin: %v", err)
+			}
+			if tt.eventStage != "" {
+				if err := store.RecordExecutionEvent(execID, tt.eventStage, tt.eventText); err != nil {
+					t.Fatalf("RecordExecutionEvent: %v", err)
+				}
+			}
+
+			origOpenCheck := staleRunningOpenPRCheck
+			staleRunningOpenPRCheck = func(_ context.Context, projectPath, branch string) (string, error) {
+				if tt.openPR && projectPath == task.ProjectPath && branch == "pilot/GH-5984-OPEN" {
+					return prURL, nil
+				}
+				return "", nil
+			}
+			defer func() { staleRunningOpenPRCheck = origOpenCheck }()
+
+			dispatcher := NewDispatcher(store, NewRunner(), nil)
+			dispatcher.reconcileOrphanedExecutions()
+
+			got, err := store.GetExecution(execID)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if got.Status != tt.wantStatus {
+				t.Errorf("status = %q, want %q", got.Status, tt.wantStatus)
+			}
+			if got.PRUrl != tt.wantPRURL {
+				t.Errorf("pr_url = %q, want %q", got.PRUrl, tt.wantPRURL)
+			}
+
+			_, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+			if err != nil {
+				t.Fatalf("nextRetryGeneration: %v", err)
+			}
+			if retry != tt.wantRetry {
+				t.Errorf("nextRetryGeneration retry = %v, want %v", retry, tt.wantRetry)
+			}
+		})
+	}
+}
+
+// TestDispatcher_ReconcileOrphanedExecutions_PRCreatedEventHealsToCompleted
+// covers the restart window after the runner records pr_created but before
+// ProjectWorker persists pr_url: the open-PR check is unreachable (no PR
+// found), yet the pr_created event carries the URL, so the row completes.
+func TestDispatcher_ReconcileOrphanedExecutions_PRCreatedEventHealsToCompleted(t *testing.T) {
+	tests := []struct {
+		name       string
+		detail     string
+		wantStatus string
+		wantPRURL  string
+	}{
+		{name: "pr created event", detail: "pr created: https://github.com/qf-studio/pilot/pull/5990", wantStatus: "completed", wantPRURL: "https://github.com/qf-studio/pilot/pull/5990"},
+		{name: "adopted open pr event", detail: "adopted existing open pr: https://github.com/qf-studio/pilot/pull/5991", wantStatus: "completed", wantPRURL: "https://github.com/qf-studio/pilot/pull/5991"},
+		{name: "event without url stalls", detail: "pr created", wantStatus: "stalled"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			task := &Task{ID: "GH-5984-EVT", ProjectPath: "/project-pr-event-boot"}
+			execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
+			if err != nil {
+				t.Fatalf("setup Begin: %v", err)
+			}
+			if err := store.RecordExecutionEvent(execID, memory.StagePRCreated, tt.detail); err != nil {
+				t.Fatalf("RecordExecutionEvent: %v", err)
+			}
+
+			origOpenCheck := staleRunningOpenPRCheck
+			staleRunningOpenPRCheck = func(_ context.Context, _, _ string) (string, error) {
+				return "", errors.New("gh unreachable")
+			}
+			defer func() { staleRunningOpenPRCheck = origOpenCheck }()
+
+			dispatcher := NewDispatcher(store, NewRunner(), nil)
+			dispatcher.reconcileOrphanedExecutions()
+
+			got, err := store.GetExecution(execID)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if got.Status != tt.wantStatus {
+				t.Errorf("status = %q, want %q", got.Status, tt.wantStatus)
+			}
+			if got.PRUrl != tt.wantPRURL {
+				t.Errorf("pr_url = %q, want %q", got.PRUrl, tt.wantPRURL)
+			}
+
+			_, retry, err := dispatcher.nextRetryGeneration(task.ID, task.ProjectPath)
+			if err != nil {
+				t.Fatalf("nextRetryGeneration: %v", err)
+			}
+			if wantRetry := tt.wantStatus == "stalled"; retry != wantRetry {
+				t.Errorf("nextRetryGeneration retry = %v, want %v", retry, wantRetry)
+			}
+		})
+	}
+}
+
 // TestDispatcher_BeginWithGenerationRetry_ArmsRepickBackoff is the GH-4394
 // subtask 2 regression test: a successful terminal-claim re-pick (the
 // "dispatch re-pick: prior claim was terminal but task is not done" path)

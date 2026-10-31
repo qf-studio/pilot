@@ -632,6 +632,20 @@ func (c *Cleaner) StartupRecover(ctx context.Context) (int, error) {
 			continue
 		}
 
+		// GH-5984: a restart must not re-offer an issue whose work already
+		// shipped. Keep the label (and skip OnStartupRecovered, which would
+		// clear the poller's processed entry) when the latest execution row is
+		// finished — the same guard the periodic cleanup applies since GH-5299 —
+		// or when the pilot branch has an open PR waiting in CI/review.
+		if reason := c.startupKeepReason(ctx, issue.Number, taskID); reason != "" {
+			c.logger.Info("startup recover: keeping pilot-in-progress label",
+				slog.Int("issue", issue.Number),
+				slog.String("task_id", taskID),
+				slog.String("reason", reason),
+			)
+			continue
+		}
+
 		c.logger.Info("startup recover: removing stuck pilot-in-progress label",
 			slog.Int("issue", issue.Number),
 			slog.String("title", issue.Title),
@@ -660,4 +674,31 @@ func (c *Cleaner) StartupRecover(ctx context.Context) (int, error) {
 	)
 
 	return cleaned, nil
+}
+
+// startupKeepReason reports why StartupRecover must leave pilot-in-progress on
+// the issue ("" means strip it): its latest execution row is already finished,
+// or its pilot branch has an open PR. Lookup errors fall through to "" so a
+// transient failure keeps the pre-existing strip behaviour (GH-5984).
+func (c *Cleaner) startupKeepReason(ctx context.Context, issueNumber int, taskID string) string {
+	latest, err := c.store.GetLatestExecutionByTaskID(taskID, "")
+	switch {
+	case err == nil && isPilotTerminalStatus(latest.Status):
+		return "latest execution finished (" + latest.Status + ")"
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		c.logger.Warn("startup recover: failed to look up latest execution",
+			slog.String("task_id", taskID), slog.Any("error", err))
+	}
+
+	branch := fmt.Sprintf("pilot/%s", taskID)
+	hasPR, err := c.client.FindOpenPRByBranch(ctx, c.owner, c.repo, branch)
+	if err != nil {
+		c.logger.Warn("startup recover: failed to check open PR for branch",
+			slog.Int("issue", issueNumber), slog.String("branch", branch), slog.Any("error", err))
+		return ""
+	}
+	if hasPR {
+		return "open PR on " + branch
+	}
+	return ""
 }
