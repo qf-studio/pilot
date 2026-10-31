@@ -162,18 +162,18 @@ func TestPostMergeReviewCitation_UncitedMetMovesToNotVerified(t *testing.T) {
 			wantUntraced: 0,
 		},
 		{
-			name:         "overflow collapses into one entry within the cap",
+			name:         "overflow keeps every entry",
 			raw:          "VERDICT: APPROVE\nDEFECTS:\nnone\nNOT-VERIFIED:\nnone\nNOTES:\n- A: met.\n- B: met.\n- C: met.\n- D: met.\n- E: met.",
 			wantVerdict:  PostMergeApproveWithNotes,
-			wantNV:       []string{"A: met. — not traced", "B: met. — not traced", "3 more requirements marked met without a path:line citation: not traced"},
+			wantNV:       []string{"A: met. — not traced", "B: met. — not traced", "C: met. — not traced", "D: met. — not traced", "E: met. — not traced"},
 			wantNotNotes: []string{"A: met", "E: met"},
 			wantUntraced: 5,
 		},
 		{
-			name:         "full NOT-VERIFIED list keeps the cap",
+			name:         "untraced entries append to a full NOT-VERIFIED list",
 			raw:          "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\nnone\nNOT-VERIFIED:\n- one\n- two\n- three\nNOTES:\n- A: met.",
 			wantVerdict:  PostMergeApproveWithNotes,
-			wantNV:       []string{"one", "two", "1 requirements marked met without a path:line citation: not traced"},
+			wantNV:       []string{"one", "two", "three", "A: met. — not traced"},
 			wantUntraced: 1,
 		},
 	}
@@ -187,9 +187,6 @@ func TestPostMergeReviewCitation_UncitedMetMovesToNotVerified(t *testing.T) {
 			}
 			if review.Untraced != tt.wantUntraced {
 				t.Errorf("Untraced = %d, want %d", review.Untraced, tt.wantUntraced)
-			}
-			if len(review.NotVerified) > MaxPostMergeNotVerified {
-				t.Errorf("NotVerified has %d entries, cap is %d", len(review.NotVerified), MaxPostMergeNotVerified)
 			}
 			if len(review.NotVerified) != len(tt.wantNV) {
 				t.Fatalf("NotVerified = %q, want %d entries %q", review.NotVerified, len(tt.wantNV), tt.wantNV)
@@ -288,9 +285,6 @@ func TestPostMergeReviewCitation_CalibrationOutputSets(t *testing.T) {
 			}
 			review := parsePostMergeReview("VERDICT: " + out.Verdict + "\nDEFECTS:\nnone\nNOT-VERIFIED:\nnone\nNOTES:\n" + out.Notes)
 			enforcePostMergeCitations(review)
-			if len(review.NotVerified) > MaxPostMergeNotVerified {
-				t.Errorf("%s: NotVerified over the cap: %d", f, len(review.NotVerified))
-			}
 			for _, line := range strings.Split(review.Notes, "\n") {
 				if claimsMet(line) && !checkoutCitationRe.MatchString(line) {
 					t.Errorf("%s: uncited met line survived: %q", f, line)

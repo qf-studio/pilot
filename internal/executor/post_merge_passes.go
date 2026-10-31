@@ -136,7 +136,7 @@ func (r *PostMergeReviewer) reviewTwoPass(ctx context.Context, in PostMergeRevie
 		// pass's own VERDICT line is not trusted here either (GH-5980).
 		review = reviews[usable[0]]
 		for j := range review.Defects {
-			review.Defects[j] = demoteNoFilesDefect(review.Defects[j], review.NoFilesRead)
+			review.Defects[j] = demoteNoFilesDefect(normalisePostMergeDefect(review.Defects[j], workDir), review.NoFilesRead)
 		}
 		review.Verdict = derivePostMergeVerdict(review)
 	default:
@@ -209,6 +209,35 @@ func normalisePostMergeLocation(location, checkoutDir string) (path, line string
 	return strings.TrimRight(token, ":"), ""
 }
 
+// normalisePostMergeDefect rewrites a defect's location to path:line and moves
+// any text that followed the location token into the claim, so the union and
+// the one-usable-pass branch produce identical defects and no claim text is
+// lost to the rewrite (GH-5986).
+func normalisePostMergeDefect(d PostMergeDefect, checkoutDir string) PostMergeDefect {
+	path, line := normalisePostMergeLocation(d.Location, checkoutDir)
+	if path == "" {
+		return d
+	}
+	loc := strings.Trim(strings.TrimSpace(d.Location), "`*")
+	if checkoutDir != "" {
+		loc = strings.TrimPrefix(loc, strings.TrimRight(checkoutDir, "/")+"/")
+	}
+	_, rest := splitPostMergeLocation(strings.TrimPrefix(loc, "./"))
+	rest = strings.TrimSpace(strings.TrimLeft(rest, "—–-|:, \t"))
+	d.Location = path
+	if line != "" {
+		d.Location = path + ":" + line
+	}
+	switch {
+	case rest == "":
+	case strings.TrimSpace(d.Claim) == "":
+		d.Claim = rest
+	default:
+		d.Claim = rest + " — " + d.Claim
+	}
+	return d
+}
+
 // defectKey is the identity of a defect for the union: the path and the first
 // line of its location, so ":589", ":589-590", ":L589" and ":589 (func X)" are
 // one key; for a location without a line, the path plus the first 40
@@ -279,8 +308,8 @@ func derivePostMergeVerdict(review *PostMergeReview) PostMergeVerdict {
 // path and first line; on a collision the higher severity and the longer
 // evidence win, and the kept location reads path:line. A [blocking] defect from
 // a pass that read no files enters as [minor] and never raises a kept one.
-// NOT-VERIFIED lines are united as a set, pass A's first, capped at
-// MaxPostMergeNotVerified with a count line; notes are concatenated with a pass
+// NOT-VERIFIED lines are united as a set, pass A's first, and
+// never capped (GH-5986); notes are concatenated with a pass
 // label. The verdict follows the prompt's own rule applied to the union; the
 // per-pass VERDICT lines survive only in RawOutput.
 func uniteTwoPassReviews(reviews [2]*PostMergeReview, checkoutDir string) *PostMergeReview {
@@ -301,10 +330,7 @@ func uniteTwoPassReviews(reviews [2]*PostMergeReview, checkoutDir string) *PostM
 
 		for _, d := range rv.Defects {
 			k := defectKey(d, checkoutDir)
-			if path, line := normalisePostMergeLocation(d.Location, checkoutDir); line != "" {
-				d.Location = path + ":" + line
-			}
-			d = demoteNoFilesDefect(d, rv.NoFilesRead)
+			d = demoteNoFilesDefect(normalisePostMergeDefect(d, checkoutDir), rv.NoFilesRead)
 			j, dup := index[k]
 			if !dup {
 				index[k] = len(out.Defects)
@@ -333,12 +359,6 @@ func uniteTwoPassReviews(reviews [2]*PostMergeReview, checkoutDir string) *PostM
 	}
 
 	out.NotVerified = notVerified
-	if len(notVerified) > MaxPostMergeNotVerified {
-		// The count line takes the last slot, as the untraced cap does.
-		out.NotVerified = append([]string(nil), notVerified[:MaxPostMergeNotVerified-1]...)
-		out.NotVerified = append(out.NotVerified, fmt.Sprintf("%d more items the passes could not verify (capped at %d)",
-			len(notVerified)-MaxPostMergeNotVerified+1, MaxPostMergeNotVerified))
-	}
 	out.RawOutput = strings.Join(raws, "\n")
 	out.Notes = strings.Join(notes, "\n")
 	out.Downgraded = allDowngraded

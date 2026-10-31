@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const postMergeFixtureRequestChanges = `VERDICT: REQUEST-CHANGES
@@ -303,6 +304,20 @@ func TestParsePostMergeDefectSeparators(t *testing.T) {
 			PostMergeDefect{Severity: PostMergeSeverityBlocking, Location: "a.go:1", Claim: "claim", Evidence: "evidence"}, true},
 		{"no tag defaults to minor", "a.go:1 - claim",
 			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:1", Claim: "claim"}, true},
+		{"em dash", "a.go:42 — the claim, the evidence",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:42", Claim: "the claim, the evidence"}, true},
+		{"em dash with three fields", "a.go:42 — the claim — the evidence",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:42", Claim: "the claim", Evidence: "the evidence"}, true},
+		{"en dash", "a.go:42 – the claim – the evidence",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:42", Claim: "the claim", Evidence: "the evidence"}, true},
+		{"colon", "a.go:42: the claim: the evidence",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:42", Claim: "the claim", Evidence: "the evidence"}, true},
+		{"no separator", "a.go:42 the claim has no separator",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:42", Claim: "the claim has no separator"}, true},
+		{"no separator then a comma", "a.go:42 the claim, the evidence",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:42", Claim: "the claim", Evidence: "the evidence"}, true},
+		{"blocking em dash", "- [blocking] internal/x.go:7 — claim text",
+			PostMergeDefect{Severity: PostMergeSeverityBlocking, Location: "internal/x.go:7", Claim: "claim text"}, true},
 		{"none", "none", PostMergeDefect{}, false},
 		{"bulleted none", "- None.", PostMergeDefect{}, false},
 		{"tagged none", "[minor] none", PostMergeDefect{}, false},
@@ -368,10 +383,10 @@ func TestParsePostMergeReviewSeverity_MinorOnlyDowngrades(t *testing.T) {
 	}
 }
 
-func TestParsePostMergeReviewSeverity_NotVerifiedCap(t *testing.T) {
+func TestParsePostMergeReviewSeverity_NotVerifiedKeepsAll(t *testing.T) {
 	text := "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\nnone\nNOT-VERIFIED:\n- one\n- two\n* three\n- four\n- five\nNOTES:\nok"
 	got := parsePostMergeReview(text)
-	want := []string{"one", "two", "three"}
+	want := []string{"one", "two", "three", "four", "five"}
 	if len(got.NotVerified) != len(want) {
 		t.Fatalf("NotVerified = %q, want %q", got.NotVerified, want)
 	}
@@ -576,5 +591,43 @@ func TestPostMergeReviewerPrompt_PreMergeVariant(t *testing.T) {
 	}
 	if pre != want {
 		t.Errorf("pre-merge prompt differs from the post-merge prompt beyond the documented changes:\n--- want\n%s\n--- got\n%s", want, pre)
+	}
+}
+
+func TestCutAtBoundary(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		max  int
+		want string
+	}{
+		{"under max is unchanged", "short text", 100, "short text"},
+		{"exactly max is unchanged", "abcde", 5, "abcde"},
+		{"sentence end wins over a later word end", "First sentence. Second sentence goes on", 30,
+			"First sentence. (truncated)"},
+		{"semicolon is a sentence end", "first clause; second clause runs long", 25,
+			"first clause; (truncated)"},
+		{"newline is a sentence end", "line one\nline two is much longer", 20,
+			"line one (truncated)"},
+		{"word end when no sentence end", "alpha beta gamma delta", 13,
+			"alpha beta (truncated)"},
+		{"cut exactly on a space keeps the whole word", "alpha beta gamma", 10,
+			"alpha beta (truncated)"},
+		{"multi-byte rune straddling the cut is dropped whole", "ab ééééé", 6,
+			"ab (truncated)"},
+		{"multi-byte rune before the cut is kept", "éé éééé éééé", 13,
+			"éé éééé (truncated)"},
+		{"one word longer than max leaves the marker", "abcdefghijklmnop", 5, "(truncated)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cutAtBoundary(tt.in, tt.max)
+			if got != tt.want {
+				t.Errorf("cutAtBoundary(%q, %d) = %q, want %q", tt.in, tt.max, got, tt.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("cutAtBoundary(%q, %d) = %q is not valid UTF-8", tt.in, tt.max, got)
+			}
+		})
 	}
 }

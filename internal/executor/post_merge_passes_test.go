@@ -418,7 +418,7 @@ func TestPostMergeReviewTwoPass_UnionUnitesLocationForms(t *testing.T) {
 	}
 }
 
-func TestPostMergeReviewTwoPass_NotVerifiedCapped(t *testing.T) {
+func TestPostMergeReviewTwoPass_NotVerifiedKeepsAll(t *testing.T) {
 	r, _, _, in := twoPassReviewer(t,
 		fixed(passAnswer(t, "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\nnone\nNOT-VERIFIED:\na1 not in the diff\na2 truncated\na3 cut\nNOTES:\n", 1)),
 		fixed(passAnswer(t, "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\nnone\nNOT-VERIFIED:\nb1 not in the diff\nb2 truncated\nb3 cut\nNOTES:\n", 1)))
@@ -426,8 +426,8 @@ func TestPostMergeReviewTwoPass_NotVerifiedCapped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Review: %v", err)
 	}
-	want := []string{"a1 not in the diff", "a2 truncated", "4 more items the passes could not verify (capped at 3)"}
-	if len(got.NotVerified) != MaxPostMergeNotVerified || strings.Join(got.NotVerified, "|") != strings.Join(want, "|") {
+	want := []string{"a1 not in the diff", "a2 truncated", "a3 cut", "b1 not in the diff", "b2 truncated", "b3 cut"}
+	if strings.Join(got.NotVerified, "|") != strings.Join(want, "|") {
 		t.Errorf("not-verified = %q, want %q", got.NotVerified, want)
 	}
 	if got.Verdict != PostMergeApproveWithNotes {
@@ -654,5 +654,50 @@ func TestPostMergeReviewerSetPasses(t *testing.T) {
 		if r.Passes() != want {
 			t.Errorf("SetPasses(%d) -> %d, want %d", in, r.Passes(), want)
 		}
+	}
+}
+
+// GH-5986: a location that still carries claim text (a defect built outside the
+// parser) keeps that text as the claim when the union rewrites it to path:line.
+func TestPostMergeReviewTwoPass_UnionKeepsClaimFromLocation(t *testing.T) {
+	a := &PostMergeReview{Verdict: PostMergeApproveWithNotes, Defects: []PostMergeDefect{
+		{Severity: PostMergeSeverityMinor, Location: "a.go:42 — the claim", Evidence: "ev"},
+		{Severity: PostMergeSeverityMinor, Location: "b.go:7 — loc claim", Claim: "own claim"},
+	}}
+	b := &PostMergeReview{Verdict: PostMergeApproveWithNotes}
+	got := uniteTwoPassReviews([2]*PostMergeReview{a, b}, "")
+	if len(got.Defects) != 2 {
+		t.Fatalf("defects = %+v, want 2", got.Defects)
+	}
+	if d := got.Defects[0]; d.Location != "a.go:42" || d.Claim != "the claim" || d.Evidence != "ev" {
+		t.Errorf("defect 0 = %+v, want location a.go:42 and claim \"the claim\"", d)
+	}
+	if d := got.Defects[1]; d.Location != "b.go:7" || !strings.Contains(d.Claim, "loc claim") || !strings.Contains(d.Claim, "own claim") {
+		t.Errorf("defect 1 = %+v, want location b.go:7 and both claim texts", d)
+	}
+}
+
+// GH-5986: the em-dash line gives the same defect through the union and through
+// the one-usable-pass branch.
+func TestPostMergeReviewTwoPass_EmDashLineSameOnBothPaths(t *testing.T) {
+	const answer = "VERDICT: APPROVE-WITH-NOTES\nDEFECTS:\n- [minor] a.go:42 — the claim\nNOT-VERIFIED:\nnone\nNOTES:\n"
+	want := PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:42", Claim: "the claim"}
+
+	united, _, _, in := twoPassReviewer(t, fixed(passAnswer(t, answer, 1)), fixed(passAnswer(t, "VERDICT: APPROVE\nDEFECTS:\nnone\nNOT-VERIFIED:\nnone\nNOTES:\n", 1)))
+	got, err := united.Review(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Review (union): %v", err)
+	}
+	if len(got.Defects) != 1 || got.Defects[0] != want {
+		t.Errorf("union defects = %+v, want [%+v]", got.Defects, want)
+	}
+
+	single, _, _, in := twoPassReviewer(t, fixed(passAnswer(t, answer, 1)), func(string) ([]byte, error) { return nil, context.DeadlineExceeded })
+	got, err = single.Review(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Review (one pass): %v", err)
+	}
+	if len(got.Defects) != 1 || got.Defects[0] != want {
+		t.Errorf("one-pass defects = %+v, want [%+v]", got.Defects, want)
 	}
 }

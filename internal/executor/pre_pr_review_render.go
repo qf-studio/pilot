@@ -22,17 +22,17 @@ const PrePRFixNone = "none"
 const (
 	prePRMaxDefects    = 30
 	prePRMaxFieldChars = 1000
+	// prePRMaxLocationChars matches maxPostMergeLocationChars in autopilot.
+	prePRMaxLocationChars = 200
 )
 
 // prePRField bounds and cleans one model-produced field for a single markdown
-// line: invisible Unicode stripped, backticks and newlines flattened.
+// line: invisible Unicode stripped, backticks and newlines flattened, and a
+// field over max cut at a sentence or word end with a "(truncated)" marker.
 func prePRField(s string, max int) string {
 	s, _ = text.SanitizeUntrusted(s)
 	s = strings.Join(strings.Fields(strings.ReplaceAll(s, "`", "")), " ")
-	if len(s) > max {
-		s = strings.ToValidUTF8(s[:max], "") + "…"
-	}
-	return s
+	return cutAtBoundary(s, max)
 }
 
 // RenderPrePRReviewSection renders the "Pre-PR review" section for the PR body,
@@ -68,7 +68,7 @@ func RenderPrePRReviewSection(out *PrePRReviewOutcome) string {
 			if d.Severity != "" {
 				tag = "[" + prePRField(string(d.Severity), 20) + "] "
 			}
-			fmt.Fprintf(&sb, "- %sat %s — %s\n", tag, prePRField(d.Location, 200), prePRField(d.Claim, prePRMaxFieldChars))
+			fmt.Fprintf(&sb, "- %sat %s — %s\n", tag, prePRField(d.Location, prePRMaxLocationChars), prePRField(d.Claim, prePRMaxFieldChars))
 		}
 	}
 

@@ -90,7 +90,9 @@ const (
 	PostMergeSeverityMinor PostMergeSeverity = "minor"
 )
 
-// MaxPostMergeNotVerified caps the Not-verified list of one review.
+// MaxPostMergeNotVerified caps the Not-verified entries rendered in the PR
+// comment. The review itself keeps the full set (GH-5986), which the CLI JSON
+// and the ledger row carry.
 const MaxPostMergeNotVerified = 3
 
 // PostMergeDefect is one finding of a review.
@@ -109,8 +111,9 @@ type PostMergeDefect struct {
 type PostMergeReview struct {
 	Verdict PostMergeVerdict
 	Defects []PostMergeDefect
-	// NotVerified lists up to MaxPostMergeNotVerified things the reviewer could
-	// not confirm, each with the reason.
+	// NotVerified lists the things the reviewer could not confirm, each with
+	// the reason. It is never capped; the PR comment applies
+	// MaxPostMergeNotVerified when rendering.
 	NotVerified []string
 	Notes       string
 	// Downgraded is true when the model said REQUEST-CHANGES without a
@@ -592,7 +595,7 @@ func parsePostMergeReview(text string) *PostMergeReview {
 			}
 		case "NOT-VERIFIED":
 			item := strings.TrimSpace(strings.TrimLeft(trimmed, "-*• \t"))
-			if item != "" && !strings.EqualFold(strings.TrimRight(item, "."), "none") && len(notVerified) < MaxPostMergeNotVerified {
+			if item != "" && !strings.EqualFold(strings.TrimRight(item, "."), "none") {
 				notVerified = append(notVerified, item)
 			}
 		case "NOTES":
@@ -644,8 +647,8 @@ func claimsMet(line string) bool {
 
 // enforcePostMergeCitations rewrites every DEFECTS or NOTES line that says
 // "met" without a path:line citation into a NOT-VERIFIED entry with the reason
-// "not traced" (GH-5947). Entries beyond MaxPostMergeNotVerified collapse into
-// one count line. The verdict is re-derived by the contract's own rules: a
+// "not traced" (GH-5947). Every such line is kept; review.Untraced carries their
+// count. The verdict is re-derived by the contract's own rules: a
 // REQUEST-CHANGES left with no [blocking] defect, or an APPROVE with a
 // non-empty NOT-VERIFIED, becomes APPROVE-WITH-NOTES.
 func enforcePostMergeCitations(review *PostMergeReview) {
@@ -678,20 +681,8 @@ func enforcePostMergeCitations(review *PostMergeReview) {
 	review.Defects = kept
 	review.Notes = strings.Join(notes, "\n")
 	review.Untraced = len(untraced)
-	slots := MaxPostMergeNotVerified - len(review.NotVerified)
-	switch {
-	case slots <= 0:
-		// No room: the count replaces the last entry's slot rather than the cap.
-		review.NotVerified[len(review.NotVerified)-1] = fmt.Sprintf("%d requirements marked met without a path:line citation: %s", len(untraced), postMergeNotTraced)
-	case len(untraced) <= slots:
-		for _, u := range untraced {
-			review.NotVerified = append(review.NotVerified, u+" — "+postMergeNotTraced)
-		}
-	default:
-		for _, u := range untraced[:slots-1] {
-			review.NotVerified = append(review.NotVerified, u+" — "+postMergeNotTraced)
-		}
-		review.NotVerified = append(review.NotVerified, fmt.Sprintf("%d more requirements marked met without a path:line citation: %s", len(untraced)-slots+1, postMergeNotTraced))
+	for _, u := range untraced {
+		review.NotVerified = append(review.NotVerified, u+" — "+postMergeNotTraced)
 	}
 
 	switch {
@@ -725,13 +716,31 @@ func nonEmpty(in ...string) []string {
 }
 
 // postMergeDefectSeparators are the field separators of a defect line.
-var postMergeDefectSeparators = []string{",", " | ", " - "}
+var postMergeDefectSeparators = []string{",", " | ", " - ", " — ", " – ", ": "}
 
-// parsePostMergeDefect parses "[severity] file:line, claim, evidence". " | " and
-// " - " separators are accepted too; the one that occurs first in the line
-// wins, so a dash or comma inside the claim of a dash-separated line does not
-// re-split it. A leading "[blocking]" or "[minor]" sets Severity, minor when
-// absent. The literal "none" (any bullet prefix) is not a defect.
+// splitPostMergeLocation splits text into its leading whitespace-free path
+// token (with the optional :line suffix, the token rule normalisePostMergeLocation
+// applies) and the rest of the text. The model sometimes writes "file:line — claim"
+// with a separator the parser does not know, or none at all; the claim must not
+// stay in the location field (GH-5986). A token that ends in ":" (the "file:line:
+// claim" form) loses the colon.
+func splitPostMergeLocation(text string) (location, rest string) {
+	text = strings.TrimSpace(text)
+	i := strings.IndexAny(text, " \t")
+	if i < 0 {
+		return strings.TrimRight(text, ":"), ""
+	}
+	return strings.TrimRight(text[:i], ":"), strings.TrimSpace(text[i:])
+}
+
+// parsePostMergeDefect parses "[severity] file:line, claim, evidence". " | ",
+// " - ", an em or en dash and ": " are accepted too; the one that occurs first
+// in the line wins, so a dash or comma inside the claim of a dash-separated line
+// does not re-split it. The location is the leading whitespace-free token only:
+// any text after it that no separator split off is the claim, and what the
+// separator split off after that is the evidence. A leading
+// "[blocking]" or "[minor]" sets Severity, minor when absent. The literal "none"
+// (any bullet prefix) is not a defect.
 func parsePostMergeDefect(line string) (PostMergeDefect, bool) {
 	line = strings.TrimSpace(strings.TrimLeft(line, "-*• \t"))
 	severity := PostMergeSeverityMinor
@@ -752,18 +761,67 @@ func parsePostMergeDefect(line string) (PostMergeDefect, bool) {
 	if sep != "" {
 		parts = strings.SplitN(line, sep, 3)
 	}
-	d := PostMergeDefect{Severity: severity, Location: strings.TrimSpace(parts[0])}
-	if len(parts) > 1 {
-		d.Claim = strings.TrimSpace(parts[1])
-	}
-	if len(parts) > 2 {
-		d.Evidence = strings.TrimSpace(parts[2])
+	location, rest := splitPostMergeLocation(parts[0])
+	d := PostMergeDefect{Severity: severity, Location: location}
+	if rest != "" {
+		// Text after the location token that no separator split off is the claim;
+		// what the first separator split off after it is the evidence.
+		d.Claim = rest
+		d.Evidence = strings.TrimSpace(strings.Join(parts[1:], sep))
+	} else {
+		if len(parts) > 1 {
+			d.Claim = strings.TrimSpace(parts[1])
+		}
+		if len(parts) > 2 {
+			d.Evidence = strings.TrimSpace(parts[2])
+		}
 	}
 	if d.Location == "" {
 		return PostMergeDefect{}, false
 	}
 	return d, true
 }
+
+// postMergeTruncatedMarker ends every field cutAtBoundary shortened.
+const postMergeTruncatedMarker = " (truncated)"
+
+// cutAtBoundary bounds s to max bytes without cutting a sentence, a word or a
+// rune in half (GH-5986). A string within max is returned unchanged. Otherwise
+// it is cut after the last sentence end (". ", "; " or a newline) that lies
+// within max, else at the last space, and " (truncated)" is appended; the marker
+// comes on top of max. A first word longer than max leaves nothing to keep, and
+// the result is the marker alone.
+func cutAtBoundary(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max < 0 {
+		max = 0
+	}
+	// Decision: every cut point below is an ASCII byte, and a UTF-8 continuation
+	// byte is never ASCII, so no cut can land inside a rune. The window reaches
+	// one byte past max so a cut that falls exactly on a space is found.
+	window := s[:max+1]
+	cut := -1
+	for _, sep := range []string{". ", "; "} {
+		if i := strings.LastIndex(window, sep); i >= 0 && i+1 > cut {
+			cut = i + 1
+		}
+	}
+	if i := strings.LastIndex(window, "\n"); i > cut {
+		cut = i
+	}
+	if cut <= 0 {
+		cut = strings.LastIndexAny(window, " \t\n")
+	}
+	if cut <= 0 {
+		return strings.TrimSpace(postMergeTruncatedMarker)
+	}
+	return strings.TrimRight(s[:cut], " \t\n") + postMergeTruncatedMarker
+}
+
+// CutAtBoundary is cutAtBoundary for the renderers outside this package.
+func CutAtBoundary(s string, max int) string { return cutAtBoundary(s, max) }
 
 // ExtractPRBodyEvidence returns the "## Evidence" section of a PR body, up to
 // the next level-2 heading, or "" when the body carries none.
