@@ -447,3 +447,42 @@ func TestGH4851_EndToEnd_AdoptedGreenPR_PastDeadline_ReachesCIPassed(t *testing.
 		t.Fatalf("final stage = %s, want %s (error=%q) — the PR#4846 shape: adopted PR with green checks must not time out blind", pr.Stage, StageCIPassed, pr.Error)
 	}
 }
+
+// TestHandleWaitingCI_StuckConclusion_ReachesCIPassed: GitHub left the only
+// required run at status in_progress after writing conclusion success (PR#5981).
+// Past the CI deadline the PR must reach StageCIPassed, not the timeout error.
+func TestHandleWaitingCI_StuckConclusion_ReachesCIPassed(t *testing.T) {
+	const sha = "stuckconcl01"
+	server := httptest.NewServer(gh4851CheckRunsHandler(sha, github.CheckRun{
+		Name: "ci", Status: github.CheckRunInProgress, Conclusion: github.ConclusionSuccess,
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.RequiredChecks = []string{"ci"}
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	c.mu.Lock()
+	c.activePRs[5981] = &PRState{
+		PRNumber:        5981,
+		HeadSHA:         sha,
+		Stage:           StageWaitingCI,
+		CIStatus:        CIPending,
+		CIWaitStartedAt: time.Now().Add(-45 * time.Minute),
+	}
+	c.mu.Unlock()
+
+	ghPR := &github.PullRequest{Number: 5981, Head: github.PRRef{SHA: sha}, Base: github.PRRef{Ref: "main"}}
+	if err := c.ProcessPR(context.Background(), 5981, ghPR); err != nil {
+		t.Fatalf("ProcessPR returned unexpected error: %v", err)
+	}
+
+	pr, ok := c.GetPRState(5981)
+	if !ok {
+		t.Fatal("PR 5981 no longer tracked")
+	}
+	if pr.Stage != StageCIPassed {
+		t.Fatalf("Stage = %s, want %s — a stuck in_progress run with conclusion success must count as completed (error=%q)", pr.Stage, StageCIPassed, pr.Error)
+	}
+}

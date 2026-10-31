@@ -566,6 +566,12 @@ func TestCIMonitor_MapCheckStatus(t *testing.T) {
 		{"completed action_required", github.CheckRunCompleted, github.ConclusionActionRequired, CIFailure},
 		{"completed unknown", github.CheckRunCompleted, "unknown", CIPending},
 		{"unknown status", "unknown", "", CIPending},
+		// PR#5981: GitHub wrote the conclusion but never flipped status to
+		// completed — a non-empty conclusion is terminal.
+		{"stuck in_progress success", github.CheckRunInProgress, github.ConclusionSuccess, CISuccess},
+		{"stuck in_progress failure", github.CheckRunInProgress, github.ConclusionFailure, CIFailure},
+		{"stuck queued success", github.CheckRunQueued, github.ConclusionSuccess, CISuccess},
+		{"in_progress empty conclusion stays running", github.CheckRunInProgress, "", CIRunning},
 	}
 
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
@@ -2562,6 +2568,81 @@ func TestCIMonitor_FailureInScope(t *testing.T) {
 			// The gate and the collectors must agree: a gate failure always has evidence.
 			if tt.wantStatus == CIFailure && len(failed) == 0 {
 				t.Error("gate failed but GetFailedChecks is empty — zero-evidence drift (GH-5776)")
+			}
+		})
+	}
+}
+
+// TestCIMonitor_FailedUnlistedChecks_StuckFailure: an unlisted run whose
+// status is stuck at in_progress but whose conclusion is failure still blocks
+// (PR#5981 shape — checkRunTerminal, not a direct status read).
+func TestCIMonitor_FailedUnlistedChecks_StuckFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		run  github.CheckRun
+		want []string
+	}{
+		{"stuck in_progress failure blocks", github.CheckRun{Name: "drift", Status: github.CheckRunInProgress, Conclusion: github.ConclusionFailure}, []string{"drift"}},
+		{"stuck in_progress success does not block", github.CheckRun{Name: "drift", Status: github.CheckRunInProgress, Conclusion: github.ConclusionSuccess}, nil},
+		{"in_progress without conclusion does not block", github.CheckRun{Name: "drift", Status: github.CheckRunInProgress}, nil},
+		{"completed failure blocks", github.CheckRun{Name: "drift", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure}, []string{"drift"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.RequiredChecks = []string{"build"}
+			monitor := NewCIMonitor(github.NewClient(testutil.FakeGitHubToken), "owner", "repo", cfg)
+			runs := &github.CheckRunsResponse{CheckRuns: []github.CheckRun{
+				{Name: "build", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				tt.run,
+			}}
+			got := monitor.failedUnlistedChecks(runs, map[string]CIStatus{"build": CISuccess})
+			if len(got) != len(tt.want) || (len(got) == 1 && got[0] != tt.want[0]) {
+				t.Errorf("failedUnlistedChecks = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCIMonitor_RequiredCheckMismatch_StuckSuccess: a stuck-success run is
+// terminal, so it neither triggers a mismatch when the required name is
+// present nor keeps the SHA looking "still executing" when it is not.
+func TestCIMonitor_RequiredCheckMismatch_StuckSuccess(t *testing.T) {
+	tests := []struct {
+		name        string
+		required    []string
+		runs        []github.CheckRun
+		wantMissing []string
+		wantOK      bool
+	}{
+		{
+			name:     "stuck success run is the required check: no mismatch",
+			required: []string{"build"},
+			runs:     []github.CheckRun{{Name: "build", Status: github.CheckRunInProgress, Conclusion: github.ConclusionSuccess}},
+		},
+		{
+			name:     "in_progress without conclusion defers the verdict",
+			required: []string{"deploy"},
+			runs:     []github.CheckRun{{Name: "build", Status: github.CheckRunInProgress}},
+		},
+		{
+			name:        "stuck success run does not defer a real mismatch",
+			required:    []string{"deploy"},
+			runs:        []github.CheckRun{{Name: "build", Status: github.CheckRunInProgress, Conclusion: github.ConclusionSuccess}},
+			wantMissing: []string{"deploy"},
+			wantOK:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.RequiredChecks = tt.required
+			monitor := NewCIMonitor(github.NewClient(testutil.FakeGitHubToken), "owner", "repo", cfg)
+			missing, _, ok := monitor.requiredCheckMismatch(&github.CheckRunsResponse{CheckRuns: tt.runs})
+			if ok != tt.wantOK || len(missing) != len(tt.wantMissing) {
+				t.Errorf("requiredCheckMismatch = (missing=%v, ok=%v), want (missing=%v, ok=%v)", missing, ok, tt.wantMissing, tt.wantOK)
 			}
 		})
 	}

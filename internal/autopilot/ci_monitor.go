@@ -65,6 +65,11 @@ type CIMonitor struct {
 	// deliberate: the whole point is comparing THIS sha's silence against
 	// what OTHER shas on the same repo have done.
 	everSeenCheckRuns bool
+
+	// stuckPromotionLogged dedupes the Debug line mapCheckRun writes when it
+	// promotes a stuck check-run (conclusion set, status never completed) —
+	// one line per run, not one per poll tick.
+	stuckPromotionLogged sync.Map
 }
 
 // NewCIMonitor creates a CI monitor with configuration from Config.
@@ -345,7 +350,7 @@ func (m *CIMonitor) checkRequiredChecks(checkRuns *github.CheckRunsResponse) CIS
 
 	for _, run := range checkRuns.CheckRuns {
 		if _, ok := requiredStatus[run.Name]; ok {
-			requiredStatus[run.Name] = m.mapCheckStatus(run.Status, run.Conclusion)
+			requiredStatus[run.Name] = m.mapCheckRun(run)
 		}
 	}
 
@@ -400,7 +405,7 @@ func (m *CIMonitor) failedUnlistedChecks(checkRuns *github.CheckRunsResponse, re
 		if !m.failureInScope(run.Name) {
 			continue
 		}
-		if run.Status != github.CheckRunCompleted {
+		if !checkRunTerminal(run) {
 			continue
 		}
 		if isCIFailureConclusion(run.Conclusion) {
@@ -446,7 +451,7 @@ func (m *CIMonitor) requiredCheckMismatch(checkRuns *github.CheckRunsResponse) (
 	for _, run := range checkRuns.CheckRuns {
 		discovered = append(discovered, run.Name)
 		seen[run.Name] = true
-		if run.Status != github.CheckRunCompleted {
+		if !checkRunTerminal(run) {
 			// Something on this SHA is still executing — too early to call
 			// any required name "missing" for good.
 			return nil, discovered, false
@@ -504,7 +509,7 @@ func (m *CIMonitor) checkAllRuns(checkRuns *github.CheckRunsResponse) CIStatus {
 	hasPending := false
 
 	for _, run := range checkRuns.CheckRuns {
-		status := m.mapCheckStatus(run.Status, run.Conclusion)
+		status := m.mapCheckRun(run)
 		switch status {
 		case CIFailure:
 			hasFailure = true
@@ -669,7 +674,7 @@ func (m *CIMonitor) checkAutoDiscoveredRuns(ctx context.Context, sha string, che
 	hasPending := false
 
 	for _, run := range filteredRuns {
-		status := m.mapCheckStatus(run.Status, run.Conclusion)
+		status := m.mapCheckRun(run)
 		switch status {
 		case CIFailure:
 			hasFailure = true
@@ -804,8 +809,38 @@ func isCIFailureConclusion(conclusion string) bool {
 	return ciFailureConclusions[conclusion]
 }
 
-// mapCheckStatus maps GitHub check status to CIStatus.
+// checkRunTerminal reports whether a check-run has finished: its status is
+// completed, or it carries a conclusion. GitHub sometimes finishes an Actions
+// job, writes the conclusion on the check-run and never flips status from
+// in_progress to completed (PR#5981, job "Knowledge Graph Drift Gate", 10-28
+// and 10-30). The Checks API sets conclusion only once a run has finished, so
+// a non-empty conclusion is a reliable terminal signal.
+func checkRunTerminal(run github.CheckRun) bool {
+	return run.Status == github.CheckRunCompleted || run.Conclusion != ""
+}
+
+// mapCheckRun maps a check-run to a CIStatus via mapCheckStatus, logging once
+// per run when a stuck status was promoted by its conclusion.
+func (m *CIMonitor) mapCheckRun(run github.CheckRun) CIStatus {
+	if run.Status != github.CheckRunCompleted && run.Conclusion != "" {
+		key := fmt.Sprintf("%s#%d", run.Name, run.ID)
+		if _, seen := m.stuckPromotionLogged.LoadOrStore(key, struct{}{}); !seen {
+			m.log.Debug("check-run has a conclusion but status never completed; treating as completed",
+				"check", run.Name,
+				"status", run.Status,
+				"conclusion", run.Conclusion,
+			)
+		}
+	}
+	return m.mapCheckStatus(run.Status, run.Conclusion)
+}
+
+// mapCheckStatus maps GitHub check status to CIStatus. A non-empty conclusion
+// is treated as completed regardless of status (see checkRunTerminal).
 func (m *CIMonitor) mapCheckStatus(status, conclusion string) CIStatus {
+	if conclusion != "" {
+		status = github.CheckRunCompleted
+	}
 	switch status {
 	case github.CheckRunQueued, github.CheckRunInProgress:
 		return CIRunning
@@ -1207,7 +1242,7 @@ func (m *CIMonitor) GetCheckLogs(ctx context.Context, sha string, maxLen int) st
 
 	var combined strings.Builder
 	for _, run := range checkRuns.CheckRuns {
-		if run.Status != github.CheckRunCompleted {
+		if !checkRunTerminal(run) {
 			continue
 		}
 		if !m.isScopedCheck(run.Name) {
@@ -1251,7 +1286,7 @@ func (m *CIMonitor) GetCheckStatus(ctx context.Context, sha, checkName string) (
 
 	for _, run := range checkRuns.CheckRuns {
 		if run.Name == checkName {
-			return m.mapCheckStatus(run.Status, run.Conclusion), nil
+			return m.mapCheckRun(run), nil
 		}
 	}
 
