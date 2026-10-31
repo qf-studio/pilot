@@ -572,6 +572,9 @@ func (s *Store) migrate() error {
 			completed_at DATETIME NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_turns_completed ON chat_turns(completed_at)`,
+		// GH-5992: the full NOT-VERIFIED set of a post-merge review, as a JSON
+		// array ('' for a review that carries none).
+		`ALTER TABLE pr_reviews ADD COLUMN not_verified TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, migration := range migrations {

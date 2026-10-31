@@ -500,6 +500,97 @@ func TestPostMergeReview_LedgerRecordsVerdict(t *testing.T) {
 	}
 }
 
+func TestPostMergeReview_LedgerRecordsFullNotVerified(t *testing.T) {
+	_, gh := newPMRGitHub(t)
+	review := requestChangesReview()
+	review.NotVerified = []string{"nv-1", "nv-2", "nv-3", "nv-4", "A: met. — not traced"}
+	c := newPMRController(t, gh, &pmrFakeReviewer{review: review}, true)
+
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	c.SetMemoryStore(store)
+
+	if err := c.handleMerged(context.Background(), mergedPRState(42, 10)); err != nil {
+		t.Fatalf("handleMerged: %v", err)
+	}
+	c.waitPostMergeReviews()
+
+	var raw string
+	if err := store.DB().QueryRow(`SELECT not_verified FROM pr_reviews WHERE pr_number = ?`, 42).Scan(&raw); err != nil {
+		t.Fatalf("no pr_reviews row: %v", err)
+	}
+	var got []string
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("not_verified %q is not a JSON array: %v", raw, err)
+	}
+	if len(got) != len(review.NotVerified) || got[4] != review.NotVerified[4] {
+		t.Errorf("ledger not_verified = %q, want the full set %q", got, review.NotVerified)
+	}
+}
+
+func TestPostMergeReviewComment_UntracedCountIsLastSlot(t *testing.T) {
+	tests := []struct {
+		name        string
+		notVerified []string
+		want        []string
+		notWant     []string
+		wantBullets int
+	}{
+		{
+			name:        "within the cap everything is listed",
+			notVerified: []string{"nv-1", "nv-2", "A: met. — not traced"},
+			want:        []string{"- nv-1", "- nv-2", "- A: met. — not traced"},
+			notWant:     []string{"omitted"},
+			wantBullets: 3,
+		},
+		{
+			name:        "untraced entries behind two model items stay counted",
+			notVerified: []string{"nv-1", "nv-2", "nv-3", "A: met. — not traced", "B: met. — not traced"},
+			want:        []string{"- nv-1", "- nv-2", "1 more not-verified items; 2 requirements marked met but not traced to a file read omitted"},
+			notWant:     []string{"- nv-3"},
+			wantBullets: 3,
+		},
+		{
+			name:        "only untraced entries",
+			notVerified: []string{"A: met. — not traced", "B: met. — not traced", "C: met. — not traced", "D: met. — not traced"},
+			want:        []string{"- … 4 requirements marked met but not traced to a file read omitted"},
+			wantBullets: 1,
+		},
+		{
+			name:        "no untraced entries",
+			notVerified: []string{"nv-1", "nv-2", "nv-3", "nv-4"},
+			want:        []string{"- nv-1", "- nv-2", "- … 2 more not-verified items omitted"},
+			notWant:     []string{"not traced"},
+			wantBullets: 3,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatPostMergeNotVerified(tt.notVerified)
+			for _, w := range tt.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("missing %q in:\n%s", w, got)
+				}
+			}
+			for _, w := range tt.notWant {
+				if strings.Contains(got, w) {
+					t.Errorf("unexpected %q in:\n%s", w, got)
+				}
+			}
+			lines := strings.Split(strings.TrimSpace(got), "\n")
+			if len(lines) != tt.wantBullets {
+				t.Errorf("rendered %d slots, want %d:\n%s", len(lines), tt.wantBullets, got)
+			}
+			if len(tt.notVerified) > executor.MaxPostMergeNotVerified && !strings.HasPrefix(lines[len(lines)-1], "- … ") {
+				t.Errorf("last slot is not the count line: %q", lines[len(lines)-1])
+			}
+		})
+	}
+}
+
 func TestBuildPostMergeReviewComment(t *testing.T) {
 	got := buildPostMergeReviewComment(requestChangesReview())
 	for _, want := range []string{"**VERDICT: REQUEST-CHANGES**", "### Defects", "internal/foo/client.go:42", "Evidence:", "### Notes", "not a substitute"} {

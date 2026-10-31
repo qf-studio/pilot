@@ -2,6 +2,8 @@ package memory
 
 import (
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 	"unicode"
@@ -86,6 +88,9 @@ type PRReview struct {
 	// Verdict is the parsed verdict (see ParseReviewVerdict), '' when unknown.
 	Verdict     string
 	SubmittedAt time.Time
+	// NotVerified is the review's full NOT-VERIFIED set (post-merge reviews);
+	// stored as a JSON array, empty for reviews that carry none.
+	NotVerified []string
 }
 
 // UpsertPRReview inserts a review, or refreshes the existing row with the same
@@ -95,10 +100,18 @@ func (s *Store) UpsertPRReview(r *PRReview) error {
 	if !r.SubmittedAt.IsZero() {
 		submitted = r.SubmittedAt.UTC()
 	}
+	var notVerified string
+	if len(r.NotVerified) > 0 {
+		b, err := json.Marshal(r.NotVerified)
+		if err != nil {
+			return fmt.Errorf("marshal not_verified: %w", err)
+		}
+		notVerified = string(b)
+	}
 	return s.withRetry("UpsertPRReview", func() error {
 		_, err := s.db.Exec(`
-			INSERT INTO pr_reviews (review_id, project_path, pr_number, execution_id, reviewer, state, verdict, submitted_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO pr_reviews (review_id, project_path, pr_number, execution_id, reviewer, state, verdict, submitted_at, not_verified)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(review_id) DO UPDATE SET
 				project_path = excluded.project_path,
 				pr_number = excluded.pr_number,
@@ -106,8 +119,9 @@ func (s *Store) UpsertPRReview(r *PRReview) error {
 				reviewer = excluded.reviewer,
 				state = excluded.state,
 				verdict = excluded.verdict,
-				submitted_at = excluded.submitted_at
-		`, r.ReviewID, r.ProjectPath, r.PRNumber, r.ExecutionID, r.Reviewer, r.State, r.Verdict, submitted)
+				submitted_at = excluded.submitted_at,
+				not_verified = CASE WHEN excluded.not_verified <> '' THEN excluded.not_verified ELSE pr_reviews.not_verified END
+		`, r.ReviewID, r.ProjectPath, r.PRNumber, r.ExecutionID, r.Reviewer, r.State, r.Verdict, submitted, notVerified)
 		return err
 	})
 }
@@ -138,7 +152,7 @@ func (s *Store) ListPRReviewIDs(projectPath string, prNumber int) (map[int64]str
 // oldest first.
 func (s *Store) ListPRReviewsByExecution(executionID string) ([]*PRReview, error) {
 	rows, err := s.db.Query(`
-		SELECT review_id, project_path, pr_number, execution_id, reviewer, state, verdict, submitted_at
+		SELECT review_id, project_path, pr_number, execution_id, reviewer, state, verdict, submitted_at, COALESCE(not_verified, '')
 		FROM pr_reviews
 		WHERE execution_id = ?
 		ORDER BY submitted_at ASC, review_id ASC
@@ -152,8 +166,14 @@ func (s *Store) ListPRReviewsByExecution(executionID string) ([]*PRReview, error
 	for rows.Next() {
 		var r PRReview
 		var submitted sql.NullTime
-		if err := rows.Scan(&r.ReviewID, &r.ProjectPath, &r.PRNumber, &r.ExecutionID, &r.Reviewer, &r.State, &r.Verdict, &submitted); err != nil {
+		var notVerified string
+		if err := rows.Scan(&r.ReviewID, &r.ProjectPath, &r.PRNumber, &r.ExecutionID, &r.Reviewer, &r.State, &r.Verdict, &submitted, &notVerified); err != nil {
 			return nil, err
+		}
+		if notVerified != "" {
+			if err := json.Unmarshal([]byte(notVerified), &r.NotVerified); err != nil {
+				return nil, fmt.Errorf("unmarshal not_verified of review %d: %w", r.ReviewID, err)
+			}
 		}
 		if submitted.Valid {
 			r.SubmittedAt = submitted.Time
