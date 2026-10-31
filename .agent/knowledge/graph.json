@@ -3525,6 +3525,19 @@
           "testing",
           "workflow"
         ]
+      },
+      "TASK-626": {
+        "path": ".agent/tasks/TASK-626-reviewer-residue-union-tolerance-empty-claim-marker-paren-exact-lookup-nv-count.md",
+        "title": "Reviewer residue \u2014 union line tolerance and case-fold, empty-claim guard, truncation marker, parenthesised hint kept, exact task lookup at startup, NOT-VERIFIED count as an extra bullet, counter and log fixes",
+        "status": "dispatched",
+        "concepts": [
+          "markers",
+          "context",
+          "api",
+          "testing",
+          "deployment",
+          "knowledge"
+        ]
       }
     },
     "memories": {
@@ -14159,6 +14172,36 @@
       "from": "TASK-625",
       "to": "workflow",
       "type": "implements"
+    },
+    {
+      "from": "TASK-626",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-626",
+      "to": "markers",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-626",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-626",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-626",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-626",
+      "to": "deployment",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -14389,7 +14432,8 @@
       "TASK-598",
       "TASK-600",
       "TASK-624",
-      "TASK-625"
+      "TASK-625",
+      "TASK-626"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -14890,7 +14934,8 @@
       "TASK-599",
       "TASK-600",
       "TASK-624",
-      "TASK-625"
+      "TASK-625",
+      "TASK-626"
     ],
     "conversational-bot": [
       "mem-036",
@@ -15290,7 +15335,8 @@
       "TASK-598",
       "TASK-599",
       "TASK-624",
-      "TASK-625"
+      "TASK-625",
+      "TASK-626"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -15848,7 +15894,8 @@
       "TASK-596",
       "TASK-598",
       "TASK-624",
-      "TASK-625"
+      "TASK-625",
+      "TASK-626"
     ],
     "labels": [
       "mem-100",
@@ -15919,7 +15966,8 @@
       "TASK-583",
       "TASK-596",
       "TASK-624",
-      "TASK-625"
+      "TASK-625",
+      "TASK-626"
     ],
     "memory": [
       "TASK-358",
@@ -16494,7 +16542,8 @@
       "TASK-599",
       "TASK-600",
       "TASK-624",
-      "TASK-625"
+      "TASK-625",
+      "TASK-626"
     ],
     "testing-quality": [
       "TASK-384",
@@ -17166,10 +17215,10 @@
       "mem-268"
     ]
   },
-  "last_updated": "2026-10-31T19:28:56.380813+00:00",
+  "last_updated": "2026-10-31T21:33:03.964502+00:00",
   "stats": {
-    "total_nodes": 816,
-    "total_edges": 906,
+    "total_nodes": 817,
+    "total_edges": 912,
     "memory_count": 445
   },
   "metadata": {}
