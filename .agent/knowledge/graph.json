@@ -3497,6 +3497,20 @@
           "theory of mind",
           "testing"
         ]
+      },
+      "TASK-624": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-624-daemon-defects-stuck-checkrun-restart-repick-hold-binding-body-cut.md",
+        "title": "Four daemon defects from the 10-28 reviewer loop \u2014 stuck check-run, restart re-pick, prerequisite-hold PR binding, follow-up body cut",
+        "status": "dispatched",
+        "concepts": [
+          "markers",
+          "context",
+          "deployment",
+          "knowledge",
+          "testing",
+          "workflow",
+          "api"
+        ]
       }
     },
     "memories": {
@@ -14061,6 +14075,41 @@
       "from": "TASK-600",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-624",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-624",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-624",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-624",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-624",
+      "to": "markers",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-624",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-624",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -14289,7 +14338,8 @@
       "TASK-596",
       "TASK-597",
       "TASK-598",
-      "TASK-600"
+      "TASK-600",
+      "TASK-624"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -14788,7 +14838,8 @@
       "TASK-597",
       "TASK-598",
       "TASK-599",
-      "TASK-600"
+      "TASK-600",
+      "TASK-624"
     ],
     "conversational-bot": [
       "mem-036",
@@ -15186,7 +15237,8 @@
       "TASK-596",
       "TASK-597",
       "TASK-598",
-      "TASK-599"
+      "TASK-599",
+      "TASK-624"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -15742,7 +15794,8 @@
       "TASK-589",
       "TASK-593",
       "TASK-596",
-      "TASK-598"
+      "TASK-598",
+      "TASK-624"
     ],
     "labels": [
       "mem-100",
@@ -15811,7 +15864,8 @@
       "TASK-573",
       "TASK-579",
       "TASK-583",
-      "TASK-596"
+      "TASK-596",
+      "TASK-624"
     ],
     "memory": [
       "TASK-358",
@@ -16384,7 +16438,8 @@
       "TASK-597",
       "TASK-598",
       "TASK-599",
-      "TASK-600"
+      "TASK-600",
+      "TASK-624"
     ],
     "testing-quality": [
       "TASK-384",
@@ -16554,7 +16609,8 @@
       "TASK-577",
       "TASK-595",
       "TASK-598",
-      "TASK-600"
+      "TASK-600",
+      "TASK-624"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -17054,11 +17110,11 @@
       "mem-268"
     ]
   },
-  "last_updated": "2026-10-27T08:44:08.228304+00:00",
+  "last_updated": "2026-10-31T15:10:02.490808+00:00",
   "stats": {
-    "total_nodes": 812,
-    "total_edges": 892,
-    "memory_count": 443
+    "total_nodes": 815,
+    "total_edges": 899,
+    "memory_count": 445
   },
   "metadata": {}
 }
