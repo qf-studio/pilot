@@ -33,6 +33,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -97,13 +98,17 @@ type BasePresenceProbe interface {
 	// issue, two for a PR.
 	IssueOrPRState(ctx context.Context, owner, repo string, number int) (kind, state string, err error)
 	// LinkedPRNumbers returns the numbers of every pull request that
-	// references issue `issueNumber` in owner/repo (e.g. via a "Fixes #N" /
-	// "Depends on: #N" body reference) — the canonical incident shape
-	// (GH-5021/GH-5028): a sub-issue's "Depends on: #N" names an issue, not
-	// a PR, and the actual unmerged work lives on the PR attached to that
-	// issue. Order is unspecified; callers probe every returned number via
-	// IssueOrPRState. An issue with no attached PR returns (nil, nil), not
-	// an error.
+	// delivers issue `issueNumber` in owner/repo — the canonical incident
+	// shape (GH-5021/GH-5028): a sub-issue's "Depends on: #N" names an
+	// issue, not a PR, and the actual unmerged work lives on the PR
+	// attached to that issue. A PR delivers issue N when any of
+	// PRDeliversIssue's three rules holds: (1) N is in the PR's
+	// closingIssuesReferences, (2) the PR body carries a closing keyword
+	// for #N (closes/fixes/resolves and their tenses, optional colon), or
+	// (3) the PR's head branch is pilot/GH-N or starts with pilot/GH-N-.
+	// A PR that merely mentions #N is NOT returned (GH-5985). Order is
+	// unspecified; callers probe every returned number via IssueOrPRState.
+	// An issue with no delivering PR returns (nil, nil), not an error.
 	LinkedPRNumbers(ctx context.Context, owner, repo string, issueNumber int) ([]int, error)
 	// FileExistsOnDefaultBranch reports whether path exists at HEAD of
 	// owner/repo's default branch.
@@ -298,9 +303,12 @@ func (ghCLIBasePresenceProbe) IssueOrPRState(ctx context.Context, owner, repo st
 
 // LinkedPRNumbers implements BasePresenceProbe via the GitHub Search API
 // (`gh api search/issues`, the same REST surface
-// adapters/github.Client.SearchPRsForIssue queries), searching for open PRs
-// that reference issueNumber anywhere in their title/body/comments. Never
-// shells out during `go test`.
+// adapters/github.Client.SearchPRsForIssue queries) as the candidate source
+// — every PR that mentions issueNumber in its title/body/comments — then
+// keeps only candidates that actually deliver the issue (PRDeliversIssue,
+// read via `gh pr view`). A lookup error on one candidate drops that
+// candidate (logged at Warn); it never produces a hold. Never shells out
+// during `go test`.
 func (ghCLIBasePresenceProbe) LinkedPRNumbers(ctx context.Context, owner, repo string, issueNumber int) ([]int, error) {
 	if testing.Testing() {
 		return nil, fmt.Errorf("ghCLIBasePresenceProbe: shellout disabled under go test")
@@ -326,9 +334,82 @@ func (ghCLIBasePresenceProbe) LinkedPRNumbers(ctx context.Context, owner, repo s
 		if perr != nil {
 			continue
 		}
-		numbers = append(numbers, n)
+		head, body, closing, verr := ghCLIPRDeliveryFields(ctx, owner, repo, n)
+		if verr != nil {
+			slog.Warn("base-presence: dropping candidate PR, delivery lookup failed",
+				slog.Int("pr", n), slog.Int("issue", issueNumber), slog.Any("error", verr))
+			continue
+		}
+		if PRDeliversIssue(head, body, closing, issueNumber) {
+			numbers = append(numbers, n)
+		}
 	}
 	return numbers, nil
+}
+
+// ghCLIPRDeliveryFields reads the three PRDeliversIssue inputs for PR
+// `number` with a single `gh pr view --json headRefName,body,
+// closingIssuesReferences`. References from other repositories are dropped
+// when gh reports the repository, since a bare number there names a
+// different issue.
+func ghCLIPRDeliveryFields(ctx context.Context, owner, repo string, number int) (head, body string, closing []int, err error) {
+	args := []string{"pr", "view", strconv.Itoa(number), "--repo", owner + "/" + repo, "--json", "headRefName,body,closingIssuesReferences"}
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if runErr := cmd.Run(); runErr != nil {
+		return "", "", nil, fmt.Errorf("gh pr view %d in %s/%s: %w (stderr: %s)", number, owner, repo, runErr, stderr.String())
+	}
+	var resp struct {
+		HeadRefName             string `json:"headRefName"`
+		Body                    string `json:"body"`
+		ClosingIssuesReferences []struct {
+			Number     int `json:"number"`
+			Repository struct {
+				Name  string `json:"name"`
+				Owner struct {
+					Login string `json:"login"`
+				} `json:"owner"`
+			} `json:"repository"`
+		} `json:"closingIssuesReferences"`
+	}
+	if jsonErr := json.Unmarshal(stdout.Bytes(), &resp); jsonErr != nil {
+		return "", "", nil, fmt.Errorf("parse gh pr view %d output: %w", number, jsonErr)
+	}
+	for _, ref := range resp.ClosingIssuesReferences {
+		if ref.Repository.Name != "" &&
+			(!strings.EqualFold(ref.Repository.Name, repo) || !strings.EqualFold(ref.Repository.Owner.Login, owner)) {
+			continue
+		}
+		closing = append(closing, ref.Number)
+	}
+	return resp.HeadRefName, resp.Body, closing, nil
+}
+
+// PRDeliversIssue reports whether a pull request delivers issue
+// `issueNumber` (GH-5985), as opposed to merely mentioning it. It holds when
+// any of three rules matches: (1) issueNumber is in closingRefs (GitHub's
+// closingIssuesReferences for the PR); (2) body carries a closing keyword
+// for #issueNumber — close/closes/closed, fix/fixes/fixed,
+// resolve/resolves/resolved, case-insensitive, optional colon; or (3)
+// headBranch is pilot/GH-<issueNumber> or starts with
+// pilot/GH-<issueNumber>- (the boundary keeps pilot/GH-51 from matching
+// issue 5). Exported because the composition root (cmd/pilot) applies it;
+// the executor package cannot import the GitHub adapter or autopilot, so the
+// closing-reference regex lives here.
+func PRDeliversIssue(headBranch, body string, closingRefs []int, issueNumber int) bool {
+	for _, n := range closingRefs {
+		if n == issueNumber {
+			return true
+		}
+	}
+	branch := fmt.Sprintf("pilot/GH-%d", issueNumber)
+	if headBranch == branch || strings.HasPrefix(headBranch, branch+"-") {
+		return true
+	}
+	re := regexp.MustCompile(fmt.Sprintf(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#%d\b`, issueNumber))
+	return re.MatchString(body)
 }
 
 // FileExistsOnDefaultBranch implements BasePresenceProbe via `gh api

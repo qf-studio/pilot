@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/config"
@@ -18,10 +19,13 @@ type githubBasePresenceProbe struct {
 	*github.Client
 }
 
-// LinkedPRNumbers implements executor.BasePresenceProbe by mapping
-// SearchPRsForIssue's []*github.PullRequest results down to bare PR
-// numbers — basePresenceChecker only needs the number to re-probe each
-// candidate via IssueOrPRState.
+// LinkedPRNumbers implements executor.BasePresenceProbe. SearchPRsForIssue
+// is only the candidate source — it matches any PR that mentions #N in its
+// title, body or comments — so each candidate is then checked with
+// executor.PRDeliversIssue against its closing references
+// (ClosingIssueNumbers), body and head branch (GetPullRequest), and only
+// delivering PRs are returned (GH-5985). A lookup error on one candidate
+// drops that candidate (logged at Warn); it never produces a hold.
 func (p githubBasePresenceProbe) LinkedPRNumbers(ctx context.Context, owner, repo string, issueNumber int) ([]int, error) {
 	prs, err := p.SearchPRsForIssue(ctx, owner, repo, issueNumber)
 	if err != nil {
@@ -29,7 +33,21 @@ func (p githubBasePresenceProbe) LinkedPRNumbers(ctx context.Context, owner, rep
 	}
 	numbers := make([]int, 0, len(prs))
 	for _, pr := range prs {
-		numbers = append(numbers, pr.Number)
+		closing, cerr := p.ClosingIssueNumbers(ctx, owner, repo, pr.Number)
+		if cerr != nil {
+			slog.Warn("base-presence: dropping candidate PR, closing references lookup failed",
+				slog.Int("pr", pr.Number), slog.Int("issue", issueNumber), slog.Any("error", cerr))
+			continue
+		}
+		full, gerr := p.GetPullRequest(ctx, owner, repo, pr.Number)
+		if gerr != nil {
+			slog.Warn("base-presence: dropping candidate PR, pull request lookup failed",
+				slog.Int("pr", pr.Number), slog.Int("issue", issueNumber), slog.Any("error", gerr))
+			continue
+		}
+		if executor.PRDeliversIssue(full.Head.Ref, full.Body, closing, issueNumber) {
+			numbers = append(numbers, pr.Number)
+		}
 	}
 	return numbers, nil
 }

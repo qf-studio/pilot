@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,20 +20,46 @@ var _ executor.BasePresenceProbe = githubBasePresenceProbe{}
 
 // TestGithubBasePresenceProbe_LinkedPRNumbers confirms the one method this
 // shim adds beyond *github.Client's own FileExistsOnDefaultBranch/
-// IssueOrPRState (repo_state.go, GH-5046): LinkedPRNumbers maps
-// SearchPRsForIssue's []*github.PullRequest results down to bare numbers
-// against a real HTTP round trip, and IssueOrPRState (inherited directly
-// via the embedded *github.Client) keeps working through the same wrapper.
+// IssueOrPRState (repo_state.go, GH-5046) against a real HTTP round trip:
+// LinkedPRNumbers takes SearchPRsForIssue's hits as candidates and keeps only
+// PRs that deliver the issue (GH-5985) — a mention-only PR is dropped, a PR
+// on branch pilot/GH-N, a PR whose closingIssuesReferences hold N, a PR whose
+// body closes #N are kept, and a candidate whose pull lookup fails is dropped
+// — and IssueOrPRState (inherited via the embedded *github.Client) keeps
+// working through the same wrapper.
 func TestGithubBasePresenceProbe_LinkedPRNumbers(t *testing.T) {
+	// PR 31: mention only (the 10-28 incident shape: closes #5927, says "see #5917").
+	// PR 32: delivering, by head branch.
+	// PR 33: delivering, by closingIssuesReferences (graphql).
+	// PR 34: delivering, by body closing keyword.
+	// PR 35: pull lookup 404s — dropped, never a hold.
 	var gotPaths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPaths = append(gotPaths, r.URL.Path)
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/search/issues"):
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"items":[{"id":1,"number":42,"title":"fix","state":"open"},{"id":2,"number":43,"title":"fix2","state":"closed","pull_request":{"merged_at":"2026-01-01T00:00:00Z"}}]}`))
-		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/7"):
-			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"items":[` +
+				`{"id":1,"number":31,"title":"other","state":"open"},` +
+				`{"id":2,"number":32,"title":"deliver","state":"open"},` +
+				`{"id":3,"number":33,"title":"graphql","state":"open"},` +
+				`{"id":4,"number":34,"title":"body","state":"open"},` +
+				`{"id":5,"number":35,"title":"gone","state":"open"}]}`))
+		case r.URL.Path == "/graphql":
+			reqBody, _ := io.ReadAll(r.Body)
+			nodes := `[]`
+			if strings.Contains(string(reqBody), `"pr":33`) {
+				nodes = `[{"number":5917,"repository":{"nameWithOwner":"owner/repo"}}]`
+			}
+			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"closingIssuesReferences":{"nodes":` + nodes + `}}}}}`))
+		case r.URL.Path == "/repos/owner/repo/pulls/31":
+			_, _ = w.Write([]byte(`{"number":31,"body":"see #5917","head":{"ref":"pilot/GH-5927"}}`))
+		case r.URL.Path == "/repos/owner/repo/pulls/32":
+			_, _ = w.Write([]byte(`{"number":32,"body":"","head":{"ref":"pilot/GH-5917"}}`))
+		case r.URL.Path == "/repos/owner/repo/pulls/33":
+			_, _ = w.Write([]byte(`{"number":33,"body":"","head":{"ref":"feature/x"}}`))
+		case r.URL.Path == "/repos/owner/repo/pulls/34":
+			_, _ = w.Write([]byte(`{"number":34,"body":"Fixes: #5917","head":{"ref":"feature/y"}}`))
+		case r.URL.Path == "/repos/owner/repo/issues/7":
 			_, _ = w.Write([]byte(`{"number":7,"state":"open"}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -43,12 +70,19 @@ func TestGithubBasePresenceProbe_LinkedPRNumbers(t *testing.T) {
 
 	probe := githubBasePresenceProbe{Client: github.NewClientWithBaseURL("test-token", server.URL)}
 
-	numbers, err := probe.LinkedPRNumbers(context.Background(), "owner", "repo", 7)
+	numbers, err := probe.LinkedPRNumbers(context.Background(), "owner", "repo", 5917)
 	if err != nil {
 		t.Fatalf("LinkedPRNumbers: unexpected error: %v", err)
 	}
-	if len(numbers) != 2 || numbers[0] != 42 || numbers[1] != 43 {
-		t.Errorf("LinkedPRNumbers = %v, want [42 43]", numbers)
+	want := []int{32, 33, 34}
+	if len(numbers) != len(want) {
+		t.Fatalf("LinkedPRNumbers = %v, want %v (mention-only PR 31 and failed lookup PR 35 must be dropped)", numbers, want)
+	}
+	for i, n := range want {
+		if numbers[i] != n {
+			t.Errorf("LinkedPRNumbers = %v, want %v", numbers, want)
+			break
+		}
 	}
 
 	kind, state, err := probe.IssueOrPRState(context.Background(), "owner", "repo", 7)
@@ -57,10 +91,6 @@ func TestGithubBasePresenceProbe_LinkedPRNumbers(t *testing.T) {
 	}
 	if kind != "issue" || state != "open" {
 		t.Errorf("IssueOrPRState = (%q, %q), want (\"issue\", \"open\")", kind, state)
-	}
-
-	if len(gotPaths) != 2 {
-		t.Fatalf("expected 2 HTTP requests against the test server, got %d: %v", len(gotPaths), gotPaths)
 	}
 }
 
