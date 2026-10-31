@@ -1,6 +1,6 @@
 # TASK-625: TASK-624 review notes — startup label guard strands crash orphans, pr_created heal on a closed PR, issue-body cut inside details, location with a space, closing keyword without a space
 
-**Status**: 🚀 DISPATCHED 2026-10-31 → [#5991](https://github.com/qf-studio/pilot/issues/5991) (`pilot` + `no-decompose`); PR#5990 (D4) merged 19:27Z, probes clean. Founder 10-31: "Approve + file follow-up".
+**Status**: ✅ MERGED + RELEASED — #5991 → PR#5993 merged 20:01Z (pre-PR AWN 8 minor; post-merge AWN), in v2.305.0 on the box 21:13Z. Unfiled note: `startupRowIsDone` calls HasTerminalCompletion on `latest.TaskID` from the fuzzy lookup, so an issue with no exact row can borrow another task's done status (GH-599 ← GH-5991); `cutAtBoundary`'s no-boundary branch returns the marker without a leading space so `TrimSuffix(" (truncated)")` misses it ("(truncated) (truncated)"); a claim that opens with a parenthesis right after path:line loses it. Was: 🚀 DISPATCHED 2026-10-31 → [#5991](https://github.com/qf-studio/pilot/issues/5991) (`pilot` + `no-decompose`); PR#5990 (D4) merged 19:27Z, probes clean. Founder 10-31: "Approve + file follow-up".
 **Origin**: the pre-PR and post-merge reviews of TASK-624's four PRs (#5987 D1, #5988 D2, #5989 D3, #5990 D4). Each verdict was APPROVE-WITH-NOTES (D4 pre-PR: REQUEST-CHANGES on a spec error — the `pr_reviews` row has no NOT-VERIFIED field, so "the ledger row carries the full set" was unsatisfiable; the founder approved the PR). Five notes are real; one is a regression.
 
 | # | From | Note | Verified 10-31 |
