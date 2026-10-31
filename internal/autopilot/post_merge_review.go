@@ -372,6 +372,7 @@ func (c *Controller) recordPostMergeReview(in postMergeReviewInputs, review *exe
 		State:       "COMMENTED",
 		Verdict:     ledgerVerdict(review.Verdict),
 		SubmittedAt: time.Now(),
+		NotVerified: review.NotVerified,
 	}
 	if err := ledger.UpsertPRReview(rec); err != nil {
 		c.log.Warn("post-merge review: ledger upsert failed", "pr", in.prNumber, "error", err)
@@ -498,20 +499,7 @@ func buildPostMergeReviewComment(review *executor.PostMergeReview) string {
 	}
 	if len(review.NotVerified) > 0 {
 		sb.WriteString("### Not verified\n\n")
-		shown := review.NotVerified
-		if len(shown) > executor.MaxPostMergeNotVerified {
-			// The review keeps the full set; the comment shows the first slots and
-			// a count line in the last one.
-			shown = shown[:executor.MaxPostMergeNotVerified-1]
-		}
-		for _, item := range shown {
-			if item = sanitizePostMergeField(item, maxPostMergeFieldChars); item != "" {
-				fmt.Fprintf(&sb, "- %s\n", item)
-			}
-		}
-		if more := len(review.NotVerified) - len(shown); more > 0 {
-			fmt.Fprintf(&sb, "- … %d more not-verified items omitted from this comment (capped at %d)\n", more, executor.MaxPostMergeNotVerified)
-		}
+		sb.WriteString(formatPostMergeNotVerified(review.NotVerified))
 		sb.WriteString("\n")
 	}
 	if notes := sanitizePostMergeField(review.Notes, maxPostMergeNotesChars); notes != "" {
@@ -524,6 +512,50 @@ func buildPostMergeReviewComment(review *executor.PostMergeReview) string {
 		sb.WriteString("\n\n")
 	}
 	sb.WriteString("<sub>Automated post-merge review — an input to human review of this merge, not a substitute for it.</sub>")
+	return sb.String()
+}
+
+// formatPostMergeNotVerified renders the Not-verified bullets of the PR comment.
+// The review keeps the full set (GH-5986); at most executor.MaxPostMergeNotVerified
+// slots are rendered. Past that, the last slot is a count line that always names
+// the "not traced" entries: those are appended after the model's own items, so
+// a plain first-N cut would hide every one of them (GH-5992).
+func formatPostMergeNotVerified(items []string) string {
+	var sb strings.Builder
+	write := func(item string) {
+		if item = sanitizePostMergeField(item, maxPostMergeFieldChars); item != "" {
+			fmt.Fprintf(&sb, "- %s\n", item)
+		}
+	}
+	if len(items) <= executor.MaxPostMergeNotVerified {
+		for _, item := range items {
+			write(item)
+		}
+		return sb.String()
+	}
+	var others []string
+	untraced := 0
+	for _, item := range items {
+		if executor.IsUntracedNotVerified(item) {
+			untraced++
+		} else {
+			others = append(others, item)
+		}
+	}
+	if len(others) > executor.MaxPostMergeNotVerified-1 {
+		others = others[:executor.MaxPostMergeNotVerified-1]
+	}
+	for _, item := range others {
+		write(item)
+	}
+	var parts []string
+	if hidden := len(items) - untraced - len(others); hidden > 0 {
+		parts = append(parts, fmt.Sprintf("%d more not-verified items", hidden))
+	}
+	if untraced > 0 {
+		parts = append(parts, fmt.Sprintf("%d requirements marked met but not traced to a file read", untraced))
+	}
+	fmt.Fprintf(&sb, "- … %s omitted from this comment (capped at %d)\n", strings.Join(parts, "; "), executor.MaxPostMergeNotVerified)
 	return sb.String()
 }
 

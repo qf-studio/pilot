@@ -92,7 +92,7 @@ const (
 
 // MaxPostMergeNotVerified caps the Not-verified entries rendered in the PR
 // comment. The review itself keeps the full set (GH-5986), which the CLI JSON
-// and the ledger row carry.
+// and the pr_reviews.not_verified column carry.
 const MaxPostMergeNotVerified = 3
 
 // PostMergeDefect is one finding of a review.
@@ -621,6 +621,12 @@ const postMergeNoFilesReadNote = "reviewer read no files from the checkout; find
 // postMergeNotTraced is the NOT-VERIFIED reason of a requirement marked met
 // without a checkout citation.
 const postMergeNotTraced = "not traced"
+
+// IsUntracedNotVerified reports whether a NOT-VERIFIED entry is one the daemon
+// moved there for a requirement marked met without a checkout citation.
+func IsUntracedNotVerified(item string) bool {
+	return strings.HasSuffix(strings.TrimSpace(item), " — "+postMergeNotTraced)
+}
 
 var (
 	// checkoutCitationRe is the shape of a checkout citation: a file name with an

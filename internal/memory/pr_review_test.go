@@ -129,3 +129,44 @@ func TestPRReview_UpsertIdempotentAndJoinsExecutions_Review(t *testing.T) {
 		t.Errorf("recent = %+v, want exec-1", recent)
 	}
 }
+
+func TestPRReview_NotVerifiedRoundTrip(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now().UTC()
+	if err := store.SaveExecution(&Execution{ID: "exec-nv", TaskID: "GH-2", ProjectPath: "/p", Status: "completed", CreatedAt: now}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	nv := []string{"one: counterpart not in the diff", "two — not traced", `three, "quoted"`, "four", "five"}
+	rev := &PRReview{ReviewID: -5, ProjectPath: "/p", PRNumber: 9, ExecutionID: "exec-nv", State: "COMMENTED", Verdict: VerdictApproveWNotes, SubmittedAt: now, NotVerified: nv}
+	if err := store.UpsertPRReview(rev); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// A refresh that carries no set keeps the stored one.
+	refresh := *rev
+	refresh.NotVerified = nil
+	refresh.Verdict = VerdictRequestChanges
+	if err := store.UpsertPRReview(&refresh); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+
+	got, err := store.ListPRReviewsByExecution("exec-nv")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("ListPRReviewsByExecution = %v, %v", got, err)
+	}
+	if got[0].Verdict != VerdictRequestChanges {
+		t.Errorf("verdict = %q, want the refreshed one", got[0].Verdict)
+	}
+	if len(got[0].NotVerified) != len(nv) {
+		t.Fatalf("NotVerified = %q, want %q", got[0].NotVerified, nv)
+	}
+	for i := range nv {
+		if got[0].NotVerified[i] != nv[i] {
+			t.Errorf("NotVerified[%d] = %q, want %q", i, got[0].NotVerified[i], nv[i])
+		}
+	}
+}

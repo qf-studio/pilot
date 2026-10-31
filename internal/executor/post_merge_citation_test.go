@@ -209,6 +209,16 @@ func TestPostMergeReviewCitation_UncitedMetMovesToNotVerified(t *testing.T) {
 			if len(review.Defects) != tt.wantDefects {
 				t.Errorf("defects = %d, want %d", len(review.Defects), tt.wantDefects)
 			}
+			// The renderer finds the daemon's entries by suffix (GH-5992).
+			var untraced int
+			for _, nv := range review.NotVerified {
+				if IsUntracedNotVerified(nv) {
+					untraced++
+				}
+			}
+			if untraced != tt.wantUntraced {
+				t.Errorf("IsUntracedNotVerified matched %d entries, want %d", untraced, tt.wantUntraced)
+			}
 		})
 	}
 }
