@@ -715,6 +715,10 @@ func nonEmpty(in ...string) []string {
 	return out
 }
 
+// postMergeLocationParenRegex matches a path:line token with a parenthesised
+// hint directly after it, as in "x.go:7 (func Foo)".
+var postMergeLocationParenRegex = regexp.MustCompile(`^(\S+:\d+:?)\s*\([^()]*\)`)
+
 // postMergeDefectSeparators are the field separators of a defect line.
 var postMergeDefectSeparators = []string{",", " | ", " - ", " — ", " – ", ": "}
 
@@ -750,6 +754,13 @@ func parsePostMergeDefect(line string) (PostMergeDefect, bool) {
 	}
 	if line == "" || strings.EqualFold(strings.TrimRight(line, "."), "none") {
 		return PostMergeDefect{}, false
+	}
+	// GH-5991: a parenthesised hint right after path:line belongs to the
+	// location, not the claim, and may itself hold a separator ("(func Foo, Bar)");
+	// drop it before the separator split, as the location rule drops everything
+	// after the first token.
+	if m := postMergeLocationParenRegex.FindStringSubmatch(line); m != nil {
+		line = m[1] + line[len(m[0]):]
 	}
 	sep, first := "", -1
 	for _, candidate := range postMergeDefectSeparators {

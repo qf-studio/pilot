@@ -1668,19 +1668,104 @@ func TestCleaner_StartupRecover_StaleExecutionStripped(t *testing.T) {
 // must keep pilot-in-progress and skip the callbacks when the issue's pilot
 // branch has an open PR, even with no execution row.
 func TestCleaner_StartupRecover_OpenPRKeepsLabel(t *testing.T) {
-	runStartupRecoverKeepsLabel(t, "", true)
+	runStartupRecoverKeepsLabel(t, "", "", true)
 }
 
-// TestCleaner_StartupRecover_FinishedRowKeepsLabel covers GH-5984: the latest
-// execution row is finished (the GH-5299 guard the periodic cleanup applies).
+// TestCleaner_StartupRecover_FinishedRowKeepsLabel covers GH-5984: a done row
+// (completed with a deliverable) keeps the label across a restart.
 func TestCleaner_StartupRecover_FinishedRowKeepsLabel(t *testing.T) {
-	runStartupRecoverKeepsLabel(t, "stalled", false)
+	runStartupRecoverKeepsLabel(t, "completed", "https://github.com/owner/repo/pull/7000", false)
+}
+
+// TestCleaner_StartupRecover_DoneRowKeepsLabel covers GH-5991: a completed row
+// with a pr_url is done, so the label stays and the callbacks are skipped.
+func TestCleaner_StartupRecover_DoneRowKeepsLabel(t *testing.T) {
+	runStartupRecoverKeepsLabel(t, "completed", "https://github.com/owner/repo/pull/7001", false)
+}
+
+// TestCleaner_StartupRecover_StalledRowWithoutPRStripsLabel covers GH-5991:
+// Dispatcher.Start stalls a crash orphan before StartupRecover runs, so a
+// stalled (or failed/infra/skipped) latest row with no open PR is not done and
+// must lose pilot-in-progress so the issue is re-offered.
+func TestCleaner_StartupRecover_StalledRowWithoutPRStripsLabel(t *testing.T) {
+	for _, status := range []string{"stalled", "failed", "infra", "skipped"} {
+		t.Run(status, func(t *testing.T) {
+			store := createTestStore(t)
+			defer func() { _ = store.Close() }()
+
+			if err := store.SaveExecution(&memory.Execution{
+				ID:          "exec-stalled",
+				TaskID:      "GH-5991",
+				ProjectPath: "/test/project",
+				Status:      status,
+			}); err != nil {
+				t.Fatalf("SaveExecution: %v", err)
+			}
+			if _, err := store.DB().Exec(
+				`UPDATE executions SET created_at = datetime('now', '-3 hours') WHERE id = 'exec-stalled'`,
+			); err != nil {
+				t.Fatalf("backdate created_at: %v", err)
+			}
+
+			issues := []*Issue{{
+				Number:    5991,
+				Title:     "Crash orphan",
+				State:     StateOpen,
+				Labels:    []Label{{Name: LabelInProgress}},
+				UpdatedAt: time.Now().Add(-3 * time.Hour),
+			}}
+
+			var mu sync.Mutex
+			var removeLabelCalled bool
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues":
+					_ = json.NewEncoder(w).Encode(issues)
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/pulls":
+					_ = json.NewEncoder(w).Encode([]*PullRequest{})
+				case r.Method == http.MethodDelete && r.URL.Path == "/repos/owner/repo/issues/5991/labels/"+LabelInProgress:
+					removeLabelCalled = true
+					w.WriteHeader(http.StatusOK)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			var recovered int
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+				Enabled: true, Interval: 30 * time.Minute, Threshold: 1 * time.Hour,
+			}, WithOnStartupRecovered(func(n int) { recovered = n }))
+
+			n, err := cleaner.StartupRecover(context.Background())
+			if err != nil {
+				t.Fatalf("StartupRecover() error = %v", err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if !removeLabelCalled {
+				t.Error("RemoveLabel not called; a non-done latest row without an open PR must lose pilot-in-progress")
+			}
+			if recovered != 5991 {
+				t.Errorf("OnStartupRecovered called with %d, want 5991", recovered)
+			}
+			if n != 1 {
+				t.Errorf("StartupRecover() returned %d, want 1", n)
+			}
+		})
+	}
 }
 
 // runStartupRecoverKeepsLabel drives StartupRecover over a stuck issue 5984
 // whose only execution row (if rowStatus != "") is backdated past the 30-minute
 // live floor, and asserts the label stays and the callbacks are not invoked.
-func runStartupRecoverKeepsLabel(t *testing.T, rowStatus string, openPR bool) {
+func runStartupRecoverKeepsLabel(t *testing.T, rowStatus, rowPRURL string, openPR bool) {
 	t.Helper()
 	store := createTestStore(t)
 	defer func() { _ = store.Close() }()
@@ -1691,6 +1776,7 @@ func runStartupRecoverKeepsLabel(t *testing.T, rowStatus string, openPR bool) {
 			TaskID:      "GH-5984",
 			ProjectPath: "/test/project",
 			Status:      rowStatus,
+			PRUrl:       rowPRURL,
 		}); err != nil {
 			t.Fatalf("SaveExecution: %v", err)
 		}

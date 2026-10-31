@@ -1277,6 +1277,22 @@ func (g *GitOperations) FindOpenPRByBranch(ctx context.Context, branch string) (
 	return parseFirstPRURL(output), nil
 }
 
+// GetPRStateByURL returns GitHub's own state for the PR at prURL: "OPEN",
+// "MERGED" or "CLOSED" (GH-5991). Never derived from mergedAt, which can read
+// null on an already-merged squash-merge PR.
+func (g *GitOperations) GetPRStateByURL(ctx context.Context, prURL string) (string, error) {
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "pr", "view", prURL,
+		"--json", "state",
+		"--jq", ".state",
+	))
+	cmd.Dir = g.projectPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to read PR state for %s: %w: %s", prURL, err, output)
+	}
+	return strings.ToUpper(strings.TrimSpace(string(output))), nil
+}
+
 // parseFirstPRURL extracts the first "url" field from `gh pr list --json url`
 // output (a JSON array like [{"url":"https://github.com/o/r/pull/1"}]). Returns
 // "" for an empty array or unparseable input.

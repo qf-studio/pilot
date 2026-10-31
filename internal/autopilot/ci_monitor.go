@@ -822,8 +822,9 @@ func checkRunTerminal(run github.CheckRun) bool {
 // mapCheckRun maps a check-run to a CIStatus via mapCheckStatus, logging once
 // per run when a stuck status was promoted by its conclusion.
 func (m *CIMonitor) mapCheckRun(run github.CheckRun) CIStatus {
-	if run.Status != github.CheckRunCompleted && run.Conclusion != "" {
-		key := fmt.Sprintf("%s#%d", run.Name, run.ID)
+	key := fmt.Sprintf("%s#%d", run.Name, run.ID)
+	switch {
+	case run.Status != github.CheckRunCompleted && run.Conclusion != "":
 		if _, seen := m.stuckPromotionLogged.LoadOrStore(key, struct{}{}); !seen {
 			m.log.Debug("check-run has a conclusion but status never completed; treating as completed",
 				"check", run.Name,
@@ -831,6 +832,10 @@ func (m *CIMonitor) mapCheckRun(run github.CheckRun) CIStatus {
 				"conclusion", run.Conclusion,
 			)
 		}
+	case run.Status == github.CheckRunCompleted:
+		// GH-5991: GitHub caught up, so the run is no longer stuck; keep the
+		// map to the runs that currently are.
+		m.stuckPromotionLogged.Delete(key)
 	}
 	return m.mapCheckStatus(run.Status, run.Conclusion)
 }

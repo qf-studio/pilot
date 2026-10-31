@@ -644,7 +644,8 @@ func TestCreatePostMergeReviewIssue_NoMidSentenceCut(t *testing.T) {
 	}
 }
 
-// The issue body is bounded once, at the end, at a word or sentence end.
+// The Defects section is bounded at a word or sentence end with the marker, and
+// the whole body stays near the 16 KB budget.
 func TestCreatePostMergeReviewIssue_BodyBounded(t *testing.T) {
 	mock, gh := newPMRGitHub(t)
 	fl := NewFeedbackLoop(gh, "owner", "repo", DefaultConfig())
@@ -658,8 +659,59 @@ func TestCreatePostMergeReviewIssue_BodyBounded(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	body := mock.issues[0].Body
-	if len(body) > maxPostMergeIssueBodyChars+len(" (truncated)") || !strings.HasSuffix(body, "(truncated)") {
-		t.Errorf("body is %d bytes and ends %q, want it bounded with the marker", len(body), body[max(0, len(body)-30):])
+	if len(body) > maxPostMergeIssueBodyChars+len(" (truncated)\n") || !strings.Contains(body, "(truncated)\n") {
+		t.Errorf("body is %d bytes, want it bounded with the marker:\n%s", len(body), body[max(0, len(body)-300):])
+	}
+}
+
+// GH-5991: the Defects section is cut to its own budget, so the Acceptance
+// Criteria and Refs sections after it survive, and a cut inside an Evidence
+// details block closes that block.
+func TestCreatePostMergeReviewIssue_KeepsTrailingSectionsUnderCut(t *testing.T) {
+	tests := []struct {
+		name   string
+		defect executor.PostMergeDefect
+	}{
+		{
+			name:   "long claim",
+			defect: executor.PostMergeDefect{Severity: executor.PostMergeSeverityBlocking, Location: "a.go:1", Claim: strings.Repeat("A very long claim sentence. ", 1500)},
+		},
+		{
+			name:   "long evidence in a details block",
+			defect: executor.PostMergeDefect{Severity: executor.PostMergeSeverityBlocking, Location: "a.go:1", Claim: "short claim", Evidence: strings.Repeat("The evidence names a caller that never sets the field. ", 600)},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock, gh := newPMRGitHub(t)
+			fl := NewFeedbackLoop(gh, "owner", "repo", DefaultConfig())
+			review := &executor.PostMergeReview{
+				Verdict: executor.PostMergeRequestChanges,
+				Defects: []executor.PostMergeDefect{tt.defect},
+				Notes:   "A reviewer note.",
+			}
+			if _, err := fl.CreatePostMergeReviewIssue(context.Background(), 42, "https://example.com/pull/42", 10, review); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			body := mock.issues[0].Body
+			if !strings.Contains(body, "(truncated)") {
+				t.Fatalf("defects were not cut, fixture too small (%d bytes)", len(body))
+			}
+			for _, want := range []string{"## Reviewer Notes", "A reviewer note.", "## Acceptance Criteria", "## Refs"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("body lost %q after the cut", want)
+				}
+			}
+			if !strings.HasSuffix(body, "- PR #42: https://example.com/pull/42\n- Issue #10\n") {
+				t.Errorf("body does not end with the Refs section:\n%s", body[max(0, len(body)-300):])
+			}
+			if o, c := strings.Count(body, "<details>"), strings.Count(body, "</details>"); o != c {
+				t.Errorf("details tags unbalanced: %d open, %d close", o, c)
+			}
+			if len(body) > maxPostMergeIssueBodyChars+len(" (truncated)\n") {
+				t.Errorf("body is %d bytes, over the budget", len(body))
+			}
+		})
 	}
 }
 

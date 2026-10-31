@@ -408,7 +408,7 @@ func PRDeliversIssue(headBranch, body string, closingRefs []int, issueNumber int
 	if headBranch == branch || strings.HasPrefix(headBranch, branch+"-") {
 		return true
 	}
-	re := regexp.MustCompile(fmt.Sprintf(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#%d\b`, issueNumber))
+	re := regexp.MustCompile(fmt.Sprintf(`(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#%d\b`, issueNumber))
 	return re.MatchString(body)
 }
 
