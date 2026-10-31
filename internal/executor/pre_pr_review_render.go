@@ -68,14 +68,31 @@ func RenderPrePRReviewSection(out *PrePRReviewOutcome) string {
 			if d.Severity != "" {
 				tag = "[" + prePRField(string(d.Severity), 20) + "] "
 			}
-			fmt.Fprintf(&sb, "- %sat %s — %s\n", tag, prePRField(d.Location, prePRMaxLocationChars), prePRField(d.Claim, prePRMaxFieldChars))
+			fmt.Fprintf(&sb, "- %sat %s", tag, prePRField(d.Location, prePRMaxLocationChars))
+			// GH-5996: a defect with no claim prints its location alone, not a
+			// dangling dash.
+			if claim := prePRField(d.Claim, prePRMaxFieldChars); !postMergeNoClaim(claim) {
+				fmt.Fprintf(&sb, " — %s", claim)
+			}
+			sb.WriteString("\n")
 		}
 	}
 
+	// GH-5996: the first MaxPostMergeNotVerified entries are listed and one extra
+	// bullet counts the rest, from the lines actually written.
 	var notVerified []string
-	for _, item := range out.Review.NotVerified {
-		if item = prePRField(item, prePRMaxFieldChars); item != "" {
+	hidden, untraced := 0, 0
+	for _, raw := range out.Review.NotVerified {
+		item := prePRField(raw, prePRMaxFieldChars)
+		switch {
+		case item == "":
+		case len(notVerified) < MaxPostMergeNotVerified:
 			notVerified = append(notVerified, item)
+		default:
+			hidden++
+			if IsUntracedNotVerified(raw) {
+				untraced++
+			}
 		}
 	}
 	if len(notVerified) > 0 {
@@ -83,6 +100,7 @@ func RenderPrePRReviewSection(out *PrePRReviewOutcome) string {
 		for _, item := range notVerified {
 			fmt.Fprintf(&sb, "- %s\n", item)
 		}
+		sb.WriteString(postMergeNotVerifiedCountLine(hidden, untraced))
 	}
 	// A killed fix session is mentioned on its own line: the parser ignores lines
 	// it does not know.

@@ -49,11 +49,6 @@ const (
 	// Verdict label for reviews that never produced a verdict because the
 	// subprocess or an input fetch failed.
 	postMergeReviewError = "error"
-	// postMergeReviewNoFilesRead counts checkout reviews that opened no file and
-	// were posted as APPROVE-WITH-NOTES (GH-5947). It is recorded in addition to
-	// the verdict, so the verdict labels still sum to the number of reviews.
-	postMergeReviewNoFilesRead = "no_files_read"
-
 	// These bounds keep a runaway model answer from producing a megabyte
 	// comment or issue body.
 	maxPostMergeDefects    = 30
@@ -293,7 +288,7 @@ func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeR
 		"duration", time.Since(start),
 	)
 	if review.NoFilesRead {
-		c.metrics.RecordPostMergeReview(postMergeReviewNoFilesRead)
+		c.metrics.RecordPostMergeReviewNoFilesRead()
 	}
 	if !review.Verdict.Postable() {
 		// Output broke the contract, or the CLI ran out of turns: post nothing
@@ -416,7 +411,12 @@ func formatPostMergeDefects(defects []executor.PostMergeDefect, withSeverity boo
 		if withSeverity && d.Severity != "" {
 			tag = "[" + plainPostMergeField(string(d.Severity), 20) + "] "
 		}
-		fmt.Fprintf(&sb, "- %sat %s — %s", tag, plainPostMergeField(d.Location, maxPostMergeLocationChars), plainPostMergeField(d.Claim, maxPostMergeFieldChars))
+		fmt.Fprintf(&sb, "- %sat %s", tag, plainPostMergeField(d.Location, maxPostMergeLocationChars))
+		// GH-5996: a defect with no claim prints its location and evidence, not a
+		// dangling dash.
+		if claim := plainPostMergeField(d.Claim, maxPostMergeFieldChars); !postMergeNoClaim(claim) {
+			fmt.Fprintf(&sb, " — %s", claim)
+		}
 		if ev := plainPostMergeField(d.Evidence, maxPostMergeFieldChars); ev != "" {
 			fmt.Fprintf(&sb, "\n  Evidence: %s", ev)
 		}
@@ -438,7 +438,7 @@ func formatPostMergeIssueDefects(defects []executor.PostMergeDefect) string {
 			break
 		}
 		fmt.Fprintf(&sb, "- at %s", plainPostMergeField(d.Location, maxPostMergeLocationChars))
-		if claim := plainPostMergeFull(d.Claim); claim != "" {
+		if claim := plainPostMergeFull(d.Claim); !postMergeNoClaim(claim) {
 			fmt.Fprintf(&sb, " — %s", claim)
 		}
 		ev := plainPostMergeFull(d.Evidence)
@@ -463,14 +463,22 @@ func cutPostMergeDefects(defects string, max int) string {
 		return defects
 	}
 	cut := executor.CutAtBoundary(defects, max)
-	const marker = " (truncated)"
+	// The cut is the marker alone, without its leading space, when max leaves no
+	// room for content (GH-5996).
+	marker := executor.PostMergeTruncatedMarker
 	kept := strings.TrimSuffix(cut, marker)
+	if kept == strings.TrimSpace(marker) {
+		kept = ""
+	}
 	var closing string
 	for open := strings.Count(kept, "<details>") - strings.Count(kept, "</details>"); open > 0; open-- {
 		closing += "\n\n</details>"
 	}
 	return kept + closing + marker + "\n"
 }
+
+// postMergeNoClaim reports whether a rendered claim is empty.
+func postMergeNoClaim(claim string) bool { return strings.TrimSpace(claim) == "" }
 
 // plainPostMergeFull is plainPostMergeField without a length bound.
 func plainPostMergeFull(s string) string {
@@ -516,47 +524,35 @@ func buildPostMergeReviewComment(review *executor.PostMergeReview) string {
 }
 
 // formatPostMergeNotVerified renders the Not-verified bullets of the PR comment.
-// The review keeps the full set (GH-5986); at most executor.MaxPostMergeNotVerified
-// slots are rendered. Past that, the last slot is a count line that always names
-// the "not traced" entries: those are appended after the model's own items, so
-// a plain first-N cut would hide every one of them (GH-5992).
+// The review keeps the full set (GH-5986); the first executor.MaxPostMergeNotVerified
+// entries that survive sanitising are listed and, when any remain, one extra
+// bullet counts them (GH-5996). The count names the "not traced" entries apart:
+// they are appended after the model's own items, so they are the ones hidden.
 func formatPostMergeNotVerified(items []string) string {
 	var sb strings.Builder
-	write := func(item string) {
-		if item = sanitizePostMergeField(item, maxPostMergeFieldChars); item != "" {
+	written, hidden, untraced := 0, 0, 0
+	for _, raw := range items {
+		item := sanitizePostMergeField(raw, maxPostMergeFieldChars)
+		switch {
+		case item == "":
+		case written < executor.MaxPostMergeNotVerified:
 			fmt.Fprintf(&sb, "- %s\n", item)
+			written++
+		default:
+			hidden++
+			if executor.IsUntracedNotVerified(raw) {
+				untraced++
+			}
 		}
 	}
-	if len(items) <= executor.MaxPostMergeNotVerified {
-		for _, item := range items {
-			write(item)
-		}
-		return sb.String()
-	}
-	var others []string
-	untraced := 0
-	for _, item := range items {
-		if executor.IsUntracedNotVerified(item) {
-			untraced++
-		} else {
-			others = append(others, item)
-		}
-	}
-	if len(others) > executor.MaxPostMergeNotVerified-1 {
-		others = others[:executor.MaxPostMergeNotVerified-1]
-	}
-	for _, item := range others {
-		write(item)
-	}
-	var parts []string
-	if hidden := len(items) - untraced - len(others); hidden > 0 {
-		parts = append(parts, fmt.Sprintf("%d more not-verified items", hidden))
-	}
-	if untraced > 0 {
-		parts = append(parts, fmt.Sprintf("%d requirements marked met but not traced to a file read", untraced))
-	}
-	fmt.Fprintf(&sb, "- … %s omitted from this comment (capped at %d)\n", strings.Join(parts, "; "), executor.MaxPostMergeNotVerified)
+	sb.WriteString(postMergeNotVerifiedCountLine(hidden, untraced))
 	return sb.String()
+}
+
+// postMergeNotVerifiedCountLine builds the extra bullet after the capped list, or
+// "" when nothing is hidden.
+func postMergeNotVerifiedCountLine(hidden, untraced int) string {
+	return executor.PostMergeNotVerifiedCountLine(hidden, untraced)
 }
 
 // maxPostMergeDiffLineFiles caps the trimmed paths named in the Diff line.

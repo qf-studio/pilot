@@ -7168,3 +7168,63 @@ func TestGH5310_UTCTimestamps_NonUTCHost(t *testing.T) {
 		})
 	}
 }
+
+func TestGetLatestExecutionByExactTaskID(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	for _, e := range []*Execution{
+		{ID: "exec-15-old", TaskID: "GH-15", ProjectPath: "/path", Status: "failed"},
+		{ID: "exec-150", TaskID: "GH-150", ProjectPath: "/path", Status: "completed"},
+		{ID: "exec-15-new", TaskID: "GH-15", ProjectPath: "/path", Status: "running"},
+		{ID: "exec-15-other", TaskID: "GH-15", ProjectPath: "/other", Status: "completed"},
+	} {
+		if err := store.SaveExecution(e); err != nil {
+			t.Fatalf("SaveExecution(%s): %v", e.ID, err)
+		}
+	}
+	// A task with no row of its own while another task number contains its id.
+	if err := store.SaveExecution(&Execution{ID: "exec-2500", TaskID: "GH-2500", ProjectPath: "/path", Status: "completed"}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		taskID  string
+		project string
+		wantID  string
+		wantNo  bool
+	}{
+		{"exact task, newest row of the project", "GH-15", "/path", "exec-15-new", false},
+		{"no project filter takes the newest row", "GH-15", "", "exec-15-other", false},
+		{"other project scopes", "GH-15", "/other", "exec-15-other", false},
+		{"no row for the task although a longer id contains it", "GH-25", "", "", true},
+		{"unknown project", "GH-15", "/nowhere", "", true},
+		{"substring of a task id is no match", "15", "", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := store.GetLatestExecutionByExactTaskID(tt.taskID, tt.project)
+			if tt.wantNo {
+				if !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("got %+v, %v; want sql.ErrNoRows", got, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetLatestExecutionByExactTaskID: %v", err)
+			}
+			if got.ID != tt.wantID {
+				t.Errorf("got %s, want %s", got.ID, tt.wantID)
+			}
+		})
+	}
+
+	// The fuzzy lookup keeps its substring fallback for its other callers.
+	if got, err := store.GetLatestExecutionByTaskID("GH-25", ""); err != nil || got.ID != "exec-2500" {
+		t.Errorf("GetLatestExecutionByTaskID(GH-25) = %+v, %v; want the substring match exec-2500", got, err)
+	}
+}

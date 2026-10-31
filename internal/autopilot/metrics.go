@@ -96,6 +96,10 @@ type Metrics struct {
 	// PostMergeReviewVerdicts counts post-merge reviews by verdict (APPROVE,
 	// APPROVE-WITH-NOTES, REQUEST-CHANGES, unknown, error) — GH-5861.
 	PostMergeReviewVerdicts map[string]int64
+	// PostMergeReviewNoFilesRead counts checkout reviews that opened no file and
+	// were posted as APPROVE-WITH-NOTES. It has its own counter so the verdict
+	// counter sums to the number of reviews (GH-5996).
+	PostMergeReviewNoFilesRead int64
 	// StageTimeouts counts per-PR stage-handler calls abandoned by the
 	// per-stage deadline (Config.StageTimeout), keyed by the PR's stage when
 	// the deadline fired — GH-5541. Exported as
@@ -439,6 +443,14 @@ func (m *Metrics) RecordPostMergeReview(verdict string) {
 	m.PostMergeReviewVerdicts[verdict]++
 }
 
+// RecordPostMergeReviewNoFilesRead increments the counter of checkout reviews
+// that read no file. GH-5996.
+func (m *Metrics) RecordPostMergeReviewNoFilesRead() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PostMergeReviewNoFilesRead++
+}
+
 // RecordStageTimeout increments the per-stage deadline counter — GH-5541.
 func (m *Metrics) RecordStageTimeout(stage string) {
 	m.mu.Lock()
@@ -742,6 +754,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		ApprovalPersistMisses:         copyStringIntMap(m.ApprovalPersistMisses),
 		IntentJudgeFailures:           copyStringIntMap(m.IntentJudgeFailures),
 		PostMergeReviewVerdicts:       copyStringIntMap(m.PostMergeReviewVerdicts),
+		PostMergeReviewNoFilesRead:    m.PostMergeReviewNoFilesRead,
 		StageTimeouts:                 copyStringIntMap(m.StageTimeouts),
 		StagePanics:                   copyStringIntMap(m.StagePanics),
 		LastTickAt:                    m.LastTickAt,
@@ -823,33 +836,34 @@ func (m *Metrics) apiErrorRate() float64 {
 // MetricsSnapshot is a read-only copy of metrics at a point in time.
 type MetricsSnapshot struct {
 	// Counters
-	IssuesProcessed           map[string]int64
-	PRsMerged                 int64
-	PRsFailed                 int64
-	PRsMergedLifetime         int64 // GH-4511: all-time gauge counterpart to session-only PRsMerged
-	PRsFailedLifetime         int64 // GH-4511: all-time gauge counterpart to session-only PRsFailed
-	PRsConflicting            int64
-	CIRuns                    map[string]int64 // GH-4134: result → count (pass, fail)
-	PRFailureClasses          map[string]int64 // GH-4533/GH-4591: class → count (code, infra, infra_billing)
-	CircuitBreakerTrips       int64
-	PlatformBreakerTrips      int64 // GH-4791: destructive CI-failure actions suppressed by the shared platform-outage breaker
-	RateLimitFloorEngagements int64 // GH-4391: distinct floor-engagement episodes across this controller's background scans
-	APIErrors                 map[string]int64
-	LabelCleanups             map[string]int64
-	ApprovalPersistMisses     map[string]int64
-	ApprovalSubmitFailures    int64
-	IntentJudgeFailures       map[string]int64 // GH-4377: cause → count
-	PostMergeReviewVerdicts   map[string]int64 // GH-5861: verdict → post-merge review count
-	StageTimeouts             map[string]int64 // GH-5541: stage → per-stage deadline expiries
-	StagePanics               map[string]int64 // GH-5547: stage → panics recovered from stage handlers
-	LastTickAt                time.Time        // GH-5541: last PR-loop progress; zero before the first tick
-	EpicParentPassTimeouts    int64            // GH-5657: epic-parent reconciler passes that hit the pass deadline
-	StaleBranchesDeleted      int64            // GH-5770: orphaned pilot/* branches deleted by the stale-branch sweep
-	LastEpicParentPassAt      time.Time        // GH-5657: last epic-parent pass completion; zero before the first pass
-	TokensConsumed            map[tokenKey]int64
-	ExecutionCostUSD          map[string]float64
-	ExecutionCostByKeySource  map[costKey]float64 // GH-5676
-	ExecutionsByResult        map[execKey]int64
+	IssuesProcessed            map[string]int64
+	PRsMerged                  int64
+	PRsFailed                  int64
+	PRsMergedLifetime          int64 // GH-4511: all-time gauge counterpart to session-only PRsMerged
+	PRsFailedLifetime          int64 // GH-4511: all-time gauge counterpart to session-only PRsFailed
+	PRsConflicting             int64
+	CIRuns                     map[string]int64 // GH-4134: result → count (pass, fail)
+	PRFailureClasses           map[string]int64 // GH-4533/GH-4591: class → count (code, infra, infra_billing)
+	CircuitBreakerTrips        int64
+	PlatformBreakerTrips       int64 // GH-4791: destructive CI-failure actions suppressed by the shared platform-outage breaker
+	RateLimitFloorEngagements  int64 // GH-4391: distinct floor-engagement episodes across this controller's background scans
+	APIErrors                  map[string]int64
+	LabelCleanups              map[string]int64
+	ApprovalPersistMisses      map[string]int64
+	ApprovalSubmitFailures     int64
+	IntentJudgeFailures        map[string]int64 // GH-4377: cause → count
+	PostMergeReviewVerdicts    map[string]int64 // GH-5861: verdict → post-merge review count
+	PostMergeReviewNoFilesRead int64            // GH-5996: checkout reviews that read no file, not a verdict
+	StageTimeouts              map[string]int64 // GH-5541: stage → per-stage deadline expiries
+	StagePanics                map[string]int64 // GH-5547: stage → panics recovered from stage handlers
+	LastTickAt                 time.Time        // GH-5541: last PR-loop progress; zero before the first tick
+	EpicParentPassTimeouts     int64            // GH-5657: epic-parent reconciler passes that hit the pass deadline
+	StaleBranchesDeleted       int64            // GH-5770: orphaned pilot/* branches deleted by the stale-branch sweep
+	LastEpicParentPassAt       time.Time        // GH-5657: last epic-parent pass completion; zero before the first pass
+	TokensConsumed             map[tokenKey]int64
+	ExecutionCostUSD           map[string]float64
+	ExecutionCostByKeySource   map[costKey]float64 // GH-5676
+	ExecutionsByResult         map[execKey]int64
 
 	// Poller dispatch/skip counters (TASK-293)
 	PollerSkipped              map[pollerSkipKey]int64

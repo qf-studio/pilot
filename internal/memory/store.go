@@ -952,6 +952,21 @@ func (s *Store) GetLatestExecutionByTaskID(taskID, projectPath string) (*Executi
 	return scanExecutionDetail(row)
 }
 
+// GetLatestExecutionByExactTaskID is GetLatestExecutionByTaskID without the
+// substring fallback: only rows whose task_id equals taskID match, so "GH-15"
+// never returns a "GH-150" row (GH-5996). projectPath scopes the same way (empty
+// skips the filter). Returns sql.ErrNoRows if no execution matches.
+func (s *Store) GetLatestExecutionByExactTaskID(taskID, projectPath string) (*Execution, error) {
+	row := s.db.QueryRow(`
+		SELECT `+executionDetailColumns+`
+		FROM executions
+		WHERE task_id = ? AND (? = '' OR project_path = ?)
+		ORDER BY created_at DESC, rowid DESC
+		LIMIT 1
+	`, taskID, projectPath, projectPath)
+	return scanExecutionDetail(row)
+}
+
 // GetLatestExecutionByTaskIDExcluding mirrors GetLatestExecutionByTaskID but
 // ignores the row identified by excludeID. GH-4141: an epic sub-issue now
 // carries its own "running" executions row for the full run duration

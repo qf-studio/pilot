@@ -319,9 +319,13 @@ func TestParsePostMergeDefectSeparators(t *testing.T) {
 		{"blocking em dash", "- [blocking] internal/x.go:7 — claim text",
 			PostMergeDefect{Severity: PostMergeSeverityBlocking, Location: "internal/x.go:7", Claim: "claim text"}, true},
 		{"parenthesised hint after the location", "x.go:7 (func Foo), claim, evidence",
-			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "x.go:7", Claim: "claim", Evidence: "evidence"}, true},
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "x.go:7", Claim: "(func Foo) claim", Evidence: "evidence"}, true},
 		{"parenthesised hint holding a separator", "x.go:7 (func Foo, Bar) - claim - evidence",
-			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "x.go:7", Claim: "claim", Evidence: "evidence"}, true},
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "x.go:7", Claim: "(func Foo, Bar) claim", Evidence: "evidence"}, true},
+		{"parenthesised hint joins an unseparated claim", "a.go:3 (nil map) panics on write",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:3", Claim: "(nil map) panics on write"}, true},
+		{"parenthesised hint alone is the claim", "a.go:3 (nil map)",
+			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "a.go:3", Claim: "(nil map)"}, true},
 		{"parenthesis after the claim starts is kept", "x.go:7 the claim (with a note), evidence",
 			PostMergeDefect{Severity: PostMergeSeverityMinor, Location: "x.go:7", Claim: "the claim (with a note)", Evidence: "evidence"}, true},
 		{"none", "none", PostMergeDefect{}, false},
@@ -624,6 +628,9 @@ func TestCutAtBoundary(t *testing.T) {
 		{"multi-byte rune before the cut is kept", "éé éééé éééé", 13,
 			"éé éééé (truncated)"},
 		{"one word longer than max leaves the marker", "abcdefghijklmnop", 5, "(truncated)"},
+		{"no space over the cap keeps the leading content", "abcdefghijklmnopqrstuvwxyz", 20, "abcdefgh (truncated)"},
+		{"no space, multi-byte rune straddling the kept prefix is dropped whole", "ééééééééééééééé", 20, "éééé (truncated)"},
+		{"no space, cap no larger than the marker", "abcdefghijklmnopqrstuvwxyz", 12, "(truncated)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
