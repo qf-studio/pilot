@@ -504,7 +504,7 @@ func (f *FeedbackLoop) CreatePostMergeReviewIssue(ctx context.Context, prNumber 
 	fmt.Fprintf(&sb, "A post-merge review of PR #%d (%s), which implemented issue #%d, returned REQUEST-CHANGES. The PR is already merged; fix the defects below on a new PR.\n\n", prNumber, prURL, issueNumber)
 	sb.WriteString("## Defects\n\n")
 	// Only [blocking] defects become work: minor ones stay in the PR comment.
-	sb.WriteString(formatPostMergeDefects(review.BlockingDefects(), false))
+	sb.WriteString(formatPostMergeIssueDefects(review.BlockingDefects()))
 	// Decision: Notes are backtick-free for the same reason as the defects —
 	// the base-presence gate scans backtick spans over the whole issue body,
 	// and a counterpart path in another repository would park the issue.
@@ -526,7 +526,10 @@ func (f *FeedbackLoop) CreatePostMergeReviewIssue(ctx context.Context, prNumber 
 		}
 	}
 
-	issue, err := ghissue.CreatePilotIssue(ctx, f.ghClient, ghissue.AllowAllIssueRepos(), f.owner, f.repo, title, sb.String(), labels)
+	// Decision: the body is bounded once, here, so the per-field renders above
+	// never cut a claim; the cut falls at a sentence or word end like every other.
+	body := executor.CutAtBoundary(sb.String(), maxPostMergeIssueBodyChars)
+	issue, err := ghissue.CreatePilotIssue(ctx, f.ghClient, ghissue.AllowAllIssueRepos(), f.owner, f.repo, title, body, labels)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create issue: %w", err)
 	}

@@ -59,6 +59,11 @@ const (
 	maxPostMergeDefects    = 30
 	maxPostMergeFieldChars = 1000
 	maxPostMergeNotesChars = 4000
+	// maxPostMergeLocationChars bounds a defect's location field; a location is
+	// a path:line, so anything longer is claim text the parser did not split off.
+	maxPostMergeLocationChars = 200
+	// maxPostMergeIssueBodyChars bounds the follow-up issue body (GH-5986).
+	maxPostMergeIssueBodyChars = 16 * 1024
 )
 
 // postMergeReviewBudget is the post-merge reviews' own daily counter. It is
@@ -374,16 +379,13 @@ func (c *Controller) recordPostMergeReview(in postMergeReviewInputs, review *exe
 func ledgerVerdict(v executor.PostMergeVerdict) string { return executor.LedgerVerdict(v) }
 
 // sanitizePostMergeField strips invisible Unicode and bounds a model-produced
-// field. The reviewer reads attacker-influenceable text (issue and PR bodies,
+// field, cutting at a sentence or word end and marking the cut "(truncated)"
+// (GH-5986). The reviewer reads attacker-influenceable text (issue and PR bodies,
 // diff content) and its output lands in a `pilot`-labeled issue that Pilot
 // itself will execute, so it is treated as untrusted on the way out.
 func sanitizePostMergeField(s string, max int) string {
 	s, _ = text.SanitizeUntrusted(s)
-	s = strings.TrimSpace(s)
-	if len(s) > max {
-		s = strings.ToValidUTF8(s[:max], "") + "…"
-	}
-	return s
+	return executor.CutAtBoundary(strings.TrimSpace(s), max)
 }
 
 // plainPostMergeField is sanitizePostMergeField without backticks.
@@ -410,13 +412,48 @@ func formatPostMergeDefects(defects []executor.PostMergeDefect, withSeverity boo
 		if withSeverity && d.Severity != "" {
 			tag = "[" + plainPostMergeField(string(d.Severity), 20) + "] "
 		}
-		fmt.Fprintf(&sb, "- %sat %s — %s", tag, plainPostMergeField(d.Location, 200), plainPostMergeField(d.Claim, maxPostMergeFieldChars))
+		fmt.Fprintf(&sb, "- %sat %s — %s", tag, plainPostMergeField(d.Location, maxPostMergeLocationChars), plainPostMergeField(d.Claim, maxPostMergeFieldChars))
 		if ev := plainPostMergeField(d.Evidence, maxPostMergeFieldChars); ev != "" {
 			fmt.Fprintf(&sb, "\n  Evidence: %s", ev)
 		}
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// formatPostMergeIssueDefects renders the defect list for the follow-up issue.
+// Unlike the PR comment it keeps each defect's full Claim; an Evidence over
+// maxPostMergeFieldChars goes in a collapsed details block under a one-line
+// summary instead of being cut (GH-5986). The issue body as a whole is bounded
+// once, by the caller.
+func formatPostMergeIssueDefects(defects []executor.PostMergeDefect) string {
+	var sb strings.Builder
+	for i, d := range defects {
+		if i == maxPostMergeDefects {
+			fmt.Fprintf(&sb, "- … %d more defects omitted\n", len(defects)-maxPostMergeDefects)
+			break
+		}
+		fmt.Fprintf(&sb, "- at %s", plainPostMergeField(d.Location, maxPostMergeLocationChars))
+		if claim := plainPostMergeFull(d.Claim); claim != "" {
+			fmt.Fprintf(&sb, " — %s", claim)
+		}
+		ev := plainPostMergeFull(d.Evidence)
+		switch {
+		case ev == "":
+		case len(ev) <= maxPostMergeFieldChars:
+			fmt.Fprintf(&sb, "\n  Evidence: %s", ev)
+		default:
+			fmt.Fprintf(&sb, "\n  <details><summary>Evidence (%d bytes, expand to read)</summary>\n\n  %s\n\n  </details>", len(ev), strings.ReplaceAll(ev, "\n", "\n  "))
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// plainPostMergeFull is plainPostMergeField without a length bound.
+func plainPostMergeFull(s string) string {
+	s, _ = text.SanitizeUntrusted(s)
+	return strings.ReplaceAll(strings.TrimSpace(s), "`", "")
 }
 
 // BuildPostMergeReviewComment renders the PR comment the controller posts for a
@@ -440,10 +477,19 @@ func buildPostMergeReviewComment(review *executor.PostMergeReview) string {
 	}
 	if len(review.NotVerified) > 0 {
 		sb.WriteString("### Not verified\n\n")
-		for _, item := range review.NotVerified {
+		shown := review.NotVerified
+		if len(shown) > executor.MaxPostMergeNotVerified {
+			// The review keeps the full set; the comment shows the first slots and
+			// a count line in the last one.
+			shown = shown[:executor.MaxPostMergeNotVerified-1]
+		}
+		for _, item := range shown {
 			if item = sanitizePostMergeField(item, maxPostMergeFieldChars); item != "" {
 				fmt.Fprintf(&sb, "- %s\n", item)
 			}
+		}
+		if more := len(review.NotVerified) - len(shown); more > 0 {
+			fmt.Fprintf(&sb, "- … %d more not-verified items omitted from this comment (capped at %d)\n", more, executor.MaxPostMergeNotVerified)
 		}
 		sb.WriteString("\n")
 	}

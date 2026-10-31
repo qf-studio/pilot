@@ -365,7 +365,12 @@ func TestCreatePostMergeReviewIssue_SanitizesModelOutput(t *testing.T) {
 	if strings.ContainsRune(body, '\u200b') {
 		t.Error("invisible unicode survived into the issue body")
 	}
-	if len(body) > 4000 {
+	// GH-5986: an Evidence over the field cap is kept whole in a details block;
+	// only the whole body is bounded, at 16 KB.
+	if !strings.Contains(body, strings.Repeat("e", 5000)) || !strings.Contains(body, "<details>") {
+		t.Error("long evidence must sit whole in a details block")
+	}
+	if len(body) > maxPostMergeIssueBodyChars {
 		t.Errorf("issue body not bounded: %d chars", len(body))
 	}
 }
@@ -563,6 +568,117 @@ func TestCreatePostMergeReviewIssue_BlockingDefectsOnly(t *testing.T) {
 	}
 	if strings.Contains(body, "minor-claim") {
 		t.Errorf("issue body carries a minor defect:\n%s", body)
+	}
+}
+
+// GH-5986: the two defect lines of issue #5937 (PR#5936's review comment) had
+// their claim text in Location and were cut at a literal 200 bytes. No rendered
+// line may end inside a word, and every cut field ends with "(truncated)".
+func TestCreatePostMergeReviewIssue_NoMidSentenceCut(t *testing.T) {
+	const (
+		// The 200-byte prefixes the byte cut left in the comment, and the words the
+		// reviewer wrote after them.
+		loc1 = "internal/autopilot/feedback_loop.go:376 - Defect 1 is only partly fixed: the diff adds the registry forget hook only on the CreateFailureIssue dedup dead-issue path and none in the issue-close or labe"
+		loc2 = "internal/autopilot/adopted_issue.go:198 - restoreBorrowedBranch re-records the consumed entry with a hardcoded 0 as the third RecordBorrowedBranch argument - the original registration passes 5921 (see"
+		more = "led paths of the fix issue, so the entry stays"
+	)
+	for _, l := range []string{loc1, loc2} {
+		if len(l) != 200 {
+			t.Fatalf("fixture is %d bytes, want the 200 the byte cut produced: %q", len(l), l)
+		}
+	}
+	longEvidence := strings.Repeat("The evidence names a second caller that never sets the field. ", 40)
+
+	mock, gh := newPMRGitHub(t)
+	fl := NewFeedbackLoop(gh, "owner", "repo", DefaultConfig())
+	review := &executor.PostMergeReview{
+		Verdict: executor.PostMergeRequestChanges,
+		Defects: []executor.PostMergeDefect{
+			{Severity: executor.PostMergeSeverityBlocking, Location: loc1 + more, Claim: "so a fix issue closed or unlabeled outside a new failure signal still keeps its entry until an adoption-time check"},
+			{Severity: executor.PostMergeSeverityBlocking, Location: loc2 + " " + more, Claim: "the registration site passes the real id", Evidence: longEvidence},
+		},
+	}
+	if _, err := fl.CreatePostMergeReviewIssue(context.Background(), 42, "u", 10, review); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	body := mock.issues[0].Body
+
+	// Each location line is cut at a word end and marked; the marker is the only
+	// sign of the cut, and no byte-cut ellipsis is left.
+	cutLines := 0
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "…") {
+			t.Errorf("line carries a byte-cut ellipsis: %q", line)
+		}
+		before, _, found := strings.Cut(line, " (truncated)")
+		if !found {
+			continue
+		}
+		cutLines++
+		prefix := strings.TrimPrefix(before, "- at ")
+		var orig string
+		for _, l := range []string{loc1 + more, loc2 + " " + more} {
+			if strings.HasPrefix(l, prefix) {
+				orig = l
+			}
+		}
+		if orig == "" || len(prefix) > 200 {
+			t.Errorf("cut line %q is not a short prefix of a fixture location", line)
+			continue
+		}
+		if next := orig[len(prefix)]; next != ' ' && !strings.HasSuffix(prefix, ".") && !strings.HasSuffix(prefix, ";") {
+			t.Errorf("line ends inside a word (next byte %q): %q", next, line)
+		}
+		if !strings.HasSuffix(line, "(truncated)") && !strings.Contains(line, "(truncated) — ") {
+			t.Errorf("marker is not at the end of the location field: %q", line)
+		}
+	}
+	if cutLines != 2 {
+		t.Errorf("%d cut location lines, want 2:\n%s", cutLines, body)
+	}
+	if !strings.Contains(body, "so a fix issue closed or unlabeled outside a new failure signal still keeps its entry until an adoption-time check") {
+		t.Errorf("the full Claim must be rendered:\n%s", body)
+	}
+	if !strings.Contains(body, "<details><summary>Evidence") || strings.Count(body, "The evidence names a second caller") != 40 {
+		t.Errorf("an Evidence over %d bytes goes whole into a details block:\n%s", maxPostMergeFieldChars, body)
+	}
+}
+
+// The issue body is bounded once, at the end, at a word or sentence end.
+func TestCreatePostMergeReviewIssue_BodyBounded(t *testing.T) {
+	mock, gh := newPMRGitHub(t)
+	fl := NewFeedbackLoop(gh, "owner", "repo", DefaultConfig())
+	review := &executor.PostMergeReview{
+		Verdict: executor.PostMergeRequestChanges,
+		Defects: []executor.PostMergeDefect{
+			{Severity: executor.PostMergeSeverityBlocking, Location: "a.go:1", Claim: strings.Repeat("A very long claim sentence. ", 1500)},
+		},
+	}
+	if _, err := fl.CreatePostMergeReviewIssue(context.Background(), 42, "u", 10, review); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	body := mock.issues[0].Body
+	if len(body) > maxPostMergeIssueBodyChars+len(" (truncated)") || !strings.HasSuffix(body, "(truncated)") {
+		t.Errorf("body is %d bytes and ends %q, want it bounded with the marker", len(body), body[max(0, len(body)-30):])
+	}
+}
+
+// The PR comment keeps the Not-verified entries it is capped to render; the
+// review itself carries them all.
+func TestBuildPostMergeReviewComment_NotVerifiedCapAtRender(t *testing.T) {
+	review := &executor.PostMergeReview{
+		Verdict:     executor.PostMergeApproveWithNotes,
+		NotVerified: []string{"one", "two", "three", "four", "five"},
+	}
+	got := buildPostMergeReviewComment(review)
+	if !strings.Contains(got, "- one\n") || !strings.Contains(got, "- two\n") || strings.Contains(got, "- three\n") {
+		t.Errorf("comment should show two entries and a count line:\n%s", got)
+	}
+	if !strings.Contains(got, "3 more not-verified items omitted") {
+		t.Errorf("comment lacks the count line:\n%s", got)
+	}
+	if len(review.NotVerified) != 5 {
+		t.Errorf("render must not shrink the review's set: %q", review.NotVerified)
 	}
 }
 
