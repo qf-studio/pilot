@@ -1016,3 +1016,35 @@ func TestProcessQueue_BasePresence_RecordsLedgerEventOnHold(t *testing.T) {
 		t.Errorf("expected zero backend invocations while held, got %d", count)
 	}
 }
+
+// TestPRDeliversIssue pins the three delivery rules (GH-5985): a PR delivers
+// issue N by closingIssuesReferences, by a closing keyword in its body, or by
+// head branch pilot/GH-N / pilot/GH-N-*; a bare mention does not.
+func TestPRDeliversIssue(t *testing.T) {
+	const n = 5917
+	tests := []struct {
+		name    string
+		branch  string
+		body    string
+		closing []int
+		want    bool
+	}{
+		{"closing reference list hit", "feature/x", "", []int{5920, n}, true},
+		{"body Closes #N", "feature/x", "Closes #5917", nil, true},
+		{"body Fixes: #N", "feature/x", "Fixes: #5917", nil, true},
+		{"body lowercase resolved #N", "feature/x", "this resolved #5917.", nil, true},
+		{"branch pilot/GH-N", "pilot/GH-5917", "", nil, true},
+		{"branch pilot/GH-N-retry", "pilot/GH-5917-retry", "", nil, true},
+		{"mention-only body", "pilot/GH-5927", "see #5917", nil, false},
+		{"closing refs for other issues", "feature/x", "", []int{5927}, false},
+		{"body closes longer number", "feature/x", "Closes #59170", nil, false},
+		{"branch pilot/GH-N1 is a different issue", "pilot/GH-59171", "", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PRDeliversIssue(tc.branch, tc.body, tc.closing, n); got != tc.want {
+				t.Errorf("PRDeliversIssue(%q, %q, %v, %d) = %v, want %v", tc.branch, tc.body, tc.closing, n, got, tc.want)
+			}
+		})
+	}
+}
