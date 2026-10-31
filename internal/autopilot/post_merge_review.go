@@ -64,6 +64,9 @@ const (
 	maxPostMergeLocationChars = 200
 	// maxPostMergeIssueBodyChars bounds the follow-up issue body (GH-5986).
 	maxPostMergeIssueBodyChars = 16 * 1024
+	// maxPostMergeIssueHardChars is the final safety bound on the issue body
+	// (GitHub's limit is 65536); the per-section bounds keep it from firing.
+	maxPostMergeIssueHardChars = 60 * 1024
 )
 
 // postMergeReviewBudget is the post-merge reviews' own daily counter. It is
@@ -448,6 +451,24 @@ func formatPostMergeIssueDefects(defects []executor.PostMergeDefect) string {
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// cutPostMergeDefects bounds the rendered Defects section to max bytes at a
+// sentence or word end (GH-5991). A cut that lands inside a details block
+// closes it before the marker, and the section ends in a newline so the next
+// heading starts on its own line.
+func cutPostMergeDefects(defects string, max int) string {
+	if len(defects) <= max {
+		return defects
+	}
+	cut := executor.CutAtBoundary(defects, max)
+	const marker = " (truncated)"
+	kept := strings.TrimSuffix(cut, marker)
+	var closing string
+	for open := strings.Count(kept, "<details>") - strings.Count(kept, "</details>"); open > 0; open-- {
+		closing += "\n\n</details>"
+	}
+	return kept + closing + marker + "\n"
 }
 
 // plainPostMergeFull is plainPostMergeField without a length bound.

@@ -2647,3 +2647,35 @@ func TestCIMonitor_RequiredCheckMismatch_StuckSuccess(t *testing.T) {
 		})
 	}
 }
+
+// GH-5991: stuckPromotionLogged tracks only currently stuck runs — a run seen
+// with a conclusion but a non-completed status, then observed completed, leaves
+// no key behind.
+func TestCIMonitor_StuckPromotionLogCleared(t *testing.T) {
+	m := &CIMonitor{log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))}
+	count := func() int {
+		n := 0
+		m.stuckPromotionLogged.Range(func(_, _ any) bool { n++; return true })
+		return n
+	}
+	stuck := github.CheckRun{ID: 7, Name: "build", Status: github.CheckRunInProgress, Conclusion: github.ConclusionSuccess}
+	done := stuck
+	done.Status = github.CheckRunCompleted
+
+	if got := m.mapCheckRun(stuck); got != CISuccess {
+		t.Fatalf("stuck run = %v, want CISuccess", got)
+	}
+	if got := count(); got != 1 {
+		t.Fatalf("stuck run tracked %d keys, want 1", got)
+	}
+	m.mapCheckRun(stuck)
+	if got := count(); got != 1 {
+		t.Errorf("a repeat observation tracked %d keys, want 1", got)
+	}
+	if got := m.mapCheckRun(done); got != CISuccess {
+		t.Fatalf("completed run = %v, want CISuccess", got)
+	}
+	if got := count(); got != 0 {
+		t.Errorf("completed run left %d keys, want 0", got)
+	}
+}

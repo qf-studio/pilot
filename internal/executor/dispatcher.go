@@ -545,9 +545,25 @@ func (d *Dispatcher) healOpenPRExecution(exec *memory.Execution) string {
 		if events[i].Stage != memory.StagePRCreated {
 			continue
 		}
-		if u := prURLInEventDetail.FindString(events[i].Detail); u != "" {
+		u := prURLInEventDetail.FindString(events[i].Detail)
+		if u == "" {
+			continue
+		}
+		// GH-5991: the event outlives the PR — the pre-push merge check and
+		// the timeout salvage write it too, and the PR may have been closed
+		// unmerged since. Heal only on an open or merged PR.
+		state, stateErr := staleRunningPRStateCheck(d.ctx, exec.ProjectPath, u)
+		if stateErr != nil {
+			d.log.Warn("Failed to read PR state for boot open-PR heal, not healing",
+				slog.String("execution_id", exec.ID), slog.String("pr_url", u), slog.Any("error", stateErr))
+			return ""
+		}
+		if state == "OPEN" || state == "MERGED" {
 			return u
 		}
+		d.log.Info("pr_created event PR is closed unmerged, not healing",
+			slog.String("execution_id", exec.ID), slog.String("pr_url", u), slog.String("state", state))
+		return ""
 	}
 	return ""
 }
@@ -976,6 +992,17 @@ var staleRunningOpenPRCheck = func(ctx context.Context, projectPath, branch stri
 		return "", nil
 	}
 	return NewGitOperations(projectPath).FindOpenPRByBranch(ctx, branch)
+}
+
+// staleRunningPRStateCheck reports GitHub's state ("OPEN", "MERGED", "CLOSED")
+// for the PR at prURL, resolved through the same GitOperations as
+// staleRunningOpenPRCheck (GH-5991). Test mode reports OPEN; tests override
+// this var directly.
+var staleRunningPRStateCheck = func(ctx context.Context, projectPath, prURL string) (string, error) {
+	if testing.Testing() {
+		return "OPEN", nil
+	}
+	return NewGitOperations(projectPath).GetPRStateByURL(ctx, prURL)
 }
 
 // mergedPRPreflightCheck reports the URL of a merged PR for a queued task's

@@ -1032,12 +1032,15 @@ func TestPRDeliversIssue(t *testing.T) {
 		{"closing reference list hit", "feature/x", "", []int{5920, n}, true},
 		{"body Closes #N", "feature/x", "Closes #5917", nil, true},
 		{"body Fixes: #N", "feature/x", "Fixes: #5917", nil, true},
+		{"body Fixes:#N without a space", "feature/x", "Fixes:#5917", nil, true},
+		{"body closes#N without a space", "feature/x", "closes#5917", nil, true},
 		{"body lowercase resolved #N", "feature/x", "this resolved #5917.", nil, true},
 		{"branch pilot/GH-N", "pilot/GH-5917", "", nil, true},
 		{"branch pilot/GH-N-retry", "pilot/GH-5917-retry", "", nil, true},
 		{"mention-only body", "pilot/GH-5927", "see #5917", nil, false},
 		{"closing refs for other issues", "feature/x", "", []int{5927}, false},
 		{"body closes longer number", "feature/x", "Closes #59170", nil, false},
+		{"body closes#N longer number", "feature/x", "closes#59170", nil, false},
 		{"branch pilot/GH-N1 is a different issue", "pilot/GH-59171", "", nil, false},
 	}
 	for _, tc := range tests {

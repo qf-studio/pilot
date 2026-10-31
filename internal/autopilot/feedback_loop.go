@@ -499,25 +499,33 @@ func (f *FeedbackLoop) CreatePostMergeReviewIssue(ctx context.Context, prNumber 
 		return existing, nil
 	}
 
-	var sb strings.Builder
-	sb.WriteString("## Context\n\n")
-	fmt.Fprintf(&sb, "A post-merge review of PR #%d (%s), which implemented issue #%d, returned REQUEST-CHANGES. The PR is already merged; fix the defects below on a new PR.\n\n", prNumber, prURL, issueNumber)
-	sb.WriteString("## Defects\n\n")
-	// Only [blocking] defects become work: minor ones stay in the PR comment.
-	sb.WriteString(formatPostMergeIssueDefects(review.BlockingDefects()))
+	var head strings.Builder
+	head.WriteString("## Context\n\n")
+	fmt.Fprintf(&head, "A post-merge review of PR #%d (%s), which implemented issue #%d, returned REQUEST-CHANGES. The PR is already merged; fix the defects below on a new PR.\n\n", prNumber, prURL, issueNumber)
+	head.WriteString("## Defects\n\n")
+
+	var tail strings.Builder
 	// Decision: Notes are backtick-free for the same reason as the defects —
 	// the base-presence gate scans backtick spans over the whole issue body,
 	// and a counterpart path in another repository would park the issue.
 	if notes := plainPostMergeField(review.Notes, maxPostMergeNotesChars); notes != "" {
-		sb.WriteString("\n## Reviewer Notes\n\n")
-		sb.WriteString(notes)
-		sb.WriteString("\n")
+		tail.WriteString("\n## Reviewer Notes\n\n")
+		tail.WriteString(notes)
+		tail.WriteString("\n")
 	}
-	sb.WriteString("\n## Acceptance Criteria\n\n")
-	sb.WriteString("- [ ] Each defect above is fixed, or shown to be a false positive with evidence in the PR body\n")
-	sb.WriteString("- [ ] Tests for each fixed defect exercise the real adapter or counterpart, not a mock of it\n")
-	sb.WriteString("\n## Refs\n\n")
-	fmt.Fprintf(&sb, "- PR #%d: %s\n- Issue #%d\n", prNumber, prURL, issueNumber)
+	tail.WriteString("\n## Acceptance Criteria\n\n")
+	tail.WriteString("- [ ] Each defect above is fixed, or shown to be a false positive with evidence in the PR body\n")
+	tail.WriteString("- [ ] Tests for each fixed defect exercise the real adapter or counterpart, not a mock of it\n")
+	tail.WriteString("\n## Refs\n\n")
+	fmt.Fprintf(&tail, "- PR #%d: %s\n- Issue #%d\n", prNumber, prURL, issueNumber)
+
+	// Only [blocking] defects become work: minor ones stay in the PR comment.
+	// Decision (GH-5991): the Defects section is cut to what is left of the body
+	// budget after the sections around it, so the cut never drops the Acceptance
+	// Criteria and Refs that follow it, and never leaves a details block open.
+	defects := cutPostMergeDefects(formatPostMergeIssueDefects(review.BlockingDefects()),
+		maxPostMergeIssueBodyChars-head.Len()-tail.Len())
+	body := head.String() + defects + tail.String()
 
 	labels := append([]string(nil), f.issueLabels...)
 	for _, extra := range []string{postMergeReviewLabel, postMergeReviewNoDecomposeLabel} {
@@ -526,9 +534,9 @@ func (f *FeedbackLoop) CreatePostMergeReviewIssue(ctx context.Context, prNumber 
 		}
 	}
 
-	// Decision: the body is bounded once, here, so the per-field renders above
-	// never cut a claim; the cut falls at a sentence or word end like every other.
-	body := executor.CutAtBoundary(sb.String(), maxPostMergeIssueBodyChars)
+	// Safety net only: the sections above are bounded already, so this cut is
+	// not expected to fire. GitHub's body limit is 65536.
+	body = executor.CutAtBoundary(body, maxPostMergeIssueHardChars)
 	issue, err := ghissue.CreatePilotIssue(ctx, f.ghClient, ghissue.AllowAllIssueRepos(), f.owner, f.repo, title, body, labels)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create issue: %w", err)
