@@ -3511,6 +3511,20 @@
           "workflow",
           "api"
         ]
+      },
+      "TASK-625": {
+        "path": ".agent/tasks/TASK-625-task624-review-notes-startup-label-strands-crash-orphans.md",
+        "title": "TASK-624 review notes \u2014 startup label guard strands crash orphans, pr_created heal on a closed PR, issue-body cut inside details, location with a space, closing keyword without a space",
+        "status": "dispatched",
+        "concepts": [
+          "api",
+          "deployment",
+          "knowledge",
+          "context",
+          "markers",
+          "testing",
+          "workflow"
+        ]
       }
     },
     "memories": {
@@ -14110,6 +14124,41 @@
       "from": "TASK-624",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-625",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-625",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-625",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-625",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-625",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-625",
+      "to": "markers",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-625",
+      "to": "workflow",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -14339,7 +14388,8 @@
       "TASK-597",
       "TASK-598",
       "TASK-600",
-      "TASK-624"
+      "TASK-624",
+      "TASK-625"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -14839,7 +14889,8 @@
       "TASK-598",
       "TASK-599",
       "TASK-600",
-      "TASK-624"
+      "TASK-624",
+      "TASK-625"
     ],
     "conversational-bot": [
       "mem-036",
@@ -15238,7 +15289,8 @@
       "TASK-597",
       "TASK-598",
       "TASK-599",
-      "TASK-624"
+      "TASK-624",
+      "TASK-625"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -15795,7 +15847,8 @@
       "TASK-593",
       "TASK-596",
       "TASK-598",
-      "TASK-624"
+      "TASK-624",
+      "TASK-625"
     ],
     "labels": [
       "mem-100",
@@ -15865,7 +15918,8 @@
       "TASK-579",
       "TASK-583",
       "TASK-596",
-      "TASK-624"
+      "TASK-624",
+      "TASK-625"
     ],
     "memory": [
       "TASK-358",
@@ -16439,7 +16493,8 @@
       "TASK-598",
       "TASK-599",
       "TASK-600",
-      "TASK-624"
+      "TASK-624",
+      "TASK-625"
     ],
     "testing-quality": [
       "TASK-384",
@@ -16610,7 +16665,8 @@
       "TASK-595",
       "TASK-598",
       "TASK-600",
-      "TASK-624"
+      "TASK-624",
+      "TASK-625"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -17110,10 +17166,10 @@
       "mem-268"
     ]
   },
-  "last_updated": "2026-10-31T15:10:02.490808+00:00",
+  "last_updated": "2026-10-31T19:28:56.380813+00:00",
   "stats": {
-    "total_nodes": 815,
-    "total_edges": 899,
+    "total_nodes": 816,
+    "total_edges": 906,
     "memory_count": 445
   },
   "metadata": {}
