@@ -1,6 +1,6 @@
 # TASK-626: Reviewer residue — union line tolerance and case-fold, empty-claim guard, truncation marker, parenthesised hint kept, exact task lookup at startup, NOT-VERIFIED count as an extra bullet, counter and log fixes
 
-**Status**: 🚀 DISPATCHED 2026-10-31 → [#5996](https://github.com/qf-studio/pilot/issues/5996) (`pilot` + `no-decompose`, pre-flight clean on aadfa658e). Founder 10-31: "Yes, dispatch it" (Pilot idle after v2.305.0; each run feeds the TASK-620 enforce sample).
+**Status**: ✅ MERGED + RELEASED — #5996 → PR#5997 merged 10-31 22:09Z (pre-PR AWN; post-merge AWN, 10 minor notes untriaged, no fix issue); v2.306.0 cut by hand 11-01 13:15Z. Was: 🚀 DISPATCHED 2026-10-31 → [#5996](https://github.com/qf-studio/pilot/issues/5996) (`pilot` + `no-decompose`, pre-flight clean on aadfa658e). Founder 10-31: "Yes, dispatch it" (Pilot idle after v2.305.0; each run feeds the TASK-620 enforce sample).
 **Origin**: TASK-623 P3 residue (bench report §"Decision inputs after seven runs": 30 same-finding pairs un-united by ±1–4 lines or case; intra-pass-B collisions on 3 ui PRs; ui#246 defect 7 empty claim) · TASK-625's three unfiled pre-PR notes on PR#5993 · PR#5950's post-merge notes (10-29). Traced 2026-10-31 on main aadfa658e.
 
 | # | Item | Site (file:line on aadfa658e) | Today |
