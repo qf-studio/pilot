@@ -3540,9 +3540,9 @@
         ]
       },
       "TASK-627": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-627-pr5990-approval-to-merge-latency-research.md",
+        "path": ".agent/tasks/archive/TASK-627-pr5990-approval-to-merge-latency-research.md",
         "title": "PR#5990 approval\u2192merge \u22482 h \u2014 research findings (no daemon defect on the merge path)",
-        "status": "research",
+        "status": "completed",
         "concepts": [
           "api",
           "testing",
@@ -3554,9 +3554,9 @@
         ]
       },
       "TASK-628": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-628-quality-gate-absent-make-target-fallback.md",
+        "path": ".agent/tasks/archive/TASK-628-quality-gate-absent-make-target-fallback.md",
         "title": "Quality gate \u2014 an absent make target falls back to the gate's default target, and \"No rule to make target\" never reaches Claude as a code failure",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "workflow",
           "context",
