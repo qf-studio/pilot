@@ -44,7 +44,7 @@ func (a *MemberResolverAdapter) ResolveIdentity(senderID string) (string, error)
 // approval package to avoid an import cycle (mirrors telegram.ApprovalCallbackHandler,
 // GH-3825 precedent, GH-4431).
 type ApprovalCallbackHandler interface {
-	HandleInteraction(ctx context.Context, actionID, value, userID, username, responseURL string) bool
+	HandleInteraction(ctx context.Context, actionID, value, userID, username, responseURL, actionTS string) bool
 }
 
 // isApprovalCallback reports whether a Socket Mode "callback" event is an
@@ -249,7 +249,7 @@ func (h *Handler) HandleMessage(ctx context.Context, ev core.MessageEvent) error
 	// before building the comms message and hand off to approval.SlackHandler
 	// directly (mirrors Telegram's GH-3825 routing).
 	if ev.Action == "callback" && h.approvalHandler != nil && isApprovalCallback(ev.CallbackID, ev.Data) {
-		h.approvalHandler.HandleInteraction(ctx, ev.CallbackID, ev.Data, ev.Sender.UserID, ev.Sender.DisplayName, "")
+		h.approvalHandler.HandleInteraction(ctx, ev.CallbackID, ev.Data, ev.Sender.UserID, ev.Sender.DisplayName, "", ev.Timestamp)
 		return nil
 	}
 

@@ -180,7 +180,7 @@ func TestRestartApprovalFlow_Slack_WritesExecutionDecisionAndResumesMerge(t *tes
 	// A click on the pre-restart Slack message arrives — its button value
 	// still carries "approve:<requestID>" verbatim (GH-4411: rehydrate honors
 	// old buttons rather than requiring a freshly-posted message).
-	handled := sl2.HandleInteraction(ctx, "approve", "approve:"+requestID, "U12345", "reviewer1", "")
+	handled := sl2.HandleInteraction(ctx, "approve", "approve:"+requestID, "U12345", "reviewer1", "", "")
 	if !handled {
 		t.Fatal("HandleInteraction did not recognize the approval action")
 	}

@@ -409,6 +409,7 @@ func TestSlackHandler_HandleInteraction_Approve(t *testing.T) {
 		"U123",
 		"testuser",
 		"https://hooks.slack.com/response",
+		"",
 	)
 
 	if !handled {
@@ -454,6 +455,7 @@ func TestSlackHandler_HandleInteraction_Reject(t *testing.T) {
 		"U456",
 		"rejectuser",
 		"https://hooks.slack.com/response",
+		"",
 	)
 
 	if !handled {
@@ -485,6 +487,7 @@ func TestSlackHandler_HandleInteraction_NotFound(t *testing.T) {
 		"U123",
 		"testuser",
 		"",
+		"",
 	)
 
 	// Should still return true (handled, just expired)
@@ -504,6 +507,7 @@ func TestSlackHandler_HandleInteraction_InvalidValue(t *testing.T) {
 		"invalid_format",
 		"U123",
 		"testuser",
+		"",
 		"",
 	)
 
@@ -627,7 +631,7 @@ func TestSlackHandler_WithStore_DeleteOnInteraction(t *testing.T) {
 		t.Fatal("expected 1 row after send")
 	}
 
-	handler.HandleInteraction(context.Background(), "approve", "approve:del-int-1", "U1", "user", "")
+	handler.HandleInteraction(context.Background(), "approve", "approve:del-int-1", "U1", "user", "", "")
 
 	if store.len() != 0 {
 		t.Errorf("expected 0 rows after interaction, got %d", store.len())
@@ -771,7 +775,7 @@ func TestSlackHandler_Rehydrate_HonorsOldButtonRequestID(t *testing.T) {
 
 	// Simulate a click on the pre-restart message — its button value still
 	// carries "approve:rehy-int" verbatim.
-	handled := handler.HandleInteraction(context.Background(), "approve", "approve:rehy-int", "U1", "tester", "")
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:rehy-int", "U1", "tester", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled after rehydrate")
 	}
@@ -787,7 +791,7 @@ func TestSlackHandler_HandleInteraction_RecordsDecisionViaRecorder(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	handler.HandleInteraction(context.Background(), "approve", "approve:req-1", "U1", "tester", "")
+	handler.HandleInteraction(context.Background(), "approve", "approve:req-1", "U1", "tester", "", "")
 
 	calls := recorder.getCalls()
 	if len(calls) != 1 {
@@ -819,7 +823,7 @@ func TestSlackHandler_Rehydrate_InteractionRecordsDecisionDirectly(t *testing.T)
 		t.Fatalf("rehydrate error: %v", err)
 	}
 
-	handled := handler.HandleInteraction(context.Background(), "reject", "reject:rehy-rec", "U2", "reviewer", "")
+	handled := handler.HandleInteraction(context.Background(), "reject", "reject:rehy-rec", "U2", "reviewer", "", "")
 	if !handled {
 		t.Fatal("expected interaction to be handled")
 	}
@@ -894,7 +898,7 @@ func TestSlackHandler_HandleInteraction_RaceLoss_ShowsAlreadyDecided(t *testing.
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-race-loss", "U1", "loser", "")
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-race-loss", "U1", "loser", "", "")
 	if !handled {
 		t.Fatal("expected interaction to still be handled on a lost race")
 	}
@@ -926,7 +930,7 @@ func TestSlackHandler_HandleInteraction_ExpiredRaceIsTreatedAsTimeout(t *testing
 
 	time.Sleep(20 * time.Millisecond)
 
-	handled := handler.HandleInteraction(context.Background(), "approve", "approve:race-1", "U1", "tester", "")
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:race-1", "U1", "tester", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled")
 	}
@@ -958,7 +962,7 @@ func TestSlackHandler_HandleInteraction_ApproversGate(t *testing.T) {
 	}
 
 	// A user not in Approvers must be rejected without consuming the request.
-	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-approvers-gate", "intruder", "intruder", "")
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-approvers-gate", "intruder", "intruder", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled (even when unauthorized)")
 	}
@@ -979,7 +983,7 @@ func TestSlackHandler_HandleInteraction_ApproversGate(t *testing.T) {
 	}
 
 	// The listed approver can still decide it afterwards.
-	handled = handler.HandleInteraction(context.Background(), "approve", "approve:req-approvers-gate", "U-allowed-2", "approver", "")
+	handled = handler.HandleInteraction(context.Background(), "approve", "approve:req-approvers-gate", "U-allowed-2", "approver", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled")
 	}
@@ -1013,7 +1017,7 @@ func TestSlackHandler_HandleInteraction_AllowlistFallback(t *testing.T) {
 	}
 
 	// Not in the handler allowlist -> rejected.
-	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-allowlist-fallback", "not-allowed", "someone", "")
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-allowlist-fallback", "not-allowed", "someone", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled (even when unauthorized)")
 	}
@@ -1022,7 +1026,7 @@ func TestSlackHandler_HandleInteraction_AllowlistFallback(t *testing.T) {
 	}
 
 	// In the handler allowlist -> authorized.
-	handled = handler.HandleInteraction(context.Background(), "approve", "approve:req-allowlist-fallback", "U-allowed", "someone-else", "")
+	handled = handler.HandleInteraction(context.Background(), "approve", "approve:req-allowlist-fallback", "U-allowed", "someone-else", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled")
 	}
@@ -1062,7 +1066,7 @@ func TestSlackHandler_HandleInteraction_UnauthorizedSendsEphemeralAndWarns(t *te
 	}
 
 	const responseURL = "https://hooks.slack.com/actions/T000/B000/xyz"
-	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-ephemeral-refusal", "intruder", "intruder", responseURL)
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-ephemeral-refusal", "intruder", "intruder", responseURL, "")
 	if !handled {
 		t.Error("expected interaction to be handled (even when unauthorized)")
 	}
@@ -1133,7 +1137,7 @@ func TestSlackHandler_HandleInteraction_UnauthorizedEmptyResponseURLFallsBackToP
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-socketmode-refusal", "intruder", "intruder", "")
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-socketmode-refusal", "intruder", "intruder", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled (even when unauthorized)")
 	}
@@ -1196,7 +1200,7 @@ func TestSlackHandler_HandleInteraction_UnrestrictedWhenNoApproversOrAllowlist(t
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-unrestricted", "anyone", "anyone", "")
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-unrestricted", "anyone", "anyone", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled")
 	}
@@ -1231,7 +1235,7 @@ func TestSlackHandler_HandleInteraction_ApproverAccepted(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-approver-accepted", "U-allowed-2", "approver", "")
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-approver-accepted", "U-allowed-2", "approver", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled")
 	}
@@ -1282,7 +1286,7 @@ func TestSlackHandler_HandleInteraction_NonApproverRefused(t *testing.T) {
 	const responseURL = "https://hooks.slack.com/actions/T000/B000/xyz"
 
 	// Refusal response.
-	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-non-approver-refused", "intruder", "intruder", responseURL)
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-non-approver-refused", "intruder", "intruder", responseURL, "")
 	if !handled {
 		t.Error("expected interaction to be handled (even when unauthorized)")
 	}
@@ -1323,7 +1327,7 @@ func TestSlackHandler_HandleInteraction_NonApproverRefused(t *testing.T) {
 	}
 
 	// Subsequent authorized tap still works.
-	handled = handler.HandleInteraction(context.Background(), "approve", "approve:req-non-approver-refused", "U-allowed", "approver", "")
+	handled = handler.HandleInteraction(context.Background(), "approve", "approve:req-non-approver-refused", "U-allowed", "approver", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled")
 	}
@@ -1358,7 +1362,7 @@ func TestSlackHandler_HandleInteraction_FallbackAllowlistMemberAcceptedNonMember
 	}
 
 	// Non-member of the fallback allowlist -> refused.
-	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-fallback-both-1", "not-allowed", "someone", "")
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-fallback-both-1", "not-allowed", "someone", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled (even when unauthorized)")
 	}
@@ -1373,7 +1377,7 @@ func TestSlackHandler_HandleInteraction_FallbackAllowlistMemberAcceptedNonMember
 	}
 
 	// Member of the fallback allowlist -> accepted.
-	handled = handler.HandleInteraction(context.Background(), "approve", "approve:req-fallback-both-1", "U-allowed", "someone-else", "")
+	handled = handler.HandleInteraction(context.Background(), "approve", "approve:req-fallback-both-1", "U-allowed", "someone-else", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled")
 	}
@@ -1407,7 +1411,7 @@ func TestSlackHandler_HandleInteraction_BothListsEmptyUnrestricted(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-both-empty-unrestricted", "anyone", "anyone", "")
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:req-both-empty-unrestricted", "anyone", "anyone", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled")
 	}
@@ -1449,7 +1453,7 @@ func TestSlackHandler_Rehydrate_ApproversGate(t *testing.T) {
 	}
 
 	// A non-approver tap after rehydrate must be rejected without mutating state.
-	handled := handler.HandleInteraction(context.Background(), "approve", "approve:rehy-gate", "intruder", "intruder", "")
+	handled := handler.HandleInteraction(context.Background(), "approve", "approve:rehy-gate", "intruder", "intruder", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled (even when unauthorized)")
 	}
@@ -1468,7 +1472,7 @@ func TestSlackHandler_Rehydrate_ApproversGate(t *testing.T) {
 
 	// The listed approver can still decide it after rehydrate — recorded
 	// directly via DecisionRecorder since no waiter reads the rebuilt channel.
-	handled = handler.HandleInteraction(context.Background(), "approve", "approve:rehy-gate", "U-allowed", "approver", "")
+	handled = handler.HandleInteraction(context.Background(), "approve", "approve:rehy-gate", "U-allowed", "approver", "", "")
 	if !handled {
 		t.Error("expected interaction to be handled")
 	}
