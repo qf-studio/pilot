@@ -103,6 +103,12 @@ func TestResolveCommand_MissingMakeTarget(t *testing.T) {
 		{"missing Makefile unchanged", map[string]string{"go.mod": goMod}, &Gate{Name: "test", Type: GateTest, Command: "make test-changed"}, "make test-changed"},
 		{"include line keeps command", map[string]string{"go.mod": goMod, "Makefile": "include rules.mk\ntest:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make test-changed"}, "make test-changed"},
 		{"non-make prefix unchanged", map[string]string{"go.mod": goMod, "Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "cd x && make test-changed"}, "cd x && make test-changed"},
+		{"-f with separate value unchanged", map[string]string{"go.mod": goMod, "Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make -f ci.mk test-changed"}, "make -f ci.mk test-changed"},
+		{"-C with separate value unchanged", map[string]string{"go.mod": goMod, "Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make -C sub test-changed"}, "make -C sub test-changed"},
+		{"-j with separate value unchanged", map[string]string{"go.mod": goMod, "Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make -j 4 test-changed"}, "make -j 4 test-changed"},
+		{"--jobs with separate value unchanged", map[string]string{"go.mod": goMod, "Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make --jobs 4 test-changed"}, "make --jobs 4 test-changed"},
+		{"--directory= unchanged", map[string]string{"go.mod": goMod, "Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make --directory=sub test-changed"}, "make --directory=sub test-changed"},
+		{"-j4 still substituted", map[string]string{"go.mod": goMod, "Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make -j4 test-changed"}, "make -j4 test"},
 		{"no fallback at all keeps command", map[string]string{"Makefile": "other:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make test-changed"}, "make test-changed"},
 	}
 	for _, tt := range tests {
