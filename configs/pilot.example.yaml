@@ -635,6 +635,12 @@ orchestrator:
       # run on one checkout, share `timeout` and their defects are united by
       # location; the verdict is derived from the union. Needs a local checkout.
       passes: 1
+      # GH-6007: minors are filed only when file_minors is true — one batched
+      # follow-up issue (label review-minor) for the filtered [minor] defects of
+      # an APPROVE-WITH-NOTES review. Default off.
+      file_minors: false
+      # One minors issue per project per UTC day. 0 = 1.
+      minor_issue_daily_cap: 1
 
     # Cross-PR platform-outage breaker (GH-4791, TASK-458 part 1). The
     # per-PR circuit breaker above is deliberately scoped to one PR at a

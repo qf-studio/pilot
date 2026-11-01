@@ -100,6 +100,9 @@ type Metrics struct {
 	// were posted as APPROVE-WITH-NOTES. It has its own counter so the verdict
 	// counter sums to the number of reviews (GH-5996).
 	PostMergeReviewNoFilesRead int64
+	// PostMergeMinorIssuesFiled counts batched minors follow-up issues the
+	// post-merge reviewer filed for APPROVE-WITH-NOTES reviews (GH-6007).
+	PostMergeMinorIssuesFiled int64
 	// StageTimeouts counts per-PR stage-handler calls abandoned by the
 	// per-stage deadline (Config.StageTimeout), keyed by the PR's stage when
 	// the deadline fired — GH-5541. Exported as
@@ -451,6 +454,14 @@ func (m *Metrics) RecordPostMergeReviewNoFilesRead() {
 	m.PostMergeReviewNoFilesRead++
 }
 
+// RecordPostMergeMinorIssueFiled increments the counter of minors follow-up
+// issues filed by the post-merge reviewer. GH-6007.
+func (m *Metrics) RecordPostMergeMinorIssueFiled() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PostMergeMinorIssuesFiled++
+}
+
 // RecordStageTimeout increments the per-stage deadline counter — GH-5541.
 func (m *Metrics) RecordStageTimeout(stage string) {
 	m.mu.Lock()
@@ -755,6 +766,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		IntentJudgeFailures:           copyStringIntMap(m.IntentJudgeFailures),
 		PostMergeReviewVerdicts:       copyStringIntMap(m.PostMergeReviewVerdicts),
 		PostMergeReviewNoFilesRead:    m.PostMergeReviewNoFilesRead,
+		PostMergeMinorIssuesFiled:     m.PostMergeMinorIssuesFiled,
 		StageTimeouts:                 copyStringIntMap(m.StageTimeouts),
 		StagePanics:                   copyStringIntMap(m.StagePanics),
 		LastTickAt:                    m.LastTickAt,
@@ -854,6 +866,7 @@ type MetricsSnapshot struct {
 	IntentJudgeFailures        map[string]int64 // GH-4377: cause → count
 	PostMergeReviewVerdicts    map[string]int64 // GH-5861: verdict → post-merge review count
 	PostMergeReviewNoFilesRead int64            // GH-5996: checkout reviews that read no file, not a verdict
+	PostMergeMinorIssuesFiled  int64            // GH-6007: batched minors follow-up issues filed
 	StageTimeouts              map[string]int64 // GH-5541: stage → per-stage deadline expiries
 	StagePanics                map[string]int64 // GH-5547: stage → panics recovered from stage handlers
 	LastTickAt                 time.Time        // GH-5541: last PR-loop progress; zero before the first tick

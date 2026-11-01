@@ -78,6 +78,8 @@ func wirePostMergeReviewer(cfg *config.Config, log *slog.Logger, controllers ...
 	for _, c := range controllers {
 		c.SetPostMergeReviewer(r)
 		c.SetPostMergeReviewBudget(budget)
+		// One minors-issue budget per controller: the cap is per project.
+		c.SetPostMergeMinorBudget(autopilot.NewPostMergeMinorBudget(pmr.EffectiveMinorIssueDailyCap()))
 		c.SetPostMergeMemoryInjection(memoryInjectionEnabled(cfg))
 	}
 	model := r.Model()
@@ -89,6 +91,7 @@ func wirePostMergeReviewer(cfg *config.Config, log *slog.Logger, controllers ...
 		slog.String("model", model),
 		slog.Int("max_diff_chars", r.MaxDiffChars()),
 		slog.Int("passes", r.Passes()),
+		slog.Bool("file_minors", pmr.FileMinors),
 	)
 }
 

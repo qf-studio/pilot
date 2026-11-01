@@ -545,6 +545,129 @@ func (f *FeedbackLoop) CreatePostMergeReviewIssue(ctx context.Context, prNumber 
 	return issue.Number, nil
 }
 
+// postMergeMinorsIssueTitle is the title of the batched minors follow-up issue
+// for a post-merge review of prNumber. It is unique per PR, so the exact-title
+// dedup in findExistingFixIssue suppresses a second filing for the same PR.
+func postMergeMinorsIssueTitle(prNumber, issueNumber int) string {
+	return fmt.Sprintf("fix(review): post-merge minors from PR #%d for issue #%d", prNumber, issueNumber)
+}
+
+// maxPostMergeMinorAcceptanceCmds bounds the go test bullets in a minors issue.
+const maxPostMergeMinorAcceptanceCmds = 4
+
+// minorGoPackageDir returns the Go package directory with a trailing slash for
+// a kept location ("internal/quality/runner.go:356" -> "./internal/quality/"),
+// or "" when the location is not a .go file.
+func minorGoPackageDir(location string) string {
+	path, _, _ := strings.Cut(strings.TrimSpace(location), ":")
+	if !strings.HasSuffix(path, ".go") {
+		return ""
+	}
+	return "./" + path[:strings.LastIndex(path, "/")+1]
+}
+
+// minorOneLine renders a model-derived field as one backtick-free line, bounded
+// and without a trailing period (the template adds its own).
+func minorOneLine(s string) string {
+	s = plainPostMergeField(s, maxPostMergeFieldChars)
+	return strings.TrimRight(strings.Join(strings.Fields(s), " "), ".")
+}
+
+// splitMinorLocation turns a location into a plain-text path and a "line N"
+// suffix; the path is never backticked and never joined to its line with a colon.
+func splitMinorLocation(location string) string {
+	path, line, ok := strings.Cut(strings.TrimSpace(location), ":")
+	if ok && line != "" {
+		return path + " line " + line
+	}
+	return path
+}
+
+// CreatePostMergeMinorsIssue files one batched follow-up issue for the filtered
+// [minor] defects of an APPROVE-WITH-NOTES post-merge review (GH-6007) and
+// returns its number. The body follows the issue-authoring SOP: H2 sections
+// Context, Implementation, Acceptance, Out of scope, Refs; paths in plain text
+// (a backticked path:line would be read by the dispatcher's referenced-path gate
+// as a missing prerequisite); the only inline code spans are the allowlisted
+// go test commands of the Acceptance bullets. An open issue with the same title
+// (a repeat for the same PR) is reused, not duplicated.
+func (f *FeedbackLoop) CreatePostMergeMinorsIssue(ctx context.Context, prNumber int, prURL string, issueNumber int, kept, dropped []executor.PostMergeDefect) (int, error) {
+	title := postMergeMinorsIssueTitle(prNumber, issueNumber)
+
+	if existing, found, err := f.findExistingFixIssue(ctx, title); err != nil {
+		f.log.Warn("existing post-merge minors issue search failed, proceeding with creation",
+			"pr", prNumber, "error", err)
+	} else if found {
+		f.log.Info("post-merge minors issue already open, suppressing duplicate",
+			"issue", existing, "pr", prNumber)
+		return existing, nil
+	}
+
+	var head strings.Builder
+	head.WriteString("## Context\n\n")
+	fmt.Fprintf(&head, "The post-merge review of PR #%d (merge of #%d) returned APPROVE-WITH-NOTES with %d minor defects; %d pass the filing filter and are listed under Implementation. Fix only the listed items; each names the file and line as the reviewer saw them at the merge commit. Review: %s\n\n",
+		prNumber, issueNumber, len(kept)+len(dropped), len(kept), prURL)
+	head.WriteString("## Implementation\n\n")
+
+	var items strings.Builder
+	for i, d := range kept {
+		fmt.Fprintf(&items, "%d. %s", i+1, plainPostMergeField(splitMinorLocation(d.Location), maxPostMergeLocationChars))
+		if claim := minorOneLine(d.Claim); claim != "" {
+			fmt.Fprintf(&items, " — %s", claim)
+		}
+		items.WriteString(".")
+		if ev := minorOneLine(d.Evidence); ev != "" {
+			fmt.Fprintf(&items, " Evidence: %s.", ev)
+		}
+		items.WriteString("\n")
+	}
+
+	var tail strings.Builder
+	tail.WriteString("\nAdd one test per item that fails without the change, and name each test in the PR body as the item's mutation pin (revert the item -> the test fails).\n")
+	tail.WriteString("\n## Acceptance\n\n")
+	var dirs []string
+	for _, d := range kept {
+		if dir := minorGoPackageDir(d.Location); dir != "" && !slices.Contains(dirs, dir) && len(dirs) < maxPostMergeMinorAcceptanceCmds {
+			dirs = append(dirs, dir)
+		}
+	}
+	for _, dir := range dirs {
+		fmt.Fprintf(&tail, "- `go test -race %s` passes; paste the output into the PR body.\n", dir)
+	}
+	tail.WriteString("- Each listed item has a test, and the PR body names the mutation pin for each item.\n")
+	tail.WriteString("\n## Out of scope\n\n")
+	for i, d := range dropped {
+		if i == maxPostMergeDefects {
+			fmt.Fprintf(&tail, "… %d more dropped defects omitted\n", len(dropped)-maxPostMergeDefects)
+			break
+		}
+		fmt.Fprintf(&tail, "%s — %s (dropped: %s)\n", plainPostMergeField(splitMinorLocation(d.Location), maxPostMergeLocationChars),
+			minorOneLine(d.Claim), minorDropReason(d))
+	}
+	tail.WriteString("No change to any file not named above.\n")
+	tail.WriteString("\n## Refs\n\n")
+	fmt.Fprintf(&tail, "- %s\n- Issue #%d\n", prURL, issueNumber)
+
+	// The Implementation list is cut first so the sections after it survive.
+	list := cutPostMergeDefects(items.String(), maxPostMergeIssueBodyChars-head.Len()-tail.Len())
+	body := head.String() + list + tail.String()
+
+	labels := append([]string(nil), f.issueLabels...)
+	for _, extra := range []string{postMergeReviewLabel, postMergeReviewNoDecomposeLabel, postMergeReviewMinorLabel} {
+		if !slices.Contains(labels, extra) {
+			labels = append(labels, extra)
+		}
+	}
+
+	body = executor.CutAtBoundary(body, maxPostMergeIssueHardChars)
+	issue, err := ghissue.CreatePilotIssue(ctx, f.ghClient, ghissue.AllowAllIssueRepos(), f.owner, f.repo, title, body, labels)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create issue: %w", err)
+	}
+	f.log.Info("created post-merge minors issue", "issue", issue.Number, "pr", prNumber)
+	return issue.Number, nil
+}
+
 // findExistingFixIssue searches open issues carrying every configured pilot
 // label for an exact title match. It's the GitHub-side complement to the
 // SQLite dedup claim in CreateFailureIssue: a store row can be lost (fresh

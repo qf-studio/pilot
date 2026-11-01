@@ -331,6 +331,13 @@ type PostMergeReviewConfig struct {
 	// 1) or 2 — a hunk pass and an adjacent pass on one checkout, defects
 	// united by location (GH-5977). Timeout is shared between the passes.
 	Passes int `yaml:"passes"`
+	// FileMinors files one batched follow-up issue for the [minor] defects of
+	// an APPROVE-WITH-NOTES review that pass the filing filter (GH-6007).
+	// Default off: minors stay in the PR comment only.
+	FileMinors bool `yaml:"file_minors"`
+	// MinorIssueDailyCap is the maximum number of minors issues per project
+	// per UTC day. Zero uses 1; negative is rejected by validation.
+	MinorIssueDailyCap int `yaml:"minor_issue_daily_cap"`
 }
 
 // PostMergeReviewEnabled reports whether the post-merge reviewer is on.
@@ -344,6 +351,19 @@ func (p *PostMergeReviewConfig) EffectiveDailyCap() int {
 		return DefaultPostMergeReviewDailyCap
 	}
 	return p.DailyCap
+}
+
+// DefaultPostMergeMinorIssueDailyCap is the minors-issue budget per project per
+// UTC day when MinorIssueDailyCap is unset (GH-6007).
+const DefaultPostMergeMinorIssueDailyCap = 1
+
+// EffectiveMinorIssueDailyCap returns MinorIssueDailyCap, or
+// DefaultPostMergeMinorIssueDailyCap when unset.
+func (p *PostMergeReviewConfig) EffectiveMinorIssueDailyCap() int {
+	if p == nil || p.MinorIssueDailyCap <= 0 {
+		return DefaultPostMergeMinorIssueDailyCap
+	}
+	return p.MinorIssueDailyCap
 }
 
 // TestEvidenceConfig configures the test-evidence escalate-only gate at the

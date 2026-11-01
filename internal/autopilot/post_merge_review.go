@@ -42,6 +42,10 @@ const (
 	// the defect list pass the 200-word threshold (GH-5527 class).
 	postMergeReviewNoDecomposeLabel = "no-decompose"
 
+	// postMergeReviewMinorLabel marks the batched minors follow-up issue
+	// (GH-6007). GitHub creates a missing label on issue creation.
+	postMergeReviewMinorLabel = "review-minor"
+
 	// postMergeReviewGatherTimeout bounds the GitHub and git calls that gather
 	// a review's inputs; the model call has its own timeout (reviewer config).
 	postMergeReviewGatherTimeout = 2 * time.Minute
@@ -114,6 +118,32 @@ func (b *postMergeReviewBudget) acquire() (ok, firstDenial bool, day string, use
 	}
 	b.used++
 	return true, false, day, b.used
+}
+
+// NewPostMergeMinorBudget returns a budget allowing cap minors issues per UTC
+// day (GH-6007). It is the review budget's shape; the controller keeps one per
+// project, so the cap is per project by construction.
+func NewPostMergeMinorBudget(cap int) *PostMergeReviewBudget {
+	return &postMergeReviewBudget{cap: cap}
+}
+
+// SetPostMergeMinorBudget installs the minors-issue budget (GH-6007).
+func (c *Controller) SetPostMergeMinorBudget(b *PostMergeReviewBudget) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.postMergeMinors = b
+}
+
+// postMergeMinorBudget returns the controller's minors-issue budget: the one
+// installed by SetPostMergeMinorBudget, else one created from the configured
+// cap on first use (tests).
+func (c *Controller) postMergeMinorBudget() *postMergeReviewBudget {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.postMergeMinors == nil {
+		c.postMergeMinors = &postMergeReviewBudget{cap: c.config.PostMergeReview.EffectiveMinorIssueDailyCap()}
+	}
+	return c.postMergeMinors
 }
 
 // SetPostMergeReviewer wires the post-merge reviewer (GH-5861). Nil, or a
@@ -315,7 +345,8 @@ func truncatePostMergeRaw(s string) string {
 }
 
 // postPostMergeReview posts the verdict comment, records it in the ledger and,
-// for REQUEST-CHANGES, files the follow-up issue.
+// for REQUEST-CHANGES, files the follow-up issue. An APPROVE-WITH-NOTES review
+// may file one batched minors issue (GH-6007).
 func (c *Controller) postPostMergeReview(ctx context.Context, in postMergeReviewInputs, review *executor.PostMergeReview) {
 	var commentID int64
 	// A PR is an issue for comment purposes: AddComment takes the PR number.
@@ -328,6 +359,7 @@ func (c *Controller) postPostMergeReview(ctx context.Context, in postMergeReview
 	c.recordPostMergeReview(in, review, commentID)
 
 	if review.Verdict != executor.PostMergeRequestChanges {
+		c.maybeFilePostMergeMinors(ctx, in, review)
 		return
 	}
 	issueNum, err := c.feedbackLoop.CreatePostMergeReviewIssue(ctx, in.prNumber, in.prURL, in.issueNumber, review)
@@ -336,6 +368,84 @@ func (c *Controller) postPostMergeReview(ctx context.Context, in postMergeReview
 		return
 	}
 	c.log.Info("post-merge review: follow-up issue filed", "pr", in.prNumber, "issue", issueNum)
+}
+
+// maybeFilePostMergeMinors files the batched minors issue for an
+// APPROVE-WITH-NOTES review when post_merge_review.file_minors is on, at least
+// one minor defect passes the filing filter and today's per-project budget has
+// room (GH-6007).
+func (c *Controller) maybeFilePostMergeMinors(ctx context.Context, in postMergeReviewInputs, review *executor.PostMergeReview) {
+	if review.Verdict != executor.PostMergeApproveWithNotes || c.config.PostMergeReview == nil || !c.config.PostMergeReview.FileMinors {
+		return
+	}
+	kept, dropped := filedMinorDefects(review)
+	if len(kept) == 0 {
+		return
+	}
+	budget := c.postMergeMinorBudget()
+	ok, firstDenial, day, used := budget.acquire()
+	if !ok {
+		if firstDenial {
+			c.log.Warn("post-merge review: minor follow-up skipped, daily cap reached",
+				"pr", in.prNumber, "cap", budget.cap, "used", used, "day", day)
+		}
+		return
+	}
+	issueNum, err := c.feedbackLoop.CreatePostMergeMinorsIssue(ctx, in.prNumber, in.prURL, in.issueNumber, kept, dropped)
+	if err != nil {
+		c.log.Warn("post-merge review: failed to file minor follow-up", "pr", in.prNumber, "error", err)
+		return
+	}
+	c.metrics.RecordPostMergeMinorIssueFiled()
+	c.log.Info("post-merge review: minor follow-up filed",
+		"pr", in.prNumber, "issue", issueNum, "kept", len(kept), "dropped", len(dropped))
+}
+
+// minorFilterExcludeTags are the phrases that mark a minor defect as not worth
+// an issue: the reviewer itself calls it a residual, out of scope, or unverified,
+// or it is about the PR description rather than the code (GH-6007).
+var minorFilterExcludeTags = []string{
+	"out of scope", "known residual", "residual risk", "not a regression",
+	"not verified", "cannot run", "PR body",
+}
+
+// minorLocationShape matches a file location: path characters with at least one
+// slash, ending in a file extension, with an optional :line suffix.
+var minorLocationShape = regexp.MustCompile(`^[A-Za-z0-9._/-]*/[A-Za-z0-9._-]*\.[A-Za-z0-9]+(:[0-9]+)?$`)
+
+// minorDropReason returns why a minor defect does not pass the filing filter,
+// or "" when it does.
+func minorDropReason(d executor.PostMergeDefect) string {
+	if !minorLocationShape.MatchString(strings.TrimSpace(d.Location)) {
+		return "no file location"
+	}
+	haystack := strings.ToLower(d.Claim + "\n" + d.Evidence)
+	for _, tag := range minorFilterExcludeTags {
+		if strings.Contains(haystack, strings.ToLower(tag)) {
+			return tag
+		}
+	}
+	return ""
+}
+
+// filedMinorDefects splits the review's minor defects into those worth a
+// follow-up issue and the rest, in order. Defects repeating a Location and
+// Claim (two passes reporting one item) collapse to the first (GH-6007).
+func filedMinorDefects(review *executor.PostMergeReview) (kept, dropped []executor.PostMergeDefect) {
+	seen := make(map[string]bool)
+	for _, d := range review.MinorDefects() {
+		key := strings.TrimSpace(d.Location) + "\x00" + strings.TrimSpace(d.Claim)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if minorDropReason(d) != "" {
+			dropped = append(dropped, d)
+			continue
+		}
+		kept = append(kept, d)
+	}
+	return kept, dropped
 }
 
 // recordPostMergeReview upserts the verdict into pr_reviews so bench
