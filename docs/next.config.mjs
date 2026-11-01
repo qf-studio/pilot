@@ -5,7 +5,7 @@ const withNextra = nextra({})
 export default withNextra({
   output: 'standalone',
   poweredByHeader: false,
-  // pilot.quantflow.studio is served through CloudFront (since 2026-09-06);
+  // The docs (docs.pilotcloud.dev) are served through CloudFront (since 2026-09-06);
   // the edge only compresses uncompressed origin responses, so leaving Next's
   // own compression off is what lets CloudFront apply Brotli. standalone
   // server.js does not honour this flag anyway (Next.js self-hosting docs §2.5).

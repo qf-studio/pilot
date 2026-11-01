@@ -100,7 +100,7 @@ brews:
     # .github/workflows/release.yml so a tap-token failure (#5615) never
     # marks a shipped release red.
     skip_upload: true
-    homepage: "https://pilot.quantflow.studio"
+    homepage: "https://docs.pilotcloud.dev"
     description: "AI that ships your tickets — autonomous development pipeline"
     license: "MIT"
     install: |

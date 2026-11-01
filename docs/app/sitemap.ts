@@ -1,6 +1,6 @@
 import type { MetadataRoute } from 'next'
 
-const BASE = 'https://pilot.quantflow.studio'
+const BASE = 'https://docs.pilotcloud.dev'
 
 // Static priority map — high-traffic pages get higher priority
 const PRIORITY: Record<string, number> = {
