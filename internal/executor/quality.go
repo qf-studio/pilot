@@ -84,7 +84,7 @@ func qualityGateFailureSummary(outcome *QualityOutcome) string {
 		}
 		fmt.Fprintf(&sb, "- gate `%s`: `%s` exited with code %d", g.Name, cmd, g.ExitCode)
 		if g.RunnerMissing {
-			sb.WriteString(" (command not found: a required tool is not installed on this box)")
+			sb.WriteString(" (command not found or make target absent: not a code failure)")
 		}
 		sb.WriteString("\n")
 	}
