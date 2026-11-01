@@ -1080,7 +1080,9 @@ quality:
       # configs, .golangci.yml, a file outside any Go package, any git/go list
       # error, or an affected set over 70% of the packages runs the full suite; a
       # diff of only docs/.agent passes without running. CI still runs the full
-      # `go test -v -race ./...` and stays the merge gate of record.
+      # `go test -v -race ./...` and stays the merge gate of record. A repo whose
+      # Makefile has no `test-changed` target falls back to `make test`, then the
+      # native test command.
     - name: lint
       type: lint
       command: "make lint"

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -60,6 +61,9 @@ func TestResolveCommand_MakeFallback(t *testing.T) {
 		{"non-make command untouched", goMakefile, &Gate{Name: "test", Type: GateTest, Command: "go test -race ./..."}, false, "go test -race ./...", false},
 		{"lint has no native equivalent", goMakefile, &Gate{Name: "lint", Type: GateLint, Command: "make lint"}, false, "make lint", false},
 		{"no detectable toolchain keeps make", map[string]string{"Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make test"}, false, "make test", false},
+		{"absent target with make on PATH falls back to make test", map[string]string{"Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make test-changed"}, true, "make test", true},
+		{"absent target keeps flags", map[string]string{"Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make -j4 test-changed"}, true, "make -j4 test", true},
+		{"present target unchanged", map[string]string{"Makefile": "test-changed:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make test-changed"}, true, "make test-changed", false},
 		{
 			"node project falls back to npm test",
 			map[string]string{"package.json": "{}", "Makefile": "test:\n\tnpm test\n"},
@@ -80,6 +84,56 @@ func TestResolveCommand_MakeFallback(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveCommand_MissingMakeTarget(t *testing.T) {
+	goMod := "module example.com/x\n\ngo 1.21\n"
+	tests := []struct {
+		name  string
+		files map[string]string
+		gate  *Gate
+		want  string
+	}{
+		{"no test target falls to native", map[string]string{"go.mod": goMod, "Makefile": "build:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make test-changed"}, "go test ./..."},
+		{"build gate uses make build", map[string]string{"Makefile": "build:\n\ttrue\n"}, &Gate{Name: "build", Type: GateBuild, Command: "make build-changed"}, "make build"},
+		{"NAME=value word kept", map[string]string{"Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make CI=1 -j4 test-changed"}, "make CI=1 -j4 test"},
+		{"lint gate without lint target unchanged", map[string]string{"go.mod": goMod, "Makefile": "test:\n\ttrue\n"}, &Gate{Name: "lint", Type: GateLint, Command: "make lint-changed"}, "make lint-changed"},
+		{"bare make unchanged", map[string]string{"go.mod": goMod, "Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make"}, "make"},
+		{"flags only unchanged", map[string]string{"go.mod": goMod, "Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make -j4 FOO=1"}, "make -j4 FOO=1"},
+		{"missing Makefile unchanged", map[string]string{"go.mod": goMod}, &Gate{Name: "test", Type: GateTest, Command: "make test-changed"}, "make test-changed"},
+		{"include line keeps command", map[string]string{"go.mod": goMod, "Makefile": "include rules.mk\ntest:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make test-changed"}, "make test-changed"},
+		{"non-make prefix unchanged", map[string]string{"go.mod": goMod, "Makefile": "test:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "cd x && make test-changed"}, "cd x && make test-changed"},
+		{"no fallback at all keeps command", map[string]string{"Makefile": "other:\n\ttrue\n"}, &Gate{Name: "test", Type: GateTest, Command: "make test-changed"}, "make test-changed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := writeProjectFiles(t, tt.files)
+			r, _ := newTestRunnerWithLog(&Config{Enabled: true}, dir, true)
+			if got := r.resolveCommand(tt.gate); got != tt.want {
+				t.Errorf("resolveCommand() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("warns once with fields", func(t *testing.T) {
+		dir := writeProjectFiles(t, map[string]string{"Makefile": "test:\n\ttrue\n"})
+		r, buf := newTestRunnerWithLog(&Config{Enabled: true}, dir, true)
+		gate := &Gate{Name: "test", Type: GateTest, Command: "make test-changed"}
+		for i := 0; i < 2; i++ {
+			if got := r.resolveCommand(gate); got != "make test" {
+				t.Fatalf("resolveCommand() = %q", got)
+			}
+		}
+		log := buf.String()
+		if n := strings.Count(log, "level=WARN"); n != 1 {
+			t.Errorf("WARN logged %d times, want 1; log:\n%s", n, log)
+		}
+		for _, want := range []string{"configured make target absent", "gate=test", "configured_command=", "fallback_command=", "target=test-changed"} {
+			if !strings.Contains(log, want) {
+				t.Errorf("log missing %q:\n%s", want, log)
+			}
+		}
+	})
 }
 
 func TestResolveCommand_WarnsOncePerGate(t *testing.T) {
@@ -175,6 +229,103 @@ func TestRunGate_Exit127IsRunnerMissingAndNotRetried(t *testing.T) {
 	}
 }
 
+func TestRunGate_NoRuleToMakeTargetIsRunnerMissingAndNotRetried(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+	}{
+		{"GNU make", "make: *** No rule to make target 'test-changed'.  Stop."},
+		{"BSD make", "make: don't know how to make test-changed. Stop in /x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			counter := filepath.Join(dir, "count")
+			cfg := &Config{
+				Enabled: true,
+				Gates: []*Gate{{
+					Name:       "test",
+					Type:       GateCustom,
+					Command:    "echo x >> " + counter + "; echo \"$MSG\" >&2; exit 2",
+					Required:   true,
+					Timeout:    time.Minute,
+					MaxRetries: 2,
+					RetryDelay: 10 * time.Second,
+				}},
+				OnFailure: FailureConfig{Action: ActionRetry, MaxRetries: 2},
+			}
+			t.Setenv("MSG", tt.stderr)
+			r, _ := newTestRunnerWithLog(cfg, dir, true)
+
+			start := time.Now()
+			res := r.runGate(context.Background(), cfg.Gates[0])
+			if time.Since(start) > 5*time.Second {
+				t.Error("gate waited out a retry delay on a missing make target")
+			}
+			if res.Status != StatusFailed {
+				t.Errorf("status = %s, want failed", res.Status)
+			}
+			if !errors.Is(res.Err, ErrGateTargetMissing) || !res.RunnerMissing() {
+				t.Errorf("Err = %v, want ErrGateTargetMissing", res.Err)
+			}
+			if !strings.Contains(res.Error, "test-changed") {
+				t.Errorf("Error %q should name the target", res.Error)
+			}
+			if res.RetryCount != 0 {
+				t.Errorf("RetryCount = %d, want 0", res.RetryCount)
+			}
+			data, err := os.ReadFile(counter)
+			if err != nil {
+				t.Fatalf("read counter: %v", err)
+			}
+			if n := strings.Count(string(data), "x"); n != 1 {
+				t.Errorf("command ran %d times, want 1", n)
+			}
+			checks := &CheckResults{Results: []*Result{res}}
+			if ShouldRetry(cfg, checks, 0) {
+				t.Error("ShouldRetry = true, want false")
+			}
+		})
+	}
+}
+
+func TestRunGate_NoRuleNeededByStillRetries(t *testing.T) {
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "count")
+	cfg := &Config{
+		Enabled: true,
+		Gates: []*Gate{{
+			Name:       "test",
+			Type:       GateCustom,
+			Command:    "echo x >> " + counter + "; echo \"$MSG\" >&2; exit 2",
+			Required:   true,
+			Timeout:    time.Minute,
+			MaxRetries: 2,
+		}},
+		OnFailure: FailureConfig{Action: ActionRetry, MaxRetries: 2},
+	}
+	t.Setenv("MSG", "make: *** No rule to make target 'foo.c', needed by 'test'.  Stop.")
+	r, _ := newTestRunnerWithLog(cfg, dir, true)
+
+	res := r.runGate(context.Background(), cfg.Gates[0])
+	if res.RunnerMissing() {
+		t.Errorf("missing prerequisite file must be an ordinary failure, got Err = %v", res.Err)
+	}
+	if res.RetryCount != 2 {
+		t.Errorf("RetryCount = %d, want 2", res.RetryCount)
+	}
+	data, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatalf("read counter: %v", err)
+	}
+	if n := strings.Count(string(data), "x"); n != 3 {
+		t.Errorf("command ran %d times, want 3", n)
+	}
+	if !ShouldRetry(cfg, &CheckResults{Results: []*Result{res}}, 0) {
+		t.Error("ShouldRetry = false, want true")
+	}
+}
+
 func TestRunGate_OrdinaryFailureStillRetries(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{Enabled: true, Gates: []*Gate{{
@@ -195,6 +346,7 @@ func TestRunGate_OrdinaryFailureStillRetries(t *testing.T) {
 func TestShouldRetry_RunnerMissing(t *testing.T) {
 	missing := &Result{Status: StatusFailed, Err: ErrGateRunnerMissing}
 	red := &Result{Status: StatusFailed}
+	targetMissing := &Result{Status: StatusFailed, Err: fmt.Errorf("%w: wrapped", ErrGateTargetMissing)}
 	passed := &Result{Status: StatusPassed}
 
 	cfg := &Config{
@@ -212,6 +364,8 @@ func TestShouldRetry_RunnerMissing(t *testing.T) {
 		want    bool
 	}{
 		{"only missing runner: no retry", []*Result{passed, missing, passed}, false},
+		{"only missing make target: no retry", []*Result{passed, targetMissing, passed}, false},
+		{"missing make target plus red test: still fixable", []*Result{targetMissing, red, passed}, true},
 		{"missing runner plus red test: still fixable", []*Result{missing, red, passed}, true},
 		{"red test: retry", []*Result{passed, red, passed}, true},
 		{"optional gate missing runner, required red: retry", []*Result{passed, red, missing}, true},

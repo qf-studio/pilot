@@ -22,10 +22,17 @@ var (
 	// the runner binary (e.g. `make`) is not installed (shell exit 127). It is not
 	// a code failure, so retrying — with the gate or with Claude — cannot fix it.
 	ErrGateRunnerMissing = errors.New("quality gate runner missing")
+	// ErrGateTargetMissing means a `make` gate named a target the Makefile does not
+	// define ("No rule to make target"). Like a missing runner it is a config
+	// problem, not a code failure, so re-invoking Claude on it only corrupts the Makefile.
+	ErrGateTargetMissing = errors.New("quality gate make target missing")
 )
 
 // exitCodeCommandNotFound is the POSIX shell exit status for "command not found".
 const exitCodeCommandNotFound = 127
+
+// exitCodeMakeError is the exit status make uses for any error, including a missing target.
+const exitCodeMakeError = 2
 
 // GateType identifies built-in gate types
 type GateType string
@@ -101,14 +108,15 @@ type Result struct {
 	Coverage    float64       `json:"coverage"`    // Parsed coverage percentage (for coverage gates)
 	StartedAt   time.Time     `json:"started_at"`
 	CompletedAt time.Time     `json:"completed_at"`
-	// Err wraps ErrGateRunnerMissing when the gate command was not found (exit 127).
+	// Err wraps ErrGateRunnerMissing (exit 127) or ErrGateTargetMissing (absent make target).
 	Err error `json:"-"`
 }
 
 // RunnerMissing reports whether the gate failed because its runner binary is
-// not installed rather than because the checked code is wrong.
+// not installed or its make target is absent rather than because the checked
+// code is wrong.
 func (r *Result) RunnerMissing() bool {
-	return errors.Is(r.Err, ErrGateRunnerMissing)
+	return errors.Is(r.Err, ErrGateRunnerMissing) || errors.Is(r.Err, ErrGateTargetMissing)
 }
 
 // Passed returns true if the gate passed

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -290,6 +291,19 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 			break
 		}
 
+		// Exit 2 with "No rule to make target" is a gate naming a target the Makefile
+		// lacks: a config problem Claude cannot fix without rewriting the Makefile.
+		// A line carrying "needed by" is a missing prerequisite file, a real code problem.
+		if exitCode == exitCodeMakeError {
+			if target, ok := missingMakeTarget(output); ok {
+				result.Err = fmt.Errorf("%w: %q exited with code %d (no rule to make target %q)", ErrGateTargetMissing, command, exitCode, target)
+				result.Error = result.Err.Error()
+				result.Status = StatusFailed
+				r.reportProgress(gate.Name, StatusFailed, fmt.Sprintf("%s gate failed: %s", gate.Name, result.Error))
+				break
+			}
+		}
+
 		// Exit code != 0
 		result.Error = fmt.Sprintf("command exited with code %d", exitCode)
 
@@ -306,24 +320,101 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 	return result
 }
 
-// resolveCommand returns the command to execute for gate. When the gate runs
-// through `make` and make is not installed (e.g. the hosted-tenant AMI ships go
-// but not make), it substitutes the language-native build/test command for the
-// project and logs the substitution once per gate. With no native equivalent the
-// original command is returned and fails with exit 127 (ErrGateRunnerMissing).
+// resolveCommand returns the command to execute for gate. For a gate that runs
+// through `make` it substitutes a working command in two cases:
+//   - make is not installed (e.g. the hosted-tenant AMI ships go but not make):
+//     the language-native build/test command (GH-5622);
+//   - make is installed but the Makefile lacks the configured target (GH-6002):
+//     the gate type's default target (`test`/`build`) when present, else the
+//     native command.
+//
+// Substitutions are logged once per gate. With no usable substitute the original
+// command is returned and fails (exit 127 / ErrGateTargetMissing).
 func (r *Runner) resolveCommand(gate *Gate) string {
 	fields := strings.Fields(gate.Command)
 	if len(fields) == 0 || fields[0] != "make" {
 		return gate.Command
 	}
 	if _, err := r.lookPath("make"); err == nil {
-		return gate.Command
+		return r.resolveMissingMakeTarget(gate, fields)
 	}
 	native := nativeFallbackCommand(r.projectDir, gate)
 	if native == "" {
 		return gate.Command
 	}
+	r.warnFallbackOnce(gate, native, "make not found on PATH; running native toolchain command for quality gate")
+	return native
+}
 
+// resolveMissingMakeTarget handles a `make` gate when make is on PATH. It reads
+// the Makefile rather than probing with `make -n`/`-q`, which would expand
+// $(shell ...) and recursive $(MAKE) lines.
+func (r *Runner) resolveMissingMakeTarget(gate *Gate, fields []string) string {
+	idx := -1
+	for i := 1; i < len(fields); i++ {
+		w := fields[i]
+		if strings.HasPrefix(w, "-") || strings.Contains(w, "=") {
+			continue
+		}
+		idx = i
+		break
+	}
+	if idx < 0 {
+		return gate.Command // bare `make`: the default goal, nothing to check
+	}
+	target := fields[idx]
+
+	makefile := filepath.Join(r.projectDir, "Makefile")
+	if !fileExists(makefile) || hasMakefileTarget(makefile, target) || makefileHasInclude(makefile) {
+		return gate.Command
+	}
+
+	var fallback string
+	if def := defaultMakeTarget(gate.Type); def != "" && def != target && hasMakefileTarget(makefile, def) {
+		repl := append([]string(nil), fields...)
+		repl[idx] = def
+		fallback = strings.Join(repl, " ")
+	} else {
+		fallback = nativeFallbackCommand(r.projectDir, gate)
+	}
+	if fallback == "" {
+		return gate.Command
+	}
+	r.warnFallbackOnce(gate, fallback, "configured make target absent; running fallback for quality gate", slog.String("target", target))
+	return fallback
+}
+
+// defaultMakeTarget is the conventional make target for a gate type, "" if none.
+func defaultMakeTarget(t GateType) string {
+	switch t {
+	case GateTest:
+		return "test"
+	case GateBuild:
+		return "build"
+	default:
+		return ""
+	}
+}
+
+// makefileHasInclude reports whether the Makefile has an include directive, in
+// which case a target hasMakefileTarget cannot see may still be defined.
+func makefileHasInclude(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "include ") || strings.HasPrefix(t, "-include ") || strings.HasPrefix(t, "sinclude ") ||
+			strings.HasPrefix(t, "include\t") || strings.HasPrefix(t, "-include\t") || strings.HasPrefix(t, "sinclude\t") {
+			return true
+		}
+	}
+	return false
+}
+
+// warnFallbackOnce logs the fallback substitution at most once per gate per Runner.
+func (r *Runner) warnFallbackOnce(gate *Gate, fallback, msg string, extra ...any) {
 	r.fallbackMu.Lock()
 	first := !r.fallbackWarned[gate.Name]
 	if r.fallbackWarned == nil {
@@ -331,14 +422,38 @@ func (r *Runner) resolveCommand(gate *Gate) string {
 	}
 	r.fallbackWarned[gate.Name] = true
 	r.fallbackMu.Unlock()
-	if first {
-		r.log.Warn("make not found on PATH; running native toolchain command for quality gate",
-			slog.String("gate", gate.Name),
-			slog.String("configured_command", gate.Command),
-			slog.String("fallback_command", native),
-		)
+	if !first {
+		return
 	}
-	return native
+	attrs := append([]any{
+		slog.String("gate", gate.Name),
+		slog.String("configured_command", gate.Command),
+		slog.String("fallback_command", fallback),
+	}, extra...)
+	r.log.Warn(msg, attrs...)
+}
+
+var (
+	noRuleToMakeTargetRe = regexp.MustCompile(`No rule to make target ['"\x60‘]([^'"\x60’]+)['"\x60’]`)
+	dontKnowHowToMakeRe  = regexp.MustCompile(`don't know how to make ([^\s:.]+(?:\.[^\s:.]+)*)`)
+)
+
+// missingMakeTarget reports the target named by a GNU "No rule to make target" or
+// BSD "don't know how to make" line in output. Lines with "needed by" (a missing
+// prerequisite file) do not count.
+func missingMakeTarget(output string) (string, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "needed by") {
+			continue
+		}
+		if m := noRuleToMakeTargetRe.FindStringSubmatch(line); m != nil {
+			return m[1], true
+		}
+		if m := dontKnowHowToMakeRe.FindStringSubmatch(line); m != nil {
+			return m[1], true
+		}
+	}
+	return "", false
 }
 
 // nativeFallbackCommand returns the language-native command equivalent to a
