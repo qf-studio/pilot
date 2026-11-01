@@ -1443,6 +1443,9 @@ func (c *Config) Validate() error {
 				if pmr.MaxDiffChars < 0 {
 					return fmt.Errorf("orchestrator.autopilot.post_merge_review.max_diff_chars must be >= 0 (0 uses the default of %d), got %d", executor.DefaultPostMergeReviewMaxDiffChars, pmr.MaxDiffChars)
 				}
+				if pmr.MinorIssueDailyCap < 0 {
+					return fmt.Errorf("orchestrator.autopilot.post_merge_review.minor_issue_daily_cap must be >= 0 (0 uses the default of %d), got %d", autopilot.DefaultPostMergeMinorIssueDailyCap, pmr.MinorIssueDailyCap)
+				}
 				if pmr.Passes < 0 || pmr.Passes > 2 {
 					return fmt.Errorf("orchestrator.autopilot.post_merge_review.passes must be 1 or 2 (0 uses the default of 1), got %d", pmr.Passes)
 				}

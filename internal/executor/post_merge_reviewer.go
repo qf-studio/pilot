@@ -207,6 +207,18 @@ func (r *PostMergeReview) BlockingDefects() []PostMergeDefect {
 	return out
 }
 
+// MinorDefects returns the defects tagged [minor] (an untagged defect parses as
+// minor), in order.
+func (r *PostMergeReview) MinorDefects() []PostMergeDefect {
+	var out []PostMergeDefect
+	for _, d := range r.Defects {
+		if d.Severity == PostMergeSeverityMinor {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // PostMergeReviewInput is everything the reviewer sees about one merged PR.
 type PostMergeReviewInput struct {
 	PRNumber   int

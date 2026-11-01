@@ -520,6 +520,7 @@ type Controller struct {
 	// in-flight review goroutines.
 	postMergeReviewer     PostMergeReviewer
 	postMergeReviewBudget *postMergeReviewBudget
+	postMergeMinors       *postMergeReviewBudget // GH-6007: minors-issue budget, one per controller
 	postMergeDiff         func(ctx context.Context, mergeSHA string) (string, error)
 	postMergeReviewWG     sync.WaitGroup
 	postMergeMemoriesOff  bool // true when executor.memory_injection is off

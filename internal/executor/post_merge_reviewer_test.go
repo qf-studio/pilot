@@ -644,3 +644,25 @@ func TestCutAtBoundary(t *testing.T) {
 		})
 	}
 }
+
+// GH-6007: MinorDefects returns the minor (and untagged, which parse as minor)
+// defects in order, never the blocking ones.
+func TestPostMergeReview_MinorDefects(t *testing.T) {
+	r := &PostMergeReview{Defects: []PostMergeDefect{
+		{Severity: PostMergeSeverityMinor, Location: "a/one.go:1", Claim: "first"},
+		{Severity: PostMergeSeverityBlocking, Location: "a/two.go:2", Claim: "blocking"},
+		{Severity: PostMergeSeverityMinor, Location: "a/three.go:3", Claim: "untagged"},
+	}}
+	got := r.MinorDefects()
+	if len(got) != 2 || got[0].Claim != "first" || got[1].Claim != "untagged" {
+		t.Fatalf("MinorDefects = %+v, want [first untagged]", got)
+	}
+
+	untagged, ok := parsePostMergeDefect("- internal/x/y.go:3 — no severity tag")
+	if !ok {
+		t.Fatal("untagged defect line did not parse")
+	}
+	if n := len((&PostMergeReview{Defects: []PostMergeDefect{untagged}}).MinorDefects()); n != 1 {
+		t.Errorf("untagged parsed defect: minors = %d, want 1 (severity %q)", n, untagged.Severity)
+	}
+}
