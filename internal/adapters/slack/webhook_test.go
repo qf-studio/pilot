@@ -319,7 +319,7 @@ func TestServeHTTP_ActionFieldMapping(t *testing.T) {
 		User:        &InteractionUser{ID: "UABC", Username: "", Name: "Alice"},
 		Channel:     &InteractionChannel{ID: "CABC"},
 		Message:     &InteractionMessage{TS: "9999.111"},
-		Actions:     []InteractionActionDef{{ActionID: "merge", Value: "pr-99"}},
+		Actions:     []InteractionActionDef{{ActionID: "merge", Value: "pr-99", ActionTS: "1793466563.669229"}},
 	}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -357,6 +357,9 @@ func TestServeHTTP_ActionFieldMapping(t *testing.T) {
 	}
 	if gotAction.MessageTS != "9999.111" {
 		t.Errorf("MessageTS = %q, want 9999.111", gotAction.MessageTS)
+	}
+	if gotAction.ActionTS != "1793466563.669229" {
+		t.Errorf("ActionTS = %q, want 1793466563.669229", gotAction.ActionTS)
 	}
 	if gotAction.ResponseURL != "https://hooks.slack.test/actions/XYZ" {
 		t.Errorf("ResponseURL = %q, want https://hooks.slack.test/actions/XYZ", gotAction.ResponseURL)

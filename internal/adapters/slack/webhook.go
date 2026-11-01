@@ -86,6 +86,8 @@ type InteractionAction struct {
 	ChannelID   string
 	MessageTS   string
 	ResponseURL string
+	// ActionTS is the click time Slack stamped on the action ("seconds.micros").
+	ActionTS string
 }
 
 // NewInteractionHandler creates a new Slack interaction handler
@@ -165,6 +167,7 @@ func (h *InteractionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ActionID:    actionDef.ActionID,
 			Value:       actionDef.Value,
 			ResponseURL: payload.ResponseURL,
+			ActionTS:    actionDef.ActionTS,
 		}
 
 		if payload.User != nil {

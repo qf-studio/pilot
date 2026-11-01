@@ -322,11 +322,11 @@ type mockApprovalHandler struct {
 }
 
 type approvalCall struct {
-	actionID, value, userID, username, responseURL string
+	actionID, value, userID, username, responseURL, actionTS string
 }
 
-func (m *mockApprovalHandler) HandleInteraction(_ context.Context, actionID, value, userID, username, responseURL string) bool {
-	m.calls = append(m.calls, approvalCall{actionID, value, userID, username, responseURL})
+func (m *mockApprovalHandler) HandleInteraction(_ context.Context, actionID, value, userID, username, responseURL, actionTS string) bool {
+	m.calls = append(m.calls, approvalCall{actionID, value, userID, username, responseURL, actionTS})
 	return m.ret
 }
 
@@ -350,6 +350,7 @@ func TestHandler_HandleMessage_ApprovalCallback_Approve(t *testing.T) {
 		ChannelID:  "C123",
 		CallbackID: "approve",
 		Data:       "approve:REQ-1",
+		Timestamp:  "1793466563.669229",
 		Sender:     core.Identity{UserID: "U789", DisplayName: "alice"},
 	}
 
@@ -374,6 +375,9 @@ func TestHandler_HandleMessage_ApprovalCallback_Approve(t *testing.T) {
 	}
 	if call.username != "alice" {
 		t.Errorf("username = %q, want alice", call.username)
+	}
+	if call.actionTS != "1793466563.669229" {
+		t.Errorf("actionTS = %q, want 1793466563.669229", call.actionTS)
 	}
 }
 

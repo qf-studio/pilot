@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"strconv"
 	"sync"
 	"time"
 
@@ -460,9 +462,21 @@ func (h *SlackHandler) CancelRequest(ctx context.Context, requestID string) erro
 	return nil
 }
 
+// deliveryDelay returns now minus actionTS, where actionTS is a Slack
+// "seconds.micros" timestamp. ok is false when actionTS is empty or does not
+// parse as a finite, non-negative number of seconds.
+func deliveryDelay(now time.Time, actionTS string) (time.Duration, bool) {
+	secs, err := strconv.ParseFloat(actionTS, 64)
+	if err != nil || math.IsNaN(secs) || math.IsInf(secs, 0) || secs < 0 {
+		return 0, false
+	}
+	clicked := time.UnixMicro(int64(math.Round(secs * 1e6)))
+	return now.Sub(clicked).Round(time.Millisecond), true
+}
+
 // HandleInteraction processes a Slack interaction (button press)
 // This should be called by the Slack webhook handler when receiving interactions
-func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, userID, username, responseURL string) bool {
+func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, userID, username, responseURL, actionTS string) bool {
 	// Parse value: "approve:<requestID>" or "reject:<requestID>"
 	var decision Decision
 	var requestID string
@@ -481,12 +495,23 @@ func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, u
 	// click that reaches the daemon is always visible — whatever happens next
 	// (unknown request, unauthorized, expired). A click that never produces
 	// this line never arrived over Socket Mode or the HTTP interactions route.
-	h.log.Info("Slack approval interaction received",
+	//
+	// action_ts is the click time Slack stamped on the action; the delivery
+	// delay (receipt minus click) separates a late click from a lost one. A
+	// missing or unparseable action_ts is logged as given and never fails the
+	// click.
+	attrs := []any{
 		slog.String("request_id", requestID),
 		slog.String("action", string(decision)),
 		slog.String("action_id", actionID),
 		slog.String("user", username),
-		slog.String("user_id", userID))
+		slog.String("user_id", userID),
+		slog.String("action_ts", actionTS),
+	}
+	if delay, ok := deliveryDelay(time.Now(), actionTS); ok {
+		attrs = append(attrs, slog.Int64("delivery_delay_ms", delay.Milliseconds()))
+	}
+	h.log.Info("Slack approval interaction received", attrs...)
 
 	h.mu.Lock()
 	pending, exists := h.pending[requestID]

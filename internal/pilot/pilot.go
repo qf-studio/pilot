@@ -205,6 +205,7 @@ func NewSlackInteractionHandler(cfg *slack.Config, h *approval.SlackHandler) *sl
 			action.UserID,
 			action.Username,
 			action.ResponseURL,
+			action.ActionTS,
 		)
 	})
 	return wh
