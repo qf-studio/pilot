@@ -1,6 +1,6 @@
 # TASK-628: Quality gate — an absent make target falls back to the gate's default target, and "No rule to make target" never reaches Claude as a code failure
 
-**Status**: 🚀 DISPATCHED 2026-11-01 → https://github.com/qf-studio/pilot/issues/6002 (`pilot`+`no-decompose`)
+**Status**: ✅ SHIPPED 2026-11-01 — #6002 → PR#6003 merged 18:43Z (v2.308 train); fast-follow #6005 → PR#6006 merged 19:08Z. Memories written (pitfall + pattern, see Refs).
 **Origin**: TASK-627 S1 run (sdk#152, 2026-11-01): the global test gate `make test-changed` failed on a repo without that target; the Claude retry rewrote the SDK Makefile (dropped the `test` recipe, defined `test-changed` twice) and the damage shipped in sdk PR#153 → post-merge fix round sdk#154/PR#155. Box workaround in place since 16:01Z: a per-project `quality:` block for studio-sdk. Same gap today for auth-service, Navigator, ai-coding-summit and every Pilot Cloud customer repo.
 **Research**: navigator-research 2026-11-01 (verified anchors below).
 
@@ -53,4 +53,4 @@ probe: absent qf-studio/pilot ErrGateTargetMissing
 
 - Q1 → https://github.com/qf-studio/pilot/issues/6002
 - Q1 PR → https://github.com/qf-studio/pilot/pull/6003 (merged 2026-11-01 18:43Z, 4cd9725e8; Navigator review APPROVE-w-notes posted as COMMENTED, 4 minor)
-- Fast-follow (notes 1+2: executor headline still says exit 127 · `-f`/`-C`/`-j N` value word parsed as target) → https://github.com/qf-studio/pilot/issues/6005 (`pilot`+`no-decompose`, filed 2026-11-01)
+- Fast-follow (notes 1+2: executor headline still says exit 127 · `-f`/`-C`/`-j N` value word parsed as target) → https://github.com/qf-studio/pilot/issues/6005 (`pilot`+`no-decompose`, filed 2026-11-01 18:45Z) → **PR#6006 merged 19:08:27Z** (pre-PR shadow APPROVE-WITH-NOTES; 23 min file→merge). **Task complete — archive with TASK-627.**
