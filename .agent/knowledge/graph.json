@@ -3552,6 +3552,20 @@
           "context",
           "deployment"
         ]
+      },
+      "TASK-628": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-628-quality-gate-absent-make-target-fallback.md",
+        "title": "Quality gate \u2014 an absent make target falls back to the gate's default target, and \"No rule to make target\" never reaches Claude as a code failure",
+        "status": "dispatched",
+        "concepts": [
+          "workflow",
+          "context",
+          "api",
+          "deployment",
+          "theory of mind",
+          "testing",
+          "authentication"
+        ]
       }
     },
     "memories": {
@@ -14349,6 +14363,36 @@
       "from": "TASK-627",
       "to": "deployment",
       "type": "implements"
+    },
+    {
+      "from": "TASK-628",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-628",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-628",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-628",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-628",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-628",
+      "to": "authentication",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -14581,7 +14625,8 @@
       "TASK-624",
       "TASK-625",
       "TASK-626",
-      "TASK-627"
+      "TASK-627",
+      "TASK-628"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -14711,7 +14756,8 @@
       "TASK-589",
       "TASK-597",
       "TASK-598",
-      "TASK-599"
+      "TASK-599",
+      "TASK-628"
     ],
     "auto-merge": [
       "mem-103"
@@ -15084,7 +15130,8 @@
       "TASK-624",
       "TASK-625",
       "TASK-626",
-      "TASK-627"
+      "TASK-627",
+      "TASK-628"
     ],
     "conversational-bot": [
       "mem-036",
@@ -15486,7 +15533,8 @@
       "TASK-624",
       "TASK-625",
       "TASK-626",
-      "TASK-627"
+      "TASK-627",
+      "TASK-628"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -16707,7 +16755,8 @@
       "TASK-624",
       "TASK-625",
       "TASK-626",
-      "TASK-627"
+      "TASK-627",
+      "TASK-628"
     ],
     "testing-quality": [
       "TASK-384",
@@ -16881,7 +16930,8 @@
       "TASK-600",
       "TASK-624",
       "TASK-625",
-      "TASK-627"
+      "TASK-627",
+      "TASK-628"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -16983,7 +17033,8 @@
       "TASK-583",
       "TASK-594",
       "TASK-596",
-      "TASK-600"
+      "TASK-600",
+      "TASK-628"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -17392,10 +17443,10 @@
       "mem-268"
     ]
   },
-  "last_updated": "2026-11-01T15:13:28.965270+00:00",
+  "last_updated": "2026-11-01T18:06:11.076876+00:00",
   "stats": {
-    "total_nodes": 823,
-    "total_edges": 924,
+    "total_nodes": 824,
+    "total_edges": 930,
     "memory_count": 450
   },
   "metadata": {}
