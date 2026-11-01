@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Documentation
-    url: https://pilot.quantflow.studio
+    url: https://docs.pilotcloud.dev
     about: Read the Pilot documentation and guides
   - name: GitHub Discussions
     url: https://github.com/qf-studio/pilot/discussions

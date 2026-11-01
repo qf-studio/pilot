@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <a href="https://pilot.quantflow.studio">Docs</a> •
+  <a href="https://docs.pilotcloud.dev">Docs</a> •
   <a href="#install">Install</a> •
   <a href="#desktop-app">Desktop</a> •
   <a href="#quick-start">Quick Start</a> •

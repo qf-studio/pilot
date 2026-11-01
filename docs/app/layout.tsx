@@ -7,7 +7,7 @@ import 'nextra-theme-docs/style.css'
 import './globals.css'
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://pilot.quantflow.studio'),
+  metadataBase: new URL('https://docs.pilotcloud.dev'),
   title: { default: 'Pilot — AI That Ships Your Tickets', template: '%s | Pilot' },
   description: 'Autonomous AI development pipeline that turns tickets into pull requests',
   openGraph: {
@@ -16,10 +16,10 @@ export const metadata: Metadata = {
     // postProcessMetadata's inheritFromMetadata in next/dist/lib/metadata),
     // so every docs page gets its own og:title instead of this site default.
     type: 'website',
-    url: 'https://pilot.quantflow.studio',
+    url: 'https://docs.pilotcloud.dev',
     images: [
       {
-        url: 'https://pilot.quantflow.studio/pilot-preview.png',
+        url: 'https://docs.pilotcloud.dev/pilot-preview.png',
         width: 1200,
         height: 630,
       },
@@ -28,7 +28,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: 'summary_large_image',
-    images: ['https://pilot.quantflow.studio/pilot-preview.png'],
+    images: ['https://docs.pilotcloud.dev/pilot-preview.png'],
   },
 }
 

@@ -6,6 +6,6 @@ export default function robots(): MetadataRoute.Robots {
       userAgent: '*',
       allow: '/',
     },
-    sitemap: 'https://pilot.quantflow.studio/sitemap.xml',
+    sitemap: 'https://docs.pilotcloud.dev/sitemap.xml',
   }
 }

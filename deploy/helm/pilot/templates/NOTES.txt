@@ -51,4 +51,4 @@ QUICK CHECK
   kubectl logs -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }} --tail=50
 
 DOCS
-  https://pilot.quantflow.studio
+  https://docs.pilotcloud.dev

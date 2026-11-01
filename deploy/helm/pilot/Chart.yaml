@@ -10,7 +10,7 @@ keywords:
   - claude
   - github
   - ci
-home: https://pilot.quantflow.studio
+home: https://docs.pilotcloud.dev
 sources:
   - https://github.com/qf-studio/pilot
 maintainers:
