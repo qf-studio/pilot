@@ -195,3 +195,27 @@ func TestSimpleQualityChecker_RunnerMissingNotRetried(t *testing.T) {
 		t.Errorf("gate detail = %+v", g)
 	}
 }
+
+func TestQualityGateFailureHeadline(t *testing.T) {
+	missing := &QualityOutcome{GateDetails: []QualityGateDetail{
+		{Name: "test", Command: "make test-changed", ExitCode: 2, RunnerMissing: true},
+	}}
+	got := qualityGateFailureHeadline(missing, 2, 2)
+	if !strings.Contains(got, "make target is absent") {
+		t.Errorf("headline missing make-target cause: %q", got)
+	}
+	if strings.Contains(got, "(exit 127)") {
+		t.Errorf("headline must not pin the cause to exit 127: %q", got)
+	}
+	if strings.Contains(got, "auto-retries") {
+		t.Errorf("runner-missing headline must not claim auto-retries: %q", got)
+	}
+
+	failed := &QualityOutcome{GateDetails: []QualityGateDetail{{Name: "test", ExitCode: 1}}}
+	if got := qualityGateFailureHeadline(failed, 2, 2); got != "quality gates failed after 2 auto-retries" {
+		t.Errorf("retries exhausted headline = %q", got)
+	}
+	if got := qualityGateFailureHeadline(failed, 0, 2); got != "quality gates failed, max retries exhausted" {
+		t.Errorf("default headline = %q", got)
+	}
+}

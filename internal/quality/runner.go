@@ -350,6 +350,14 @@ func (r *Runner) resolveCommand(gate *Gate) string {
 // the Makefile rather than probing with `make -n`/`-q`, which would expand
 // $(shell ...) and recursive $(MAKE) lines.
 func (r *Runner) resolveMissingMakeTarget(gate *Gate, fields []string) string {
+	// The Makefile being read may not be the one make uses (-f/-C/--directory),
+	// and a flag with a separate value word would be mistaken for the target,
+	// so no substitution.
+	for _, w := range fields[1:] {
+		if makeFlagTakesValueWord(w) {
+			return gate.Command
+		}
+	}
 	idx := -1
 	for i := 1; i < len(fields); i++ {
 		w := fields[i]
@@ -382,6 +390,24 @@ func (r *Runner) resolveMissingMakeTarget(gate *Gate, fields []string) string {
 	}
 	r.warnFallbackOnce(gate, fallback, "configured make target absent; running fallback for quality gate", slog.String("target", target))
 	return fallback
+}
+
+// makeFlagTakesValueWord reports whether w is a make flag that redirects the
+// Makefile or carries its value in the next word (or inline for the long forms
+// that name a Makefile or directory). `-j4` and a bare `-j` are not matched.
+func makeFlagTakesValueWord(w string) bool {
+	switch w {
+	case "-f", "-C", "-I", "-o", "-W", "-j", "-l",
+		"--file", "--makefile", "--directory", "--include-dir", "--jobs",
+		"--old-file", "--what-if", "--new-file", "--assume-new", "--assume-old":
+		return true
+	}
+	for _, p := range []string{"--file=", "--makefile=", "--directory=", "--include-dir="} {
+		if strings.HasPrefix(w, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // defaultMakeTarget is the conventional make target for a gate type, "" if none.

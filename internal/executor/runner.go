@@ -924,7 +924,7 @@ type QualityGateResult struct {
 	ExitCode int
 	// Output is the combined stdout+stderr of the final attempt
 	Output string
-	// RunnerMissing is true when the gate's runner binary was not found (exit 127)
+	// RunnerMissing is true when the gate's runner binary was not found (exit 127 or an absent make target)
 	RunnerMissing bool
 }
 
@@ -6567,14 +6567,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					result.Success = false
 					// GH-5622: name each failed gate's command + exit code and quote its
 					// output so the issue comment shows the cause. A missing runner
-					// (exit 127) is not retried, so it must not claim "N auto-retries".
-					gateHeadline := "quality gates failed, max retries exhausted"
-					switch {
-					case outcomeRunnerMissing(outcome):
-						gateHeadline = "quality gates failed: a gate command was not found (exit 127)"
-					case retryAttempt >= maxAutoRetries:
-						gateHeadline = fmt.Sprintf("quality gates failed after %d auto-retries", maxAutoRetries)
-					}
+					// (exit 127) or an absent make target is not retried, so it must not
+					// claim "N auto-retries".
+					gateHeadline := qualityGateFailureHeadline(outcome, retryAttempt, maxAutoRetries)
 					gatePlainErr, gateFullErr := formatQualityGateFailure(gateHeadline, outcome)
 					result.Error = gateFullErr
 					result.Outcome = OutcomeQualityGateFailed

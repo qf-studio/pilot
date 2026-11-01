@@ -22,7 +22,7 @@ type QualityGateDetail struct {
 	ExitCode int
 	// Output is the combined stdout+stderr of the final attempt.
 	Output string
-	// RunnerMissing is true when the gate's runner binary was not found (exit 127).
+	// RunnerMissing is true when the gate's runner binary was not found (exit 127 or an absent make target).
 	RunnerMissing bool
 }
 
@@ -135,6 +135,19 @@ func tailLines(s string, n, maxLen int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// qualityGateFailureHeadline picks the task-failure headline. A missing runner
+// (exit 127 or an absent make target) is not retried, so it must not claim
+// "N auto-retries".
+func qualityGateFailureHeadline(outcome *QualityOutcome, retryAttempt, maxAutoRetries int) string {
+	switch {
+	case outcomeRunnerMissing(outcome):
+		return "quality gates failed: a gate command was not found or its make target is absent (not a code failure)"
+	case retryAttempt >= maxAutoRetries:
+		return fmt.Sprintf("quality gates failed after %d auto-retries", maxAutoRetries)
+	}
+	return "quality gates failed, max retries exhausted"
 }
 
 // formatQualityGateFailure builds the task error for failed quality gates.
