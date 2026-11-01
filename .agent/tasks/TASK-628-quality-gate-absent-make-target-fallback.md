@@ -52,3 +52,5 @@ probe: absent qf-studio/pilot ErrGateTargetMissing
 ## Refs
 
 - Q1 → https://github.com/qf-studio/pilot/issues/6002
+- Q1 PR → https://github.com/qf-studio/pilot/pull/6003 (merged 2026-11-01 18:43Z, 4cd9725e8; Navigator review APPROVE-w-notes posted as COMMENTED, 4 minor)
+- Fast-follow (notes 1+2: executor headline still says exit 127 · `-f`/`-C`/`-j N` value word parsed as target) → https://github.com/qf-studio/pilot/issues/6005 (`pilot`+`no-decompose`, filed 2026-11-01)

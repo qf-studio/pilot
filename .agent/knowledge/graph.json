@@ -3566,6 +3566,15 @@
           "testing",
           "authentication"
         ]
+      },
+      "TASK-620": {
+        "path": ".agent/tasks/TASK-620-pre-pr-reviewer-replaces-self-review-and-judge.md",
+        "title": "TASK-620: the reviewer moves before the PR \u2014 one in-run review after the gates with a resumed fix round; self-review and the in-run intent judge retire; post-merge becomes a sampled audit",
+        "status": "active",
+        "concepts": [
+          "quality-gate",
+          "review"
+        ]
       }
     },
     "memories": {
@@ -9740,6 +9749,41 @@
         ],
         "created": "2026-11-01",
         "last_validated": "2026-11-01"
+      },
+      "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread": {
+        "type": "learning",
+        "summary": "PR#6003 (2026-11-01): the Opus 5.5 pre-PR + post-merge reviewers found 3 of 4 Navigator notes plus 2 more; the diff re-read duplicated them. Non-duplicated value = execution (go test -race + spec mutations; reviewer checkout is read-only) and one extra caller hop (RunnerMissing -> outcomeRunnerMissing -> stale headline executor/runner.go:6574). Minor defects have no sink: only REQUEST-CHANGES files an issue (post_merge_review.go:330) \u2014 hand-file a fast-follow (#6005). Navigator review = run the Not-verified list + one caller hop, not a re-read.",
+        "file": ".agent/knowledge/memories/learnings/navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread.md",
+        "concepts": [
+          "review",
+          "workflow-discipline",
+          "quality-gate"
+        ],
+        "confidence": 0.9,
+        "created": "2026-11-01"
+      },
+      "gate-exit-2-no-rule-to-make-target-was-a-claude-fixable-failure": {
+        "type": "pitfall",
+        "summary": "Until #6002 (2026-11-01) only exit 127 was a runner failure: a global gate 'make test-changed' on a repo without the target exited 2, the retry prompt told Claude the approach FAILED, Claude rewrote the SDK Makefile (shipped sdk PR#153, fixed sdk#154/PR#155). Fix: resolveCommand swaps the absent target for the type default/native; exit 2 + 'No rule to make target' (no 'needed by') -> ErrGateTargetMissing, RunnerMissing() true, no retries. Residuals -> #6005.",
+        "file": ".agent/knowledge/memories/pitfalls/gate-exit-2-no-rule-to-make-target-was-a-claude-fixable-failure.md",
+        "concepts": [
+          "quality-gate",
+          "executor",
+          "retry"
+        ],
+        "confidence": 0.95,
+        "created": "2026-11-01"
+      },
+      "hasmakefiletarget-is-the-make-target-probe-never-make-n-or-q": {
+        "type": "pattern",
+        "summary": "Probe a Makefile for a target by reading it (hasMakefileTarget line-prefix scan, internal/quality/types.go); never make -n / make -q (both expand $(shell) and run recursive $(MAKE)). Conservative guards: keep the configured command on include lines (makefileHasInclude) and on -f/-C flags (#6005); order default target (test/build) -> nativeFallbackCommand -> unchanged; warn once per gate via fallbackWarned.",
+        "file": ".agent/knowledge/memories/patterns/hasmakefiletarget-is-the-make-target-probe-never-make-n-or-q.md",
+        "concepts": [
+          "quality-gate",
+          "executor"
+        ],
+        "confidence": 0.95,
+        "created": "2026-11-01"
       }
     }
   },
@@ -14393,6 +14437,31 @@
       "from": "TASK-628",
       "to": "authentication",
       "type": "implements"
+    },
+    {
+      "from": "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread",
+      "to": "TASK-620",
+      "type": "learned-from"
+    },
+    {
+      "from": "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread",
+      "to": "TASK-628",
+      "type": "learned-from"
+    },
+    {
+      "from": "gate-exit-2-no-rule-to-make-target-was-a-claude-fixable-failure",
+      "to": "TASK-628",
+      "type": "learned-from"
+    },
+    {
+      "from": "gate-exit-2-no-rule-to-make-target-was-a-claude-fixable-failure",
+      "to": "TASK-627",
+      "type": "learned-from"
+    },
+    {
+      "from": "hasmakefiletarget-is-the-make-target-probe-never-make-n-or-q",
+      "to": "TASK-628",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -15710,7 +15779,9 @@
       "workflow-yaml-requires-front-matter",
       "executor-box-has-no-postgres-db-test-evidence-invalid",
       "mem-267",
-      "mem-269"
+      "mem-269",
+      "gate-exit-2-no-rule-to-make-target-was-a-claude-fixable-failure",
+      "hasmakefiletarget-is-the-make-target-probe-never-make-n-or-q"
     ],
     "external-contributor": [
       "external-fork-pr-sweeps-stale-agent-state"
@@ -16391,7 +16462,8 @@
       "nextretrygeneration-blind-to-dead-owner-nonterminal-claims",
       "poller-labels-in-progress-before-dispatcher-claim-wedge",
       "sequential-gates-on-execution-not-merge-fastfollow-misbase",
-      "terminal-status-without-rearm-probe-kills-operator-recovery"
+      "terminal-status-without-rearm-probe-kills-operator-recovery",
+      "gate-exit-2-no-rule-to-make-target-was-a-claude-fixable-failure"
     ],
     "saas": [
       "console-ssm-paths-work-locally-proxy-does-not",
@@ -16972,7 +17044,8 @@
       "ccd-slack-connector-off-by-default-enable-per-session",
       "slack-connector-returns-text-only-colleague-attachments-need-a-pr",
       "nav-task-id-generator-ignores-archive-returns-used-id",
-      "dispatch-leg-hygiene-test-names-shipped-symbols-refs-boundary"
+      "dispatch-leg-hygiene-test-names-shipped-symbols-refs-boundary",
+      "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread"
     ],
     "worktree": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -17086,7 +17159,8 @@
       "mem-220",
       "mem-221",
       "evidence-runner-pastes-nonzero-exit-under-passes-bullet",
-      "pre-pr-reviewer-treats-unsatisfiable-issue-requirement-as-blocking"
+      "pre-pr-reviewer-treats-unsatisfiable-issue-requirement-as-blocking",
+      "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread"
     ],
     "operations": [
       "dead-cdk-stack-carried-live-founder-box-backup-policy",
@@ -17440,14 +17514,17 @@
       "dispatch-leg-hygiene-test-names-shipped-symbols-refs-boundary"
     ],
     "quality-gate": [
-      "mem-268"
+      "mem-268",
+      "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread",
+      "gate-exit-2-no-rule-to-make-target-was-a-claude-fixable-failure",
+      "hasmakefiletarget-is-the-make-target-probe-never-make-n-or-q"
     ]
   },
-  "last_updated": "2026-11-01T18:06:11.076876+00:00",
+  "last_updated": "2026-11-01T18:57:04.414676+00:00",
   "stats": {
-    "total_nodes": 824,
-    "total_edges": 930,
-    "memory_count": 450
+    "total_nodes": 828,
+    "total_edges": 935,
+    "memory_count": 453
   },
   "metadata": {}
 }
