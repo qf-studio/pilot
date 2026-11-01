@@ -1,6 +1,6 @@
 # TASK-627: PR#5990 approval→merge ≈2 h — research findings (no daemon defect on the merge path)
 
-**Status**: ✅ P1 MERGED 2026-11-01 (PR#6000, unreleased on pilot main; post-merge APPROVE-WITH-NOTES 4 minor, no issue) · S1 ✅ released studio-sdk v0.38.5 · box gate override live 16:01Z · research closed (merge path clean; 10-31 click time undecidable)
+**Status**: ✅ DONE 2026-11-01 — P1 PR#6000 released as **v2.307.0** (cut by hand 16:45Z, box hot-upgraded 17:02:46Z) · S1 released studio-sdk v0.38.5 · box studio-sdk gate override live 16:01Z · research closed (merge path clean; 10-31 click time undecidable). Remaining: the first Slack click on 2.307.0 shows `action_ts` + `delivery_delay_ms`; first SDK run shows `project_override=true`.
 **Origin**: 10-31 marker working note "approval → merge latency was ≈2 h on PR#5990 (approved ~17:30Z, `merging` at 19:27Z)"
 **Data sources**: box `daemon.log` via SSM (named per rule 6 of `pilot-aws`), Slack DM `D09HGS3BR4J` via the Slack connector, repo code at `a3c773952`.
 
