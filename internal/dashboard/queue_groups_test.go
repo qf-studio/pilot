@@ -231,6 +231,25 @@ func TestRenderTasks_ProjectHeaderNames(t *testing.T) {
 	}
 }
 
+// GH-6014: a running epic child registered with its project renders under that
+// project's header with its title, not under "(no project)".
+func TestRenderTasks_RegisteredChildUnderProjectHeader(t *testing.T) {
+	m := NewModel("test")
+	m.tasks = []TaskDisplay{
+		{ID: "GH-280", Title: "parent epic", Status: QueueStatusRunning, ProjectPath: "/work/widgets", ProjectName: "widgets"},
+		{ID: "GH-288", Title: "child title", Status: QueueStatusRunning, ProjectPath: "/work/widgets", ProjectName: "widgets"},
+	}
+	out := m.renderTasks()
+	if strings.Contains(out, "(no project)") {
+		t.Errorf("registered child fell under (no project):\n%s", out)
+	}
+	for _, want := range []string{"widgets", "child title"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRenderTasks_FinishedAndRunningRows(t *testing.T) {
 	now := time.Now()
 	m := NewModel("test")

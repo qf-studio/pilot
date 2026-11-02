@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -2329,6 +2330,12 @@ func (r *Runner) reconcileSelfOwnedTakeover(ctx context.Context, taskID, project
 	r.log.Info("reconcileChildOutcome: took over self-owned queued child after claim-loss deadlock detection",
 		"task_id", taskID, "project_path", projectPath, "execution_id", newExecID)
 
+	// GH-6014: keep title/project on the Monitor card for the inline takeover run.
+	if r.monitor != nil {
+		r.monitor.EnsureSubtask(taskID, subTask.Title, "", "")
+		r.monitor.SetProjectInfo(taskID, subTask.ProjectPath, filepath.Base(subTask.ProjectPath))
+	}
+
 	var execResult *ExecutionResult
 	var execErr error
 	if r.executeFunc != nil {
@@ -2986,6 +2993,14 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		// If this loop ever grows its own generation+1 retry, it must route
 		// through the same shared repick_backoff store beginWithGenerationRetry
 		// uses instead of re-implementing a second, driftable copy.
+		// GH-6014: register the child with the Monitor before anything can
+		// report progress for it, so the dashboard shows its title under its
+		// project instead of "(no project)" with the bare id as title.
+		if r.monitor != nil {
+			r.monitor.EnsureSubtask(taskID, issue.Subtask.Title, issue.URL, parent.ID)
+			r.monitor.SetProjectInfo(taskID, subTaskRepoPath, filepath.Base(subTaskRepoPath))
+		}
+
 		subLifecycle := NewExecutionLifecycle(r.logStore)
 		subLifecycle.SetDailyCapGate(r.DailyCapGate())
 		subExecID, err := subLifecycle.Begin(subTask, ExecStatusRunning)

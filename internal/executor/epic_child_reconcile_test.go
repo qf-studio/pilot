@@ -650,3 +650,46 @@ func TestExecuteSubIssues_ClaimLost_RunningSilentlyTimesOutFromStartedAt(t *test
 		t.Errorf("elapsed = %s, want >= %s (timed out before the child even started running — deadline not anchored to started_at)", elapsed, queuedPhase)
 	}
 }
+
+// TestExecuteSubIssues_RegistersChildWithProject is the GH-6014 regression:
+// the child must be on the Monitor with its sub-issue title and its repo's
+// project name before the backend runs, so Start/UpdateProgress don't fall
+// back to a Title == ID entry under "(no project)".
+func TestExecuteSubIssues_RegistersChildWithProject(t *testing.T) {
+	issues := makeSubIssues(1, 288)
+	parent := &Task{ID: "GH-280", Title: "[epic] register children"}
+	repo := "/work/widgets"
+
+	monitor := NewMonitor()
+	var seen TaskState
+	var seenOK bool
+	execFn := func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+		// Snapshot at backend-run time, then mimic the runner's own calls.
+		if st, ok := monitor.Get(task.ID); ok {
+			seen, seenOK = *st, true
+		}
+		monitor.Start(task.ID)
+		monitor.UpdateProgress(task.ID, "Implementing", 10, "")
+		return &ExecutionResult{TaskID: task.ID, Success: true}, nil
+	}
+	runner := newTestRunnerWithExecFunc(execFn)
+	runner.monitor = monitor
+
+	if err := runner.ExecuteSubIssues(context.Background(), parent, issues, repo, ""); err != nil {
+		t.Fatalf("ExecuteSubIssues: %v", err)
+	}
+
+	if !seenOK {
+		t.Fatal("child not registered with the monitor before the backend ran")
+	}
+	if seen.Title != "Sub-issue 1" || seen.ParentID != parent.ID {
+		t.Errorf("at run time Title/ParentID = %q/%q, want %q/%q", seen.Title, seen.ParentID, "Sub-issue 1", parent.ID)
+	}
+	if seen.ProjectName != "widgets" || seen.ProjectPath != repo {
+		t.Errorf("at run time project = %q/%q, want %q/widgets", seen.ProjectPath, seen.ProjectName, repo)
+	}
+	state, _ := monitor.Get("GH-288")
+	if state.Title != "Sub-issue 1" || state.ProjectName != "widgets" {
+		t.Errorf("after run Title/ProjectName = %q/%q, want Sub-issue 1/widgets", state.Title, state.ProjectName)
+	}
+}

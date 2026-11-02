@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -131,6 +132,9 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 		// summary.
 		if r.monitor != nil {
 			r.monitor.RegisterSubtask(subtask.ID, subtask.Title, "", parentTask.ID)
+			// GH-6014: subtask.ProjectPath is executionPath (possibly a
+			// worktree), so name the project from the parent's real path.
+			r.monitor.SetProjectInfo(subtask.ID, parentTask.ProjectPath, filepath.Base(parentTask.ProjectPath))
 		}
 
 		// Temporarily disable decomposer to prevent recursive decomposition
