@@ -2833,7 +2833,7 @@
         ]
       },
       "TASK-502": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-502-included-tokens-platform-key.md",
+        "path": ".agent/tasks/archive/TASK-502-included-tokens-platform-key.md",
         "title": "Included token volume \u2014 platform Anthropic key per tenant, allowance metering, own-key overage",
         "status": "completed",
         "concepts": [
@@ -2859,9 +2859,9 @@
         ]
       },
       "TASK-509": {
-        "path": ".agent/tasks/TASK-509-linear-invoices-onboarding.md",
+        "path": ".agent/tasks/archive/TASK-509-linear-invoices-onboarding.md",
         "title": "Linear Invoices onboarding \u2014 two repos, one Linear project, Linear polling routing gap",
-        "status": "unknown",
+        "status": "completed",
         "concepts": [
           "deployment",
           "authentication",
@@ -3354,9 +3354,9 @@
         ]
       },
       "TASK-582": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-582-wave0-site-unblock-the-sale.md",
+        "path": ".agent/tasks/archive/TASK-582-wave0-site-unblock-the-sale.md",
         "title": "Wave 0 \u2014 pilotcloud.dev copy update (unblock the sale)",
-        "status": "unknown",
+        "status": "completed",
         "concepts": [
           "deployment",
           "authentication",
@@ -3487,9 +3487,9 @@
         ]
       },
       "TASK-600": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-600-rate-limit-parser-just-passed-reset-and-duplicate-alert.md",
+        "path": ".agent/tasks/archive/TASK-600-rate-limit-parser-just-passed-reset-and-duplicate-alert.md",
         "title": "a just-passed reset rolls +24 h into a 6-hour daemon-wide hold; one usage-limit failure fires two alerts",
-        "status": "backlog",
+        "status": "completed",
         "concepts": [
           "api",
           "workflow",
