@@ -1,5 +1,7 @@
 # Pilot SaaS — Architecture & Roadmap (Program Doc)
 
+> **2026-11-02 note — historical doc (S0–S4 era).** Billing is **Paddle**, not Stripe (TASK-497; memory `payment-processor-is-paddle-not-stripe`). Live hosted-console state: `tasks/TASK-584-pilot-cloud-execution-roadmap.md` (waves), `tasks/TASK-583-wave1-design-update-proof-surface.md` (wave 1), `system/project/project_pilot_cloud_roadmap_tickets.md` (ticket rows). Stripe sections below are not the plan.
+
 **Created**: 2026-07-13 · **Status**: PLANNED (pre-dispatch)
 **Task doc**: `.agent/tasks/TASK-405-pilot-saas-platform.md`
 **Siblings**: `saas-kanban-sync-design.md` · `saas-fleet-design.md` · `saas-asset-research.md`

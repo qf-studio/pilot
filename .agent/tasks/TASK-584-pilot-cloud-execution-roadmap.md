@@ -1,6 +1,6 @@
 # TASK-584: Pilot Cloud — complete execution roadmap (phases A–H)
 
-**Status**: 🚀 APPROVED 2026-10-22 (plan mode). Phase A partly done in the 10-22 session (memories mem-261..264, marker); Phase A items 1–2 (docs-copy issue on docs/content, modelPricing bug in internal/executor/runner.go) are the **first actions of the next session**; item 5 (O1 note) done. Waves 0–1 dispatched via TASK-582/583; waves 2–5 get TASK-585..588 when their triggers fire.
+**Status**: 🚀 **11-02 audit.** Phase A: item 2 (modelPricing) ✅ pilot#5821; item 1 (docs-copy, S9) ✅ pilot#5820 merged 10-22; items 3–4 (graph memories, marker) not marked. **Phase B (wave 1)**: every held leg merged except C6/U11/U12 (gate = I3 SES sender, Nelya); **wave-1 exit NOT met** — P11 real-run report missing on pilot#5793, I2 pending, canary evidence stops at 10-26 (TASK-583 line 3). **Wave 2 trigger MET since 10-12** (console#387 closed) — TASK-585 not written. Wave 3: F3 (TASK-581 matrix on the box → bootstrap cap) unblocked since P12 #5788 merged 10-21, not done. Wave 4: after wave-1 exit. Wave 5: after 5 design partners (O3 not started; the wave-0 deploy still waits on Nelya's site PR). Phase H docs chore open: `saas-roadmap.md` / `saas-architecture.md` carry a history/Paddle banner since 11-02 but no wave entries. Repo decision open: `prod-*` tag ruleset on pilot-console (tags at prod-0.1.51).
 **Created**: 2026-10-22
 **Assignee**: Navigator (task docs, dispatch, reviews) · Pilot (all P/U/C/S legs) · founder (F1–F4, O3, D1–D7) · Nelya (I1–I4)
 
@@ -47,12 +47,8 @@ Trigger = upstream PR merged (check `gh pr list --state merged` per repo, or the
 
 | Held leg | File when | Repo | Body source |
 |---|---|---|---|
-| C1 run-story endpoint | pilot#5790 merged | pilot-console | §8.1; aggregate `run_story` from the instance read |
-| C2 share token | C1 merged | pilot-console | §8.1 D3 |
-| U6 Run Story card + ticket page | C1 merged | pilot-console-ui | §8.1 (4 states, Retry) |
-| U7 share-link view | C2 merged | pilot-console-ui | §8.1 D3 |
-| U8 Review needed page | console#422 merged | pilot-console-ui | §8.2 (3 types, 3 actions) |
-| C6 brief store + Briefs API + SES email | pilot#5791 merged **and** I3 (SES) done | pilot-console | §8.7 |
+| C1 · C2 · U6 · U7 · U8 | ✅ merged 10-26 (console#440/#450 → PR#442/#452; ui#277/#282/#275 → PR#278/#285/#276) | — | — |
+| C6 brief store + Briefs API + SES email | I3 (SES) done — pilot#5791 merged 10-22 | pilot-console | §8.7 |
 | U11 Briefs page + bell | C6 merged | pilot-console-ui | §8.7 |
 | U12 brief settings | C6 merged | pilot-console-ui | §8.7 D3 |
 

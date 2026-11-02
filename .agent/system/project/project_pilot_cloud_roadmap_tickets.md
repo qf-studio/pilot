@@ -22,7 +22,7 @@ Status: 📋 not filed · 🎫 filed (issue #) · 🚧 in flight · ✅ merged. 
 | S6 | 0 | feat(self-hosted): OSS keeps "secrets never leave"; Cloud column says "a box only you use" | 8.6 D4 | S | ✅ site#15 → PR#20 merged 13:35Z, reviewed APPROVE-w-notes (10-22) |
 | S7 | 0 | chore(copy): product name Pilot Cloud site-wide; "Console" only as the app URL | 8.6 D5 | S | ✅ site#16 → PR#21 closed (test red) → PR#23 merged 13:59Z, unreviewed; price constants in `lib/site.ts` still duplicated (10-22) |
 | S8 | 4 | feat(security): Security page — blast-radius statement verbatim + last pen-test summary with date | 8.8 D4 | S | 📋 after P11 |
-| S9 | 0 | docs(cloud): docs site copy — why-pilot research line, dedicated-box wording next to the self-hosted claim, Pilot Cloud name, §3 proof line (repo: pilot `docs/content/`) | 8.6, 3 | S | 🎫 pilot#5820 (10-22) |
+| S9 | 0 | docs(cloud): docs site copy — why-pilot research line, dedicated-box wording next to the self-hosted claim, Pilot Cloud name, §3 proof line (repo: pilot `docs/content/`) | 8.6, 3 | S | ✅ pilot#5820 (merged 10-22) |
 
 ## pilot-console-ui (`qf-studio/pilot-console-ui`) — 19
 
@@ -34,7 +34,7 @@ Status: 📋 not filed · 🎫 filed (issue #) · 🚧 in flight · ✅ merged. 
 | U4 | 1 | feat(queue): queue grouped by project with epic trees; rows show `duration · +a −b`, never tokens | 6.1 | M | ✅ ui#242 → epic ui#256–258; PR#261 (stacked superset) merged 14:34Z carrying the component; PR#260 closed as duplicate, ui#257 closed pilot-done 16:20Z; **reviewed REQUEST-CHANGES** (groups/trees/meta bind to `project`/`parentId`/`durationMs` the console never sends; N+1 fetch) → ui#272 + console#436 (10-22) |
 | U5 | 1 | feat(context): Context panel shows growth (`Memories 5.0K · +120 this week`), labeled health | 6.4 | S | ✅ ui#243 → PR#255 merged 13:41Z; **reviewed REQUEST-CHANGES** (no Needs-API list; Memory card ignores served `counts`; Graph card = dead prop; no `ds-*` tokens) → ui#271 + pilot#5857 (refiled from #5816) (P18) (10-22) |
 | U6 | 1 | feat(run-story): Run Story card on Done (expand) + ticket page: asked / changed / verified / time / outcome / model; 4 states; `Retry` on Failed | 8.1 | L | ✅ ui#277 merged 10-26 |
-| U7 | 1 | feat(run-story): share-link view, public, redacted, opt-in toggle | 8.1 D3 | S | 🎫 ui#282 (10-26, `no-decompose`) |
+| U7 | 1 | feat(run-story): share-link view, public, redacted, opt-in toggle | 8.1 D3 | S | ✅ ui#282 → PR#285 (10-26) |
 | U8 | 1 | feat(review): Review needed page — one list, oldest first, grouped by project; 3 item types with the "why" line; Approve / Reject with reason / Send back | 8.2 | L | ✅ ui#275 → PR#276 merged 10-26 10:59Z, deployed 11:02Z, unreviewed |
 | U9 | 1 | feat(research): Research page per Figma `13-994` — sub-agent tree with DONE badges, report, Context-per-run panel (`Read 12 docs · 4 memories · Created 2`) | 6 research | M | ✅ ui#244 → PR#246, reviewed APPROVE-w-defects (mobile chat lost confirmation cards → ui#265; tree/Context bind to events the daemon never emits → P17; mode pills inert → ui#266 decision) (10-22) |
 | U10 | 2 | feat(research): `Create tickets` under the report → drafts → lane; edit before approve; board input submits to this page | 8.3, 6.3 | M | 📋 after C5 |
@@ -46,7 +46,7 @@ Status: 📋 not filed · 🎫 filed (issue #) · 🚧 in flight · ✅ merged. 
 | U16 | 5 | feat(members): Viewer role invite with project scope; "Approved by …" on lane items | 9.1 | M | 📋 after C11 |
 | U17 | 5 | feat(mobile): re-land `restore/GH-71-mobile` on the new design; Playwright 390×844 check | 9.6 | L | 📋 after U1–U11 |
 | U18 | 5 | feat(docs): edit + create `.agent/` docs from the Docs page, PR per change | 9.5 | M | 📋 |
-| U19 | 1 | feat(board): daily cap banner from the cards response `notice`; `daily_cap_reached` toast names the resume time | TASK-589 | S | 🎫 ui#280 — 1st run failed, retry non-FF on its own stale branch → branch deleted (f688fe4), `pilot-retry-ready` 15:10Z |
+| U19 | 1 | feat(board): daily cap banner from the cards response `notice`; `daily_cap_reached` toast names the resume time | TASK-589 | S | ✅ ui#280 → PR#284 (10-26, run 3; runs 1–2 → pilot#5864) |
 
 ## pilot-console (API, `qf-studio/pilot-console`) — 14
 
@@ -85,10 +85,10 @@ Status: 📋 not filed · 🎫 filed (issue #) · 🚧 in flight · ✅ merged. 
 | P12 | 3 | feat(bench): bootstrap cost harness + the 4-repo × 3-stage × 2-run matrix | TASK-581 | M | ✅ #5788 → PR#5789 (10-22) |
 | P13 | 5 | feat(templates): deploy-template ticket sets — VPS (Compose + Actions over SSH), AWS | 9.2 | L | 📋 |
 | P14 | 5 | feat(pm-mode): preview URL on the Run Story + merge-on-green per project behind the evidence gates | 9.4 | L | 📋 |
-| P15 | 1 | fix(executor): `modelPricing` — Opus 5.5 $4/$20, Sonnet 5.5 + Sonnet 5 $2/$10, Haiku 5.5 $0.10/$0.50, cache-read rate per model (TASK-581 § Found) | 4 | S | 🎫 pilot#5821 (10-22) |
+| P15 | 1 | fix(executor): `modelPricing` — Opus 5.5 $4/$20, Sonnet 5.5 + Sonnet 5 $2/$10, Haiku 5.5 $0.10/$0.50, cache-read rate per model (TASK-581 § Found) | 4 | S | ✅ pilot#5821 (closed) |
 | P16 | 1 | feat(executor): daily ticket cap held at `ExecutionLifecycle.Begin` — `executor.daily_ticket_cap` + timezone keys, org-local day, `GET /api/v1/executions/daily-cap` standing | TASK-589 | M | ✅ pilot#5794 epic → #5807/#5809 (10-22) + #5808 → PR#5835 merged 10-23 12:38Z, unreviewed; in v2.294.0 |
 | P17 | 1 | feat(web): `subagent` + `context` chat events (`durationMs`, `docsRead`, `memoriesRead`, `memoriesCreated`) for the Research page — U9 renders `—` until then | 6 research | M | 🎫 pilot#5810, needs design (10-22) |
-| P18 | 1 | feat(gateway): docs + graph summary read (`created/updated this week`, memory totals, graph nodes/edges/updatedAt) for the Context panel — U5 renders `—` until then | 6.4 | M | 🎫 pilot#5857 (refiled from #5816) (10-22) |
+| P18 | 1 | feat(gateway): docs + graph summary read (`created/updated this week`, memory totals, graph nodes/edges/updatedAt) for the Context panel — U5 renders `—` until then | 6.4 | M | ✅ pilot#5857 → PR#5859 (10-26) |
 
 ## infra (fleet, Nelya / `aws-infrastructure-pilot`) — 4
 

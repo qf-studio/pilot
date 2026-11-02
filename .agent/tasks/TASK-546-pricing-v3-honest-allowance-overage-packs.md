@@ -1,6 +1,6 @@
 # TASK-546: Pricing v3 — honest ticket allowance + prepaid overage packs at a value price
 
-**Status**: 🚀 **WAVES 1–3 DISPATCHED 2026-10-14 (price unchanged; packs/copy/$300 deferred until the founder changes the price).** Pilot: [#5676](https://github.com/qf-studio/pilot/issues/5676) key_source + reported cost + usage rows · [#5677](https://github.com/qf-studio/pilot/issues/5677) chat-turn rows + metrics · [#5678](https://github.com/qf-studio/pilot/issues/5678) daily chat cap. Console: [#401](https://github.com/qf-studio/pilot-console/issues/401) per-ticket ledger · [#402](https://github.com/qf-studio/pilot-console/issues/402) tickets-or-USD exhaustion (blocked by 401) · [#403](https://github.com/qf-studio/pilot-console/issues/403) daily caps as plan data (blocked by 401) · [#404](https://github.com/qf-studio/pilot-console/issues/404) org invites. UI: [ui#231](https://github.com/qf-studio/pilot-console-ui/issues/231) Members page. Founder decisions D1–D11 still open for the price-bearing parts (D2 value, D3–D5 packs, D11).
+**Status**: ✅ **11-02 audit — ALL DISPATCHED LEGS MERGED; price unchanged at $499.** Pilot [#5676](https://github.com/qf-studio/pilot/issues/5676)/[#5677](https://github.com/qf-studio/pilot/issues/5677)/[#5678](https://github.com/qf-studio/pilot/issues/5678) (key_source + reported cost · chat-turn rows · daily chat cap) · console [#401](https://github.com/qf-studio/pilot-console/issues/401) ledger · [#402](https://github.com/qf-studio/pilot-console/issues/402) tickets-or-USD · [#403](https://github.com/qf-studio/pilot-console/issues/403) daily caps as plan data · [#404](https://github.com/qf-studio/pilot-console/issues/404) invites · [ui#231](https://github.com/qf-studio/pilot-console-ui/issues/231) Members page · **[console#424](https://github.com/qf-studio/pilot-console/issues/424) (10-22, C8 of TASK-583): $300 fair-use ceiling + prepaid packs 25/$99 and 100/$349, 90-day expiry, pack prices from config, ledger draws** · daily ticket cap owner moved to the daemon (TASK-589: console#449 → PR#451, ui#280 → PR#284). **Unfiled (Phase 3 remainder)**: `POST /api/v1/billing/packs/checkout` + `transaction.completed` credit via `billing_events`, Buy 25 / Buy 100 UI + balance card. **Unfiled (Phase 5)**: site/console/Paddle copy, `PRICING-MODEL.md` v3 banner, `UNIT-ECONOMICS.md` pack rows. Founder decisions D1–D11 for the price-bearing parts still open (D2 value, D3–D5 packs, D11). Boxes below are ticked only where a merged issue proves them.
 **Created**: 2026-10-13
 **Assignee**: Navigator plans · Pilot executes per repo · founder decides prices
 **Parent**: [TASK-405](TASK-405-pilot-saas-platform.md) S5 billing · **Builds on**: [TASK-502](TASK-502-included-tokens-platform-key.md) (allowance + platform key), [TASK-497](TASK-497-paddle-billing-integration.md) (Paddle)
@@ -61,14 +61,14 @@ Founder answers "D1–D11 ok" or sends changes. No dispatch before that.
 
 ## Acceptance Criteria
 
-- [ ] The plan-allowance row carries both `included_tickets` and a fair-use `included_usd_cents`; enforcement exhausts on **whichever first**, and the 80%/100% alerts name which one fired.
-- [ ] A per-ticket ledger exists in the console: one row per billable ticket with task id, instance, period, model, tokens, list-price USD, `key_source ∈ {platform, pack, own}`, and the pack id when funded by a pack.
-- [ ] The daemon tags every execution with `key_source` and stores the CLI-reported `total_cost_usd` beside `estimated_cost_usd`.
+- [x] (console#402) The plan-allowance row carries both `included_tickets` and a fair-use `included_usd_cents`; enforcement exhausts on **whichever first**, and the 80%/100% alerts name which one fired.
+- [x] (console#401) A per-ticket ledger exists in the console: one row per billable ticket with task id, instance, period, model, tokens, list-price USD, `key_source ∈ {platform, pack, own}`, and the pack id when funded by a pack.
+- [x] (pilot#5676) The daemon tags every execution with `key_source` and stores the CLI-reported `total_cost_usd` beside `estimated_cost_usd`.
 - [ ] A customer can buy a pack from Plan & Billing; the Paddle one-time transaction credits a `ticket_packs` row via the existing `billing_events` idempotency ledger; balance and expiry are visible in the UI and via `GET /api/v1/billing/allowance`.
 - [ ] Consumption order is included → packs (oldest expiry first) → own key; the own-key fallback behaves exactly as TASK-502 leg 3 today.
-- [ ] The daily burst cap pauses platform-key dispatch at the limit, resumes at the next UTC day, and never blocks own-key dispatch.
+- [x] (console#403 → daemon-owned, TASK-589) The daily burst cap pauses platform-key dispatch at the limit, resumes at the next UTC day, and never blocks own-key dispatch.
 - [ ] Site, console copy and the Paddle product description agree: "100 tickets a month included on Sonnet 5.5 (fair use: $300 of model usage)", "Extra tickets from $3.49", "Overage on your own key is never marked up".
-- [ ] An org owner can invite a second member by email and that member sees the same board, usage and billing pages (no per-seat charge).
+- [x] (console#404 + ui#231) An org owner can invite a second member by email and that member sees the same board, usage and billing pages (no per-seat charge).
 - [ ] `PRICING-MODEL.md` carries a v3 decision banner; `UNIT-ECONOMICS.md` gains the pack margin rows and the cost-plus rejection with the arithmetic.
 
 ---
@@ -82,32 +82,32 @@ Founder answers "D1–D11 ok" or sends changes. No dispatch before that.
 
 ### Phase 1: Billable-ticket ledger (pilot repo + console)
 **Goal**: every shipped ticket is one attributable row before anything is debited.
-- [ ] **pilot** — `executions` gains `key_source TEXT` and `reported_cost_usd REAL` (CLI `total_cost_usd`); the executor sets `key_source` from `PILOT_ANTHROPIC_KEY_SOURCE` at run start.
-- [ ] **pilot** — chat turns are recorded too: `ExecuteChatTurn` copies `TokensInput/Output/Cache` and cost from `BackendResult` into `ChatTurnResult`; the comms handler writes a `chat_turns` row (conversation, project, model, tokens, cost, key_source, duration, partial) and bumps `pilot_chat_turns_total` / `pilot_chat_cost_usd_total`; `/api/v1/metrics` exposes the chat totals beside execution cost. Mutation that must fail: drop the chat row write → allowance test with chat-only spend must still exhaust. `/api/v1/metrics` (or a new `/api/v1/executions?since=`) exposes per-task rows with these fields.
-- [ ] **console** — a new migration adds `ticket_ledger` (org, instance, period, task_id, model, tokens, list_usd_cents, reported_usd_cents, key_source, pack_id NULL, shipped_at); the `UsagePoller` ingests per-task rows idempotently on `(instance_id, task_id)` instead of relying only on cumulative counters.
+- [x] (pilot#5676) **pilot** — `executions` gains `key_source TEXT` and `reported_cost_usd REAL` (CLI `total_cost_usd`); the executor sets `key_source` from `PILOT_ANTHROPIC_KEY_SOURCE` at run start.
+- [x] (pilot#5677) **pilot** — chat turns are recorded too: `ExecuteChatTurn` copies `TokensInput/Output/Cache` and cost from `BackendResult` into `ChatTurnResult`; the comms handler writes a `chat_turns` row (conversation, project, model, tokens, cost, key_source, duration, partial) and bumps `pilot_chat_turns_total` / `pilot_chat_cost_usd_total`; `/api/v1/metrics` exposes the chat totals beside execution cost. Mutation that must fail: drop the chat row write → allowance test with chat-only spend must still exhaust. `/api/v1/metrics` (or a new `/api/v1/executions?since=`) exposes per-task rows with these fields.
+- [x] (console#401) **console** — a new migration adds `ticket_ledger` (org, instance, period, task_id, model, tokens, list_usd_cents, reported_usd_cents, key_source, pack_id NULL, shipped_at); the `UsagePoller` ingests per-task rows idempotently on `(instance_id, task_id)` instead of relying only on cumulative counters.
 - [ ] Mutation that must fail: drop the `key_source` write → ledger test asserts `platform` rows exist for a platform-key run.
 **Files**: `internal/memory/store.go`, `internal/executor/runner.go`, `internal/gateway/server.go` (pilot) · `internal/fleet/usagepoller.go`, `internal/fleet/usage_meter.go`, `internal/db/migrations/` (console).
 
 ### Phase 2: Honest allowance (console + reconciler)
 **Goal**: tickets are the unit; the USD figure is a fair-use ceiling.
-- [ ] `allowance/status.go` returns both meters and `exhausted_by ∈ {tickets, usd}`; the USD meter includes chat-turn dollars (D10); `allowanceenforce.go` switches to own key on either.
+- [x] (console#402) `allowance/status.go` returns both meters and `exhausted_by ∈ {tickets, usd}`; the USD meter includes chat-turn dollars (D10); `allowanceenforce.go` switches to own key on either.
 - [ ] `consolectl billing set-allowance --tickets 100 --usd 300` run in prod after deploy (operator step, recorded in the SOP).
 - [ ] UI "included: 37 of 100 tickets · $41 of $300 fair use".
 - [ ] Mutation that must fail: enforcement that reads only USD → test with 100 tickets at $0.50 each must exhaust on tickets.
 
 ### Phase 3: Prepaid packs (console + console-ui)
 **Goal**: a customer buys tickets; the box keeps running on the platform key.
-- [ ] A new migration adds `ticket_packs` (org, paddle_transaction_id, tickets_total, tickets_used, price_cents, purchased_at, expires_at) and `pack_prices` (code, tickets, price_id_sandbox, price_id_live, active).
+- [x] (console#424) A new migration adds `ticket_packs` (org, paddle_transaction_id, tickets_total, tickets_used, price_cents, purchased_at, expires_at) and `pack_prices` (code, tickets, price_id_sandbox, price_id_live, active).
 - [ ] `POST /api/v1/billing/packs/checkout` creates a Paddle one-time transaction with `custom_data.org_id` and `pack_code`; the webhook handler on `transaction.completed` inserts the pack through `billing_events` dedupe.
-- [ ] Consumption: `allowanceenforce.go` debits `ticket_ledger` rows to the oldest unexpired pack when included is exhausted; own-key fallback only when no pack has balance.
+- [x] (console#424 ledger draws) Consumption: `allowanceenforce.go` debits `ticket_ledger` rows to the oldest unexpired pack when included is exhausted; own-key fallback only when no pack has balance.
 - [ ] UI: pack balance card, "Buy 25 / Buy 100" buttons, expiry, history.
 - [ ] Mutation that must fail: remove the dedupe check → replayed `transaction.completed` must not credit twice.
 
 ### Phase 4: Daily burst cap (console + reconciler)
 **Goal**: no pack drains in an afternoon; the box duty cycle stays bounded.
-- [ ] `plan_allowances.daily_ticket_cap` (default 15) + org override; reconciler pauses platform-key dispatch at the cap with a 429-style event; resumes next UTC day.
-- [ ] Own-key dispatch is never paused by this cap.
-- [ ] Org-level daily chat cap (`plan_allowances.daily_chat_turn_cap`, default 200): the daemon's web adapter gets an org-wide limiter beside the per-conversation one; over the cap the chat replies "Daily chat limit reached" instead of running a session.
+- [x] (console#403; owner now the daemon, TASK-589) `plan_allowances.daily_ticket_cap` (default 15) + org override; reconciler pauses platform-key dispatch at the cap with a 429-style event; resumes next UTC day.
+- [x] (console#403) Own-key dispatch is never paused by this cap.
+- [x] (pilot#5678) Org-level daily chat cap (`plan_allowances.daily_chat_turn_cap`, default 200): the daemon's web adapter gets an org-wide limiter beside the per-conversation one; over the cap the chat replies "Daily chat limit reached" instead of running a session.
 
 ### Phase 5: Copy, catalog, docs
 **Goal**: site, console, Paddle description and Navigator docs say the same thing.
@@ -117,9 +117,9 @@ Founder answers "D1–D11 ok" or sends changes. No dispatch before that.
 
 ### Phase 6: Org invites (console + console-ui) — makes "No seats" deliverable
 **Goal**: an owner can add teammates; usage stays per org.
-- [ ] `POST /api/v1/org/members` (owner-only, CSRF-guarded) creates an invite by email; acceptance on first auth-service login binds `user_subject` → `org_members` row with `role='member'`; `DELETE /api/v1/org/members/{subject}` removes.
+- [x] (console#404) `POST /api/v1/org/members` (owner-only, CSRF-guarded) creates an invite by email; acceptance on first auth-service login binds `user_subject` → `org_members` row with `role='member'`; `DELETE /api/v1/org/members/{subject}` removes.
 - [ ] Decide whether `UNIQUE (user_subject)` stays (one org per user) — keep for v3; multi-org membership is out of scope.
-- [ ] UI: Members page with invite form and role chip; the existing `members: OrgMember[]` wire type gains `status ∈ {active, invited}`.
+- [x] (ui#231) UI: Members page with invite form and role chip; the existing `members: OrgMember[]` wire type gains `status ∈ {active, invited}`.
 - [ ] Mutation that must fail: a `member` calling the invite endpoint must get 403.
 **Files**: `internal/orgs/handlers.go` (routes at :129-137), `internal/orgs/store.go` (`ListMembers` :313, owner insert :233), migration `0006_orgs_connections` schema; UI `src/lib/api/types.ts`, `src/stores/orgDetail.ts`.
 
