@@ -28,6 +28,14 @@ var (
 	// comms brain (pitfall GH-4411/GH-4431) — the console must call POST
 	// /api/v1/approvals/{requestId}/decision (#4748) directly.
 	ErrApprovalCallback = errors.New("approval decisions are not accepted on the chat API; use POST /api/v1/approvals/{requestId}/decision")
+	// ErrUnknownAction is returned for an action other than create_tickets, or
+	// an action sent together with a button callback.
+	ErrUnknownAction = errors.New("unknown action: only create_tickets is supported on a text message")
+	// ErrMissingProject is returned when create_tickets carries no projectId.
+	ErrMissingProject = errors.New("create_tickets requires projectId")
+	// ErrReportTooLarge is returned when the create_tickets report exceeds
+	// comms.MaxDraftReportBytes.
+	ErrReportTooLarge = errors.New("create_tickets report exceeds 64 KB")
 	// ErrUnknownProject is returned (wrapped with the id) when a request names
 	// a projectId the handler's project source does not know.
 	ErrUnknownProject = errors.New("unknown project")
@@ -45,6 +53,9 @@ type DispatchRequest struct {
 	// ProjectID selects the conversation's active project (the config project
 	// name) before the message is dispatched. Empty leaves it unchanged.
 	ProjectID string
+	// Action selects a chat action on a text message; only
+	// comms.ActionCreateTickets is accepted. Text is then the report markdown.
+	Action string
 }
 
 // ProjectSummary is one entry of the GET /api/v1/chat/projects list.
@@ -122,6 +133,17 @@ func (a *API) Dispatch(dispatchCtx context.Context, req DispatchRequest) (seq in
 		return 0, ErrMissingText
 	}
 
+	if req.Action != "" {
+		switch {
+		case req.Action != comms.ActionCreateTickets || req.IsCallback:
+			return 0, ErrUnknownAction
+		case len(req.Text) > comms.MaxDraftReportBytes:
+			return 0, ErrReportTooLarge
+		case strings.TrimSpace(req.ProjectID) == "":
+			return 0, ErrMissingProject
+		}
+	}
+
 	contextID := contextIDPrefix + req.ConversationID
 	if req.ProjectID != "" {
 		if err := a.handler.SetActiveProject(contextID, req.ProjectID); err != nil {
@@ -133,6 +155,7 @@ func (a *API) Dispatch(dispatchCtx context.Context, req DispatchRequest) (seq in
 		SenderName: req.Sender,
 		Text:       req.Text,
 		Platform:   "web",
+		Action:     req.Action,
 		Timestamp:  time.Now(),
 		IsCallback: req.IsCallback,
 		CallbackID: req.CallbackID,

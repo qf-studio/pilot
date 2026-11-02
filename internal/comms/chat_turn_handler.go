@@ -64,32 +64,47 @@ func (h *Handler) reserveDailyTurn() bool {
 	return true
 }
 
-// handleChatTurn runs one read-only agentic chat turn for a web conversation.
-func (h *Handler) handleChatTurn(ctx context.Context, contextID, threadID, text string) {
+// admitChatTurn runs the checks every chat turn shares: a runner exists, no
+// other turn runs for the conversation, and the org-wide daily cap has room
+// (reserveDailyTurn). When it refuses it has already told the user why; when it
+// admits, the caller must call release when the turn ends.
+func (h *Handler) admitChatTurn(ctx context.Context, contextID, threadID string) (release func(), ok bool) {
 	send := func(s string) { _ = h.messenger.SendText(ctx, contextID, threadID, s) }
 	if h.runner == nil {
 		send("Chat is not available: no runner configured")
-		return
+		return nil, false
 	}
 	// Two concurrent turns would resume the same session; reject the second.
 	h.mu.Lock()
 	if h.chatTurnBusy[contextID] {
 		h.mu.Unlock()
 		send("A turn is already running for this conversation. Wait for it to finish.")
-		return
+		return nil, false
 	}
 	h.chatTurnBusy[contextID] = true
 	h.mu.Unlock()
-	defer func() {
+	release = func() {
 		h.mu.Lock()
 		delete(h.chatTurnBusy, contextID)
 		h.mu.Unlock()
-	}()
+	}
 
 	if !h.reserveDailyTurn() {
+		release()
 		send(DailyChatLimitMessage)
+		return nil, false
+	}
+	return release, true
+}
+
+// handleChatTurn runs one read-only agentic chat turn for a web conversation.
+func (h *Handler) handleChatTurn(ctx context.Context, contextID, threadID, text string) {
+	send := func(s string) { _ = h.messenger.SendText(ctx, contextID, threadID, s) }
+	release, ok := h.admitChatTurn(ctx, contextID, threadID)
+	if !ok {
 		return
 	}
+	defer release()
 
 	projectPath := h.getActiveProjectPath(contextID)
 	h.mu.Lock()
@@ -133,6 +148,103 @@ func (h *Handler) handleChatTurn(ctx context.Context, contextID, threadID, text 
 	default:
 		draft = h.rewriteUntrackedRefs(ctx, contextID, threadID, draft, projectPath)
 		h.presentIssueCard(ctx, contextID, threadID, draft, projectPath)
+	}
+}
+
+// ActionCreateTickets is the chat action that drafts tickets from a research
+// report sent inline as the message text.
+const ActionCreateTickets = "create_tickets"
+
+// MaxDraftReportBytes caps the report a create_tickets action may carry.
+const MaxDraftReportBytes = 64 * 1024
+
+// ticketDraftingPrompt is the fixed instruction of a drafting turn; the report
+// follows it. Body rules mirror .agent/sops/onboarding/new-project-issue-authoring.md.
+const ticketDraftingPrompt = `You are drafting GitHub issues from the research report below. This is read-only: do not edit files and do not file anything. Use the read-only tools to check every file and symbol you cite against the checkout.
+
+Reply with a short note, then ONE fenced block named pilot-drafts holding a YAML list of drafts. Each draft has the keys id, title, labels, body and deps:
+
+- id: a short unique slug (for example d1, d2).
+- title: a conventional-commit title, type(scope): description.
+- labels: a list of label names (may be empty).
+- body: a literal block with exactly these H2 sections, in order: "## Context", "## Acceptance", "## Implementation", "## Refs". Cite evidence as file:line inside backticks. Only backtick paths that exist in the checkout; write other paths as plain text. Under "## Acceptance" write checkbox bullets; at least one must be a backticked command from go, make, npm, npx, bun, bunx, pnpm, yarn, pytest or cargo followed by "passes; paste the output into the PR body" (one command span per bullet, no shell operators), or a mutation pin of the form "<change> -> <TestName> fails".
+- deps: a list of ids of OTHER drafts in this block that must land first (ids only, never issue numbers).
+
+One draft is one PR-sized change. If part of the report is bigger than that, still emit it as one draft; do not split it further.
+
+` + "```pilot-drafts" + `
+- id: d1
+  title: "feat(scope): add the thing"
+  labels: [enhancement]
+  deps: []
+  body: |
+    ## Context
+    ...
+    ## Acceptance
+    - [ ] ` + "`go test ./internal/x/`" + ` passes; paste the output into the PR body.
+    ## Implementation
+    ...
+    ## Refs
+    ...
+` + "```" + `
+
+The report:
+`
+
+// handleCreateTickets runs one drafting turn for the create_tickets action and
+// emits a drafts event. Nothing is filed: the console owns approval and filing.
+func (h *Handler) handleCreateTickets(ctx context.Context, contextID, threadID, report string) {
+	send := func(s string) { _ = h.messenger.SendText(ctx, contextID, threadID, s) }
+	if len(report) > MaxDraftReportBytes {
+		send(fmt.Sprintf("The report is too large to draft tickets from (%d bytes, limit %d).", len(report), MaxDraftReportBytes))
+		return
+	}
+	release, ok := h.admitChatTurn(ctx, contextID, threadID)
+	if !ok {
+		return
+	}
+	defer release()
+
+	projectPath := h.getActiveProjectPath(contextID)
+	taskID := "drafts-" + strings.TrimPrefix(contextID, "web:")
+	progress := func(line string) {
+		_, _ = h.messenger.SendProgress(ctx, contextID, "", taskID, "drafting", 0, line)
+	}
+	progress("Drafting tickets from the report")
+
+	// A drafting turn never resumes or replaces the conversation's chat session.
+	startedAt := time.Now()
+	result, err := h.runner.ExecuteChatTurn(ctx, executor.ChatTurn{
+		ConversationID: contextID, ProjectPath: projectPath, Text: ticketDraftingPrompt + report,
+	}, progress)
+	h.recordChatTurn(contextID, projectPath, startedAt, result, err)
+	if err != nil {
+		send("Ticket drafting failed: " + err.Error())
+		return
+	}
+
+	reply, drafts, found, blockErr := extractPilotDraftsBlock(result.Text)
+	switch {
+	case !found:
+		send("Ticket drafting failed: the reply had no pilot-drafts block.")
+		return
+	case blockErr != nil:
+		send("Ticket drafting failed: the drafts block was not valid: " + blockErr.Error())
+		return
+	}
+	checkDrafts(drafts, projectPath)
+
+	if ds, ok := h.messenger.(DraftsSender); ok {
+		_ = ds.SendDrafts(ctx, contextID, threadID, drafts)
+	} else {
+		var b strings.Builder
+		for _, d := range drafts {
+			fmt.Fprintf(&b, "- %s [%s]: %s\n", d.ID, d.Kind, d.Title)
+		}
+		send("Drafted tickets:\n" + b.String())
+	}
+	if strings.TrimSpace(reply) != "" {
+		_ = h.messenger.SendChunked(ctx, contextID, threadID, strings.TrimSpace(reply), "")
 	}
 }
 

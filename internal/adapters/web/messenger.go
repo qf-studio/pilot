@@ -34,6 +34,7 @@ const (
 	EventConfirmation EventType = "confirmation"
 	EventProgress     EventType = "progress"
 	EventResult       EventType = "result"
+	EventDrafts       EventType = "drafts"
 )
 
 // Event is one entry in a conversation's outbound timeline, served verbatim
@@ -60,7 +61,9 @@ type Event struct {
 	PRUrl      string    `json:"prUrl,omitempty"`
 	Success    *bool     `json:"success,omitempty"`
 	MessageRef string    `json:"messageRef,omitempty"`
-	OccurredAt time.Time `json:"occurredAt"`
+	// Drafts carries the tickets drafted from a research report (type "drafts").
+	Drafts     []comms.TicketDraft `json:"drafts,omitempty"`
+	OccurredAt time.Time           `json:"occurredAt"`
 }
 
 type conversation struct {
@@ -83,7 +86,10 @@ type WebMessenger struct {
 	now           func() time.Time // seam for tests
 }
 
-var _ comms.Messenger = (*WebMessenger)(nil)
+var (
+	_ comms.Messenger    = (*WebMessenger)(nil)
+	_ comms.DraftsSender = (*WebMessenger)(nil)
+)
 
 // NewMessenger creates an empty WebMessenger.
 func NewMessenger() *WebMessenger {
@@ -202,6 +208,16 @@ func (m *WebMessenger) SendResult(_ context.Context, contextID, _threadID, taskI
 		Success:    &s,
 		MessageRef: taskID,
 	})
+	return nil
+}
+
+// SendDrafts appends one drafts event carrying every drafted ticket with its
+// kind and shippable verdict. It satisfies comms.DraftsSender.
+func (m *WebMessenger) SendDrafts(_ context.Context, contextID, _threadID string, drafts []comms.TicketDraft) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneLocked()
+	m.appendLocked(contextID, Event{Type: EventDrafts, Drafts: drafts})
 	return nil
 }
 

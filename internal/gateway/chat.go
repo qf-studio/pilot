@@ -53,6 +53,9 @@ type chatMessageRequest struct {
 	ActionID       string `json:"actionId,omitempty"`
 	Sender         string `json:"sender,omitempty"`
 	ProjectID      string `json:"projectId,omitempty"`
+	// Action is optional; the only value is "create_tickets", where Text is the
+	// research report markdown (<= 64 KB) and ProjectID is required.
+	Action string `json:"action,omitempty"`
 }
 
 // chatMessageResponse is the 202 body: Seq is the conversation's newest seq
@@ -122,6 +125,7 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, r *http.Request) {
 		ActionID:       body.ActionID,
 		Sender:         body.Sender,
 		ProjectID:      body.ProjectID,
+		Action:         body.Action,
 	})
 	if err != nil {
 		switch {
@@ -130,7 +134,10 @@ func (s *Server) handleChatMessages(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, web.ErrMissingConversationID),
 			errors.Is(err, web.ErrMissingText),
 			errors.Is(err, web.ErrMissingCallbackFields),
-			errors.Is(err, web.ErrApprovalCallback):
+			errors.Is(err, web.ErrApprovalCallback),
+			errors.Is(err, web.ErrUnknownAction),
+			errors.Is(err, web.ErrMissingProject),
+			errors.Is(err, web.ErrReportTooLarge):
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		default:
 			http.Error(w, "failed to dispatch message", http.StatusInternalServerError)
