@@ -38,6 +38,13 @@ const chatUserSeparator = "--- User message ---"
 // backend already runs with it as the working directory, so it is not echoed
 // into the prompt.
 func BuildChatPrompt(projectPath string, userText string) string {
+	return buildChatPromptWithLearnings(projectPath, userText, "")
+}
+
+// buildChatPromptWithLearnings is BuildChatPrompt plus the project's
+// console-review learnings block (GH-6011), placed just before the user
+// message. An empty learnings block leaves the prompt byte-identical.
+func buildChatPromptWithLearnings(projectPath string, userText string, learnings string) string {
 	_ = projectPath
 
 	var sb strings.Builder
@@ -49,6 +56,10 @@ func BuildChatPrompt(projectPath string, userText string) string {
 	sb.WriteString("\n\n")
 	sb.WriteString(chatIssueContract)
 	sb.WriteString("\n\n")
+	if learnings != "" {
+		sb.WriteString(learnings)
+		sb.WriteString("\n")
+	}
 	sb.WriteString(chatUserSeparator)
 	sb.WriteString("\n")
 	sb.WriteString(userText)

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"database/sql"
+	"encoding/json"
 	"time"
 )
 
@@ -36,9 +37,18 @@ type Memory struct {
 	Context    string  // Task/file where this was learned
 	Confidence float64 // 0.0-1.0, decays over time
 	ProjectID  string  // Optional project scope
+	Source     string  // Origin of the memory, e.g. SourceConsoleReview ("" = legacy/untagged)
+	Tags       []string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
+
+// SourceConsoleReview marks learnings written from a console reject
+// (POST /api/v1/learnings or a reason on an approval decision, GH-6011).
+const SourceConsoleReview = "console-review"
+
+// memoryColumns is the SELECT list every Memory reader scans via scanMemory.
+const memoryColumns = "id, type, content, context, confidence, project_id, source, tags, created_at, updated_at"
 
 // KnowledgeStore manages experiential memories using SQLite.
 // It provides storage, retrieval, and time-based decay of memories.
@@ -62,6 +72,9 @@ func (k *KnowledgeStore) InitSchema() error {
 			context TEXT,
 			confidence REAL DEFAULT 1.0,
 			project_id TEXT,
+			source TEXT,
+			tags TEXT,
+			dedup_key TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
@@ -69,6 +82,48 @@ func (k *KnowledgeStore) InitSchema() error {
 		CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
 		CREATE INDEX IF NOT EXISTS idx_memories_confidence ON memories(confidence DESC);
 	`)
+	if err != nil {
+		return err
+	}
+	// GH-6011: databases created before source/tags/dedup_key existed.
+	for _, col := range []string{"source", "tags", "dedup_key"} {
+		if err := k.ensureColumn(col); err != nil {
+			return err
+		}
+	}
+	_, err = k.db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_memories_source ON memories(source, project_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_memories_dedup ON memories(dedup_key);
+	`)
+	return err
+}
+
+// ensureColumn adds a TEXT column to memories when an older database lacks it.
+func (k *KnowledgeStore) ensureColumn(name string) error {
+	rows, err := k.db.Query(`SELECT name FROM pragma_table_info('memories')`)
+	if err != nil {
+		return err
+	}
+	found := false
+	for rows.Next() {
+		var col string
+		if err := rows.Scan(&col); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if col == name {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+	if found {
+		return nil
+	}
+	_, err = k.db.Exec(`ALTER TABLE memories ADD COLUMN ` + name + ` TEXT`)
 	return err
 }
 
@@ -79,9 +134,9 @@ func (k *KnowledgeStore) AddMemory(m *Memory) error {
 		m.Confidence = 1.0 // Default confidence
 	}
 	result, err := k.db.Exec(`
-		INSERT INTO memories (type, content, context, confidence, project_id)
-		VALUES (?, ?, ?, ?, ?)
-	`, m.Type, m.Content, m.Context, m.Confidence, m.ProjectID)
+		INSERT INTO memories (type, content, context, confidence, project_id, source, tags)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, m.Type, m.Content, m.Context, m.Confidence, m.ProjectID, m.Source, encodeTags(m.Tags))
 	if err != nil {
 		return err
 	}
@@ -89,23 +144,89 @@ func (k *KnowledgeStore) AddMemory(m *Memory) error {
 	return nil
 }
 
+// AddMemoryOnce stores m unless a memory with the same dedupKey was created in
+// the last window; the check and insert are one statement, so concurrent
+// callers cannot both insert. It sets m.ID to the new or the existing row's ID
+// and reports whether a row was created (GH-6011: console learnings are
+// idempotent on (kind, subject, reason hash) for 24 h).
+func (k *KnowledgeStore) AddMemoryOnce(m *Memory, dedupKey string, window time.Duration) (created bool, err error) {
+	if m.Confidence == 0 {
+		m.Confidence = 1.0
+	}
+	cutoff := time.Now().UTC().Add(-window).Format("2006-01-02 15:04:05")
+	result, err := k.db.Exec(`
+		INSERT INTO memories (type, content, context, confidence, project_id, source, tags, dedup_key)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE NOT EXISTS (SELECT 1 FROM memories WHERE dedup_key = ? AND created_at >= ?)
+	`, m.Type, m.Content, m.Context, m.Confidence, m.ProjectID, m.Source, encodeTags(m.Tags), dedupKey,
+		dedupKey, cutoff)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := result.RowsAffected(); n > 0 {
+		m.ID, _ = result.LastInsertId()
+		return true, nil
+	}
+	err = k.db.QueryRow(`
+		SELECT id FROM memories WHERE dedup_key = ? AND created_at >= ? ORDER BY id DESC LIMIT 1
+	`, dedupKey, cutoff).Scan(&m.ID)
+	return false, err
+}
+
+// QueryBySource returns the newest memories of memType and source scoped to
+// exactly projectID (no NULL-project fallback), newest first.
+func (k *KnowledgeStore) QueryBySource(memType MemoryType, source, projectID string, limit int) ([]*Memory, error) {
+	rows, err := k.db.Query(`
+		SELECT `+memoryColumns+`
+		FROM memories
+		WHERE type = ? AND source = ? AND project_id = ?
+		AND confidence > 0.1
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?
+	`, memType, source, projectID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return k.scanMemories(rows)
+}
+
+func encodeTags(tags []string) sql.NullString {
+	if len(tags) == 0 {
+		return sql.NullString{}
+	}
+	b, err := json.Marshal(tags)
+	if err != nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: string(b), Valid: true}
+}
+
 // GetMemory retrieves a memory by ID.
 // Returns sql.ErrNoRows if not found.
 func (k *KnowledgeStore) GetMemory(id int64) (*Memory, error) {
 	row := k.db.QueryRow(`
-		SELECT id, type, content, context, confidence, project_id, created_at, updated_at
+		SELECT `+memoryColumns+`
 		FROM memories WHERE id = ?
 	`, id)
+	return scanMemory(row)
+}
 
+// scanMemory scans one memoryColumns row.
+func scanMemory(row interface{ Scan(dest ...any) error }) (*Memory, error) {
 	m := &Memory{}
-	var projectID sql.NullString
-	err := row.Scan(&m.ID, &m.Type, &m.Content, &m.Context,
-		&m.Confidence, &projectID, &m.CreatedAt, &m.UpdatedAt)
-	if err != nil {
+	var projectID, source, tags sql.NullString
+	var context sql.NullString
+	if err := row.Scan(&m.ID, &m.Type, &m.Content, &context,
+		&m.Confidence, &projectID, &source, &tags, &m.CreatedAt, &m.UpdatedAt); err != nil {
 		return nil, err
 	}
-	if projectID.Valid {
-		m.ProjectID = projectID.String
+	m.Context = context.String
+	m.ProjectID = projectID.String
+	m.Source = source.String
+	if tags.Valid && tags.String != "" {
+		_ = json.Unmarshal([]byte(tags.String), &m.Tags)
 	}
 	return m, nil
 }
@@ -115,7 +236,7 @@ func (k *KnowledgeStore) GetMemory(id int64) (*Memory, error) {
 // Only returns memories with confidence > 0.1.
 func (k *KnowledgeStore) QueryByTopic(topic string, projectID string) ([]*Memory, error) {
 	rows, err := k.db.Query(`
-		SELECT id, type, content, context, confidence, project_id, created_at, updated_at
+		SELECT `+memoryColumns+`
 		FROM memories
 		WHERE (content LIKE ? OR context LIKE ?)
 		AND (project_id = ? OR project_id IS NULL)
@@ -134,7 +255,7 @@ func (k *KnowledgeStore) QueryByTopic(topic string, projectID string) ([]*Memory
 // QueryByType retrieves memories of a specific type for a project.
 func (k *KnowledgeStore) QueryByType(memType MemoryType, projectID string) ([]*Memory, error) {
 	rows, err := k.db.Query(`
-		SELECT id, type, content, context, confidence, project_id, created_at, updated_at
+		SELECT `+memoryColumns+`
 		FROM memories
 		WHERE type = ?
 		AND (project_id = ? OR project_id IS NULL)
@@ -153,7 +274,7 @@ func (k *KnowledgeStore) QueryByType(memType MemoryType, projectID string) ([]*M
 // GetRecentMemories retrieves the most recently updated memories.
 func (k *KnowledgeStore) GetRecentMemories(limit int) ([]*Memory, error) {
 	rows, err := k.db.Query(`
-		SELECT id, type, content, context, confidence, project_id, created_at, updated_at
+		SELECT `+memoryColumns+`
 		FROM memories
 		WHERE confidence > 0.1
 		ORDER BY updated_at DESC
@@ -171,15 +292,9 @@ func (k *KnowledgeStore) GetRecentMemories(limit int) ([]*Memory, error) {
 func (k *KnowledgeStore) scanMemories(rows *sql.Rows) ([]*Memory, error) {
 	var memories []*Memory
 	for rows.Next() {
-		m := &Memory{}
-		var projectID sql.NullString
-		err := rows.Scan(&m.ID, &m.Type, &m.Content, &m.Context,
-			&m.Confidence, &projectID, &m.CreatedAt, &m.UpdatedAt)
+		m, err := scanMemory(rows)
 		if err != nil {
 			continue
-		}
-		if projectID.Valid {
-			m.ProjectID = projectID.String
 		}
 		memories = append(memories, m)
 	}
@@ -287,6 +402,11 @@ type MemoryStats struct {
 
 // SyncToFiles exports memories to markdown files in .agent/memories/ for git tracking.
 // This allows memories to persist in version control alongside the codebase.
+//
+// Hook (GH-6011, TASK-585 D2 "SQLite now, files later"): console-review
+// learnings (Source == SourceConsoleReview) live only in SQLite today; when this
+// stub is implemented they are the rows to export as .agent/knowledge/memories
+// learning files. Deliberately still a stub.
 func (k *KnowledgeStore) SyncToFiles(agentPath string) error {
 	// TODO: Implement file export for git-tracked memories
 	// Format: .agent/memories/{type}/{hash}.md

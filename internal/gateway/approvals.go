@@ -93,6 +93,9 @@ func approvalReason(meta map[string]interface{}) *string {
 type decisionRequestBody struct {
 	Decision string `json:"decision"`
 	By       string `json:"by"`
+	// Reason is optional (≤ 2 KB). On a reject a non-empty reason is written
+	// as a console-review learning for the project (GH-6011).
+	Reason string `json:"reason,omitempty"`
 }
 
 // decisionResponseBody echoes the recorded decision.
@@ -242,6 +245,11 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "missing by", http.StatusBadRequest)
 		return
 	}
+	body.Reason = strings.TrimSpace(body.Reason)
+	if len(body.Reason) > maxLearningReasonBytes {
+		http.Error(w, "reason exceeds 2048 bytes", http.StatusBadRequest)
+		return
+	}
 
 	s.mu.RLock()
 	store := s.dashboardStore
@@ -302,6 +310,11 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 	default:
 		http.Error(w, "failed to record decision", http.StatusInternalServerError)
 		return
+	}
+
+	if decision == approval.DecisionRejected && body.Reason != "" {
+		exec, _ := store.GetExecutionByApprovalRequestID(requestID)
+		s.recordRejectLearning(requestID, pending, exec, body.Reason, body.By)
 	}
 
 	if err := store.DeletePendingApproval(requestID); err != nil {

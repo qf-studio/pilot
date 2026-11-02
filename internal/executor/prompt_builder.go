@@ -442,23 +442,31 @@ const memoryInjectionCharCap = 1500
 // if injection is disabled, unavailable, or nothing was recalled (TASK-387).
 // Gated on: memory injection enabled in config, non-LocalMode, a Navigator
 // project, and at least one recalled memory. Capped at
-// min(config.MaxMemories, 5) entries and ~1500 chars total.
+// min(config.MaxMemories, 5) entries and ~1500 chars total. GH-6011: when a
+// knowledge store is set, the project's newest console-review learnings
+// (≤ 2 KB) follow the graph memories, with or without Navigator.
 func (r *Runner) buildMemoryInjectionBlock(task *Task, executionPath string, hasNavigator bool) string {
 	if r.config == nil || r.config.MemoryInjection == nil || !r.config.MemoryInjection.Enabled {
 		return ""
 	}
-	if task.LocalMode || !hasNavigator {
+	if task.LocalMode {
 		return ""
 	}
 
-	limit := min(r.config.MemoryInjection.MaxMemories, 5)
-	recalled := graphrecall.RecallRelevant(executionPath, task.Title+" "+task.Description, limit)
-	if len(recalled) == 0 {
-		return ""
+	var block string
+	if hasNavigator {
+		limit := min(r.config.MemoryInjection.MaxMemories, 5)
+		recalled := graphrecall.RecallRelevant(executionPath, task.Title+" "+task.Description, limit)
+		block, _ = renderMemoryBlock("## Known pitfalls from project memory\n\n", "\nHeed these before implementing.\n", recalled)
 	}
 
-	block, _ := renderMemoryBlock("## Known pitfalls from project memory\n\n", "\nHeed these before implementing.\n", recalled)
-	return block
+	// GH-6011: console reject reasons for this project ride in the same block,
+	// independent of Navigator — they live in SQLite, not graph.json.
+	projectPath := task.ProjectPath
+	if projectPath == "" {
+		projectPath = executionPath
+	}
+	return block + r.buildConsoleLearningsBlock(projectPath)
 }
 
 // renderMemoryBlock renders header, one "- [type] summary (confidence c)"

@@ -1482,6 +1482,7 @@ Examples:
 				// TUI eval panel — same store, same wiring site.
 				p.Gateway().SetEvalMetricsSource(gwStore)
 				p.Gateway().SetChatMetricsSource(gwStore) // GH-5677
+				wireLearnings(p.Gateway(), gwStore, cfg)  // GH-6011
 			}
 			// GH-4748: wire the same DecisionRecorder (approvalMgr) that
 			// Telegram/Slack use via WithDecisionRecorder above, so
@@ -2962,6 +2963,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// eval panel — same store, same wiring site.
 			gwServer.SetEvalMetricsSource(store)
 			gwServer.SetChatMetricsSource(store) // GH-5677
+			wireLearnings(gwServer, store, cfg)  // GH-6011
 		}
 		// GH-4748: wire the same DecisionRecorder (approvalMgr) that
 		// Telegram/Slack use via WithDecisionRecorder above, so
@@ -5017,4 +5019,18 @@ func countGitHubRepos(cfg *config.Config) int {
 		}
 	}
 	return len(seen)
+}
+
+// wireLearnings backs POST /api/v1/learnings and approval reject reasons
+// (GH-6011): console-review learnings are written to the memories table that
+// the executor reads when building prompts. Called at both gateway
+// construction sites (gateway mode and polling mode); a missed site leaves the
+// route answering 503. InitSchema is idempotent.
+func wireLearnings(gw *gateway.Server, store *memory.Store, cfg *config.Config) {
+	ks := memory.NewKnowledgeStore(store.DB())
+	if err := ks.InitSchema(); err != nil {
+		logging.WithComponent("knowledge").Warn("Failed to initialize knowledge store schema (learnings API)", slog.Any("error", err))
+		return
+	}
+	gw.SetLearningStore(ks, config.NewProjectSource(cfg))
 }

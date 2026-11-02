@@ -135,7 +135,7 @@ func (r *Runner) ExecuteChatTurn(ctx context.Context, turn ChatTurn, onProgress 
 	run := func(resume string) (*BackendResult, error) {
 		prompt := turn.Text
 		if resume == "" {
-			prompt = BuildChatPrompt(turn.ProjectPath, turn.Text)
+			prompt = buildChatPromptWithLearnings(turn.ProjectPath, turn.Text, r.buildConsoleLearningsBlock(turn.ProjectPath))
 		}
 		opts := ExecuteOptions{
 			Prompt:          prompt,
