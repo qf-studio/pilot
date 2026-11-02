@@ -3591,6 +3591,16 @@
           "theory of mind",
           "authentication"
         ]
+      },
+      "TASK-630": {
+        "path": ".agent/tasks/TASK-630-monitor-register-epic-subissues-project.md",
+        "title": "Dashboard shows epic sub-issues as \"(no project)\" with the id as title \u2014 register children with the Monitor",
+        "status": "dispatched",
+        "concepts": [
+          "context",
+          "knowledge",
+          "testing"
+        ]
       }
     },
     "memories": {
@@ -14518,6 +14528,21 @@
       "from": "TASK-585",
       "to": "knowledge",
       "type": "implements"
+    },
+    {
+      "from": "TASK-630",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-630",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-630",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -15259,7 +15284,8 @@
       "TASK-626",
       "TASK-627",
       "TASK-628",
-      "TASK-585"
+      "TASK-585",
+      "TASK-630"
     ],
     "conversational-bot": [
       "mem-036",
@@ -16234,7 +16260,8 @@
       "TASK-625",
       "TASK-626",
       "TASK-627",
-      "TASK-585"
+      "TASK-585",
+      "TASK-630"
     ],
     "labels": [
       "mem-100",
@@ -16892,7 +16919,8 @@
       "TASK-626",
       "TASK-627",
       "TASK-628",
-      "TASK-585"
+      "TASK-585",
+      "TASK-630"
     ],
     "testing-quality": [
       "TASK-384",
@@ -17585,10 +17613,10 @@
       "hasmakefiletarget-is-the-make-target-probe-never-make-n-or-q"
     ]
   },
-  "last_updated": "2026-11-02T15:51:43.547091+00:00",
+  "last_updated": "2026-11-02T19:01:29.741631+00:00",
   "stats": {
-    "total_nodes": 829,
-    "total_edges": 943,
+    "total_nodes": 830,
+    "total_edges": 946,
     "memory_count": 453
   },
   "metadata": {}
