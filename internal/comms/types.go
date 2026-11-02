@@ -21,7 +21,14 @@ type IncomingMessage struct {
 	IsCallback bool        // true when this is a button callback
 	CallbackID string      // platform callback ID
 	ActionID   string      // button action ID
+	Action     string      // chat action on a text message (web only; ActionCreateTickets)
 	RawEvent   interface{} // platform-specific escape hatch
+}
+
+// DraftsSender is implemented by messengers that can deliver a batch of
+// drafted tickets as one structured event (the web console).
+type DraftsSender interface {
+	SendDrafts(ctx context.Context, contextID, threadID string, drafts []TicketDraft) error
 }
 
 // Messenger is the interface every chat adapter must implement for outbound messaging.

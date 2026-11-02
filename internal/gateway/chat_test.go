@@ -122,6 +122,9 @@ func TestHandleChatMessages_ValidationErrors_400(t *testing.T) {
 		web.ErrMissingText,
 		web.ErrMissingCallbackFields,
 		web.ErrApprovalCallback,
+		web.ErrUnknownAction,
+		web.ErrMissingProject,
+		web.ErrReportTooLarge,
 	}
 	for _, wantErr := range cases {
 		api := &mockChatAPI{
@@ -396,6 +399,17 @@ const chatIssueOutput = "Here is the draft.\n\n```pilot-issue\n" +
 	"  ## Context\n  Composed test.\n  ## Scope\n  One file.\n  ## Acceptance Criteria\n  Passes.\n" +
 	"  ## Out of scope\n  Everything else.\n  ## Refs\n  None.\n```"
 
+// chatDraftsOutput is a two-draft reply: d1 is shippable, d2 is not (title and
+// acceptance dialect), so the composed test sees both kinds on the wire.
+const chatDraftsOutput = "Two drafts.\n\n```pilot-drafts\n" +
+	"- id: d1\n  title: \"fix(chat): validate widget input\"\n  labels: [bug]\n  deps: []\n  body: |\n" +
+	"    ## Context\n" +
+	"    The widget never validates its input, which lets bad configuration through to the runtime.\n" +
+	"    ## Acceptance\n" +
+	"    - [ ] `go test ./internal/x/ -run TestWidget` passes; paste the output into the PR body.\n" +
+	"    ## Implementation\n    Validate it.\n    ## Refs\n    - report\n" +
+	"- id: d2\n  title: \"Rework the rest\"\n  deps: [d1]\n  body: |\n    ## Context\n    Rework.\n```"
+
 func (b *chatTestBackend) Name() string      { return "chat-test-backend" }
 func (b *chatTestBackend) IsAvailable() bool { return true }
 func (b *chatTestBackend) Execute(ctx context.Context, opts executor.ExecuteOptions) (*executor.BackendResult, error) {
@@ -414,6 +428,9 @@ func (b *chatTestBackend) Execute(ctx context.Context, opts executor.ExecuteOpti
 	}
 	if b.hold > 0 {
 		time.Sleep(b.hold)
+	}
+	if strings.Contains(opts.Prompt, "drafting GitHub issues from the research report") {
+		return &executor.BackendResult{Success: true, Output: chatDraftsOutput}, nil
 	}
 	if strings.Contains(opts.Prompt, "file an issue") {
 		opts.EventHandler(executor.BackendEvent{
@@ -1005,4 +1022,112 @@ func TestChatAPI_Composed_RunnerDoneBeforeCleanup(t *testing.T) {
 	if backend.started != 1 {
 		t.Errorf("backend Execute calls = %d, want 1", backend.started)
 	}
+}
+
+func TestChatMessages_ActionPassedToDispatch(t *testing.T) {
+	var got web.DispatchRequest
+	api := &mockChatAPI{dispatchFunc: func(_ context.Context, req web.DispatchRequest) (int64, error) {
+		got = req
+		return 0, nil
+	}}
+	s := newTestServerWithChat(api)
+	req := httpTestRequest(t, http.MethodPost, "/api/v1/chat/messages",
+		jsonBody(t, chatMessageRequest{ConversationID: "c1", Text: "# report", ProjectID: "alpha", Action: "create_tickets"}))
+	w := newTestResponseRecorder()
+	s.handleChatMessages(w, req)
+	if w.status != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.status)
+	}
+	if got.Action != "create_tickets" || got.Text != "# report" || got.ProjectID != "alpha" {
+		t.Errorf("dispatch request = %+v, want action, text and projectId passed through", got)
+	}
+}
+
+// TestChatMessages_CreateTicketsDraftsEvent drives action create_tickets
+// through the real gateway, API, comms.Handler and Runner with a two-draft
+// fixture reply and checks the single drafts event on the wire.
+func TestChatMessages_CreateTicketsDraftsEvent(t *testing.T) {
+	h := newChatHarness(t, &chatTestBackend{})
+	client := &http.Client{Timeout: 10 * time.Second}
+	do := func(method, path, body string) (int, []byte) {
+		t.Helper()
+		req, _ := http.NewRequest(method, h.baseURL+path, bytes.NewBufferString(body))
+		req.Header.Set("Authorization", "Bearer "+h.token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, b
+	}
+
+	// Validation on the wire.
+	for name, body := range map[string]string{
+		"unknown action":  `{"conversationId":"v","text":"r","projectId":"alpha","action":"nope"}`,
+		"missing project": `{"conversationId":"v","text":"r","action":"create_tickets"}`,
+		"missing report":  `{"conversationId":"v","projectId":"alpha","action":"create_tickets"}`,
+		"oversize report": `{"conversationId":"v","projectId":"alpha","action":"create_tickets","text":"` + strings.Repeat("x", comms.MaxDraftReportBytes+1) + `"}`,
+	} {
+		if status, _ := do(http.MethodPost, "/api/v1/chat/messages", body); status != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", name, status)
+		}
+	}
+
+	status, body := do(http.MethodPost, "/api/v1/chat/messages",
+		`{"conversationId":"tickets","text":"# Report\nThe widget is unvalidated.","projectId":"alpha","action":"create_tickets"}`)
+	if status != http.StatusAccepted {
+		t.Fatalf("POST status = %d body = %s, want 202", status, body)
+	}
+
+	var raw []byte
+	var events chatEventsResponse
+	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		_, raw = do(http.MethodGet, "/api/v1/chat/conversations/tickets/events", "")
+		if err := json.Unmarshal(raw, &events); err != nil {
+			t.Fatalf("decode events: %v", err)
+		}
+		if countType(events.Events, web.EventDrafts) > 0 {
+			break
+		}
+	}
+	if n := countType(events.Events, web.EventDrafts); n != 1 {
+		t.Fatalf("drafts events = %d, want 1; body = %s", n, raw)
+	}
+	for _, key := range []string{`"drafts"`, `"shippable"`, `"kind"`, `"deps"`} {
+		if !strings.Contains(string(raw), key) {
+			t.Errorf("events body lacks key %s: %s", key, raw)
+		}
+	}
+
+	var drafts []comms.TicketDraft
+	var phases []string
+	for _, ev := range events.Events {
+		if ev.Type == web.EventProgress {
+			phases = append(phases, ev.Phase)
+		}
+		if ev.Type == web.EventDrafts {
+			drafts = ev.Drafts
+		}
+	}
+	if len(phases) == 0 || phases[0] != "drafting" {
+		t.Errorf("progress phases = %v, want drafting first", phases)
+	}
+	if len(drafts) != 2 || drafts[0].ID != "d1" || drafts[1].ID != "d2" {
+		t.Fatalf("drafts = %+v, want d1 and d2", drafts)
+	}
+	if drafts[1].Kind != comms.DraftKindEpic || drafts[1].Shippable.OK || len(drafts[1].Deps) != 1 {
+		t.Errorf("d2 = %+v, want an epic-candidate depending on d1", drafts[1])
+	}
+}
+
+func countType(evs []web.Event, typ web.EventType) int {
+	n := 0
+	for _, ev := range evs {
+		if ev.Type == typ {
+			n++
+		}
+	}
+	return n
 }

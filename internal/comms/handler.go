@@ -236,6 +236,10 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 
 	// Web console: agentic chat turns and the pilot-issue confirmation card.
 	if msg.Platform == "web" {
+		if msg.Action == ActionCreateTickets && !msg.IsCallback {
+			h.handleCreateTickets(ctx, contextID, msg.ThreadID, text)
+			return
+		}
 		lowerText := strings.ToLower(strings.TrimSpace(text))
 		yes := lowerText == "yes" || lowerText == "y" || lowerText == "confirm" || lowerText == "ok"
 		no := lowerText == "no" || lowerText == "n" || lowerText == "cancel" || lowerText == "nope"

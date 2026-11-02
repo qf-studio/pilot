@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -393,5 +394,44 @@ func TestAPI_Wait_TimeoutLeaksNoGoroutines(t *testing.T) {
 	close(gate.release)
 	if !api.Wait(5 * time.Second) {
 		t.Fatal("Wait = false after HandleMessage was released")
+	}
+}
+
+func TestAPI_Dispatch_CreateTicketsValidation(t *testing.T) {
+	api, m := newTestAPIWithProjects()
+	tests := []struct {
+		name string
+		req  DispatchRequest
+		want error
+	}{
+		{"unknown action", DispatchRequest{ConversationID: "c1", Text: "r", ProjectID: "beta", Action: "delete_all"}, ErrUnknownAction},
+		{"action with callback", DispatchRequest{ConversationID: "c1", IsCallback: true, CallbackID: "x", ActionID: "y", ProjectID: "beta", Action: comms.ActionCreateTickets}, ErrUnknownAction},
+		{"missing report", DispatchRequest{ConversationID: "c1", ProjectID: "beta", Action: comms.ActionCreateTickets}, ErrMissingText},
+		{"missing project", DispatchRequest{ConversationID: "c1", Text: "r", Action: comms.ActionCreateTickets}, ErrMissingProject},
+		{"report over 64 KB", DispatchRequest{ConversationID: "c1", Text: strings.Repeat("x", comms.MaxDraftReportBytes+1), ProjectID: "beta", Action: comms.ActionCreateTickets}, ErrReportTooLarge},
+		{"unknown project", DispatchRequest{ConversationID: "c1", Text: "r", ProjectID: "nope", Action: comms.ActionCreateTickets}, ErrUnknownProject},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := api.Dispatch(context.Background(), tt.req); !errors.Is(err, tt.want) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
+		})
+	}
+	time.Sleep(50 * time.Millisecond)
+	if events, latest := m.Events("web:c1", 0); len(events) != 0 || latest != 0 {
+		t.Errorf("events = %d, latest = %d; want nothing dispatched", len(events), latest)
+	}
+}
+
+func TestMessenger_SendDraftsAppendsOneDraftsEvent(t *testing.T) {
+	m := NewMessenger()
+	d := comms.TicketDraft{ID: "d1", Title: "fix(x): y", Labels: []string{}, Deps: []string{}, Kind: comms.DraftKindEpic}
+	if err := m.SendDrafts(context.Background(), "web:c1", "", []comms.TicketDraft{d}); err != nil {
+		t.Fatal(err)
+	}
+	events, _ := m.Events("web:c1", 0)
+	if len(events) != 1 || events[0].Type != EventDrafts || len(events[0].Drafts) != 1 || events[0].Drafts[0].ID != "d1" {
+		t.Fatalf("events = %+v, want one drafts event", events)
 	}
 }
