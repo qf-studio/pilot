@@ -95,7 +95,7 @@ Depends on #5924 (it lands the -short guards the scoped run relies on). The qual
 ## Refs
 
 - .agent/tasks/TASK-616-box-quality-gate-speed.md
-- .agent/tasks/TASK-393-throughput-acceleration.md
+- .agent/tasks/archive/TASK-393-throughput-acceleration.md
 
 ### LEG G3 — repo: qf-studio/pilot — title: fix(quality): changed-package scope accepts the last go list line — whole-output TrimSpace drops the trailing empty test columns and every box run falls back to the full suite
 probe: present qf-studio/pilot func listPackages\(

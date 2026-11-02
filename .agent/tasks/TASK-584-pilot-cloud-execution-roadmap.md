@@ -113,6 +113,14 @@ Rewrite the contradicted lines rather than append: `saas-architecture.md` (Strip
 closed per §4), `saas-roadmap.md` (add S5 entries = waves 1–4). One `docs:` commit; update
 `DEVELOPMENT-README.md` § Current State to point at the positioning doc.
 
+## Carried from TASK-496 (archived 2026-11-02)
+
+Repo-settings decisions still open, verified 2026-11-02 via the GitHub API:
+
+- **Branch protection on `qf-studio/pilot` main — none** (open since 08-03). Minimum: required checks `test` + `lint`, no review count. One `gh api -X PUT repos/qf-studio/pilot/branches/main/protection` call.
+- **Tag ruleset on `qf-studio/pilot-console` — none**; tags reach `prod-0.1.49`. Decide: restrict `prod-*` creation to the release workflow identity.
+- Nelya open items stay under TASK-495. infra#35/#36 need a human author (executor refuses the isolation-harness package).
+
 ## Verification (end-to-end, per phase)
 
 - Phase A: `git log origin/main -1` shows the close-out commit; `gh issue list --repo qf-studio/pilot

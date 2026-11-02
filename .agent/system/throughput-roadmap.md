@@ -1,6 +1,6 @@
 # Roadmap: Pilot Throughput Acceleration (TASK-393 Program)
 
-**Source plan**: `.agent/tasks/TASK-393-throughput-acceleration.md`
+**Source plan**: `.agent/tasks/archive/TASK-393-throughput-acceleration.md`
 **Feeder fixes**: `.agent/tasks/TASK-394-epic-subissue-execution-ledger.md` (→ [#4140](https://github.com/qf-studio/pilot/issues/4140)), `.agent/tasks/TASK-395-epic-reconcile-false-positives.md` (→ [#4143](https://github.com/qf-studio/pilot/issues/4143))
 **As of**: 2026-07-13 — **M3 baseline window OPEN: 2026-07-13 09:38 UTC → ~2026-07-20** (daemon PID 11530 on `6e60eb4b`)
 
@@ -147,7 +147,7 @@ sqlite3 ~/.pilot/data/pilot.db "SELECT task_id,status FROM executions WHERE date
 
 - **M3 window is live (2026-07-13 09:38 UTC → ~2026-07-20).** During the week, collect the two decision inputs: D1 (retry wall-clock share) and D2 (queue-wait vs per-task ceremony dominance → picks M4-first vs M5-first). End-of-window: compute medians from in-window samples only (subtract pre-window snapshot counts 93/104/31 from histogram `_count`s, or filter `execution_events` by `occurred_at >= '2026-07-13 09:38'`).
 - Do not dispatch M4/M5/M6/M7 before M3 has at least a few days of clean data — the program's "measure first" ordering is why Phase 1 shipped ahead of everything, and M1 exists to keep that data clean.
-- `.agent/tasks/TASK-393-throughput-acceleration.md` carries the per-phase Files lists and Technical Decisions — use those as literal issue-body content when dispatching M4–M7, mirroring how #4127 was decomposed for Phase 1.
+- `.agent/tasks/archive/TASK-393-throughput-acceleration.md` carries the per-phase Files lists and Technical Decisions — use those as literal issue-body content when dispatching M4–M7, mirroring how #4127 was decomposed for Phase 1.
 
 ---
 

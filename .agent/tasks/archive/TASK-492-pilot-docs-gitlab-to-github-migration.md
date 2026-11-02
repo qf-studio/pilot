@@ -1,5 +1,7 @@
 # TASK-492: pilot-docs migration — GitLab → GitHub `qf-studio/pilot-docs` + AWS deploy (Nelya)
 
+**Status**: 📦 ARCHIVED 2026-11-02 — no code work left (docs chain is GitHub-only). Step 4 operator items (delete `GITLAB_SSH_KEY` — still present on the repo 2026-11-02 — archive `quant-flow/pilot-docs`, drop the hosted `gitlab:` docs block, rewrite the pipeline reference) are carried by TASK-629 phase D.
+
 ✅ **CUTOVER DONE 2026-09-05 (by Nelya) — `pilot.quantflow.studio` served from AWS since 09-05 19:21 CEST** (ECS behind ALB, Route 53; verified 09-06: DNS → AWS, HSTS + nosniff live, sub-pages 200). Handover received 09-06 in Slack `#infrastructure` (msg `1788692051.363079`, artifact "QuantFlow AWS Handover"). Her deploy leg: `qf-studio/pilot-docs` workflow "Deploy QuantFlow AWS" (`workflow_run` after our "Build image" on a `prod-*` tag → mirror GHCR → ECR → ECS). She also removed the GitLab pipeline files from pilot-docs and the nested `docker/docker/…` copies. **Step 1 (this repo, 09-05)** stands. **Step 2′ DONE (TASK-494, 09-06):** sync is GitHub-only and preserves pilot-docs `.github/` + `docker/`; GitLab files gone from both repos; proven e2e through Nelya's deploy. Remaining: step 4 (retire GitLab, operator) + infra notes to Nelya (compression + CSP-RO missing on the AWS path; `PILOT_DOCS_PAT` = founder OAuth token, org admin → tag-ruleset bypass OK).
 ## Why
 

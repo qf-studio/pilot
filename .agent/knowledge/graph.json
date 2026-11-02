@@ -1433,7 +1433,7 @@
         ]
       },
       "TASK-393": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-393-throughput-acceleration.md",
+        "path": ".agent/tasks/archive/TASK-393-throughput-acceleration.md",
         "title": "Pilot Throughput Acceleration",
         "status": "completed",
         "concepts": [
@@ -1580,7 +1580,7 @@
         ]
       },
       "TASK-404": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-404-execution-lifecycle-chokepoint.md",
+        "path": ".agent/tasks/archive/TASK-404-execution-lifecycle-chokepoint.md",
         "title": "Execution lifecycle chokepoint \u2014 one API for create/transition, kill the FK-787 class permanently",
         "status": "completed",
         "concepts": [
@@ -2681,9 +2681,9 @@
         ]
       },
       "TASK-489": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-489-receipts-digest.md",
+        "path": ".agent/tasks/archive/TASK-489-isolation-gate-verify-ingress-source-and-kms-canary.md",
         "title": "Task 489 Receipts Digest",
-        "status": "unknown",
+        "status": "completed",
         "concepts": [
           "api",
           "markers",
@@ -2695,9 +2695,9 @@
         ]
       },
       "TASK-490": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-490-s4-minimal-invpc-console.md",
+        "path": ".agent/tasks/archive/TASK-490-s4-minimal-invpc-console.md",
         "title": "Task 490 S4 Minimal Invpc Console",
-        "status": "unknown",
+        "status": "completed",
         "concepts": [
           "deployment",
           "theory of mind",
@@ -2710,9 +2710,9 @@
         ]
       },
       "TASK-492": {
-        "path": ".agent/tasks/TASK-492-pilot-docs-gitlab-to-github-migration.md",
+        "path": ".agent/tasks/archive/TASK-492-pilot-docs-gitlab-to-github-migration.md",
         "title": "pilot-docs migration \u2014 GitLab \u2192 GitHub `qf-studio/pilot-docs` + AWS deploy (Nelya)",
-        "status": "in_progress",
+        "status": "completed",
         "concepts": [
           "context",
           "database",
