@@ -1,6 +1,6 @@
 # TASK-585: Wave 2 — research → tickets (P2, P3, C5, C4, C10, U10)
 
-**Status**: 📋 PLANNED 2026-11-02 — legs written, none filed. Dispatch now: P2, P3, C5, C10 (independent). Held: C4 (after P3 + C5), U10 (after P2 + C5). Founder confirms D1–D4 below before dispatch (defaults are the recommendation; silence = go).
+**Status**: 🚀 **DISPATCHED 2026-11-02 (D1–D4 accepted by the founder)** — P2 → [pilot#6010](https://github.com/qf-studio/pilot/issues/6010) (L, decomposable) · P3 → [pilot#6011](https://github.com/qf-studio/pilot/issues/6011) (no-decompose) · C5 → [console#459](https://github.com/qf-studio/pilot-console/issues/459) (no-decompose) · C10 → [console#460](https://github.com/qf-studio/pilot-console/issues/460) (no-decompose). Held: C4 after P3 + C5 merge, U10 after P2 + C5 merge (`nav-dispatch-legs.py --only C4` / `--only U10`; their probes pin the upstream fields). Review C5 and C10 pre-merge (migration + public route); P2/P3 per the tier-1 policy.
 **Created**: 2026-11-02
 **Assignee**: Pilot (P/C/U legs) · founder (D1–D4, ui#266)
 **Parent**: [TASK-584](TASK-584-pilot-cloud-execution-roadmap.md) Phase C · roadmap rows in `system/project/project_pilot_cloud_roadmap_tickets.md` · scope `system/project/project_pilot_cloud_positioning.md` §8.3 (flow, D1–D4), §8.2 D2 (reject → learning), §4 (research draws from the pool)
@@ -152,6 +152,8 @@ probe: absent qf-studio/pilot \"/api/v1/learnings\"
 ## Out of scope
 Writing `.agent/` files or graph.json, a PR per learning, any console change.
 
+no-decompose
+
 ---
 
 ## Legs — pilot-console
@@ -243,6 +245,8 @@ probe: present qf-studio/pilot DefaultDailyTurnCap
 ## Out of scope
 A separate research counter, daemon changes, UI copy (U10 reads the label).
 
+no-decompose
+
 ---
 
 ## Legs — pilot-console-ui
@@ -293,6 +297,10 @@ Dispatch order: P2, P3, C5, C10 now (`nav-dispatch-legs.py` with `--only P2,P3,C
 
 ## Refs
 
+- P2 → https://github.com/qf-studio/pilot/issues/6010
+- P3 → https://github.com/qf-studio/pilot/issues/6011
+- C5 → https://github.com/qf-studio/pilot-console/issues/459
+- C10 → https://github.com/qf-studio/pilot-console/issues/460
 - TASK-584 Phase C (wave 2) · positioning §8.3, §8.2 D2 · roadmap rows P2, P3, C4, C5, C10, U10
 - ui#266 (mode pills decision → D4) · pilot#5810 (P17 chat events, separate)
 - Seam map 2026-11-02 (navigator-research, this doc § Context)

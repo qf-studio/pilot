@@ -56,12 +56,12 @@ Status: 📋 not filed · 🎫 filed (issue #) · 🚧 in flight · ✅ merged. 
 | C2 | 1 | feat(run-story): share token (opt-in), redacted public payload | 8.1 D3 | S | ✅ console#450 → PR#452 merged 10-26 |
 | C3 | 1 | feat(review): unified Review needed list — approvals + spec drafts + decisions; actions carry `actor_id` | 8.2 | M | ✅ console#422 → PR#426 hand-merged, D1 → pilot#5858 (refiled from #5797) (10-22) |
 | C4 | 2 | feat(review): reject reason → learning write-through to the tenant daemon | 8.2 D2 | S | 📝 TASK-585 (leg written 11-02) — after P3 |
-| C5 | 2 | feat(drafts): ticket-draft store; approve → GitHub issue with the `pilot` label → Queued; edit before approve | 8.3 | M | 📝 TASK-585 (leg written 11-02) — after P2 |
+| C5 | 2 | feat(drafts): ticket-draft store; approve → GitHub issue with the `pilot` label → Queued; edit before approve | 8.3 | M | 🎫 console#459 (11-02, TASK-585, `no-decompose`) |
 | C6 | 1 | feat(briefs): brief store + Briefs API; email channel (SES); tenant time + timezone | 8.7 | M | 📋 after P9, I3 |
 | C7 | 1 | feat(metering): pool meter endpoint (% of the $300 ceiling); USD hidden on platform key | 4 | S | ✅ console#423 → PR#427 recovery, reviewed APPROVE-w-notes → console#431 (proxy /metrics USD gap), console#432 (hygiene), ui#263 (10-22) |
 | C8 | 1 | feat(billing): $300 ceiling config; Paddle products for packs 25/$99 and 100/$349 (90-day expiry); daily cap 15 notice | 4 (v3) | M | ✅ console#424 → PR#425, D1 → TASK-589 (10-22) |
 | C9 | 4 | feat(ws): `/ws/dashboard` proxy to the tenant gateway for the live log | 8.5 D3 | M | 📋 after P7, P8 |
-| C10 | 2 | chore(research): verify the daily research-turn cap (50) against the shipped chat-turn metering; adjust | 8.3 D4 | S | 📝 TASK-585 (leg written 11-02) |
+| C10 | 2 | chore(research): verify the daily research-turn cap (50) against the shipped chat-turn metering; adjust | 8.3 D4 | S | 🎫 console#460 (11-02, TASK-585, `no-decompose`) |
 | C11 | 5 | feat(viewer): `viewer` role with `project_ids` scope enforced on every read | 9.1 | M | 📋 |
 | C12 | 4 | feat(db): Postgres RLS — `FORCE ROW LEVEL SECURITY` + `app.current_tenant_id` | 8.8 D3 | M | 📋 |
 | C13 | 3 | feat(onboarding): bootstrap trigger per project, cost cap from TASK-581, status + result surface | 7 | M | 📋 after P5 |
@@ -72,8 +72,8 @@ Status: 📋 not filed · 🎫 filed (issue #) · 🚧 in flight · ✅ merged. 
 | # | Wave | Ticket | § | Size | Status |
 |---|---|---|---|---|---|
 | P1 | 1 | feat(gateway): run-story fields per execution — diff stats, tests passed/failed, evidence-gate result, issue→PR and PR→merge timings | 8.1 | M | ✅ pilot#5790 → PR#5828 merged 10-22 21:29Z (rebuild after PR#5805 manual-rebase hold), unreviewed; in v2.294.0 |
-| P2 | 2 | feat(research): `Create tickets` — draft N tickets from a research report in SOP format (H2, Acceptance, `file:line`, `#N` deps); shippable check; epic split on failure | 8.3 | L | 📝 TASK-585 (leg written 11-02) — after TASK-518 leg 4 |
-| P3 | 2 | feat(memory): reject reason from the lane → learning memory + graph index | 8.2 D2 | S | 📝 TASK-585 (leg written 11-02) |
+| P2 | 2 | feat(research): `Create tickets` — draft N tickets from a research report in SOP format (H2, Acceptance, `file:line`, `#N` deps); shippable check; epic split on failure | 8.3 | L | 🎫 pilot#6010 (11-02, TASK-585) |
+| P3 | 2 | feat(memory): reject reason from the lane → learning memory + graph index | 8.2 D2 | S | 🎫 pilot#6011 (11-02, TASK-585, `no-decompose`) |
 | P4 | 3 | feat(bootstrap): new-project interview (≤5 questions, defaults) → scaffold ticket + 5–10 first tickets per the onboarding SOP | 7 | L | 📋 |
 | P5 | 3 | feat(bootstrap): legacy scan — repo, README, `docs/`, open issues, last 50 merged PRs → proposed tickets; cost cap + degrade path | 7, TASK-549/581 | L | 📋 after P12 |
 | P6 | 3 | feat(bootstrap): external docs ingestion v1 — URL / upload → `.agent/system/`, indexed by Navigator | 7 | M | 📋 |
