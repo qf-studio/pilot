@@ -3575,6 +3575,22 @@
           "quality-gate",
           "review"
         ]
+      },
+      "TASK-585": {
+        "path": ".agent/tasks/TASK-585-wave2-research-to-tickets.md",
+        "title": "Wave 2 \u2014 research \u2192 tickets (P2, P3, C5, C4, C10, U10)",
+        "status": "backlog",
+        "concepts": [
+          "api",
+          "database",
+          "testing",
+          "knowledge",
+          "context",
+          "frontend",
+          "deployment",
+          "theory of mind",
+          "authentication"
+        ]
       }
     },
     "memories": {
@@ -14462,6 +14478,46 @@
       "from": "hasmakefiletarget-is-the-make-target-probe-never-make-n-or-q",
       "to": "TASK-628",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-585",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-585",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-585",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-585",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-585",
+      "to": "frontend",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-585",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-585",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-585",
+      "to": "knowledge",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -14695,7 +14751,8 @@
       "TASK-625",
       "TASK-626",
       "TASK-627",
-      "TASK-628"
+      "TASK-628",
+      "TASK-585"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -14826,7 +14883,8 @@
       "TASK-597",
       "TASK-598",
       "TASK-599",
-      "TASK-628"
+      "TASK-628",
+      "TASK-585"
     ],
     "auto-merge": [
       "mem-103"
@@ -15200,7 +15258,8 @@
       "TASK-625",
       "TASK-626",
       "TASK-627",
-      "TASK-628"
+      "TASK-628",
+      "TASK-585"
     ],
     "conversational-bot": [
       "mem-036",
@@ -15347,7 +15406,8 @@
       "test-db-migrations-race-on-cluster-wide-roles-need-base-db-advisory-lock",
       "TASK-583",
       "mem-260",
-      "TASK-589"
+      "TASK-589",
+      "TASK-585"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -15603,7 +15663,8 @@
       "TASK-625",
       "TASK-626",
       "TASK-627",
-      "TASK-628"
+      "TASK-628",
+      "TASK-585"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -15889,7 +15950,8 @@
       "TASK-589",
       "TASK-593",
       "TASK-594",
-      "TASK-596"
+      "TASK-596",
+      "TASK-585"
     ],
     "gateway": [
       "TASK-01",
@@ -16171,7 +16233,8 @@
       "TASK-624",
       "TASK-625",
       "TASK-626",
-      "TASK-627"
+      "TASK-627",
+      "TASK-585"
     ],
     "labels": [
       "mem-100",
@@ -16828,7 +16891,8 @@
       "TASK-625",
       "TASK-626",
       "TASK-627",
-      "TASK-628"
+      "TASK-628",
+      "TASK-585"
     ],
     "testing-quality": [
       "TASK-384",
@@ -17107,7 +17171,8 @@
       "TASK-594",
       "TASK-596",
       "TASK-600",
-      "TASK-628"
+      "TASK-628",
+      "TASK-585"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -17520,10 +17585,10 @@
       "hasmakefiletarget-is-the-make-target-probe-never-make-n-or-q"
     ]
   },
-  "last_updated": "2026-11-01T18:57:04.414676+00:00",
+  "last_updated": "2026-11-02T15:51:43.547091+00:00",
   "stats": {
-    "total_nodes": 828,
-    "total_edges": 935,
+    "total_nodes": 829,
+    "total_edges": 943,
     "memory_count": 453
   },
   "metadata": {}
