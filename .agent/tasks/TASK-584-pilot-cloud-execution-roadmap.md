@@ -117,7 +117,7 @@ closed per §4), `saas-roadmap.md` (add S5 entries = waves 1–4). One `docs:` c
 
 Repo-settings decisions still open, verified 2026-11-02 via the GitHub API:
 
-- **Branch protection on `qf-studio/pilot` main — none** (open since 08-03). Minimum: required checks `test` + `lint`, no review count. One `gh api -X PUT repos/qf-studio/pilot/branches/main/protection` call.
+- ~~Branch protection on `qf-studio/pilot` main — none~~ **DONE 2026-11-02**: required checks `test` + `lint` (strict off), no review count, force-push and deletion blocked, admins not enforced (founder docs pushes keep working; the daemon only merges PRs on green). Applied via `gh api -X PUT repos/qf-studio/pilot/branches/main/protection`.
 - **Tag ruleset on `qf-studio/pilot-console` — none**; tags reach `prod-0.1.49`. Decide: restrict `prod-*` creation to the release workflow identity.
 - Nelya open items stay under TASK-495. infra#35/#36 need a human author (executor refuses the isolation-harness package).
 
