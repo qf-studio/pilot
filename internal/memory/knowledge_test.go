@@ -14,6 +14,7 @@ func setupKnowledgeTestDB(t *testing.T) (*sql.DB, *KnowledgeStore) {
 	if err != nil {
 		t.Fatalf("failed to open test db: %v", err)
 	}
+	db.SetMaxOpenConns(1) // each ":memory:" connection is its own database
 
 	ks := NewKnowledgeStore(db)
 	if err := ks.InitSchema(); err != nil {
@@ -323,5 +324,144 @@ func TestKnowledgeStore_DeleteMemory(t *testing.T) {
 	_, err := ks.GetMemory(mem.ID)
 	if err != sql.ErrNoRows {
 		t.Errorf("expected ErrNoRows after delete, got: %v", err)
+	}
+}
+
+func TestAddMemory_PersistsSourceAndTags(t *testing.T) {
+	db, ks := setupKnowledgeTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	mem := &Memory{
+		Type:      MemoryTypeLearning,
+		Content:   "review_reject — task GH-1\nuse the existing helper",
+		ProjectID: "pilot",
+		Source:    SourceConsoleReview,
+		Tags:      []string{"review_reject", "pilot", "GH-1"},
+	}
+	if err := ks.AddMemory(mem); err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	got, err := ks.GetMemory(mem.ID)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if got.Source != SourceConsoleReview {
+		t.Errorf("Source = %q, want %q", got.Source, SourceConsoleReview)
+	}
+	if len(got.Tags) != 3 || got.Tags[1] != "pilot" {
+		t.Errorf("Tags = %v, want [review_reject pilot GH-1]", got.Tags)
+	}
+}
+
+func TestAddMemory_LegacyMemoryHasNoSource(t *testing.T) {
+	db, ks := setupKnowledgeTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	mem := &Memory{Type: MemoryTypePattern, Content: "plain", ProjectID: "pilot"}
+	if err := ks.AddMemory(mem); err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	got, err := ks.GetMemory(mem.ID)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if got.Source != "" || len(got.Tags) != 0 {
+		t.Errorf("legacy memory got Source=%q Tags=%v, want empty", got.Source, got.Tags)
+	}
+}
+
+func TestAddMemory_InitSchemaMigratesOldTable(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`CREATE TABLE memories (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, content TEXT NOT NULL,
+		context TEXT, confidence REAL DEFAULT 1.0, project_id TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO memories (type, content, project_id) VALUES ('pattern', 'old row', 'pilot')`); err != nil {
+		t.Fatal(err)
+	}
+
+	ks := NewKnowledgeStore(db)
+	for i := 0; i < 2; i++ { // twice: the migration must be idempotent
+		if err := ks.InitSchema(); err != nil {
+			t.Fatalf("InitSchema #%d: %v", i+1, err)
+		}
+	}
+	old, err := ks.QueryByType(MemoryTypePattern, "pilot")
+	if err != nil || len(old) != 1 || old[0].Content != "old row" {
+		t.Fatalf("old row not readable after migration: %v %v", old, err)
+	}
+	mem := &Memory{Type: MemoryTypeLearning, Content: "new", ProjectID: "pilot", Source: SourceConsoleReview}
+	if err := ks.AddMemory(mem); err != nil {
+		t.Fatalf("AddMemory after migration: %v", err)
+	}
+}
+
+func TestAddMemoryOnce_IdempotentWithinWindow(t *testing.T) {
+	db, ks := setupKnowledgeTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	newMem := func() *Memory {
+		return &Memory{Type: MemoryTypeLearning, Content: "c", ProjectID: "pilot", Source: SourceConsoleReview}
+	}
+	first := newMem()
+	created, err := ks.AddMemoryOnce(first, "k1", 24*time.Hour)
+	if err != nil || !created {
+		t.Fatalf("first: created=%v err=%v, want created", created, err)
+	}
+	second := newMem()
+	created, err = ks.AddMemoryOnce(second, "k1", 24*time.Hour)
+	if err != nil || created {
+		t.Fatalf("second: created=%v err=%v, want duplicate", created, err)
+	}
+	if second.ID != first.ID {
+		t.Errorf("duplicate ID = %d, want existing %d", second.ID, first.ID)
+	}
+	other := newMem()
+	if created, err = ks.AddMemoryOnce(other, "k2", 24*time.Hour); err != nil || !created {
+		t.Fatalf("different key: created=%v err=%v, want created", created, err)
+	}
+
+	// A row older than the window no longer blocks the same key.
+	if _, err := db.Exec(`UPDATE memories SET created_at = datetime('now', '-25 hours') WHERE id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	again := newMem()
+	if created, err = ks.AddMemoryOnce(again, "k1", 24*time.Hour); err != nil || !created {
+		t.Fatalf("after window: created=%v err=%v, want created", created, err)
+	}
+}
+
+func TestAddMemory_QueryBySourceScopesAndOrders(t *testing.T) {
+	db, ks := setupKnowledgeTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	add := func(content, project, source string) {
+		t.Helper()
+		if err := ks.AddMemory(&Memory{Type: MemoryTypeLearning, Content: content, ProjectID: project, Source: source}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("old", "pilot", SourceConsoleReview)
+	add("new", "pilot", SourceConsoleReview)
+	add("other-project", "other", SourceConsoleReview)
+	add("other-source", "pilot", "")
+
+	got, err := ks.QueryBySource(MemoryTypeLearning, SourceConsoleReview, "pilot", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Content != "new" || got[1].Content != "old" {
+		t.Fatalf("got %v, want [new old] for project pilot", got)
+	}
+	if limited, _ := ks.QueryBySource(MemoryTypeLearning, SourceConsoleReview, "pilot", 1); len(limited) != 1 {
+		t.Errorf("limit 1 returned %d rows", len(limited))
 	}
 }

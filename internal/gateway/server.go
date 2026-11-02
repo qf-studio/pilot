@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/qf-studio/pilot/internal/adapters/linear"
 	"github.com/qf-studio/pilot/internal/approval"
+	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
@@ -130,6 +131,8 @@ type Server struct {
 	gitGraphFetcher          GitGraphFetcher           // Injected to avoid import cycle with internal/dashboard
 	docsProjectPath          string                    // GH-5003: project worktree path backing /api/v1/docs/{tree,file}; "" until SetDocsProjectPath is called
 	decisionRecorder         approval.DecisionRecorder // GH-4748: backs POST /api/v1/approvals/{requestId}/decision
+	learningStore            LearningStore             // GH-6011: backs POST /api/v1/learnings and reject reasons on approval decisions
+	learningProjects         comms.ProjectSource       // GH-6011: project registry that validates/keys learnings
 	chatAPI                  ChatAPI                   // GH-4835: backs the chat routes; nil = routes not registered (adapters.chat.enabled: false)
 	daemonCtx                context.Context           // GH-4835: long-lived ctx stashed by Start(), used to dispatch chat tasks outside the HTTP request lifetime
 	version                  string                    // GH-4864: running process's compiled-in version (main.version); "" until SetVersion is called
@@ -275,6 +278,7 @@ func (s *Server) Start(ctx context.Context) error {
 	apiMux.HandleFunc("/api/v1/gitgraph", s.handleGitGraph)
 	apiMux.HandleFunc("GET /api/v1/approvals", s.handleApprovals)
 	apiMux.HandleFunc("POST /api/v1/approvals/{requestId}/decision", s.handleApprovalDecision)
+	apiMux.HandleFunc("POST /api/v1/learnings", s.handleLearnings)             // GH-6011
 	apiMux.HandleFunc("GET /api/v1/executions/usage", s.handleExecutionsUsage) // GH-5676
 	apiMux.HandleFunc("GET /api/v1/executions/daily-cap", s.handleDailyCap)    // GH-5809
 	apiMux.HandleFunc("GET /api/v1/briefs/latest", s.handleBriefsLatest)       // GH-5791
