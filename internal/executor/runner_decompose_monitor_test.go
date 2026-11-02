@@ -180,3 +180,31 @@ func TestExecuteDecomposedTask_FailedSubtaskStatusIsFailed(t *testing.T) {
 		t.Errorf("subtask GH-5350-F-1: monitor Error = %q, want the subtask's own error", state.Error)
 	}
 }
+
+// TestExecuteDecomposedTask_SubtaskHasProjectInfo is the GH-6014 regression:
+// a decomposition subtask's monitor entry carries the project named from the
+// parent's path, not the (possibly worktree) execution path.
+func TestExecuteDecomposedTask_SubtaskHasProjectInfo(t *testing.T) {
+	r := &Runner{
+		log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		monitor: NewMonitor(),
+		executeFunc: func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+			return &ExecutionResult{TaskID: task.ID, Success: true, CommitSHA: "deadbeef"}, nil
+		},
+	}
+
+	parent := &Task{ID: "GH-4328", Title: "Epic", ProjectPath: "/work/widgets"}
+	subtasks := []*Task{{ID: "GH-4328-1", Title: "feat: one", ProjectPath: parent.ProjectPath}}
+
+	if _, err := r.executeDecomposedTask(context.Background(), parent, subtasks, "/tmp/worktrees/pilot-worktree-GH-4328"); err != nil {
+		t.Fatalf("executeDecomposedTask() error = %v", err)
+	}
+
+	state, ok := r.monitor.Get("GH-4328-1")
+	if !ok {
+		t.Fatal("monitor has no entry for GH-4328-1")
+	}
+	if state.ProjectName != "widgets" || state.ProjectPath != "/work/widgets" {
+		t.Errorf("project = %q/%q, want /work/widgets/widgets", state.ProjectPath, state.ProjectName)
+	}
+}

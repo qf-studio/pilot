@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -1313,5 +1314,59 @@ func TestMonitorReconcileWithStore_CopiesTimesAndPRFromRow(t *testing.T) {
 	}
 	if st.PRUrl != "https://example.com/pr/9" {
 		t.Errorf("PRUrl = %q", st.PRUrl)
+	}
+}
+
+// TestMonitorEnsureSubtask_KeepsTitleAndProjectThroughStartAndProgress is the
+// GH-6014 regression: an in-process child registered via EnsureSubtask +
+// SetProjectInfo must keep its title and project through Start and the first
+// UpdateProgress, instead of the Title == ID, project-less fallback entry.
+func TestMonitorEnsureSubtask_KeepsTitleAndProjectThroughStartAndProgress(t *testing.T) {
+	m := NewMonitor()
+	repo := "/work/widgets"
+
+	m.EnsureSubtask("GH-288", "feat(api): add rate limiting", "https://github.com/o/r/issues/288", "GH-280")
+	m.SetProjectInfo("GH-288", repo, filepath.Base(repo))
+	m.Start("GH-288")
+	m.UpdateProgress("GH-288", "Implementing", 20, "working")
+
+	state, ok := m.Get("GH-288")
+	if !ok {
+		t.Fatal("no monitor entry for GH-288")
+	}
+	if state.Title != "feat(api): add rate limiting" {
+		t.Errorf("Title = %q, want the sub-issue title", state.Title)
+	}
+	if state.ProjectName != "widgets" || state.ProjectPath != repo {
+		t.Errorf("project = %q/%q, want %q/%q", state.ProjectPath, state.ProjectName, repo, "widgets")
+	}
+	if state.ParentID != "GH-280" || state.IssueURL == "" {
+		t.Errorf("ParentID/IssueURL = %q/%q, want them recorded", state.ParentID, state.IssueURL)
+	}
+	if state.Status != StatusRunning || state.Progress != 20 {
+		t.Errorf("status/progress = %q/%d, want running/20", state.Status, state.Progress)
+	}
+}
+
+// TestMonitorEnsureSubtask_IdempotentKeepsStatus: a second call for an id that
+// is already registered (poller pickup, retry) must not reset its status; the
+// follow-up SetProjectInfo still lands.
+func TestMonitorEnsureSubtask_IdempotentKeepsStatus(t *testing.T) {
+	m := NewMonitor()
+	m.Register("GH-470", "poller title", "https://github.com/o/r/issues/470")
+	m.Start("GH-470")
+
+	m.EnsureSubtask("GH-470", "epic title", "", "GH-460")
+	m.SetProjectInfo("GH-470", "/work/gadgets", "gadgets")
+
+	state, _ := m.Get("GH-470")
+	if state.Status != StatusRunning {
+		t.Errorf("Status = %q, want running (second registration must not reset it)", state.Status)
+	}
+	if state.Title != "poller title" {
+		t.Errorf("Title = %q, want the first registration's title", state.Title)
+	}
+	if state.ProjectName != "gadgets" {
+		t.Errorf("ProjectName = %q, want gadgets", state.ProjectName)
 	}
 }

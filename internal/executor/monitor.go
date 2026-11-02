@@ -126,6 +126,33 @@ func (m *Monitor) RegisterSubtask(taskID, title, issueURL, parentID string) {
 	}
 }
 
+// EnsureSubtask makes sure an in-process child (epic sub-issue or
+// decomposition subtask) has a Monitor entry carrying its title (GH-6014;
+// callers follow with SetProjectInfo). Without it, Start is a silent no-op for
+// the unknown id and the first UpdateProgress creates a Title == ID, project-less entry that the
+// dashboard files under "(no project)".
+//
+// Decision: unlike RegisterSubtask/Register this never overwrites. A child can
+// already be registered (poller pickup of a labelled sub-issue, or a retry)
+// and may be running; resetting it to pending would erase its status. The
+// entry is created only when the id is unknown.
+func (m *Monitor) EnsureSubtask(taskID, title, issueURL, parentID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.tasks[taskID]; ok {
+		return
+	}
+	m.tasks[taskID] = &TaskState{
+		ID:       taskID,
+		Title:    title,
+		Status:   StatusPending,
+		Phase:    "Pending",
+		IssueURL: issueURL,
+		ParentID: parentID,
+	}
+}
+
 // Hydrate seeds a task's state directly from persisted data, bypassing the
 // normal Register→Queue/Start transition sequence. Used at startup to
 // reconstruct monitor state from DB rows after a restart (GH-4246) — plain

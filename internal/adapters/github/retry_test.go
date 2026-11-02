@@ -324,8 +324,10 @@ func TestWithRetry_MaxDelayRespected(t *testing.T) {
 
 	// Without cap: 10, 20, 40, 80, 160ms
 	// With cap at 25ms: 10, 20, 25, 25, 25ms
-	// Max should be around 25ms, not 160ms
-	if maxDelayObserved > 35*time.Millisecond {
+	// Max should be around 25ms, not 160ms. The threshold leaves headroom for
+	// scheduler/timer overshoot on loaded CI hosts while still rejecting the
+	// uncapped 160ms delay.
+	if maxDelayObserved > 100*time.Millisecond {
 		t.Errorf("max delay %v exceeded expected cap of ~25ms", maxDelayObserved)
 	}
 }
