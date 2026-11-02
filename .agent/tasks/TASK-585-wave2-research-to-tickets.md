@@ -1,6 +1,6 @@
 # TASK-585: Wave 2 — research → tickets (P2, P3, C5, C4, C10, U10)
 
-**Status**: 🚀 **ALL SIX LEGS FILED 2026-11-02.** MERGED same day: P2 [pilot#6010](https://github.com/qf-studio/pilot/issues/6010) · P3 [pilot#6011](https://github.com/qf-studio/pilot/issues/6011) → PR#6013 · C10 [console#460](https://github.com/qf-studio/pilot-console/issues/460) → PR#461 (+ post-merge fixes #462/#466; #468 closed not-planned: PR-body-only defect, reviewer loop → TASK-620) · C5 [console#459](https://github.com/qf-studio/pilot-console/issues/459) → PR#463 merged 18:36Z via hand-filed revision [#465](https://github.com/qf-studio/pilot-console/issues/465) (0039 migration collision with #461 → renumbered 0040; wire-contract gate; claim-before-file). **18:45Z: C4 → [console#469](https://github.com/qf-studio/pilot-console/issues/469) · U10 → [ui#287](https://github.com/qf-studio/pilot-console-ui/issues/287) dispatched** (pre-flight green on merged main). **Not reviewed**: PR#463 (migration + public routes, tier-1) and the P2/P3 daemon routes — post-merge reviews pending. Lesson → SOP: two legs with migrations dispatched together collide on the number.
+**Status**: 🚀 **ALL SIX LEGS FILED 2026-11-02.** MERGED same day: P2 [pilot#6010](https://github.com/qf-studio/pilot/issues/6010) · P3 [pilot#6011](https://github.com/qf-studio/pilot/issues/6011) → PR#6013 · C10 [console#460](https://github.com/qf-studio/pilot-console/issues/460) → PR#461 (+ post-merge fixes #462/#466; #468 closed not-planned: PR-body-only defect, reviewer loop → TASK-620) · C5 [console#459](https://github.com/qf-studio/pilot-console/issues/459) → PR#463 merged 18:36Z via hand-filed revision [#465](https://github.com/qf-studio/pilot-console/issues/465) (0039 migration collision with #461 → renumbered 0040; wire-contract gate; claim-before-file). **19:50Z: C11 ADDED → [console#475](https://github.com/qf-studio/pilot-console/issues/475)** (console must relay `action` on chat messages — missed by the plan; found by the PR#291 pre-PR review). C4 epic-split into #470 (merged PR#472) + #471 (PR#473 conflicts with #472 → hand-filed revision [console#474](https://github.com/qf-studio/pilot-console/issues/474), autopilot-fix shape); U10 split into ui#288 (PR#291 awaiting approval on the C11 gap) / #289 (PR#292, vendored wire list refreshed by hand on the branch) / #290 (PR#293 green). **18:45Z: C4 → [console#469](https://github.com/qf-studio/pilot-console/issues/469) · U10 → [ui#287](https://github.com/qf-studio/pilot-console-ui/issues/287) dispatched** (pre-flight green on merged main). **Not reviewed**: PR#463 (migration + public routes, tier-1) and the P2/P3 daemon routes — post-merge reviews pending. Lesson → SOP: two legs with migrations dispatched together collide on the number.
 **Created**: 2026-11-02
 **Assignee**: Pilot (P/C/U legs) · founder (D1–D4, ui#266)
 **Parent**: [TASK-584](TASK-584-pilot-cloud-execution-roadmap.md) Phase C · roadmap rows in `system/project/project_pilot_cloud_roadmap_tickets.md` · scope `system/project/project_pilot_cloud_positioning.md` §8.3 (flow, D1–D4), §8.2 D2 (reject → learning), §4 (research draws from the pool)
@@ -249,6 +249,35 @@ no-decompose
 
 ---
 
+### LEG C11 — repo: qf-studio/pilot-console — title: feat(chat): relay the action field on POST /api/v1/chat/messages so Create tickets reaches the daemon
+
+## Context
+Daemon leg P2 (merged 2026-11-02, pilot#6010) added `action` to the chat message request: with `action: "create_tickets"` the `text` is the report and the daemon runs a drafting turn. The console relay builds its own request from parsed fields (`internal/chatapi/handlers.go` sendMessageRequest → `internal/chat/client.go` SendMessageRequest) and has no `action` field, so the console silently drops it and the UI's Create tickets (ui#287 / PR#291) never reaches the daemon. The pre-PR review of ui PR#291 flagged exactly this. The events relay is byte-faithful already, so the `drafts` event needs nothing.
+
+probe: present qf-studio/pilot json:\"action,omitempty
+probe: present qf-studio/pilot-console sendMessageRequest
+
+## Scope
+- `internal/chatapi/handlers.go`: sendMessageRequest gains `Action string` with json tag action, omitempty. Allowed values: empty or `create_tickets`; anything else → 400 `invalid_action`. With `create_tickets`, `text` is required (the report) and `projectId` is required; reuse the existing validation shape.
+- `internal/chat/client.go`: SendMessageRequest gains Action (json action, omitempty) and the relay copies it through unchanged.
+- No new persistence, no mode field, no change to the events route.
+- Wire-contract test: a same-package test captures the request body sent to the fake daemon and asserts the literal "action":"create_tickets" (strings.Contains on the raw body), plus the 400 path for `action: bogus`.
+
+## Acceptance
+- [ ] `make test` passes; paste the output into the PR body.
+- [ ] `make check-wire-contract-tests` passes; paste the output into the PR body.
+- [ ] `make build` passes; paste the output into the PR body.
+- [ ] A test posts action create_tickets and asserts the fake daemon received a body containing "action":"create_tickets" and the same text and projectId.
+- [ ] A test posts action bogus and asserts 400 with error invalid_action.
+- [ ] drop the Action copy in the relay -> TestSendMessage_RelaysAction fails
+
+## Out of scope
+UI, daemon, the drafts store (C5), reject forwarding (C4).
+
+no-decompose
+
+---
+
 ## Legs — pilot-console-ui
 
 ### LEG U10 — repo: qf-studio/pilot-console-ui — title: feat(research): Create tickets under the report → drafts posted to the console → Review needed draft items with edit, approve, reject, send back
@@ -303,6 +332,7 @@ Dispatch order: P2, P3, C5, C10 now (`nav-dispatch-legs.py` with `--only P2,P3,C
 - C10 → https://github.com/qf-studio/pilot-console/issues/460
 - C4 → https://github.com/qf-studio/pilot-console/issues/469
 - U10 → https://github.com/qf-studio/pilot-console-ui/issues/287
+- C11 → https://github.com/qf-studio/pilot-console/issues/475
 - TASK-584 Phase C (wave 2) · positioning §8.3, §8.2 D2 · roadmap rows P2, P3, C4, C5, C10, U10
 - ui#266 (mode pills decision → D4) · pilot#5810 (P17 chat events, separate)
 - Seam map 2026-11-02 (navigator-research, this doc § Context)
