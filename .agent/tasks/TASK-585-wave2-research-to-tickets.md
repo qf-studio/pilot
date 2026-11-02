@@ -1,6 +1,6 @@
 # TASK-585: Wave 2 — research → tickets (P2, P3, C5, C4, C10, U10)
 
-**Status**: 🚀 **DISPATCHED 2026-11-02 (D1–D4 accepted by the founder)** — P2 → [pilot#6010](https://github.com/qf-studio/pilot/issues/6010) (L, decomposable) · P3 → [pilot#6011](https://github.com/qf-studio/pilot/issues/6011) (no-decompose) · C5 → [console#459](https://github.com/qf-studio/pilot-console/issues/459) (no-decompose) · C10 → [console#460](https://github.com/qf-studio/pilot-console/issues/460) (no-decompose). **16:30Z: C10 MERGED (PR#461, post-merge fix #462 running). C5 PR#463 held `pilot-needs-human`: CI red on the merge ref — migration 0039 collided with #461's 0039_chat_turn_cap_50 (every DB test fails "duplicate migration file"), plus the wire-contract gate on `draftId`; pre-PR review REQUEST-CHANGES (approve files the issue before claiming the draft → orphan issue on concurrent approve). Size guard refused a fix issue (1149 prod additions > 200 on a feature PR) → hand-filed [console#465](https://github.com/qf-studio/pilot-console/issues/465) in the autopilot-fix shape (labels pilot + autopilot-fix + no-decompose, autopilot-meta branch:pilot/GH-459 pr:463 sha:ac107bb) continuing the branch: renumber to 0040, raw-body test, claim-before-file, guardPilotLabels, keep the send-back comment. Lesson → SOP: two console legs with migrations dispatched at once collide on the number; file them with an explicit number or serialize.** Held: C4 after P3 + C5 merge, U10 after P2 + C5 merge (`nav-dispatch-legs.py --only C4` / `--only U10`; their probes pin the upstream fields). Review C5 and C10 pre-merge (migration + public route); P2/P3 per the tier-1 policy.
+**Status**: 🚀 **ALL SIX LEGS FILED 2026-11-02.** MERGED same day: P2 [pilot#6010](https://github.com/qf-studio/pilot/issues/6010) · P3 [pilot#6011](https://github.com/qf-studio/pilot/issues/6011) → PR#6013 · C10 [console#460](https://github.com/qf-studio/pilot-console/issues/460) → PR#461 (+ post-merge fixes #462/#466; #468 closed not-planned: PR-body-only defect, reviewer loop → TASK-620) · C5 [console#459](https://github.com/qf-studio/pilot-console/issues/459) → PR#463 merged 18:36Z via hand-filed revision [#465](https://github.com/qf-studio/pilot-console/issues/465) (0039 migration collision with #461 → renumbered 0040; wire-contract gate; claim-before-file). **18:45Z: C4 → [console#469](https://github.com/qf-studio/pilot-console/issues/469) · U10 → [ui#287](https://github.com/qf-studio/pilot-console-ui/issues/287) dispatched** (pre-flight green on merged main). **Not reviewed**: PR#463 (migration + public routes, tier-1) and the P2/P3 daemon routes — post-merge reviews pending. Lesson → SOP: two legs with migrations dispatched together collide on the number.
 **Created**: 2026-11-02
 **Assignee**: Pilot (P/C/U legs) · founder (D1–D4, ui#266)
 **Parent**: [TASK-584](TASK-584-pilot-cloud-execution-roadmap.md) Phase C · roadmap rows in `system/project/project_pilot_cloud_roadmap_tickets.md` · scope `system/project/project_pilot_cloud_positioning.md` §8.3 (flow, D1–D4), §8.2 D2 (reject → learning), §4 (research draws from the pool)
@@ -288,8 +288,8 @@ A drafts lane on the board (approved drafts appear as Queued cards through the e
 
 | Leg | Repo | After | Body source |
 |---|---|---|---|
-| C4 reject write-through | pilot-console | P3 merged + C5 merged | §8.2 D2 |
-| U10 Create tickets + draft review | pilot-console-ui | P2 merged + C5 merged (vendored field list) | §8.3 |
+| C4 reject write-through | pilot-console | ✅ filed 11-02 as console#469 | §8.2 D2 |
+| U10 Create tickets + draft review | pilot-console-ui | ✅ filed 11-02 as ui#287 | §8.3 |
 
 Dispatch order: P2, P3, C5, C10 now (`nav-dispatch-legs.py` with `--only P2,P3,C5,C10`), then C4, then U10. Review every merge pre-merge where it touches a migration or a public route (C5, C10); the rest per the tier-1 policy.
 
@@ -301,6 +301,8 @@ Dispatch order: P2, P3, C5, C10 now (`nav-dispatch-legs.py` with `--only P2,P3,C
 - P3 → https://github.com/qf-studio/pilot/issues/6011
 - C5 → https://github.com/qf-studio/pilot-console/issues/459
 - C10 → https://github.com/qf-studio/pilot-console/issues/460
+- C4 → https://github.com/qf-studio/pilot-console/issues/469
+- U10 → https://github.com/qf-studio/pilot-console-ui/issues/287
 - TASK-584 Phase C (wave 2) · positioning §8.3, §8.2 D2 · roadmap rows P2, P3, C4, C5, C10, U10
 - ui#266 (mode pills decision → D4) · pilot#5810 (P17 chat events, separate)
 - Seam map 2026-11-02 (navigator-research, this doc § Context)
