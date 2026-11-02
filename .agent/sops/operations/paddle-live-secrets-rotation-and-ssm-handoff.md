@@ -39,7 +39,7 @@ for pair in PADDLE_API_KEY:BILLING_PADDLE_API_KEY PADDLE_WEBHOOK_SECRET:BILLING_
   eval val=\$$src
   aws ssm put-parameter --profile quantflow --region eu-central-1 \
     --name "/pilot-fleet/console/$dst" --type SecureString --overwrite \
-    --key-id "<pilot-fleet console family KMS key id — ask Nelya>" \
+    --key-id alias/pilot-fleet \
     --value "$val" --output text --query Version
 done'
 ```
