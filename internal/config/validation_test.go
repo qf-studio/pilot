@@ -1264,8 +1264,8 @@ func TestConfig_Validate_Billing(t *testing.T) {
 		billing   *executor.BillingConfig
 		errSubstr string
 	}{
-		{name: "nil is subscription"},
-		{name: "empty mode is subscription", billing: &executor.BillingConfig{}},
+		{name: "nil is unset"},
+		{name: "empty mode is unset", billing: &executor.BillingConfig{}},
 		{name: "subscription", billing: &executor.BillingConfig{Mode: executor.BillingModeSubscription}},
 		{name: "api_key with command", billing: &executor.BillingConfig{Mode: executor.BillingModeAPIKey, APIKeyCommand: "pass show anthropic"}},
 		{name: "api_key with env", billing: &executor.BillingConfig{Mode: executor.BillingModeAPIKey, APIKeyEnv: "PILOT_BILLING_KEY"}},
@@ -1286,6 +1286,29 @@ func TestConfig_Validate_Billing(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.errSubstr) {
 				t.Fatalf("err = %v, want substring %q", err, tt.errSubstr)
+			}
+		})
+	}
+}
+
+func TestConfig_Validate_BillingUnsetAccepted(t *testing.T) {
+	tests := []struct {
+		name    string
+		billing *executor.BillingConfig
+	}{
+		{name: "no billing block"},
+		{name: "empty block", billing: &executor.BillingConfig{}},
+		{name: "empty mode with stray api_key fields", billing: &executor.BillingConfig{APIKeyEnv: "PILOT_BILLING_KEY"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Executor = &executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{Billing: tt.billing}}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got := tt.billing.EffectiveMode(); got != executor.BillingModeUnset {
+				t.Errorf("EffectiveMode = %q, want %q", got, executor.BillingModeUnset)
 			}
 		})
 	}

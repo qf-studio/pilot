@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -362,7 +363,9 @@ func TestPostMergeCheckoutConfinement_Environ(t *testing.T) {
 	}{
 		// GH-6016: the key comes from the billing credential, never the ambient env.
 		{"injected api key authenticates", append([]string{"HOME=" + realHome, "PATH=/bin"}, secrets...), []string{"PATH=/bin", "ANTHROPIC_API_KEY=fake-api-key"}, false, filepath.Join(home, ".claude"), &BillingCredential{mode: BillingModeAPIKey, key: []byte("fake-api-key")}},
-		{"inherited api key is dropped, login file authenticates", append([]string{"HOME=" + realHome, "PATH=/bin", "ANTHROPIC_API_KEY=ambient-fake-key"}, secrets...), []string{"PATH=/bin"}, true, filepath.Join(home, ".claude"), nil},
+		// GH-6032: an explicit subscription mode drops the inherited key; the unset mode keeps it.
+		{"inherited api key is dropped in subscription mode, login file authenticates", append([]string{"HOME=" + realHome, "PATH=/bin", "ANTHROPIC_API_KEY=ambient-fake-key"}, secrets...), []string{"PATH=/bin"}, true, filepath.Join(home, ".claude"), &BillingCredential{mode: BillingModeSubscription}},
+		{"inherited api key is kept in unset mode", append([]string{"HOME=" + realHome, "PATH=/bin", "ANTHROPIC_API_KEY=ambient-fake-key"}, secrets...), []string{"PATH=/bin", "ANTHROPIC_API_KEY=ambient-fake-key"}, false, filepath.Join(home, ".claude"), &BillingCredential{mode: BillingModeUnset}},
 		{"login file authenticates", append([]string{"HOME=" + realHome, "PATH=/bin"}, secrets...), []string{"PATH=/bin"}, true, filepath.Join(home, ".claude"), nil},
 		{"ambient config dir is replaced", append([]string{"HOME=" + realHome, "CLAUDE_CONFIG_DIR=" + filepath.Join(realHome, ".claude"), "PATH=/bin"}, secrets...), []string{"PATH=/bin"}, true, filepath.Join(home, ".claude"), nil},
 	}
@@ -386,7 +389,7 @@ func TestPostMergeCheckoutConfinement_Environ(t *testing.T) {
 				if name == "HOME" && kv != "HOME="+home {
 					t.Errorf("HOME = %q, want the review home", kv)
 				}
-				if kv == "ANTHROPIC_API_KEY=ambient-fake-key" {
+				if kv == "ANTHROPIC_API_KEY=ambient-fake-key" && !slices.Contains(tt.wantKept, kv) {
 					t.Errorf("inherited ANTHROPIC_API_KEY reached the review subprocess")
 				}
 			}

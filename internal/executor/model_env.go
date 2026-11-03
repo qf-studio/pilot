@@ -199,22 +199,36 @@ func modelSubprocessEnv(base []string) []string {
 }
 
 // modelEnvBillingCredentialNames are the Anthropic credential variables the
-// billing mode owns (GH-6016). Whatever the daemon environment carries for
-// them never reaches a model subprocess; the per-execution credential does.
+// an explicit billing mode owns (GH-6016). Whatever the daemon environment
+// carries for them never reaches a model subprocess in that mode; the
+// per-execution credential does.
 var modelEnvBillingCredentialNames = map[string]bool{
 	"ANTHROPIC_API_KEY":    true,
 	"ANTHROPIC_AUTH_TOKEN": true,
 }
 
 // modelSubprocessEnvFor is modelSubprocessEnv for one execution (GH-6016): it
-// runs the same scrub, removes ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN
-// inherited from the daemon environment, then appends the entries of the
-// BillingCredential on ctx. So the mode in force, not the daemon's ambient
-// environment, decides which credential the claude CLI bills. Other
-// ANTHROPIC_* names (ANTHROPIC_BASE_URL, ANTHROPIC_MODEL, ...) are untouched;
-// callers append config-driven values such as api_auth_token after this.
+// runs the same scrub and, when the BillingCredential on ctx has an explicit
+// mode (subscription or api_key), removes ANTHROPIC_API_KEY and
+// ANTHROPIC_AUTH_TOKEN inherited from the daemon environment, then appends the
+// credential's entries. So an explicit mode, not the daemon's ambient
+// environment, decides which credential the claude CLI bills.
+//
+// Decision (GH-6032): with the unset mode, or no credential on ctx at all, the
+// result is plain modelSubprocessEnv: the inherited key reaches the CLI as it
+// did before GH-6016. Env-key deployments (hosted tenants, operators who
+// export ANTHROPIC_API_KEY) have no billing block and no OAuth login, so
+// stripping the key there leaves the CLI without any credential.
+//
+// Other ANTHROPIC_* names (ANTHROPIC_BASE_URL, ANTHROPIC_MODEL, ...) are
+// untouched; callers append config-driven values such as api_auth_token after
+// this.
 func modelSubprocessEnvFor(ctx context.Context, base []string) []string {
 	scrubbed := modelSubprocessEnv(base)
+	cred := BillingCredentialFromContext(ctx)
+	if cred == nil || cred.Mode() == BillingModeUnset {
+		return scrubbed
+	}
 	out := make([]string, 0, len(scrubbed)+1)
 	for _, kv := range scrubbed {
 		if name, _, ok := strings.Cut(kv, "="); ok && modelEnvBillingCredentialNames[name] {
@@ -222,7 +236,7 @@ func modelSubprocessEnvFor(ctx context.Context, base []string) []string {
 		}
 		out = append(out, kv)
 	}
-	return append(out, BillingCredentialFromContext(ctx).Env()...)
+	return append(out, cred.Env()...)
 }
 
 // ModelSubprocessEnvForTest exposes modelSubprocessEnv to tests in other

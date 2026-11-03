@@ -2,6 +2,7 @@ package executor
 
 import (
 	"os"
+	"strings"
 
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -16,4 +17,19 @@ const KeySourceEnv = "PILOT_ANTHROPIC_KEY_SOURCE"
 // (unset, empty or any other value). GH-5676.
 func KeySourceFromEnv() string {
 	return memory.NormalizeKeySource(os.Getenv(KeySourceEnv))
+}
+
+// DerivedBillingMode is the billing_mode of an execution that runs with
+// billing.mode unset (GH-6032): api_key when environ carries a non-empty
+// ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, since the claude CLI then bills
+// that key, otherwise subscription (its OAuth login). environ is in
+// os.Environ form.
+func DerivedBillingMode(environ []string) string {
+	for _, kv := range environ {
+		name, value, ok := strings.Cut(kv, "=")
+		if ok && modelEnvBillingCredentialNames[name] && value != "" {
+			return memory.BillingModeAPIKey
+		}
+	}
+	return memory.BillingModeSubscription
 }

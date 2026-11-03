@@ -22,8 +22,13 @@ import (
 type BillingMode string
 
 const (
+	// BillingModeUnset is billing.mode left out of the config (GH-6032): the
+	// daemon environment passes through to model subprocesses untouched, as it
+	// did before GH-6016, and the recorded mode is derived from that
+	// environment. The default.
+	BillingModeUnset BillingMode = "unset"
 	// BillingModeSubscription runs model subprocesses with no API key, so the
-	// CLI uses its OAuth login. The default.
+	// CLI uses its OAuth login. Only when the operator wrote it.
 	BillingModeSubscription BillingMode = "subscription"
 	// BillingModeAPIKey injects a resolved Anthropic API key into every model
 	// subprocess of one execution.
@@ -46,7 +51,7 @@ const BillingKeyRetryInterval = 5 * time.Minute
 
 // BillingConfig is executor.claude_code.billing (GH-6016).
 type BillingConfig struct {
-	// Mode is subscription (default) or api_key.
+	// Mode is subscription, api_key or empty (inherit the daemon environment).
 	Mode BillingMode `yaml:"mode,omitempty"`
 	// APIKeyCommand is run through the shell at each admission in api_key
 	// mode; its trimmed stdout is the key. Timeout 10s.
@@ -56,10 +61,11 @@ type BillingConfig struct {
 	APIKeyEnv string `yaml:"api_key_env,omitempty"`
 }
 
-// EffectiveMode returns the configured mode, subscription when unset.
+// EffectiveMode returns the configured mode, BillingModeUnset when the block
+// or the field is empty. Subscription is returned only when it was written.
 func (c *BillingConfig) EffectiveMode() BillingMode {
 	if c == nil || c.Mode == "" {
-		return BillingModeSubscription
+		return BillingModeUnset
 	}
 	return c.Mode
 }
@@ -92,24 +98,29 @@ type BillingCredential struct {
 	key  []byte
 }
 
-// Mode returns the mode in force. Safe on a nil receiver (subscription).
+// Mode returns the mode in force. Safe on a nil receiver (unset).
 func (c *BillingCredential) Mode() BillingMode {
 	if c == nil {
-		return BillingModeSubscription
+		return BillingModeUnset
 	}
 	return c.mode
 }
 
-// MemoryMode returns Mode in the vocabulary of the billing_mode columns.
+// MemoryMode returns Mode in the vocabulary of the billing_mode columns. In
+// the unset mode the value is derived from the daemon environment at call time
+// (DerivedBillingMode), not asserted.
 func (c *BillingCredential) MemoryMode() string {
 	if c == nil {
 		return memory.BillingModeUnknown
+	}
+	if c.mode == BillingModeUnset {
+		return DerivedBillingMode(os.Environ())
 	}
 	return memory.NormalizeBillingMode(string(c.mode))
 }
 
 // Env returns the entries to append to a model subprocess env: none in
-// subscription mode or after Zero, ANTHROPIC_API_KEY=<key> in api_key mode.
+// subscription or unset mode or after Zero, ANTHROPIC_API_KEY=<key> in api_key mode.
 func (c *BillingCredential) Env() []string {
 	if c == nil {
 		return nil
@@ -161,7 +172,7 @@ type BillingResolver struct {
 	log     *slog.Logger
 }
 
-// NewBillingResolver builds a resolver for cfg; nil cfg means subscription.
+// NewBillingResolver builds a resolver for cfg; nil cfg means the unset mode.
 func NewBillingResolver(cfg *BillingConfig) *BillingResolver {
 	return &BillingResolver{
 		cfg:     cfg,
@@ -171,20 +182,21 @@ func NewBillingResolver(cfg *BillingConfig) *BillingResolver {
 	}
 }
 
-// Mode returns the configured mode. Safe on a nil receiver.
+// Mode returns the configured mode. Safe on a nil receiver (unset).
 func (r *BillingResolver) Mode() BillingMode {
 	if r == nil {
-		return BillingModeSubscription
+		return BillingModeUnset
 	}
 	return r.cfg.EffectiveMode()
 }
 
 // Resolve returns the mode in force and its env entries. In api_key mode any
 // failure (command exit non-zero, timeout, empty output, env var unset) is a
-// *BillingKeyError; it never falls back to the subscription.
+// *BillingKeyError; it never falls back to the subscription. The unset and
+// subscription modes resolve to a credential with no env and never fail.
 func (r *BillingResolver) Resolve(ctx context.Context) (*BillingCredential, error) {
-	if r.Mode() != BillingModeAPIKey {
-		return &BillingCredential{mode: BillingModeSubscription}, nil
+	if mode := r.Mode(); mode != BillingModeAPIKey {
+		return &BillingCredential{mode: mode}, nil
 	}
 	key, err := r.resolveKey(ctx)
 	if err != nil {
