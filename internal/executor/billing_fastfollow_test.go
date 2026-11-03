@@ -500,20 +500,9 @@ func TestBillingCredential_TransitionFailureDrops(t *testing.T) {
 	}
 	rig.w.lifecycle = NewExecutionLifecycle(broken)
 
-	// The failed row stays queued, so processQueue re-picks it until its ctx
-	// ends: let it run until the stash empties (or time out), then cancel.
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		rig.w.processQueue(ctx)
-	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for rig.stashCount() != 0 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	cancel()
-	<-done
+	// The failed row stays queued; processQueue skips it for the rest of the
+	// call (GH-6028) and returns.
+	rig.w.processQueue(context.Background())
 
 	row, err := rig.d.store.GetExecution(execID)
 	if err != nil {
@@ -524,6 +513,63 @@ func TestBillingCredential_TransitionFailureDrops(t *testing.T) {
 	}
 	if rig.stashCount() != 0 || len(cred.Env()) != 0 {
 		t.Errorf("credential left behind: stashed=%d env=%v", rig.stashCount(), cred.Env())
+	}
+}
+
+// A failed move to running must not make processQueue re-pick the same still
+// queued row at once with no backoff (GH-6028). Mutation pin: drop the
+// transitionFailed skip in processQueue and the older row is re-picked forever,
+// so the call never returns and the newer row's key is never reached.
+func TestProcessQueue_TransitionFailureDoesNotSpin(t *testing.T) {
+	skipWithoutShell(t)
+	stubFetchIssueState(t, func(context.Context, *Runner, *Task, string) (IssueState, error) {
+		return IssueState{}, nil
+	})
+	rig := newBillingWorkerRig(t, apiKeyConfig("printf "+testBillingKey))
+	var ids []string
+	for _, id := range []string{"GH-6028-A", "GH-6028-B"} {
+		execID, err := rig.d.beginWithGenerationRetry(&Task{ID: id, Title: id, ProjectPath: rig.proj}, ExecStatusQueued)
+		if err != nil || execID == "" {
+			t.Fatalf("beginWithGenerationRetry(%s) = %q, %v", id, execID, err)
+		}
+		ids = append(ids, execID)
+	}
+
+	broken, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broken.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rig.w.lifecycle = NewExecutionLifecycle(broken)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rig.w.processQueue(ctx)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("processQueue kept re-picking a row whose move to running failed")
+	}
+
+	for _, id := range ids {
+		row, err := rig.d.store.GetExecution(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.Status != string(ExecStatusQueued) {
+			t.Errorf("%s status = %q, want queued", id, row.Status)
+		}
+	}
+	if n := rig.stashCount(); n != 0 {
+		t.Errorf("stash count = %d, want 0 (both rows were attempted once and dropped)", n)
 	}
 }
 
@@ -613,9 +659,10 @@ func TestBillingCredential_DiscardZeroesEntry(t *testing.T) {
 type credEnvBackend struct {
 	mu        sync.Mutex
 	envs      [][]string
-	procEnvs  [][]string // modelSubprocessEnvFor over the call's ctx and inheritedEnv
 	failFirst bool
 	inner     Backend
+	real      Backend // when set, each call also runs the real claude backend (GH-6028)
+	dump      string  // env the real backend's fake CLI wrote, one block per call
 }
 
 func (b *credEnvBackend) Name() string      { return "cred-env" }
@@ -623,9 +670,13 @@ func (b *credEnvBackend) IsAvailable() bool { return true }
 func (b *credEnvBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
 	b.mu.Lock()
 	b.envs = append(b.envs, BillingCredentialFromContext(ctx).Env())
-	b.procEnvs = append(b.procEnvs, modelSubprocessEnvFor(ctx, inheritedEnv))
 	n := len(b.envs)
 	b.mu.Unlock()
+	if b.real != nil {
+		// The real backend builds the subprocess env (backend_claudecode.go);
+		// its fake CLI records what it was handed. The result is ignored.
+		_, _ = b.real.Execute(ctx, ExecuteOptions{Prompt: "x", ProjectPath: opts.ProjectPath, EventHandler: func(BackendEvent) {}})
+	}
 	if b.failFirst && n == 1 {
 		return nil, gh5718BackendErr{}
 	}
@@ -641,16 +692,45 @@ func (b *credEnvBackend) seen() [][]string {
 	return append([][]string(nil), b.envs...)
 }
 
-// inheritedEnv stands in for the daemon environment: it carries a key the
-// subscription-or-api_key decision must replace, not pass through.
-var inheritedEnv = []string{"PATH=/usr/bin", "ANTHROPIC_API_KEY=" + testInheritedKey}
-
 const testInheritedKey = "inherited-fake-key"
 
+// withRealProcEnv makes b also run the real Claude Code backend against a fake
+// CLI that appends its environment to a dump, one "--CALL--"-terminated block
+// per run. The daemon env carries an inherited key the backend must replace.
+func withRealProcEnv(t *testing.T, b *credEnvBackend) *credEnvBackend {
+	t.Helper()
+	skipWithoutShell(t)
+	t.Setenv("ANTHROPIC_API_KEY", testInheritedKey)
+	dir := t.TempDir()
+	b.dump = filepath.Join(dir, "env.txt")
+	script := filepath.Join(dir, "claude")
+	body := "#!/bin/sh\n{ /usr/bin/env; echo --CALL--; } >> " + b.dump + "\nexit 0\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil { //nolint:gosec // fake CLI must be executable
+		t.Fatal(err)
+	}
+	b.real = NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script})
+	return b
+}
+
+// seenProcEnvs returns the env the real backend's subprocess got on each call.
 func (b *credEnvBackend) seenProcEnvs() [][]string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return append([][]string(nil), b.procEnvs...)
+	raw, err := os.ReadFile(b.dump)
+	if err != nil {
+		return nil
+	}
+	var calls [][]string
+	var cur []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		switch line {
+		case "--CALL--":
+			calls = append(calls, cur)
+			cur = nil
+		case "":
+		default:
+			cur = append(cur, line)
+		}
+	}
+	return calls
 }
 
 // assertProcEnvCarriesKey checks the env built for each backend call holds
@@ -671,11 +751,11 @@ func assertProcEnvCarriesKey(t *testing.T, envs [][]string) {
 				}
 			}
 			if strings.Contains(kv, testInheritedKey) {
-				t.Errorf("call %d: inherited key leaked into the subprocess env: %v", i+1, env)
+				t.Errorf("call %d: inherited key leaked into the subprocess env", i+1)
 			}
 		}
 		if keys != 1 {
-			t.Errorf("call %d: %d ANTHROPIC_API_KEY entries in %v, want exactly 1", i+1, keys, env)
+			t.Errorf("call %d: %d ANTHROPIC_API_KEY entries, want exactly 1", i+1, keys)
 		}
 	}
 }
@@ -702,7 +782,7 @@ func apiKeyCtx() context.Context {
 // smart retry re-executes on the retry ctx.
 func runSmartRetry(t *testing.T) *credEnvBackend {
 	t.Helper()
-	backend := &credEnvBackend{failFirst: true}
+	backend := withRealProcEnv(t, &credEnvBackend{failFirst: true})
 	runner := NewRunnerWithBackend(backend)
 	runner.config = &BackendConfig{}
 	runner.SetRecordingEnabled(false)
@@ -730,7 +810,7 @@ func runGateFeedbackRetry(t *testing.T) *credEnvBackend {
 	t.Cleanup(func() { _ = os.RemoveAll(localRepo) })
 	t.Cleanup(func() { _ = os.RemoveAll(remoteRepo) })
 
-	backend := &credEnvBackend{inner: &stackingAttemptBackend{}}
+	backend := withRealProcEnv(t, &credEnvBackend{inner: &stackingAttemptBackend{}})
 	runner := NewRunnerWithBackend(backend)
 	runner.config = &BackendConfig{UseWorktree: boolPtr(false)}
 	runner.SetSkipPreflightChecks(true)
@@ -764,8 +844,10 @@ func TestBillingRetryCtx_GateFeedbackRetryKeepsCredential(t *testing.T) {
 	assertRetryCarriesKey(t, runGateFeedbackRetry(t).seen())
 }
 
-// The env the subprocess gets from each retry ctx carries the credential's key
-// once and none of the inherited one (GH-6026).
+// The env the real Claude Code backend hands its subprocess on each retry ctx
+// carries the credential's key once and none of the inherited one (GH-6026,
+// GH-6028). Mutation pin: change backend_claudecode.go's
+// `modelSubprocessEnvFor(ctx, os.Environ())` to `os.Environ()` and this fails.
 func TestBillingRetryCtx_SubprocessEnvCarriesKey(t *testing.T) {
 	t.Run("smart retry", func(t *testing.T) {
 		assertProcEnvCarriesKey(t, runSmartRetry(t).seenProcEnvs())
