@@ -10057,6 +10057,18 @@
         ],
         "created": "2026-11-03",
         "last_validated": "2026-11-03"
+      },
+      "pre-pr-shadow-review-finds-minors-but-fixes-nothing-file-minors-flipped-on": {
+        "type": "learning",
+        "summary": "PR#6017 log: the pre-PR shadow review found 8 of the 9 post-merge minors on the same lines and fixed none — the fix round needs enforce AND a [blocking] tag (pre_pr_fix.go:108-116), and the reviewer tags unmet issue promises [minor]; minors had no automatic path. post_merge_review.file_minors flipped ON on the box 2026-11-03 14:16Z (trial, cap 1 issue/project/day, auto-dispatched via the pilot label). Open lever before the enforce flip: severity calibration (issue requirement not met ⇒ blocking).",
+        "file": ".agent/knowledge/memories/learnings/pre-pr-shadow-review-finds-minors-but-fixes-nothing-file-minors-flipped-on.md",
+        "concepts": [
+          "autopilot",
+          "review",
+          "autopilot-fix"
+        ],
+        "confidence": 0.95,
+        "created": "2026-11-03"
       }
     }
   },
@@ -14965,6 +14977,21 @@
       "from": "TASK-632",
       "to": "context",
       "type": "implements"
+    },
+    {
+      "from": "pre-pr-shadow-review-finds-minors-but-fixes-nothing-file-minors-flipped-on",
+      "to": "TASK-620",
+      "type": "learned-from"
+    },
+    {
+      "from": "pre-pr-shadow-review-finds-minors-but-fixes-nothing-file-minors-flipped-on",
+      "to": "TASK-631",
+      "type": "learned-from"
+    },
+    {
+      "from": "pre-pr-shadow-review-finds-minors-but-fixes-nothing-file-minors-flipped-on",
+      "to": "TASK-633",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -18125,5 +18152,7 @@
     "total_edges": 981,
     "memory_count": 466
   },
-  "metadata": {}
+  "metadata": {
+    "last_updated": null
+  }
 }
