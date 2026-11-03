@@ -655,6 +655,7 @@ func (d *Dispatcher) runStaleRecoveryLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			d.recoverStaleTasks()
+			d.sweepBillingCredentials()
 			d.wakeHeldWorkers()
 		}
 	}
@@ -1073,6 +1074,7 @@ func (d *Dispatcher) recoverStaleQueuedTasks() int {
 			if err := d.store.DeleteExecution(exec.ID); err != nil {
 				d.log.Error("Failed to delete decomposed-parent-guarded orphan queued row", slog.String("id", exec.ID), slog.Any("error", err))
 			}
+			d.discardBillingCredential(exec.ID)
 			continue
 		}
 
@@ -1091,6 +1093,7 @@ func (d *Dispatcher) recoverStaleQueuedTasks() int {
 			if err := d.store.DeleteExecution(exec.ID); err != nil {
 				d.log.Error("Failed to delete orphan queued row", slog.String("id", exec.ID), slog.Any("error", err))
 			}
+			d.discardBillingCredential(exec.ID)
 			continue
 		}
 
@@ -1125,6 +1128,7 @@ func (d *Dispatcher) recoverStaleQueuedTasks() int {
 				slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID))
 		} else {
 			resetCount++
+			d.discardBillingCredential(exec.ID)
 			// GH-4101: mirrors the stale-running event above — the audit trail must
 			// show why this row went terminal, not just that it did.
 			d.recordExecutionEvent(exec.ID, memory.StageCanceled, "stale_queued recovered after restart: project no longer configured")
@@ -3118,6 +3122,7 @@ func (d *Dispatcher) ensureWorker(projectPath string) {
 	worker.setAdmissionPaused(d.admissionPaused)
 	worker.onRateLimited = d.armUsageLimitPause
 	worker.billingCredentialFor = d.billingCredentialForRun
+	worker.discardBillingCredential = d.discardBillingCredential
 	worker.setBasePresenceHoldMaxCycles(d.config.BasePresenceHoldMaxCycles)
 	d.workers[projectPath] = worker
 
@@ -3460,6 +3465,10 @@ type ProjectWorker struct {
 	// whose runs then carry no credential.
 	billingCredentialFor func(execID, taskID, projectPath string) (*BillingCredential, error)
 
+	// discardBillingCredential, when set, zeroes the stashed credential of an
+	// execution the worker finishes without running it (GH-6021).
+	discardBillingCredential func(execID string)
+
 	// basePresenceHoldMaxCycles mirrors DispatcherConfig.BasePresenceHoldMaxCycles
 	// (GH-5045/GH-5052), threaded in post-construction the same way
 	// admissionPaused is (see setBasePresenceHoldMaxCycles/ensureWorker)
@@ -3564,6 +3573,14 @@ func (w *ProjectWorker) resolvedBasePresenceHoldMaxCycles() int {
 		return w.basePresenceHoldMaxCycles
 	}
 	return DefaultDispatcherConfig().BasePresenceHoldMaxCycles
+}
+
+// dropBillingCredential discards the stashed billing credential of an
+// execution this worker finished without running (GH-6021).
+func (w *ProjectWorker) dropBillingCredential(execID string) {
+	if w.discardBillingCredential != nil {
+		w.discardBillingCredential(execID)
+	}
 }
 
 // Status returns the current worker status.
@@ -3682,6 +3699,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			}
 			w.recordExecutionEvent(exec.ID, memory.StageCompleted, "terminal-success ledger guard: task already completed")
 			w.runner.EmitProgress(exec.TaskID, "Completed", 100, "already completed per execution ledger")
+			w.dropBillingCredential(exec.ID)
 			w.currentTaskID.Store("")
 			continue
 		} else if allShipped, childIDs, evidence, cErr := decomposedChildrenAllComplete(w.store, exec.TaskID, w.projectPath, w.log); cErr != nil {
@@ -3716,6 +3734,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			}
 			w.recordExecutionEvent(exec.ID, memory.StageCompleted, fmt.Sprintf("cross-task-id dispatch guard: children already completed (%s)", strings.Join(childIDs, ", ")))
 			w.runner.EmitProgress(exec.TaskID, "Completed", 100, "already completed via decomposed children (cross-task-id guard)")
+			w.dropBillingCredential(exec.ID)
 			w.currentTaskID.Store("")
 			continue
 		}
@@ -3806,6 +3825,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 					w.log.Warn("base-presence hold: failed to clear hold count on supersede",
 						slog.String("execution_id", exec.ID), slog.Any("error", clrErr))
 				}
+				w.dropBillingCredential(exec.ID)
 				w.currentTaskID.Store("")
 				continue
 			} else {
@@ -3896,6 +3916,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 							slog.String("execution_id", exec.ID), slog.Any("error", clrErr))
 					}
 					w.runner.EmitProgress(exec.TaskID, "NeedsHuman", 100, escDetail)
+					w.dropBillingCredential(exec.ID)
 					w.currentTaskID.Store("")
 					// Unlike the not-yet-escalated case below, the row is now
 					// parked (no longer queued/pending) — continue so THIS
@@ -3999,6 +4020,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				if _, fromPR, ok := w.runner.BorrowedBranch(exec.TaskID); ok && fromPR > 0 {
 					if mergedNum, numOK := extractPRNumberFromURL(mergedURL); numOK && mergedNum == fromPR {
 						w.supersedeMergedOriginBorrow(ctx, exec, task, fromPR, mergedURL)
+						w.dropBillingCredential(exec.ID)
 						w.currentTaskID.Store("")
 						continue
 					}
@@ -4012,6 +4034,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				// pilot_prs_merged_total doesn't miss it.
 				w.runner.recordExternalMerge(exec.ProjectPath, mergedURL)
 				w.runner.EmitProgress(exec.TaskID, "Completed", 100, "work already merged: "+mergedURL)
+				w.dropBillingCredential(exec.ID)
 				w.currentTaskID.Store("")
 				continue
 			}
@@ -4030,8 +4053,16 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 					slog.String("execution_id", exec.ID),
 					slog.Any("error", credErr))
 				w.recordExecutionEvent(exec.ID, memory.StageFailed, credErr.Error())
-				if _, finErr := w.lifecycle.Finish(exec.ID, nil, credErr, 0); finErr != nil {
+				// GH-6021: infra-class, like the admission path — the task never
+				// ran, so the next pickup owes no repick backoff or failure streak.
+				if _, finErr := w.lifecycle.Finish(exec.ID, nil, credErr, 0, ExecStatusInfra); finErr != nil {
 					w.log.Error("Failed to persist billing-key failure", slog.Any("error", finErr))
+				}
+				// The card left Running on the progress event above; close it the
+				// way the normal failure branch does.
+				w.runner.EmitProgress(exec.TaskID, "Failed", 100, fmt.Sprintf("Execution error: %s", truncateForLog(credErr.Error(), 60)))
+				if w.runner.monitor != nil {
+					w.runner.monitor.Fail(exec.TaskID, credErr.Error())
 				}
 				w.currentTaskID.Store("")
 				continue

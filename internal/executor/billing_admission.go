@@ -2,6 +2,8 @@ package executor
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -89,14 +91,18 @@ func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (strin
 }
 
 // failBillingKeyUnavailable is the fail-closed path (GH-6016). The first
-// failure of an outage creates the execution row, finishes it failed with the
-// billing_key_unavailable error, pauses admission for
+// failure of an outage creates the execution row, finishes it infra-class with
+// the billing_key_unavailable error, pauses admission for
 // AdmissionPauseOwnerBillingKey, arms the retry timer and emits one alert.
 // Every call returns an ErrBillingKeyHold so the task is left for the next
 // poll; none of them starts a backend or falls back to the subscription.
 //
-// Decision: the error text carries no env var names, so the GH-5211 env-class
-// signatures never match it and it cannot be exempted from retry accounting.
+// Decision: the row is finished ExecStatusInfra, not failed (GH-6021). A
+// failed row makes the next pickup count a repick drop and grow the backoff
+// window, and two outages with identical text trip the identical-failure
+// streak and stall the task, though it never ran. The infra class has its own
+// capped counter and no streak check. The error text carries no env var names,
+// so the GH-5211 env-class signatures never match it either.
 func (d *Dispatcher) failBillingKeyUnavailable(task *Task, keyErr error) (string, error) {
 	if d.armBillingKeyPause(task.ID, task.ProjectPath, keyErr) {
 		execID, err := d.beginClaimWithGenerationRetry(task, ExecStatusRunning)
@@ -107,7 +113,7 @@ func (d *Dispatcher) failBillingKeyUnavailable(task *Task, keyErr error) (string
 		case execID != "":
 			d.recordExecutionEvent(execID, memory.StageFailed, keyErr.Error())
 			lifecycle := NewExecutionLifecycle(d.store)
-			if _, finErr := lifecycle.Finish(execID, nil, keyErr, 0); finErr != nil {
+			if _, finErr := lifecycle.Finish(execID, nil, keyErr, 0, ExecStatusInfra); finErr != nil {
 				d.log.Error("failed to persist billing-key failure",
 					slog.String("execution_id", execID), slog.Any("error", finErr))
 			}
@@ -229,6 +235,42 @@ func (d *Dispatcher) billingCredentialForRun(execID, taskID, projectPath string)
 		return nil, err
 	}
 	return cred, nil
+}
+
+// discardBillingCredential zeroes and removes the stashed credential of
+// execID, for a queued row that will never reach the worker's run (GH-6021).
+// A missing entry is a no-op.
+func (d *Dispatcher) discardBillingCredential(execID string) {
+	d.billingMu.Lock()
+	cred := d.billingCreds[execID]
+	delete(d.billingCreds, execID)
+	d.billingMu.Unlock()
+	cred.Zero()
+}
+
+// sweepBillingCredentials zeroes every stashed credential whose execution row
+// is missing or no longer queued, e.g. canceled by `pilot task cancel` from
+// another process (GH-6021). A lookup error keeps the entry.
+func (d *Dispatcher) sweepBillingCredentials() {
+	d.billingMu.Lock()
+	ids := make([]string, 0, len(d.billingCreds))
+	for id := range d.billingCreds {
+		ids = append(ids, id)
+	}
+	d.billingMu.Unlock()
+	if len(ids) == 0 || d.store == nil {
+		return
+	}
+	for _, id := range ids {
+		exec, err := d.store.GetExecution(id)
+		switch {
+		case err == nil && exec != nil && exec.Status == string(ExecStatusQueued):
+			continue
+		case err != nil && !errors.Is(err, sql.ErrNoRows):
+			continue
+		}
+		d.discardBillingCredential(id)
+	}
 }
 
 // stopBillingState cancels the retry timer and wipes stashed keys on Stop.
