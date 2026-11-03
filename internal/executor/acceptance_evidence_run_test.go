@@ -3,6 +3,8 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -901,5 +903,45 @@ func TestRenderAcceptanceEvidence_MixedItemBudgetKill(t *testing.T) {
 	}
 	if n := strings.Count(notVerifiedPart, "Reason: "+evidenceBudgetExhaustedReason); n != 2 {
 		t.Errorf("want 2 budget-exhausted reasons, got %d:\n%s", n, got)
+	}
+}
+
+// TestEvidenceRun_LogsFailingTestNames: a paste-output command that exits
+// non-zero is still pasted, and the daemon log names the failing tests even
+// though they sit in the trimmed middle of the output (GH-6035).
+func TestEvidenceRun_LogsFailingTestNames(t *testing.T) {
+	var out strings.Builder
+	for i := 0; i < 150; i++ {
+		fmt.Fprintf(&out, "    log noise %d\n", i)
+	}
+	out.WriteString("--- FAIL: TestAlpha (0.01s)\n--- FAIL: TestBeta (0.02s)\n")
+	for i := 0; i < 150; i++ {
+		fmt.Fprintf(&out, "    more noise %d\n", i)
+	}
+	out.WriteString("FAIL\tgithub.com/x/pkg\t1.2s\n")
+
+	var logBuf strings.Builder
+	r := &Runner{config: DefaultBackendConfig(), log: slog.New(slog.NewTextHandler(&logBuf, nil))}
+	r.acceptanceRunner = &fakeAcceptanceCommandRunner{responses: map[string]fakeCommandResponse{
+		"go test ./pkg/": {output: out.String(), err: &exec.ExitError{}},
+	}}
+	task := &Task{ID: "GH-6035", AcceptanceCriteria: []string{"paste the output of `go test ./pkg/` into the PR body"}}
+
+	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary", nil)
+
+	if !strings.Contains(got, "--- FAIL: TestAlpha") {
+		t.Errorf("PR body must keep the failure lines from the omitted middle:\n%s", got)
+	}
+	logged := logBuf.String()
+	for _, want := range []string{
+		"acceptance evidence command failed", "task_id=GH-6035", `command="go test ./pkg/"`,
+		"exit_code=", "duration=", "TestAlpha", "TestBeta",
+	} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("WARN line missing %q:\n%s", want, logged)
+		}
+	}
+	if !strings.Contains(logged, "level=WARN") {
+		t.Errorf("expected a WARN line:\n%s", logged)
 	}
 }

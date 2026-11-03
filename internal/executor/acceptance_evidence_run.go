@@ -326,6 +326,7 @@ func runPasteOutputItemReusing(ctx context.Context, runner AcceptanceCommandRunn
 			})
 			continue
 		}
+		started := time.Now()
 		out, err := runner.RunCommand(ctx, dir, command)
 		cr := AcceptanceCommandResult{Command: command, Output: finalizeEvidenceOutput(out)}
 		var exitErr *exec.ExitError
@@ -340,6 +341,14 @@ func runPasteOutputItemReusing(ctx context.Context, runner AcceptanceCommandRunn
 			lastErr = err
 		} else {
 			allErrored = false
+			if exitErr != nil {
+				// GH-6035: record which tests failed from the raw output, so the
+				// daemon log names them even when the pasted block is trimmed.
+				cr.Failed = true
+				cr.ExitCode = exitErr.ExitCode()
+				cr.Duration = time.Since(started)
+				cr.FailedTests = evidenceFailedTestNames(out, evidenceLoggedFailedTests)
+			}
 		}
 		result.Commands = append(result.Commands, cr)
 	}
@@ -532,6 +541,9 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 			onEvent: func(event string, index int, elapsed time.Duration) {
 				r.logEvidenceEvent(task, event, index, elapsed)
 			},
+			onCommandFailed: func(index int, c AcceptanceCommandResult) {
+				r.logEvidenceCommandFailed(task, index, c)
+			},
 		})
 		cancel()
 	}
@@ -622,6 +634,27 @@ func (r *Runner) logEvidenceEvent(task *Task, event string, itemIndex int, elaps
 		slog.String("task_id", task.ID),
 		slog.Int("item_index", itemIndex),
 		slog.Duration("elapsed", elapsed),
+	)
+}
+
+// evidenceLoggedFailedTests is how many "--- FAIL:" test names the
+// command-failed WARN line carries.
+const evidenceLoggedFailedTests = 10
+
+// logEvidenceCommandFailed emits the GH-6035 WARN line for a paste-output
+// command that exited non-zero, naming the failing tests so the daemon log is
+// not blind when the PR-body block is trimmed.
+func (r *Runner) logEvidenceCommandFailed(task *Task, itemIndex int, c AcceptanceCommandResult) {
+	if r == nil || r.log == nil {
+		return
+	}
+	r.log.Warn("acceptance evidence command failed",
+		slog.String("task_id", task.ID),
+		slog.Int("item_index", itemIndex),
+		slog.String("command", redactOutputForEvidence(c.Command)),
+		slog.Int("exit_code", c.ExitCode),
+		slog.Duration("duration", c.Duration),
+		slog.String("failed_tests", redactOutputForEvidence(strings.Join(c.FailedTests, ", "))),
 	)
 }
 
@@ -832,6 +865,9 @@ type evidenceRunOptions struct {
 	// the budget cut off, with the 1-based item index and the time spent in
 	// the evidence step so far.
 	onEvent func(event string, itemIndex int, elapsed time.Duration)
+	// onCommandFailed is called for each paste-output command that ran and
+	// exited non-zero (GH-6035), with the 1-based item index.
+	onCommandFailed func(itemIndex int, cmd AcceptanceCommandResult)
 }
 
 // runAcceptanceEvidenceItemsBudgeted runs evidence-requiring items in order.
@@ -875,6 +911,9 @@ func runAcceptanceEvidenceItemsBudgeted(ctx context.Context, runner AcceptanceCo
 		for _, c := range res.Commands {
 			if c.FromQualityGate {
 				emit(evidenceEventReused, i+1)
+			}
+			if c.Failed && opts.onCommandFailed != nil {
+				opts.onCommandFailed(i+1, c)
 			}
 		}
 		if res.NotVerifiedReason == evidenceBudgetExhaustedReason && !exhaustedReported {
