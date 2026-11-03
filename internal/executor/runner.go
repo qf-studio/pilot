@@ -5467,7 +5467,10 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						if decision.ExtendedTimeout > 0 {
 							retryTimeout = decision.ExtendedTimeout
 						}
-						retryCtx, retryCancel := context.WithTimeout(context.Background(), retryTimeout)
+						// GH-6021: WithoutCancel keeps the billing credential on ctx; a
+						// bare Background would drop it and the CLI would bill the
+						// subscription in api_key mode.
+						retryCtx, retryCancel := context.WithTimeout(context.WithoutCancel(ctx), retryTimeout)
 
 						r.reportProgress(task.ID, "Re-executing", 55, fmt.Sprintf("Retry attempt %d with %v timeout...", state.smartRetryAttempt, retryTimeout))
 
@@ -6446,7 +6449,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						// attempt ctx, which may already be exhausted by the time the
 						// quality-gate retry loop reaches this point.
 						feedbackAllowed, feedbackMCP := r.executionToolOptions()
-						retryCtx, retryCancel := context.WithTimeout(context.Background(), timeout)
+						retryCtx, retryCancel := context.WithTimeout(context.WithoutCancel(ctx), timeout) // GH-6021: keeps the billing credential
 						retryResult, retryErr := r.backendExecute(retryCtx, task, executionPath, ExecuteOptions{
 							Prompt:            retryPrompt,
 							TaskID:            task.ID,

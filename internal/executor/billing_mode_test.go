@@ -309,7 +309,11 @@ func TestBillingMode_APIKeyReachesBackendAndClassifier(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", filepath.Dir(script)+string(os.PathListSeparator)+os.Getenv("PATH"))
-	cred := &BillingCredential{mode: BillingModeAPIKey, key: []byte(testBillingKey)}
+	cred, err := NewBillingResolver(r.config.ClaudeCode.Billing).Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	defer cred.Zero()
 	_, _ = NewEffortClassifier().defaultCmdRunner(WithBillingCredential(context.Background(), cred), "-p", "x")
 	if got, _ := billingEnvValue(readEnvDump(t, dump), "ANTHROPIC_API_KEY"); got != testBillingKey {
 		t.Errorf("effort classifier ANTHROPIC_API_KEY = %q, want %q", got, testBillingKey)
@@ -425,8 +429,8 @@ func TestBillingMode_FailClosedPausesAdmission(t *testing.T) {
 	if getErr != nil {
 		t.Fatalf("no execution row recorded: %v", getErr)
 	}
-	if exec.Status != "failed" || !strings.HasPrefix(exec.Error, "billing_key_unavailable") || !strings.Contains(exec.Error, "exit code 1") {
-		t.Errorf("row = status %q error %q, want failed / billing_key_unavailable ... exit code 1", exec.Status, exec.Error)
+	if exec.Status != "infra" || !strings.HasPrefix(exec.Error, "billing_key_unavailable") || !strings.Contains(exec.Error, "exit code 1") {
+		t.Errorf("row = status %q error %q, want infra / billing_key_unavailable ... exit code 1", exec.Status, exec.Error)
 	}
 	if IsEnvClassFailureText(exec.Error) {
 		t.Errorf("error %q matches an env-class signature and would skip retry accounting", exec.Error)

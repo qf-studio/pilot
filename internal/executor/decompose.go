@@ -517,6 +517,8 @@ func (d *TaskDecomposer) createSubtasks(parent *Task, parts []string, partType s
 			// parent's own row correctly carried is_canary=1, leaking canary
 			// executions into every unscoped metrics/dashboard aggregate.
 			IsCanary: parent.IsCanary,
+			// GH-6021: subtask cost is recorded under the parent's billing mode.
+			billingMode: parent.billingMode,
 		}
 
 		// Last subtask creates the PR
