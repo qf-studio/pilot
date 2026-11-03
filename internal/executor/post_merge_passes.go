@@ -43,8 +43,9 @@ var postMergePassLabels = [2]string{"pass A (hunk)", "pass B (adjacent)"}
 
 // postMergeSystemPrompt builds the system prompt of one pass from the shared
 // pieces. With kind postMergePassCombined it is byte-identical to the
-// single-pass prompt.
-func postMergeSystemPrompt(kind postMergePassKind, checkout, memories, preMerge bool) string {
+// single-pass prompt. evidence marks a pre-merge review that carries the
+// evidence section as its PR body (GH-6037).
+func postMergeSystemPrompt(kind postMergePassKind, checkout, memories, preMerge, evidence bool) string {
 	systemPrompt := postMergeReviewerSystemPrompt
 	if checkout {
 		item2 := postMergeChecklistItem2Checkout
@@ -65,7 +66,13 @@ func postMergeSystemPrompt(kind postMergePassKind, checkout, memories, preMerge 
 	}
 	if preMerge {
 		systemPrompt = strings.Replace(systemPrompt, postMergeAlreadyMergedSentence, preMergeAboutToPushSentence, 1)
-		systemPrompt = strings.Replace(systemPrompt, "\n\n"+postMergePRBodyParagraph, "", 1)
+		if evidence {
+			// GH-6037: the evidence this run produced is the PR body.
+			systemPrompt = strings.Replace(systemPrompt, postMergePRBodyParagraph, preMergePRBodyParagraph, 1)
+			systemPrompt = strings.Replace(systemPrompt, postMergeGreenCIRule, preMergeEvidenceRule, 1)
+		} else {
+			systemPrompt = strings.Replace(systemPrompt, "\n\n"+postMergePRBodyParagraph, "", 1)
+		}
 	}
 	return systemPrompt
 }

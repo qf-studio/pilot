@@ -574,6 +574,7 @@ func TestPostMergeReviewerPrompt_PreMergeVariant(t *testing.T) {
 	post := prompt(t, base)
 	preIn := base
 	preIn.PreMerge = true
+	preIn.PRBody = "" // GH-6037: a pre-merge review with no evidence keeps the old shape
 	pre := prompt(t, preIn)
 
 	if !strings.Contains(post, postMergeAlreadyMergedSentence) || !strings.Contains(post, "## CI Result\n"+base.CIResult) || !strings.Contains(post, "## PR Body") || !strings.Contains(post, postMergePRBodyParagraph) {
@@ -601,6 +602,36 @@ func TestPostMergeReviewerPrompt_PreMergeVariant(t *testing.T) {
 	}
 	if pre != want {
 		t.Errorf("pre-merge prompt differs from the post-merge prompt beyond the documented changes:\n--- want\n%s\n--- got\n%s", want, pre)
+	}
+}
+
+// GH-6037: a pre-merge review that carries the evidence section gets it as the
+// PR body, with the paragraph that says this run produced it and the severity
+// rule without a CI caveat.
+func TestPostMergeReviewerPrompt_PreMergeWithEvidence(t *testing.T) {
+	var got string
+	r := newPostMergeReviewerWithRunner(func(_ context.Context, args ...string) ([]byte, error) {
+		got = args[2]
+		return []byte("VERDICT: APPROVE\nDEFECTS:\nnone\nNOT-VERIFIED:\nnone\nNOTES:\n"), nil
+	})
+	in := PostMergeReviewInput{
+		PreMerge: true, IssueTitle: "ISSUE-TITLE", IssueBody: "ISSUE-BODY",
+		Diff:     "diff --git a/x b/x\n+DIFF-LINE",
+		CIResult: "build: passed (3s)",
+		PRBody:   "## Evidence\n\n### go test FAILS\n\n```\n$ go test ./x\n--- FAIL: TestX\n```",
+	}
+	if _, err := r.Review(context.Background(), in); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	for _, want := range []string{preMergeAboutToPushSentence, preMergePRBodyParagraph, preMergeEvidenceRule, "## PR Body\n## Evidence", "--- FAIL: TestX", "## Gate Results"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("pre-merge prompt with evidence missing %q", want)
+		}
+	}
+	for _, banned := range []string{postMergeAlreadyMergedSentence, postMergePRBodyParagraph, postMergeGreenCIRule, "## CI Result"} {
+		if strings.Contains(got, banned) {
+			t.Errorf("pre-merge prompt with evidence still contains %q", banned)
+		}
 	}
 }
 

@@ -112,8 +112,10 @@ func prePRGateResults(gates *QualityGatesResult) string {
 // runPrePRReview runs the pre-PR review once the gates have passed. It never
 // fails the run: every failure is recorded on the outcome and the run goes on
 // to push. It returns nil when the mode is off. Shadow mode never starts a fix
-// round and writes nothing to GitHub.
-func (r *Runner) runPrePRReview(ctx context.Context, task *Task, executionPath string, git *GitOperations, state *progressState, gates *QualityGatesResult) *PrePRReviewOutcome {
+// round and writes nothing to GitHub. evidence, when the evidence step ran ahead
+// of the review (GH-6037), is passed as the PR body so the reviewer reads the
+// pasted output the PR will carry.
+func (r *Runner) runPrePRReview(ctx context.Context, task *Task, executionPath string, git *GitOperations, state *progressState, gates *QualityGatesResult, evidence *AcceptanceEvidenceCollection) *PrePRReviewOutcome {
 	mode := r.config.PrePRReviewMode()
 	if mode == PrePRReviewModeOff {
 		return nil
@@ -176,7 +178,7 @@ func (r *Runner) runPrePRReview(ctx context.Context, task *Task, executionPath s
 	}
 
 	// GH-5980: every pass gets the full timeout, so the context holds passes of them.
-	reviewCtx, cancel := context.WithTimeout(ctx, time.Duration(r.config.PrePRReview.EffectivePasses())*r.config.PrePRReview.EffectiveTimeout())
+	reviewCtx, cancel := context.WithTimeout(ctx, r.prePRReviewTimeBudget())
 	defer cancel()
 
 	r.reportProgress(task.ID, "Pre-PR Review", 96, "Reviewing the change against the system...")
@@ -187,6 +189,7 @@ func (r *Runner) runPrePRReview(ctx context.Context, task *Task, executionPath s
 		IssueBody:      task.Description,
 		Diff:           diff,
 		CIResult:       prePRGateResults(gates),
+		PRBody:         evidence.section(),
 		Memories:       memories,
 		ProjectPath:    executionPath,
 		MergeCommitSHA: sha,
@@ -215,6 +218,7 @@ func (r *Runner) runPrePRReview(ctx context.Context, task *Task, executionPath s
 		slog.Int("files_read", out.FilesRead),
 		slog.Int("passes", out.Passes),
 		slog.Duration("duration", out.Duration),
+		slog.Float64("evidence_s", evidence.seconds()),
 	}
 	if out.Err != nil {
 		attrs = append(attrs, slog.Any("error", out.Err))

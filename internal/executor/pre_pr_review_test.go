@@ -112,7 +112,7 @@ func TestRunPrePRReview_OffIsNoop(t *testing.T) {
 			fake := &fakePrePRReviewer{review: approveWithNotes()}
 			r := prePRRunner(mode, fake)
 
-			out := r.runPrePRReview(context.Background(), prePRTask(dir), dir, NewGitOperations(dir), &progressState{}, prePRGates())
+			out := r.runPrePRReview(context.Background(), prePRTask(dir), dir, NewGitOperations(dir), &progressState{}, prePRGates(), nil)
 
 			if out != nil {
 				t.Errorf("outcome = %+v, want nil when the mode is off", out)
@@ -128,7 +128,7 @@ func TestRunPrePRReview_OffIsNoop(t *testing.T) {
 		fake := &fakePrePRReviewer{review: approveWithNotes()}
 		r := prePRRunner(PrePRReviewModeShadow, fake)
 		r.config = nil
-		if out := r.runPrePRReview(context.Background(), prePRTask(dir), dir, NewGitOperations(dir), &progressState{}, prePRGates()); out != nil || fake.calls() != 0 {
+		if out := r.runPrePRReview(context.Background(), prePRTask(dir), dir, NewGitOperations(dir), &progressState{}, prePRGates(), nil); out != nil || fake.calls() != 0 {
 			t.Errorf("nil config must be off: out=%v calls=%d", out, fake.calls())
 		}
 	})
@@ -151,7 +151,7 @@ func TestRunPrePRReview_Shadow_RecordsOutcomeNoFix(t *testing.T) {
 	task.ExecutionID = execID
 
 	countBefore := PrePRReviewsTotal()[string(PostMergeApproveWithNotes)]
-	out := r.runPrePRReview(context.Background(), task, dir, NewGitOperations(dir), &progressState{}, prePRGates())
+	out := r.runPrePRReview(context.Background(), task, dir, NewGitOperations(dir), &progressState{}, prePRGates(), nil)
 
 	if n := fake.calls(); n != 1 {
 		t.Fatalf("reviewer called %d times, want exactly 1 (shadow never starts a fix round)", n)
@@ -328,7 +328,7 @@ func TestRunPrePRReview_Skips(t *testing.T) {
 			task := prePRTask(dir)
 			ctx, gates := tt.mutate(t, task, r, dir)
 
-			out := r.runPrePRReview(ctx, task, dir, NewGitOperations(dir), &progressState{}, gates)
+			out := r.runPrePRReview(ctx, task, dir, NewGitOperations(dir), &progressState{}, gates, nil)
 
 			if n := fake.calls(); n != 0 {
 				t.Errorf("reviewer called %d times, want 0", n)
@@ -361,7 +361,7 @@ func TestRunPrePRReview_NoVerdictOutcomes(t *testing.T) {
 			r := prePRRunner(PrePRReviewModeShadow, fake)
 
 			countBefore := PrePRReviewsTotal()
-			out := r.runPrePRReview(context.Background(), prePRTask(dir), dir, NewGitOperations(dir), &progressState{}, prePRGates())
+			out := r.runPrePRReview(context.Background(), prePRTask(dir), dir, NewGitOperations(dir), &progressState{}, prePRGates(), nil)
 			for k, v := range PrePRReviewsTotal() {
 				if v != countBefore[k] {
 					t.Errorf("reviews counter %q moved %d -> %d without a verdict", k, countBefore[k], v)
@@ -457,7 +457,7 @@ func TestPrePRReview_ContextHoldsOneTimeoutPerPass(t *testing.T) {
 			r.config.PrePRReview.Passes = tt.passes
 			ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 			defer cancel()
-			r.runPrePRReview(ctx, prePRTask(dir), dir, NewGitOperations(dir), &progressState{}, prePRGates())
+			r.runPrePRReview(ctx, prePRTask(dir), dir, NewGitOperations(dir), &progressState{}, prePRGates(), nil)
 			if !rec.hadDL || rec.left < tt.wantMin || rec.left > tt.wantMax {
 				t.Errorf("review context has %s left, want between %s and %s", rec.left, tt.wantMin, tt.wantMax)
 			}
@@ -474,7 +474,7 @@ func TestPrePRReview_LogsSkippedPassReason(t *testing.T) {
 	r := prePRRunner(PrePRReviewModeShadow, &fakePrePRReviewer{review: review})
 	var buf bytes.Buffer
 	r.log = slog.New(slog.NewTextHandler(&buf, nil))
-	r.runPrePRReview(context.Background(), prePRTask(dir), dir, NewGitOperations(dir), &progressState{}, prePRGates())
+	r.runPrePRReview(context.Background(), prePRTask(dir), dir, NewGitOperations(dir), &progressState{}, prePRGates(), nil)
 	if line := buf.String(); !strings.Contains(line, "pass_2_failed=budget") || strings.Contains(line, "pass_1_failed") {
 		t.Errorf("log = %q, want pass_2_failed=budget and no pass_1_failed", line)
 	}

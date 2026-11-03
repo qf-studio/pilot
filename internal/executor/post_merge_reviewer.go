@@ -228,7 +228,9 @@ type PostMergeReviewInput struct {
 	Diff string
 	// CIResult is the CI result known at review time ("" when unknown).
 	CIResult string
-	// PRBody is the merged PR's body; its evidence block is passed through.
+	// PRBody is the merged PR's body; its evidence block is passed through. A
+	// pre-merge review (PreMerge) gets the evidence section the PR will carry
+	// instead (GH-6037); empty when none was collected.
 	PRBody string
 	// Memories are the ranked project memories relevant to the issue and the
 	// touched files, recalled by the caller (empty when none). The reviewer
@@ -242,8 +244,10 @@ type PostMergeReviewInput struct {
 
 	// PreMerge marks a review that runs before the push (TASK-620): the prompt
 	// says the change is about to be pushed and has passed the quality gates,
-	// has no PR body or Evidence paragraph, and renders CIResult as "Gate
-	// Results". MergeCommitSHA is then the worktree HEAD and PRBody is ignored.
+	// has no PR yet, and renders CIResult as "Gate Results". MergeCommitSHA is then
+	// the worktree HEAD. With a non-empty PRBody (the evidence this run produced,
+	// GH-6037) the prompt carries it and the pre-merge evidence paragraph and
+	// severity rule; without one it has no PR body or Evidence paragraph.
 	PreMerge bool
 }
 
@@ -377,6 +381,15 @@ const preMergeAboutToPushSentence = "This change is about to be pushed as a pull
 // block; the pre-merge variant has no PR yet and drops it.
 const postMergePRBodyParagraph = `PR body: it is supplied in full under "## PR Body". Its "## Evidence" block is where build, test, lint and adapter bullets of the issue are checked — read it for each such bullet. "Not in the diff" is never a reason to skip one of them.`
 
+// preMergePRBodyParagraph replaces postMergePRBodyParagraph in a pre-merge
+// review that carries evidence (GH-6037): the pasted output was produced by this
+// run just now, not by CI.
+const preMergePRBodyParagraph = `PR body: the evidence section of the pull request this change will open is supplied under "## PR Body". Its "## Evidence" block is where build, test, lint and adapter bullets of the issue are checked — read it for each such bullet. "Not in the diff" is never a reason to skip one of them. The commands in it ran in this run, on this branch, not in CI.`
+
+// preMergeEvidenceRule replaces postMergeGreenCIRule in a pre-merge review that
+// carries evidence: no CI status exists to refute the output.
+const preMergeEvidenceRule = `The pasted output was produced by this run on this branch, not by CI, so there is no CI status to weigh: a failing test or build in it for code the diff changed is [blocking], naming the package.`
+
 // PostMergeCIStatusPrefix leads the CIResult line that carries the CI status at
 // merge time; the green-CI downgrade guard reads the status back from it.
 const PostMergeCIStatusPrefix = "CI status at merge time: "
@@ -495,7 +508,8 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 		}
 		fmt.Fprintf(&sb, "\n## %s\n%s\n", heading, in.CIResult)
 	}
-	if !in.PreMerge && strings.TrimSpace(in.PRBody) != "" {
+	hasPRBody := strings.TrimSpace(in.PRBody) != ""
+	if hasPRBody {
 		prBody := truncatePreflightBody(in.PRBody)
 		fmt.Fprintf(&sb, "\n## PR Body\n%s\n", prBody)
 		// Truncation keeps a head and a tail; an Evidence block cut out of the
@@ -515,7 +529,7 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 	tail := sb.String()
 
 	promptFor := func(kind postMergePassKind) string {
-		return postMergeSystemPrompt(kind, hasCheckout, memoriesRendered > 0, in.PreMerge) + tail
+		return postMergeSystemPrompt(kind, hasCheckout, memoriesRendered > 0, in.PreMerge, hasPRBody) + tail
 	}
 
 	var review *PostMergeReview

@@ -505,13 +505,40 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 // since runDiffCoverageCheck below shells out to git only when
 // ExtractDiffCoveragePaths finds a candidate path at all.
 //
+// GH-6037: cached is the optional evidence the pre-PR review already read
+// (collectAcceptanceEvidenceForReview). When one is passed the commands are not
+// run again and its section is appended; without one the evidence is collected
+// here, as before.
+func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workDir, prBody string, gates *QualityGatesResult, cached ...*AcceptanceEvidenceCollection) string {
+	if r == nil || task == nil {
+		return prBody
+	}
+
+	var ev *AcceptanceEvidenceCollection
+	if len(cached) > 0 {
+		ev = cached[0]
+	}
+	if ev == nil {
+		ev = r.collectAcceptanceEvidence(ctx, task, workDir, gates)
+	}
+	if ev == nil || ev.Section == "" {
+		return prBody
+	}
+	return strings.TrimRight(prBody, "\n") + "\n\n" + ev.Section
+}
+
+// collectAcceptanceEvidence classifies the acceptance criteria, runs the
+// evidence items and the diff-coverage check, and renders the sections. It
+// returns nil when the acceptance-evidence gate is disabled; otherwise the
+// collection's Section is "" when there is nothing to report.
+//
 // GH-5867: the classified items run on their own budget context
 // (evidenceBudgetCtx) so a slow command can never consume the time the PR
 // create step needs, and a paste-output command identical to a quality gate
 // that passed in this run (gates) reuses that gate's captured output.
-func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workDir, prBody string, gates *QualityGatesResult) string {
+func (r *Runner) collectAcceptanceEvidence(ctx context.Context, task *Task, workDir string, gates *QualityGatesResult) *AcceptanceEvidenceCollection {
 	if r == nil || task == nil {
-		return prBody
+		return nil
 	}
 
 	var cfg *AcceptanceEvidenceConfig
@@ -519,8 +546,9 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 		cfg = r.config.AcceptanceEvidence
 	}
 	if !cfg.IsEnabled() {
-		return prBody
+		return nil
 	}
+	started := time.Now()
 
 	var results []AcceptanceEvidenceResult
 	if len(task.AcceptanceCriteria) > 0 {
@@ -562,11 +590,11 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 	results = append(results, runDiffCoverageCheck(diffCtx, r, task, workDir)...)
 	diffCancel()
 
-	section := RenderAcceptanceEvidenceSections(results)
-	if section == "" {
-		return prBody
+	return &AcceptanceEvidenceCollection{
+		Section:  RenderAcceptanceEvidenceSections(results),
+		Results:  results,
+		Duration: time.Since(started),
 	}
-	return strings.TrimRight(prBody, "\n") + "\n\n" + section
 }
 
 // evidenceGateOutputsAtHead indexes the reusable gate output of gates, or
