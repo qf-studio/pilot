@@ -1,6 +1,6 @@
 # TASK-633: Billing mode fast-follow — PR#6017 post-merge review notes verified on main, two fix legs
 
-**Status**: 🚀 **F1 MERGED 2026-11-03 13:29Z → [PR#6024](https://github.com/qf-studio/pilot/pull/6024)** (715/−11, 6 files; pre-PR shadow APPROVE-w-notes: sweep zeroes a key in the queued→running gap before the worker takes it (re-resolve covers it; false outage only if that fails) · Transition-failure path leaks the stash · discard after a failed DeleteExecution · two test-depth notes). **F2 [pilot#6022](https://github.com/qf-studio/pilot/issues/6022) in progress.** **F3 [pilot#6026](https://github.com/qf-studio/pilot/issues/6026) dispatched 13:5xZ** (sweep keeps queued **or** running rows, drop on Transition failure, retry tests assert the real subprocess env). Post-merge Opus review of PR#6024 still pending; new notes → F4 only if real. Parent: TASK-631 A1 → PR#6017.
+**Status**: 🔴 **F4 [pilot#6032](https://github.com/qf-studio/pilot/issues/6032) P1 DISPATCHED 2026-11-03 ~15:50Z — v2.310.0 regression: unset `billing.mode` = subscription = inherited `ANTHROPIC_API_KEY` stripped from every model subprocess; every hosted tenant (env key, no OAuth login) breaks on upgrade. None exposed yet (tenants on 2.282.0 / 2.277.4). HOLD: no AMI bake (infra#23) or SSM hop to 2.310.0 until F4 is released.** Shipped in v2.310.0: A1 PR#6017 · F1 #6021→PR#6024 · F2 #6022→PR#6025 · F3 #6026→PR#6027; box on it since 14:16Z (OAuth, unaffected), 4 tasks completed. Parent: TASK-631.
 **Created**: 2026-11-03
 **Assignee**: Pilot
 
@@ -264,11 +264,63 @@ Paths outside the dispatcher (OpenCode/Qwen, reviewer, bootstrap, alerts: GH-602
 
 - PR#6024 pre-PR review notes; GH-6021; GH-6016 / PR#6017; Navigator TASK-633 in this repo
 
+### LEG F4 — repo: qf-studio/pilot — title: fix(executor): billing mode unset keeps the inherited Anthropic key (legacy passthrough) — only an explicit subscription mode strips it; attribution derived from the env
+
+## Context
+
+Regression shipped in v2.310.0 (PR#6017, GH-6016), found 2026-11-03 while auditing the release against the hosted fleet. Nobody is broken yet; the fix must land before any env-key deployment upgrades.
+
+- EffectiveMode (`internal/executor/billing_mode.go` near line 60) returns subscription when billing.mode is unset.
+- modelSubprocessEnvFor (`internal/executor/model_env.go` near line 216) always removes ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN inherited from the daemon env, then appends the credential on ctx. In subscription mode that credential is empty.
+- Result: a daemon with no billing block and ANTHROPIC_API_KEY in its environment, which worked on every release up to v2.309.0, now starts the claude CLI with no credential. The CLI falls back to the OAuth login file; where none exists every run fails.
+- Who runs that way: every hosted tenant. Their env file carries ANTHROPIC_API_KEY (platform or own key, written by the console's key selector) and no OAuth login; their config has no billing block. Verified 2026-11-03 on all three tenant instances (versions 2.282.0 and 2.277.4, so not yet exposed). Self-hosted operators who export ANTHROPIC_API_KEY are in the same position; the founder box is not, because it authenticates with CLAUDE_CODE_OAUTH_TOKEN, which the strip keeps.
+- The requester's own ask (#5955) was that subscription mode drops a stray key. That stays true for an explicit mode. The default for an unset mode must be the pre-v2.310.0 behaviour.
+
+probe: present qf-studio/pilot func[[:space:]]\(c[[:space:]]\*BillingConfig\)[[:space:]]EffectiveMode\(
+probe: present qf-studio/pilot func[[:space:]]modelSubprocessEnvFor\(
+probe: present qf-studio/pilot BillingModeSubscription[[:space:]]BillingMode
+probe: absent qf-studio/pilot BillingModeUnset[[:space:]]+BillingMode
+
+## Scope
+
+- Config: billing.mode gains the unset state as a first-class value. EffectiveMode returns a new BillingModeUnset constant when the block or the field is empty; it returns subscription only when the operator wrote subscription. Validation accepts subscription, api_key and empty.
+- Resolver: in the unset mode Resolve returns a credential whose Env is empty and whose mode is unset, never an error, and runs no command.
+- Subprocess env: modelSubprocessEnvFor removes the two inherited credential names only when the credential on ctx has mode subscription or api_key. With mode unset, or with no credential on ctx at all, it returns the plain modelSubprocessEnv result, which is the v2.309.0 behaviour (the ANTHROPIC_ keep-prefix passes the key). This covers every spawn site at once, including the post-merge reviewer and the Navigator bootstrap added in GH-6022.
+- Attribution in the unset mode: the recorded billing_mode is derived, not asserted. When the daemon env carries ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN the row reads api_key; otherwise subscription. Add a DerivedBillingMode(environ) helper next to KeySourceFromEnv and use it wherever the mode is stamped for an unset credential (admission, chat turns, bootstrap, decomposed subtasks inherit as today). Explicit modes stamp their own value as today.
+- Fail-closed paths are unchanged for api_key. The unset mode never pauses admission and never alerts.
+- Example config: document the three states in `configs/pilot.example.yaml` under the billing block: unset = passthrough of the daemon environment (default, recommended for env-key deployments until the console sets the mode), subscription = strip inherited keys, api_key = inject the resolved key only.
+- Release note line for the next tag: v2.310.0 stripped an inherited ANTHROPIC_API_KEY when billing.mode was unset; this release restores passthrough for the unset mode.
+
+Tests to add, named exactly: TestBillingMode_UnsetKeepsInheritedKey, TestBillingMode_ExplicitSubscriptionStripsInheritedKey, TestBillingMode_UnsetDerivesAttribution, TestBillingMode_UnsetNoCredentialOnCtxPassesThrough, TestConfig_Validate_BillingUnsetAccepted.
+
+## Acceptance
+
+- [ ] `go test -race ./internal/executor/ -run TestBillingMode` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/executor/ -run TestModelSubprocessEnvFor` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/config/ -run TestConfig_Validate_Billing` passes; paste the output into the PR body.
+- [ ] A test with no billing block and ANTHROPIC_API_KEY in the base env asserts the claude backend's recorded command env, the effort classifier's env and the post-merge reviewer's env all carry that key.
+- [ ] A test with billing.mode subscription and the same base env asserts none of those envs carries the key.
+- [ ] A test with no billing block asserts the execution row reads billing_mode api_key when the base env carries the key and subscription when it does not.
+- [ ] A test calls modelSubprocessEnvFor with a ctx that carries no credential and asserts the result equals modelSubprocessEnv of the same base.
+- [ ] make EffectiveMode return subscription for an empty mode -> TestBillingMode_UnsetKeepsInheritedKey fails
+- [ ] strip the credential names regardless of the credential's mode -> TestBillingMode_UnsetNoCredentialOnCtxPassesThrough fails
+- [ ] stamp unknown instead of the derived value for the unset mode -> TestBillingMode_UnsetDerivesAttribution fails
+- [ ] Do not re-run make build, make test or make lint as evidence: the daemon's quality gates already run them on this repo.
+
+## Out of scope
+
+The runtime switch (A2), the usage-limit fallback (B), budget scope (C). Any console change that writes a billing block into tenant configs (hosted follow-up, TASK-631 D4). Any change to key_source.
+
+## Refs
+
+- v2.310.0 release (PR#6017, #6024, #6025, #6027); #5955 item 3; Navigator TASK-633 in this repo
+
 ## Refs
 
 - F1 → https://github.com/qf-studio/pilot/issues/6021
 - F2 → https://github.com/qf-studio/pilot/issues/6022
 - F3 → https://github.com/qf-studio/pilot/issues/6026
+- F4 → https://github.com/qf-studio/pilot/issues/6032
 
 - Parent: TASK-631 · [pilot#6016](https://github.com/qf-studio/pilot/issues/6016) → PR#6017 (merged 2026-11-03 12:14Z)
 - Post-merge review: Opus APPROVE-WITH-NOTES on PR#6017, 12:18Z
