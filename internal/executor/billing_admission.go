@@ -248,9 +248,17 @@ func (d *Dispatcher) discardBillingCredential(execID string) {
 	cred.Zero()
 }
 
+// billingStashRowLive reports whether a row in this status can still reach the
+// worker's key take. A running row is live: the worker moves a row to running
+// before it takes the key, and a sweep tick in that gap must not zero a key
+// admission already resolved (GH-6026).
+func billingStashRowLive(status string) bool {
+	return status == string(ExecStatusQueued) || status == string(ExecStatusRunning)
+}
+
 // sweepBillingCredentials zeroes every stashed credential whose execution row
-// is missing or no longer queued, e.g. canceled by `pilot task cancel` from
-// another process (GH-6021). A lookup error keeps the entry.
+// is missing or neither queued nor running, e.g. canceled by `pilot task
+// cancel` from another process (GH-6021). A lookup error keeps the entry.
 func (d *Dispatcher) sweepBillingCredentials() {
 	d.billingMu.Lock()
 	ids := make([]string, 0, len(d.billingCreds))
@@ -264,7 +272,7 @@ func (d *Dispatcher) sweepBillingCredentials() {
 	for _, id := range ids {
 		exec, err := d.store.GetExecution(id)
 		switch {
-		case err == nil && exec != nil && exec.Status == string(ExecStatusQueued):
+		case err == nil && exec != nil && billingStashRowLive(exec.Status):
 			continue
 		case err != nil && !errors.Is(err, sql.ErrNoRows):
 			continue

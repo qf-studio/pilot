@@ -410,6 +410,189 @@ func TestBillingCredential_WorkerSkipPathsDiscard(t *testing.T) {
 	})
 }
 
+// A row between the worker's Transition to running and its key take is
+// running: the sweep keeps its key, and the take then empties the stash.
+func TestBillingCredential_SweepKeepsRunningRowUntilTaken(t *testing.T) {
+	skipWithoutShell(t)
+	rig := newBillingWorkerRig(t, apiKeyConfig("printf "+testBillingKey))
+	task := &Task{ID: "GH-6026-A", Title: "running", ProjectPath: rig.proj}
+	execID, err := rig.d.beginWithGenerationRetry(task, ExecStatusQueued)
+	if err != nil || execID == "" {
+		t.Fatalf("beginWithGenerationRetry = %q, %v", execID, err)
+	}
+	cred := rig.stashed(execID)
+	if cred == nil {
+		t.Fatal("no stashed credential")
+	}
+	if err := rig.w.lifecycle.Transition(execID, ExecStatusRunning); err != nil {
+		t.Fatal(err)
+	}
+
+	rig.d.sweepBillingCredentials()
+	if got := rig.stashed(execID); got != cred || len(cred.Env()) != 1 {
+		t.Fatalf("sweep dropped the key of a running row: stashed=%v env=%v", got, cred.Env())
+	}
+
+	taken, err := rig.d.billingCredentialForRun(execID, task.ID, rig.proj)
+	if err != nil || taken != cred {
+		t.Fatalf("billingCredentialForRun = %v, %v; want the admission credential", taken, err)
+	}
+	if rig.stashCount() != 0 {
+		t.Errorf("stash count after the take = %d, want 0", rig.stashCount())
+	}
+}
+
+// The sweep zeroes the keys of rows that ended and of rows that are gone.
+func TestBillingCredential_SweepDropsTerminalAndMissingRows(t *testing.T) {
+	skipWithoutShell(t)
+	rig := newBillingWorkerRig(t, apiKeyConfig("printf "+testBillingKey))
+	task := &Task{ID: "GH-6026-B", Title: "failed", ProjectPath: rig.proj}
+	failedID, err := rig.d.beginWithGenerationRetry(task, ExecStatusQueued)
+	if err != nil || failedID == "" {
+		t.Fatalf("beginWithGenerationRetry = %q, %v", failedID, err)
+	}
+	failedCred := rig.stashed(failedID)
+	if failedCred == nil {
+		t.Fatal("no stashed credential")
+	}
+	if err := rig.d.store.UpdateExecutionStatus(failedID, string(ExecStatusFailed)); err != nil {
+		t.Fatal(err)
+	}
+	missingCred := &BillingCredential{mode: BillingModeAPIKey, key: []byte(testBillingKey)}
+	rig.d.stashBillingCredential("exec-gh6026-deleted", missingCred)
+
+	rig.d.sweepBillingCredentials()
+
+	if rig.stashCount() != 0 {
+		t.Errorf("stash count = %d, want 0 after the sweep", rig.stashCount())
+	}
+	if len(failedCred.Env()) != 0 || len(missingCred.Env()) != 0 {
+		t.Errorf("credentials not zeroed: failed=%v missing=%v", failedCred.Env(), missingCred.Env())
+	}
+}
+
+// When the move to running fails the worker drops the key; the row stays
+// queued, so the sweep alone would keep it.
+func TestBillingCredential_TransitionFailureDrops(t *testing.T) {
+	skipWithoutShell(t)
+	stubFetchIssueState(t, func(context.Context, *Runner, *Task, string) (IssueState, error) {
+		return IssueState{}, nil
+	})
+	rig := newBillingWorkerRig(t, apiKeyConfig("printf "+testBillingKey))
+	task := &Task{ID: "GH-6026-C", Title: "transition fails", ProjectPath: rig.proj}
+	execID, err := rig.d.beginWithGenerationRetry(task, ExecStatusQueued)
+	if err != nil || execID == "" {
+		t.Fatalf("beginWithGenerationRetry = %q, %v", execID, err)
+	}
+	cred := rig.stashed(execID)
+	if cred == nil {
+		t.Fatal("no stashed credential")
+	}
+
+	// A closed store makes the lifecycle's status write fail while the worker
+	// still reads its queue from the open one.
+	broken, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broken.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rig.w.lifecycle = NewExecutionLifecycle(broken)
+
+	// The failed row stays queued, so processQueue re-picks it until its ctx
+	// ends: let it run until the stash empties (or time out), then cancel.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rig.w.processQueue(ctx)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for rig.stashCount() != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	row, err := rig.d.store.GetExecution(execID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != string(ExecStatusQueued) {
+		t.Fatalf("row status = %q, want queued (the Transition must have failed)", row.Status)
+	}
+	if rig.stashCount() != 0 || len(cred.Env()) != 0 {
+		t.Errorf("credential left behind: stashed=%d env=%v", rig.stashCount(), cred.Env())
+	}
+}
+
+// The base-presence park and the closed-issue supersede also end the stash.
+func TestBillingCredential_WorkerSkipPathsDiscard_ParkAndSupersede(t *testing.T) {
+	skipWithoutShell(t)
+
+	t.Run("base-presence park", func(t *testing.T) {
+		setupFakeGhCLI(t)
+		stubFetchIssueState(t, func(context.Context, *Runner, *Task, string) (IssueState, error) {
+			return IssueState{}, nil
+		})
+		stubCheckBasePresence(t, func(context.Context, *Runner, *Task, string, []int, []string) (BasePresenceHold, error) {
+			return BasePresenceHold{Held: true, Reason: "referenced PR #1 is still open (not merged)"}, nil
+		})
+		rig := newBillingWorkerRig(t, apiKeyConfig("printf "+testBillingKey))
+		rig.w.setBasePresenceHoldMaxCycles(1)
+		task := &Task{ID: "GH-6026-D", Title: "held", Description: "Depends on: #1", ProjectPath: rig.proj}
+		execID, err := rig.d.beginWithGenerationRetry(task, ExecStatusQueued)
+		if err != nil || execID == "" {
+			t.Fatalf("beginWithGenerationRetry = %q, %v", execID, err)
+		}
+		cred := rig.stashed(execID)
+		if cred == nil {
+			t.Fatal("no stashed credential")
+		}
+		rig.w.processQueue(context.Background())
+
+		row, err := rig.d.store.GetExecution(execID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.Status != string(ExecStatusSkipped) {
+			t.Fatalf("row status = %q, want skipped (parked by the hold)", row.Status)
+		}
+		if rig.stashCount() != 0 || len(cred.Env()) != 0 {
+			t.Errorf("credential left behind: stashed=%d env=%v", rig.stashCount(), cred.Env())
+		}
+	})
+
+	t.Run("supersede", func(t *testing.T) {
+		stubFetchIssueState(t, func(context.Context, *Runner, *Task, string) (IssueState, error) {
+			return IssueState{Closed: true, Labels: []string{"pilot-superseded"}}, nil
+		})
+		rig := newBillingWorkerRig(t, apiKeyConfig("printf "+testBillingKey))
+		task := &Task{ID: "GH-6026-E", Title: "closed", ProjectPath: rig.proj}
+		execID, err := rig.d.beginWithGenerationRetry(task, ExecStatusQueued)
+		if err != nil || execID == "" {
+			t.Fatalf("beginWithGenerationRetry = %q, %v", execID, err)
+		}
+		cred := rig.stashed(execID)
+		if cred == nil {
+			t.Fatal("no stashed credential")
+		}
+		rig.w.processQueue(context.Background())
+
+		row, err := rig.d.store.GetExecution(execID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.Status != string(ExecStatusSuperseded) {
+			t.Fatalf("row status = %q, want superseded", row.Status)
+		}
+		if rig.stashCount() != 0 || len(cred.Env()) != 0 {
+			t.Errorf("credential left behind: stashed=%d env=%v", rig.stashCount(), cred.Env())
+		}
+	})
+}
+
 // discardBillingCredential zeroes and removes one entry and ignores an unknown id.
 func TestBillingCredential_DiscardZeroesEntry(t *testing.T) {
 	rig := newBillingWorkerRig(t, nil)
@@ -430,6 +613,7 @@ func TestBillingCredential_DiscardZeroesEntry(t *testing.T) {
 type credEnvBackend struct {
 	mu        sync.Mutex
 	envs      [][]string
+	procEnvs  [][]string // modelSubprocessEnvFor over the call's ctx and inheritedEnv
 	failFirst bool
 	inner     Backend
 }
@@ -439,6 +623,7 @@ func (b *credEnvBackend) IsAvailable() bool { return true }
 func (b *credEnvBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
 	b.mu.Lock()
 	b.envs = append(b.envs, BillingCredentialFromContext(ctx).Env())
+	b.procEnvs = append(b.procEnvs, modelSubprocessEnvFor(ctx, inheritedEnv))
 	n := len(b.envs)
 	b.mu.Unlock()
 	if b.failFirst && n == 1 {
@@ -454,6 +639,45 @@ func (b *credEnvBackend) seen() [][]string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([][]string(nil), b.envs...)
+}
+
+// inheritedEnv stands in for the daemon environment: it carries a key the
+// subscription-or-api_key decision must replace, not pass through.
+var inheritedEnv = []string{"PATH=/usr/bin", "ANTHROPIC_API_KEY=" + testInheritedKey}
+
+const testInheritedKey = "inherited-fake-key"
+
+func (b *credEnvBackend) seenProcEnvs() [][]string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([][]string(nil), b.procEnvs...)
+}
+
+// assertProcEnvCarriesKey checks the env built for each backend call holds
+// the credential's key exactly once and no inherited key (GH-6026).
+func assertProcEnvCarriesKey(t *testing.T, envs [][]string) {
+	t.Helper()
+	if len(envs) < 2 {
+		t.Fatalf("backend ran %d time(s), want the retry to run too", len(envs))
+	}
+	want := "ANTHROPIC_API_KEY=" + testBillingKey
+	for i, env := range envs {
+		keys := 0
+		for _, kv := range env {
+			if strings.HasPrefix(kv, "ANTHROPIC_API_KEY=") {
+				keys++
+				if kv != want {
+					t.Errorf("call %d: %s, want %s", i+1, kv, want)
+				}
+			}
+			if strings.Contains(kv, testInheritedKey) {
+				t.Errorf("call %d: inherited key leaked into the subprocess env: %v", i+1, env)
+			}
+		}
+		if keys != 1 {
+			t.Errorf("call %d: %d ANTHROPIC_API_KEY entries in %v, want exactly 1", i+1, keys, env)
+		}
+	}
 }
 
 func assertRetryCarriesKey(t *testing.T, envs [][]string) {
@@ -474,8 +698,10 @@ func apiKeyCtx() context.Context {
 	return WithBillingCredential(context.Background(), cred)
 }
 
-// The smart retry re-executes on a context that still carries the key.
-func TestBillingRetryCtx_SmartRetryKeepsCredential(t *testing.T) {
+// runSmartRetry drives a task whose first backend call fails retryably, so the
+// smart retry re-executes on the retry ctx.
+func runSmartRetry(t *testing.T) *credEnvBackend {
+	t.Helper()
 	backend := &credEnvBackend{failFirst: true}
 	runner := NewRunnerWithBackend(backend)
 	runner.config = &BackendConfig{}
@@ -493,16 +719,16 @@ func TestBillingRetryCtx_SmartRetryKeepsCredential(t *testing.T) {
 	ctx, cancel := context.WithTimeout(apiKeyCtx(), 30*time.Second)
 	defer cancel()
 	_, _ = runner.Execute(ctx, task)
-
-	assertRetryCarriesKey(t, backend.seen())
+	return backend
 }
 
-// The quality-gate feedback retry re-invokes the backend on a context that
-// still carries the key.
-func TestBillingRetryCtx_GateFeedbackRetryKeepsCredential(t *testing.T) {
+// runGateFeedbackRetry drives a task whose first quality gate fails, so the
+// feedback retry re-invokes the backend on the retry ctx.
+func runGateFeedbackRetry(t *testing.T) *credEnvBackend {
+	t.Helper()
 	localRepo, remoteRepo := setupTestRepoWithRemote(t)
-	defer func() { _ = os.RemoveAll(localRepo) }()
-	defer func() { _ = os.RemoveAll(remoteRepo) }()
+	t.Cleanup(func() { _ = os.RemoveAll(localRepo) })
+	t.Cleanup(func() { _ = os.RemoveAll(remoteRepo) })
 
 	backend := &credEnvBackend{inner: &stackingAttemptBackend{}}
 	runner := NewRunnerWithBackend(backend)
@@ -524,8 +750,29 @@ func TestBillingRetryCtx_GateFeedbackRetryKeepsCredential(t *testing.T) {
 	ctx, cancel := context.WithTimeout(apiKeyCtx(), 60*time.Second)
 	defer cancel()
 	_, _ = runner.Execute(ctx, task)
+	return backend
+}
 
-	assertRetryCarriesKey(t, backend.seen())
+// The smart retry re-executes on a context that still carries the key.
+func TestBillingRetryCtx_SmartRetryKeepsCredential(t *testing.T) {
+	assertRetryCarriesKey(t, runSmartRetry(t).seen())
+}
+
+// The quality-gate feedback retry re-invokes the backend on a context that
+// still carries the key.
+func TestBillingRetryCtx_GateFeedbackRetryKeepsCredential(t *testing.T) {
+	assertRetryCarriesKey(t, runGateFeedbackRetry(t).seen())
+}
+
+// The env the subprocess gets from each retry ctx carries the credential's key
+// once and none of the inherited one (GH-6026).
+func TestBillingRetryCtx_SubprocessEnvCarriesKey(t *testing.T) {
+	t.Run("smart retry", func(t *testing.T) {
+		assertProcEnvCarriesKey(t, runSmartRetry(t).seenProcEnvs())
+	})
+	t.Run("gate feedback retry", func(t *testing.T) {
+		assertProcEnvCarriesKey(t, runGateFeedbackRetry(t).seenProcEnvs())
+	})
 }
 
 // Subtasks created by decomposition run in the parent's billing mode, so

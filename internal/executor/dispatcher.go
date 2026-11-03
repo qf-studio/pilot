@@ -3982,6 +3982,8 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		// Update status to running
 		if err := w.lifecycle.Transition(exec.ID, ExecStatusRunning); err != nil {
 			w.log.Error("Failed to update status to running", slog.Any("error", err))
+			// GH-6026: the row stays queued, so the sweep would keep its key.
+			w.dropBillingCredential(exec.ID)
 			continue
 		}
 
