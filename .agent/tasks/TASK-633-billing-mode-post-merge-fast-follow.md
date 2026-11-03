@@ -1,0 +1,228 @@
+# TASK-633: Billing mode fast-follow — PR#6017 post-merge review notes verified on main, two fix legs
+
+**Status**: 🚀 **F1 + F2 DISPATCHED 2026-11-03 → [pilot#6021](https://github.com/qf-studio/pilot/issues/6021) · [pilot#6022](https://github.com/qf-studio/pilot/issues/6022)** (`pilot` + `no-decompose`). Parent: TASK-631 A1 → pilot#6016 → PR#6017 merged 12:14Z, Opus post-merge APPROVE-WITH-NOTES (9 minors, 8 confirmed + 2 new by navigator-research).
+**Created**: 2026-11-03
+**Assignee**: Pilot
+
+---
+
+## Context
+
+**Problem**: the post-merge review of PR#6017 listed nine minor defects. navigator-research verified them on main `f72c25810` (2026-11-03): eight confirmed, one not a defect (additive migration matches the key_source idiom), and two new gaps found while tracing: backend retries rooted in `context.Background()` drop the billing credential, and the Navigator bootstrap run has no credential and no mode on its row. None blocks; together they make `api_key` mode leak to the subscription on four paths, show a false dashboard state, add repick backoff to tasks that never ran, and keep resolved keys in memory.
+
+**Goal**: close every confirmed gap in two one-PR legs, so that in `api_key` mode no model subprocess bills the subscription without an error, every execution row carries the right `billing_mode`, a key outage never touches retry accounting, and a resolved key lives no longer than its execution.
+
+**Verified defects** (file:line on main):
+
+| # | Verdict | Where | What |
+|---|---|---|---|
+| 1 | confirmed, regression | `backend_opencode.go:122`, `:144-146`; `backend_qwencode.go:203`, `:257` | `modelSubprocessEnvFor` strips `ANTHROPIC_API_KEY`; `billingContext` returns nil for non-claude backends (`billing_mode.go:269-271`), so OpenCode/Qwen with the anthropic provider lose the key. The comment still claims the keep-prefix saves it. |
+| 2 | confirmed | `autopilot/post_merge_review.go:300`, `post_merge_confine.go:141-175` | The reviewer ctx carries no credential; the confine strips the ambient key and copies the login file → subscription billed silently. Controller has no Runner; reviewer built in `cmd/pilot/post_merge_reviewer.go:60-62` from cfg. Pre-PR review is unaffected (runs inside Execute, `pre_pr_review.go:179-184`). |
+| 3 | confirmed | `dispatcher.go:4028-4037` | credErr branch does `continue` after Finish; no `EmitProgress("Failed")` (`:4076`) and no `monitor.Fail` (`:4108-4114`) after "Running" fired at `:3971`. Card stays Running (mem-142 pitfall). |
+| 4 | confirmed, wider | `billing_admission.go:102`, `:110`; `dispatcher.go:2015-2023`, `:2390-2408`, `:1761`, `:1862-1877` | First outage row takes a real claim and finishes `failed`. Next pickup → `ErrClaimLost` → generic path → `consecutiveDrops` + backoff; identical error text ×2 trips the streak check → stalled + pilot-blocked. `ExecStatusSkipped` takes the same path. |
+| 5 | confirmed | `billing_mode.go:252-284` | `prepareBilling`/`billingContext` return the error with no alert. Callers bypassing the dispatcher: `cmd/pilot/handler_common.go:445` (Dispatcher nil), `commands.go:1009`, `:1624`, `interactive.go:229`, `comms/handler.go:494,541,592,685,935`, chat turns via `chat_turn.go:93`. Runner has no Dispatcher → alert is the seam. |
+| 6 | confirmed, test | `billing_mode_test.go:313` | Classifier half uses a hand-built credential, not the resolver. |
+| 7 | confirmed, wider | `billing_admission.go:220-221`, `:705`; `dispatcher.go:1071,1088,1115`; `:3890`, `:4001`, `:4006-4016` | Stash cleared only by `billingCredentialForRun` or Stop. CLI cancel (`lifecycle.Cancel`, separate process) and stale queued recovery never touch it; worker `continue` paths (base-presence park, supersede, merged-PR short-circuit) leak too. |
+| 8 | not a defect | `store.go:207` | Additive ALTER, same as key_source; old rows read `unknown`. |
+| 9 | confirmed (decompose only) | `decompose.go:497-519`; `runner.go:5763` | Subtask `&Task{}` has no `billingMode` → cost labelled unknown. Epic children (`epic.go:3006`) and parallel (`parallel.go:271`) are fine. |
+| A | **new** | `runner.go:5470-5475`, `:6449-6450` | Smart retry and quality-gate feedback retry use `context.WithTimeout(context.Background(), …)` → credential dropped → key stripped → CLI falls back to login → subscription billed silently. Idiom to use: `context.WithoutCancel(ctx)` as at `runner.go:374`, `:3299`, `:3336`. |
+| B | **new** | `navigator_bootstrap.go:109`, `:386`; `cmd/pilot/navigator.go:74` | Bootstrap `Task` has no mode (row `unknown`); the standalone CLI path never calls `billingContext` → no credential in `api_key` mode. |
+
+**Carrier**: `Task.billingMode` (unexported, `runner.go:820`), set in `admitBilling`, `prepareBilling`, the worker rebuild (`dispatcher.go:4546`) and epic children; stamped by `lifecycle.Begin` (`lifecycle.go:237`). After `Zero()` the credential's `Env()` returns nil, the same as subscription: a late spawn fails **open**. Nothing in-process spawns after the worker's `Zero` (`dispatcher.go:4050-4051`); the retries in A are inside Execute.
+
+---
+
+## Known Pitfalls & Patterns
+
+- **PITFALL** (95%, mem-142): dashboard/ledger stage strip marks state wrongly when a path skips the normal failure branch → F1 mirrors `:4076`/`:4108` exactly.
+- **PITFALL** (95%, mem-024): every non-success collapsed into `failed` inflated the failed count → the outage row must not be `failed`; F1 uses the infra class.
+- **PITFALL** (95%, terminal-status-without-rearm-probe): a new terminal status without a re-arm probe kills operator recovery → F1 adds **no** new status; it reuses `ExecStatusInfra` and its existing carve-out.
+- **PITFALL** (90%, nextretrygeneration-blind-to-dead-owner): claim accounting is subtle → F1 pins the no-backoff behaviour with a test on `nextRetryGeneration` after an outage row.
+- **LEARNING** (feedback_subprocess_not_api): every LLM primitive spawns `claude`; so every spawn site is a billing site → F2 covers reviewer, bootstrap, OpenCode/Qwen.
+
+---
+
+## Acceptance Criteria
+
+- [ ] F1: a billing-key failure in the worker emits "Failed" progress and `monitor.Fail`; the outage row finishes `infra`, not `failed`; the next pickup of that task has no repick backoff and no identical-failure streak.
+- [ ] F1: a stashed credential for a queued row that is cancelled, deleted by stale recovery, parked, superseded or short-circuited is zeroed within one stale-recovery tick.
+- [ ] F1: decomposed subtasks carry the parent's `billingMode`; smart retry and gate-feedback retry keep the credential on their ctx.
+- [ ] F2: OpenCode and Qwen subprocess envs keep an inherited `ANTHROPIC_API_KEY`; the stale comment is corrected.
+- [ ] F2: the autopilot post-merge reviewer resolves a credential in `api_key` mode, zeroes it after, and fails closed with the `billing_key_unavailable` error when the command fails.
+- [ ] F2: `billingContext` emits the `billing_key_unavailable` alert on failure for non-dispatcher callers; Navigator bootstrap resolves a credential and stamps `billing_mode` on its row.
+
+---
+
+## Implementation
+
+Two legs, both `pilot` + `no-decompose`, both in `internal/executor` with small spill-over. F1 and F2 touch disjoint files except tests; no dependency between them.
+
+### Leg F1 — dispatcher state, retry accounting, credential lifetime, attribution
+Defects 3, 4, 6, 7, 9, A. Files: `internal/executor/dispatcher.go`, `billing_admission.go`, `decompose.go`, `runner.go`, `billing_mode_test.go`.
+
+### Leg F2 — paths outside the dispatcher
+Defects 1, 2, 5, B. Files: `internal/executor/backend_opencode.go`, `backend_qwencode.go`, `post_merge_reviewer.go`, `billing_mode.go`, `navigator_bootstrap.go`, `cmd/pilot/post_merge_reviewer.go`, `cmd/pilot/navigator.go`.
+
+---
+
+## Out of Scope
+
+- A2 runtime switch, B usage-limit fallback, C budget scope (TASK-631).
+- Scrubbing quality-gate / git env; key_source semantics; the additive migration (not a defect).
+- A Runner→Dispatcher pause hook for in-daemon comms callers (alert only in F2; revisit if the alert fires in practice).
+- Making `Env()` after `Zero()` fail closed (would break the subscription path; the leak is already prevented by A).
+
+---
+
+## Technical Decisions
+
+| Decision | Options Considered | Chosen | Reasoning |
+|----------|-------------------|--------|-----------|
+| Outage row status | keep `failed`; `ExecStatusSkipped`; new status; `ExecStatusInfra` | **`ExecStatusInfra`** | Reuses the GH-5211 infra carve-out (own counter, cap 8, no streak check); no new terminal status, so no re-arm probe needed; semantically the same class the env-class signatures already assign to a missing key. |
+| Non-dispatcher fail-closed signal | pause via a Runner hook; alert only | **alert only** | Runner has no Dispatcher; CLI callers are other processes where a pause is meaningless; the alert rule's cooldown bounds noise. |
+| OpenCode/Qwen env | thread a credential; plain scrub | **plain `modelSubprocessEnv`** | Those backends have no billing mode; the pre-change behaviour is the spec ("non-Anthropic setups behave as today"). |
+| Reviewer credential | Controller resolves; reviewer resolves | **reviewer resolves** (setter on `PostMergeReviewer`) | One seam serves autopilot and `pilot review-merge`; pre-PR path unaffected. |
+| Stash cleanup | hook every cancel path; periodic sweep | **sweep in `runStaleRecoveryLoop` + direct discard at the 3 stale points** | CLI cancel happens in another process; only a sweep sees it. |
+
+---
+
+## Verify
+
+```bash
+go test -race ./internal/executor/ -run TestBillingKey
+go test -race ./internal/executor/ -run TestBillingCredential
+go test -race ./internal/executor/ -run TestBillingRetryCtx
+go test -race ./internal/executor/ -run TestOpenCode_EnvKeepsAnthropicKey
+go test -race ./internal/executor/ -run TestPostMergeReviewer_Billing
+```
+
+---
+
+## Done
+
+- [ ] F1 and F2 merged; post-merge reviews read.
+- [ ] On the founder box in `subscription` mode (default): no behaviour change observed over one day of runs.
+- [ ] TASK-631 status updated; A2 unblocked.
+
+---
+
+## Dispatched legs
+
+### LEG F1 — repo: qf-studio/pilot — title: fix(executor): billing-mode fast-follow — worker failure state, infra-class outage row, credential sweep, subtask and retry attribution
+
+## Context
+
+Post-merge review of PR#6017 (billing mode, GH-6016), verified on main at f72c25810. Six gaps inside the dispatcher and runner; none blocks, together they leak the key to the subscription on retries, show a false dashboard state and add repick backoff to tasks that never ran.
+
+- Worker billing-key failure (`internal/executor/dispatcher.go` near lines 4028-4037): after lifecycle.Finish the branch runs continue. It skips the EmitProgress Failed call (near line 4076) and monitor.Fail (near lines 4108-4114) that the normal failure branch runs, while EmitProgress Running already fired near line 3971. The card stays Running.
+- Outage row (`internal/executor/billing_admission.go` near lines 102 and 110): failBillingKeyUnavailable takes a real claim with beginClaimWithGenerationRetry and finishes the row failed. On resume the next pickup gets ErrClaimLost, nextRetryGeneration treats the failed row as not done (`internal/executor/dispatcher.go` near lines 2015-2023), falls into the generic path and grows consecutiveDrops and the backoff window (near lines 2390-2408). Two outages with the identical error text trip consecutiveIdenticalFailureThreshold (near line 1761, check near lines 1862-1877) and escalate the task to stalled plus pilot-blocked. ExecStatusSkipped is terminal but not done and takes the same path. The infra class already has a carve-out: priorClaimWasInfra (near line 1668, used near lines 2350-2388) with its own counter capped at 8 and no streak check.
+- Credential stash (`internal/executor/billing_admission.go` near lines 199-235): a stashed credential is removed only by billingCredentialForRun (called from the worker near line 4026) or by stopBillingState. recoverStaleQueuedTasks (`internal/executor/dispatcher.go` near lines 1048-1135) deletes or cancels rows at three points (near lines 1071, 1088, 1115) without touching the stash. pilot task cancel runs lifecycle.Cancel in another process. Worker paths that continue before line 4026 also leak: base-presence park (near line 3890), supersede (near line 4001), merged-PR short-circuit (near lines 4006-4016).
+- Decomposed subtasks (`internal/executor/decompose.go` near lines 497-519): createSubtasks builds a fresh Task literal without billingMode; RecordCost (`internal/executor/runner.go` near line 5763) labels their cost unknown. Epic children and parallel research are already correct.
+- Retry contexts (`internal/executor/runner.go` near lines 5470-5475 and 6449-6450): the smart retry and the quality-gate feedback retry build their ctx from context.Background with a timeout, so the credential set by WithBillingCredential is gone. modelSubprocessEnvFor then strips the inherited key and the CLI falls back to the login file: in api_key mode the retry bills the subscription with no error. The idiom already used near lines 374, 3299 and 3336 is context.WithoutCancel of the task ctx.
+- Test gap (`internal/executor/billing_mode_test.go` near line 313): the effort-classifier half of the api_key test puts a hand-built credential on ctx instead of resolving one through the fake command.
+
+probe: present qf-studio/pilot func[[:space:]]\(d[[:space:]]\*Dispatcher\)[[:space:]]failBillingKeyUnavailable\(
+probe: present qf-studio/pilot func[[:space:]]\(d[[:space:]]\*Dispatcher\)[[:space:]]billingCredentialForRun\(
+probe: present qf-studio/pilot func[[:space:]]modelSubprocessEnvFor\(
+probe: present qf-studio/pilot ExecStatusInfra
+probe: absent qf-studio/pilot func[[:space:]]+\(d[[:space:]]+\*Dispatcher\)[[:space:]]+discardBillingCredential
+
+## Scope
+
+- Worker failure state: in the credErr branch of the worker loop, before continue, emit the same Failed progress event and monitor.Fail call the normal failure branch emits. No other change to that branch.
+- Outage row class: finish the outage row with the ExecStatusInfra override in failBillingKeyUnavailable and in the worker credErr branch (lifecycle.Finish takes an override status). Keep the error text prefix billing_key_unavailable. Do not add a status. Confirm with a test that nextRetryGeneration after an outage row yields no repick backoff and no identical-failure streak, and that the infra counter cap still parks the task after repeated outages.
+- Credential sweep: a new Dispatcher method discardBillingCredential(execID) that zeroes and deletes a stash entry. Call it at the three stale-recovery points and at the three worker continue paths named above. Add a sweep step to runStaleRecoveryLoop that zeroes every stash entry whose execution row is missing or not queued; this covers pilot task cancel from another process.
+- Subtask attribution: createSubtasks copies the parent's billingMode into each subtask literal (same package, unexported field).
+- Retry contexts: both retry sites derive their ctx with context.WithoutCancel from the task ctx plus the existing timeout, so the credential survives. No change to the timeout values.
+- Test: the classifier half of the api_key test resolves its credential with NewBillingResolver over the fake command, so both halves exercise the resolver.
+
+Tests to add, named exactly: TestBillingKeyFailure_WorkerEmitsFailedAndMonitorFail, TestBillingKeyOutage_RowIsInfraNoBackoffNoStreak, TestBillingKeyOutage_InfraCapParks, TestBillingCredential_StaleSweepZeroesOrphans, TestBillingCredential_WorkerSkipPathsDiscard, TestBillingRetryCtx_SmartRetryKeepsCredential, TestBillingRetryCtx_GateFeedbackRetryKeepsCredential, TestDecompose_SubtasksInheritBillingMode, TestBillingMode_ClassifierResolvesViaCommand.
+
+## Acceptance
+
+- [ ] `go test -race ./internal/executor/ -run TestBillingKey` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/executor/ -run TestBillingCredential` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/executor/ -run TestBillingRetryCtx` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/executor/ -run TestDecompose_SubtasksInheritBillingMode` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/executor/ -run TestBillingMode` passes; paste the output into the PR body.
+- [ ] A test drives a worker through a billing-key failure and asserts a Failed progress event and a monitor.Fail call were recorded for the task.
+- [ ] A test asserts the outage row's status is infra, that a following nextRetryGeneration for the same task reports no backoff and no identical-failure streak, and that the row count toward the infra cap.
+- [ ] A test queues a task in api_key mode, cancels its row through the store from outside the dispatcher, runs one stale-recovery tick and asserts the stash is empty and the credential zeroed.
+- [ ] A test decomposes a parent in api_key mode and asserts every subtask records cost under billing_mode api_key.
+- [ ] A test runs a smart retry and a gate-feedback retry with a recording backend and asserts both retry envs carry ANTHROPIC_API_KEY from the credential.
+- [ ] remove the Failed progress emit from the credErr branch -> TestBillingKeyFailure_WorkerEmitsFailedAndMonitorFail fails
+- [ ] finish the outage row as failed instead of infra -> TestBillingKeyOutage_RowIsInfraNoBackoffNoStreak fails
+- [ ] remove the sweep from runStaleRecoveryLoop -> TestBillingCredential_StaleSweepZeroesOrphans fails
+- [ ] build the smart-retry ctx from context.Background again -> TestBillingRetryCtx_SmartRetryKeepsCredential fails
+- [ ] drop the billingMode copy in createSubtasks -> TestDecompose_SubtasksInheritBillingMode fails
+- [ ] Do not re-run make build, make test or make lint as evidence: the daemon's quality gates already run them on this repo.
+
+## Out of scope
+
+OpenCode and Qwen env, the autopilot post-merge reviewer credential, alerts for non-dispatcher callers, Navigator bootstrap (all in the sibling leg). A new terminal status. A Runner-to-Dispatcher pause hook. Any change to key_source or to the migrations.
+
+## Refs
+
+- PR#6017 post-merge review comment (nine minors); GH-6016; GH-5211 (infra carve-out); Navigator TASK-633 in this repo
+
+### LEG F2 — repo: qf-studio/pilot — title: fix(executor): billing-mode fast-follow — OpenCode/Qwen keep their key, post-merge reviewer and Navigator bootstrap resolve a credential, non-dispatcher callers alert
+
+## Context
+
+Post-merge review of PR#6017 (billing mode, GH-6016), verified on main at f72c25810. Four paths outside the dispatcher either lost a key they had before or bill the subscription silently in api_key mode.
+
+- OpenCode and Qwen (`internal/executor/backend_opencode.go` near line 122 and the comment near lines 144-146; `internal/executor/backend_qwencode.go` near lines 203 and 257): these sites were switched to modelSubprocessEnvFor, which always strips ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN. billingContext (`internal/executor/billing_mode.go` near lines 269-271) returns a nil credential for any non-claude backend, so nothing puts the key back. OpenCodeConfig has no key field (`internal/executor/backend.go` near lines 1391-1411); OpenCode reads the provider key from its process env. Before PR#6017 the ANTHROPIC_ keep-prefix preserved it. The comment still says so and is now false. The issue promised that non-Anthropic setups behave as today.
+- Autopilot post-merge review (`internal/autopilot/post_merge_review.go` near line 300): reviewer.Review runs on a context.WithoutCancel of the controller ctx (near line 244) that carries no credential. postMergeReviewEnviron (`internal/executor/post_merge_confine.go` near lines 141-175) strips the ambient key and, with no auth variable left, copies the login file. In api_key mode the review bills the subscription with no error. The Controller has no Runner or resolver; the reviewer is built in `cmd/pilot/post_merge_reviewer.go` near lines 60-62 from the config, which carries the billing block. The same constructor serves pilot review-merge. The pre-PR review runs inside Execute with the credential on ctx (`internal/executor/pre_pr_review.go` near lines 179-184) and is unaffected.
+- Non-dispatcher callers (`internal/executor/billing_mode.go` near lines 252-284): prepareBilling and billingContext fail closed but return the error with no alert and no pause. Callers: `cmd/pilot/handler_common.go` near line 445 when the Dispatcher is nil, `cmd/pilot/commands.go` near lines 1009 and 1624, `cmd/pilot/interactive.go` near line 229, `internal/comms/handler.go` near lines 494, 541, 592, 685 and 935, and chat turns through `internal/executor/chat_turn.go` near line 93. The Runner has no Dispatcher, and the CLI callers are separate processes, so a pause is not the seam; the alert is. The Runner's alert emitter is EmitAlertEvent (`internal/executor/runner.go` near line 9203) and the event type for a billing key failure already exists from PR#6017.
+- Navigator bootstrap (`internal/executor/navigator_bootstrap.go` near lines 109 and 386; `cmd/pilot/navigator.go` near line 74): the bootstrap Task literal has no billingMode, so its row reads unknown; the standalone CLI path never calls billingContext, so in api_key mode it spawns with no credential and bills the subscription.
+
+probe: present qf-studio/pilot func[[:space:]]\(r[[:space:]]\*Runner\)[[:space:]]billingContext\(
+probe: present qf-studio/pilot func[[:space:]]modelSubprocessEnv\(
+probe: present qf-studio/pilot AlertEventTypeBillingKeyUnavailable
+probe: absent qf-studio/pilot \)[[:space:]]+SetBillingResolver\(
+
+## Scope
+
+- OpenCode and Qwen: the three spawn sites go back to the plain modelSubprocessEnv scrub (the pre-change behaviour). Rewrite the comment near line 144 of the OpenCode backend to say the key passes through the ANTHROPIC_ keep-prefix and that billing mode applies to the claude backend only. No credential threading for these backends.
+- Post-merge reviewer: add a SetBillingResolver method on PostMergeReviewer (`internal/executor/post_merge_reviewer.go`) and wire it in the constructor in cmd/pilot from the config's billing block. In Review, when a resolver is set, resolve a credential, attach it with WithBillingCredential to the ctx passed down to the spawn, zero it on return, and on a resolver error return that error so the review fails closed and the autopilot path records the failure. subscription mode resolves to an empty credential and behaves as today.
+- Non-dispatcher callers: in billingContext, when the error satisfies IsBillingKeyUnavailable, emit one alert event of the existing billing key type through the Runner's emitter with the task id and project when known, then return the error. Rely on the alert rule's cooldown for repetition.
+- Navigator bootstrap: the bootstrap Task literal gets the mode from the resolver's result, and the standalone path in cmd/pilot/navigator.go goes through the Runner's billing context so the spawn carries the credential; the row then stamps billing_mode from the task like every other execution.
+
+Tests to add, named exactly: TestOpenCode_EnvKeepsAnthropicKey, TestQwenCode_EnvKeepsAnthropicKey, TestPostMergeReviewer_BillingAPIKeyCredentialOnSpawn, TestPostMergeReviewer_BillingKeyUnavailableFailsClosed, TestPostMergeReviewer_BillingSubscriptionUnchanged, TestBillingContext_UnavailableEmitsAlert, TestNavigatorBootstrap_BillingModeStampedAndCredentialOnSpawn.
+
+## Acceptance
+
+- [ ] `go test -race ./internal/executor/ -run TestOpenCode_EnvKeepsAnthropicKey` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/executor/ -run TestQwenCode_EnvKeepsAnthropicKey` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/executor/ -run TestPostMergeReviewer_Billing` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/executor/ -run TestBillingContext_UnavailableEmitsAlert` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/executor/ -run TestNavigatorBootstrap_BillingMode` passes; paste the output into the PR body.
+- [ ] A test sets ANTHROPIC_API_KEY in the base env and asserts the OpenCode server command env and both Qwen spawn envs still carry it.
+- [ ] A test gives the reviewer a resolver in api_key mode with a fake command and asserts the recorded reviewer spawn env carries that value as ANTHROPIC_API_KEY and that the credential is zeroed after Review returns.
+- [ ] A test gives the reviewer a resolver whose command exits 1 and asserts Review returns an error satisfying IsBillingKeyUnavailable and spawns nothing.
+- [ ] A test calls billingContext with a failing command and asserts exactly one alert event of the billing key type reached a recording alert processor.
+- [ ] A test runs the bootstrap in api_key mode and asserts the execution row reads billing_mode api_key and the spawn env carries the key.
+- [ ] switch the OpenCode spawn back to modelSubprocessEnvFor -> TestOpenCode_EnvKeepsAnthropicKey fails
+- [ ] drop the WithBillingCredential call in the reviewer -> TestPostMergeReviewer_BillingAPIKeyCredentialOnSpawn fails
+- [ ] return nil from Review on a resolver error -> TestPostMergeReviewer_BillingKeyUnavailableFailsClosed fails
+- [ ] remove the alert emit from billingContext -> TestBillingContext_UnavailableEmitsAlert fails
+- [ ] Do not re-run make build, make test or make lint as evidence: the daemon's quality gates already run them on this repo.
+
+## Out of scope
+
+Worker failure state, outage row class, credential sweep, subtask and retry attribution (all in the sibling leg). A Runner-to-Dispatcher pause hook. Any change to the pre-PR review path, to key_source or to the migrations.
+
+## Refs
+
+- PR#6017 post-merge review comment (nine minors); GH-6016; Navigator TASK-633 in this repo
+
+## Refs
+
+- F1 → https://github.com/qf-studio/pilot/issues/6021
+- F2 → https://github.com/qf-studio/pilot/issues/6022
+
+- Parent: TASK-631 · [pilot#6016](https://github.com/qf-studio/pilot/issues/6016) → PR#6017 (merged 2026-11-03 12:14Z)
+- Post-merge review: Opus APPROVE-WITH-NOTES on PR#6017, 12:18Z
+- Verification: navigator-research on main f72c25810, 2026-11-03
+
+**Last Updated**: 2026-11-03
