@@ -294,7 +294,7 @@ func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeR
 	}
 	input := gathered.Input
 	if in.ciStatus != "" {
-		input.CIResult = fmt.Sprintf("CI status at merge time: %s", in.ciStatus)
+		input.CIResult = fmt.Sprintf("%s%s", executor.PostMergeCIStatusPrefix, in.ciStatus)
 	}
 
 	review, err := reviewer.Review(ctx, input)

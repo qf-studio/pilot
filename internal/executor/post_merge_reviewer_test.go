@@ -666,3 +666,110 @@ func TestPostMergeReview_MinorDefects(t *testing.T) {
 		t.Errorf("untagged parsed defect: minors = %d, want 1 (severity %q)", n, untagged.Severity)
 	}
 }
+
+const postMergeEvidenceFailOutput = `VERDICT: REQUEST-CHANGES
+DEFECTS:
+- [blocking] PR body - pasted ` + "`go test -race ./internal/executor/`" + ` ends FAIL - the Evidence block shows "FAIL github.com/qf-studio/pilot/internal/executor 585.572s"
+- [blocking] PR body - acceptance bullet 2 is not met - "--- FAIL: TestSomething" in the pasted output
+NOT-VERIFIED:
+none
+NOTES:
+`
+
+func reviewEvidenceFail(t *testing.T, ciResult string) (*PostMergeReview, string) {
+	t.Helper()
+	r := newPostMergeReviewerWithRunner(mockJudgeRunner(postMergeEvidenceFailOutput))
+	var logs strings.Builder
+	r.log = slog.New(slog.NewTextHandler(&logs, nil))
+	got, err := r.Review(context.Background(), PostMergeReviewInput{
+		PRNumber: 6030, Diff: "diff --git a/x b/x\n+x", CIResult: ciResult,
+	})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	return got, logs.String()
+}
+
+func TestPostMergeReviewer_EvidenceFailWithGreenCIDowngradedToMinor(t *testing.T) {
+	got, logs := reviewEvidenceFail(t, PostMergeCIStatusPrefix+"success")
+	if n := len(got.BlockingDefects()); n != 0 {
+		t.Fatalf("blocking defects = %d, want 0: %+v", n, got.Defects)
+	}
+	if len(got.MinorDefects()) != 2 {
+		t.Fatalf("minor defects = %d, want 2: %+v", len(got.MinorDefects()), got.Defects)
+	}
+	for _, d := range got.Defects {
+		if !strings.Contains(d.Claim+" "+d.Evidence, "(CI at merge: success)") {
+			t.Errorf("defect %+v lacks the CI suffix", d)
+		}
+	}
+	if got.Verdict != PostMergeApproveWithNotes {
+		t.Errorf("verdict = %q, want %q", got.Verdict, PostMergeApproveWithNotes)
+	}
+	if n := strings.Count(logs, "pasted-evidence FAIL downgraded"); n != 2 {
+		t.Errorf("downgrade log lines = %d, want 2:\n%s", n, logs)
+	}
+	for _, want := range []string{"pr=6030", "defect=0", "defect=1", "ci_status=success"} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("log missing %q:\n%s", want, logs)
+		}
+	}
+}
+
+func TestPostMergeReviewer_EvidenceFailWithFailedCIStaysBlocking(t *testing.T) {
+	for _, ci := range []string{PostMergeCIStatusPrefix + "failure", PostMergeCIStatusPrefix + "pending", "", "success"} {
+		got, logs := reviewEvidenceFail(t, ci)
+		if n := len(got.BlockingDefects()); n != 2 {
+			t.Errorf("ci %q: blocking defects = %d, want 2", ci, n)
+		}
+		if got.Verdict != PostMergeRequestChanges {
+			t.Errorf("ci %q: verdict = %q, want %q", ci, got.Verdict, PostMergeRequestChanges)
+		}
+		if strings.Contains(logs, "downgraded to minor") {
+			t.Errorf("ci %q: unexpected downgrade log:\n%s", ci, logs)
+		}
+	}
+}
+
+func TestPostMergeReviewer_FileLocatedDefectNotDowngraded(t *testing.T) {
+	const out = `VERDICT: REQUEST-CHANGES
+DEFECTS:
+- [blocking] internal/executor/foo_test.go:42 - FAIL: TestFoo is a failing test the diff added - the test asserts the wrong field
+- [blocking] Makefile:7 - --- FAIL: build target broken - recipe calls a missing script
+NOT-VERIFIED:
+none
+NOTES:
+`
+	r := newPostMergeReviewerWithRunner(mockJudgeRunner(out))
+	got, err := r.Review(context.Background(), PostMergeReviewInput{
+		PRNumber: 6030, Diff: "diff --git a/x b/x\n+x", CIResult: PostMergeCIStatusPrefix + "success",
+	})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if n := len(got.BlockingDefects()); n != 2 {
+		t.Fatalf("blocking defects = %d, want 2: %+v", n, got.Defects)
+	}
+	if got.Verdict != PostMergeRequestChanges {
+		t.Errorf("verdict = %q, want %q", got.Verdict, PostMergeRequestChanges)
+	}
+}
+
+func TestPostMergeReviewer_PromptCarriesGreenCIRule(t *testing.T) {
+	var prompt string
+	r := newPostMergeReviewerWithRunner(func(_ context.Context, args ...string) ([]byte, error) {
+		prompt = args[2]
+		return []byte("VERDICT: APPROVE\nDEFECTS:\nnone\nNOT-VERIFIED:\nnone\nNOTES:\n"), nil
+	})
+	if _, err := r.Review(context.Background(), PostMergeReviewInput{PRNumber: 3, Diff: "diff --git a/x b/x\n+x"}); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	for _, want := range []string{
+		"A failing test or build in pasted output is [minor] when the CI status at merge time is success, naming the package and the CI status",
+		"it is [blocking] only when CI at merge was not success, or when the pasted output names a test the diff added or changed and CI did not run that package",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
