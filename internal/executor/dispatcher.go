@@ -1803,6 +1803,23 @@ func declinedStallReason(exec *memory.Execution) (string, bool) {
 	return reason, true
 }
 
+// priorClaimWasDeclined reports whether (taskID, projectPath)'s currently
+// claimed execution is a decline carrying a stall-worthy reason
+// (declinedStallReason), returning that reason. GH-6042: reads the claimed row
+// so the row judged is the row escalateStalledTask stalls. Errors are treated
+// as "not declined" — the caller falls through to the ordinary cap path.
+func (d *Dispatcher) priorClaimWasDeclined(taskID, projectPath string) (string, bool) {
+	_, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
+	if err != nil || !found {
+		return "", false
+	}
+	exec, err := d.store.GetExecution(execID)
+	if err != nil || exec == nil {
+		return "", false
+	}
+	return declinedStallReason(exec)
+}
+
 // isNoProgressOutcome reports whether exec ended in an outcome that counts
 // toward dispatcherNoProgressRepickCap: status "declined", or status "no_op"
 // with the ghost-SHA guard's "no new commit produced" error (GH-5800). An
@@ -2180,11 +2197,12 @@ func (d *Dispatcher) beginClaimWithGenerationRetry(task *Task, initial Status) (
 	// GH-6033: a decline is a judgement on the issue body, which a re-run
 	// cannot change — stall on the first one and quote its reason instead of
 	// spending dispatcherNoProgressRepickCap runs.
-	if execs, lerr := d.store.ListExecutionsForTask(task.ID, task.ProjectPath); lerr == nil && len(execs) > 0 {
-		if reason, ok := declinedStallReason(execs[0]); ok {
-			d.stallTaskAfterDecline(task, gen, reason)
-			return "", nil
-		}
+	// Reads the claimed row, like the sibling checks above: escalateStalledTask
+	// stalls the row the claim ledger points at, so that is the row whose
+	// decline must be judged, not the newest row ListExecutionsForTask returns.
+	if reason, ok := d.priorClaimWasDeclined(task.ID, task.ProjectPath); ok {
+		d.stallTaskAfterDecline(task, gen, reason)
+		return "", nil
 	}
 
 	// GH-5800: a declined or no-commit no_op prior claim is not terminal-done,
@@ -4179,11 +4197,11 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			// trail. Stalled is instrumented at its detection site in runner.go instead;
 			// declined/rate_limited/infra have no execution_events Stage equivalent yet.
 			if stage, ok := dispatchTerminalStage(string(outcome.Status)); ok {
-				w.recordExecutionEvent(exec.ID, stage, fmt.Sprintf("%s: %s", outcome.Status, truncateForLog(outcome.Error, 200)))
+				w.recordExecutionEvent(exec.ID, stage, terminalOutcomeText(outcome, 200))
 			}
 			// Emit progress callback with a phase that matches the classified outcome.
 			w.runner.EmitProgress(exec.TaskID, terminalPhaseLabel(string(outcome.Status)), 100,
-				fmt.Sprintf("%s: %s", outcome.Status, truncateForLog(outcome.Error, 60)))
+				terminalOutcomeText(outcome, 60))
 			// GH-4490 subtask 2: EmitProgress alone only drives phase/progress —
 			// it never moves the in-memory card's Status off "running" (see
 			// Monitor.UpdateProgress), so a no-commit run (outcome.Status ==
@@ -4649,6 +4667,18 @@ func truncateForLog(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// terminalOutcomeText renders "<status>: <error>" for progress and audit text.
+// GH-6042: a decline's persisted error already starts with declinedErrorPrefix
+// (GH-6033), so the prefix is dropped to keep the text "declined: <reason>"
+// rather than "declined: declined: <reason>".
+func terminalOutcomeText(outcome FinishOutcome, limit int) string {
+	errText := outcome.Error
+	if outcome.Status == ExecStatusDeclined {
+		errText = strings.TrimPrefix(errText, declinedErrorPrefix)
+	}
+	return fmt.Sprintf("%s: %s", outcome.Status, truncateForLog(errText, limit))
 }
 
 // terminalPhaseLabel maps a classified execution status to the human-readable

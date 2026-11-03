@@ -2293,6 +2293,26 @@ func truncateDiagnostic(s string, max int) string {
 	return s[:max] + "\n[...truncated]"
 }
 
+// epicCoverageGapDeclinedResult builds the declined result for an epic whose
+// decomposition left a sub-issue coverage gap. GH-6042: DeclinedReason is
+// deliberately left empty — the gap can be transient (a failed GitHub create),
+// and a reason would make Classify persist the `declined: ` prefix that stalls
+// the task on the first decline (declinedStallReason). Without it the decline
+// keeps counting toward the generic no-progress cap. Error still carries the
+// gap text for the row, progress and comments.
+func epicCoverageGapDeclinedResult(taskID string, plan *EpicPlan, gapErr error, start time.Time) *ExecutionResult {
+	return &ExecutionResult{
+		TaskID:   taskID,
+		Success:  false,
+		Declined: true,
+		Outcome:  "declined",
+		Error:    gapErr.Error(),
+		Duration: time.Since(start),
+		IsEpic:   true,
+		EpicPlan: plan,
+	}
+}
+
 // parseDeclinedReason extracts the reason from a DECLINED:<reason> marker
 // emitted by Claude when a task is explicitly unactionable. Returns the reason
 // and true if found, or ("", false) if no marker is present. GH-2777.
@@ -4467,17 +4487,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 								// otherwise be orphaned by this parent's terminal "declined".
 								r.sweepStalledEpicChildren(task.ID, task.ProjectPath, createdIssueTaskIDs(reconciled), gapErr.Error())
 								r.ForgetBorrowedBranch(task.ID) // GH-5927
-								return &ExecutionResult{
-									TaskID:         task.ID,
-									Success:        false,
-									Declined:       true,
-									DeclinedReason: gapErr.Error(),
-									Outcome:        "declined",
-									Error:          gapErr.Error(),
-									Duration:       time.Since(start),
-									IsEpic:         true,
-									EpicPlan:       plan,
-								}, nil
+								return epicCoverageGapDeclinedResult(task.ID, plan, gapErr, start), nil
 							}
 							recovered = reconciled
 						}
@@ -4528,17 +4538,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 							// before this coverage gap aborted the rest of decomposition.
 							r.sweepStalledEpicChildren(task.ID, task.ProjectPath, createdIssueTaskIDs(issues), gapErr.Error())
 							r.ForgetBorrowedBranch(task.ID) // GH-5927
-							return &ExecutionResult{
-								TaskID:         task.ID,
-								Success:        false,
-								Declined:       true,
-								DeclinedReason: gapErr.Error(),
-								Outcome:        "declined",
-								Error:          gapErr.Error(),
-								Duration:       time.Since(start),
-								IsEpic:         true,
-								EpicPlan:       plan,
-							}, nil
+							return epicCoverageGapDeclinedResult(task.ID, plan, gapErr, start), nil
 						}
 						createErr := fmt.Sprintf("failed to create sub-issues: %v", err)
 						r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, truncateForLog(createErr, 200))
