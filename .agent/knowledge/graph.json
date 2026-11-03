@@ -1250,6 +1250,31 @@
         "name": "Quality-Gate",
         "aliases": [],
         "domain": "general"
+      },
+      "env-scrub": {
+        "name": "Env-Scrub",
+        "aliases": [],
+        "domain": "general"
+      },
+      "usage-limit": {
+        "name": "Usage-Limit",
+        "aliases": [],
+        "domain": "general"
+      },
+      "admission-pause": {
+        "name": "Admission-Pause",
+        "aliases": [],
+        "domain": "general"
+      },
+      "pilot-issues": {
+        "name": "Pilot-Issues",
+        "aliases": [],
+        "domain": "general"
+      },
+      "sop": {
+        "name": "Sop",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -3600,6 +3625,21 @@
           "context",
           "knowledge",
           "testing"
+        ]
+      },
+      "TASK-631": {
+        "path": ".agent/tasks/TASK-631-switchable-claude-billing-mode.md",
+        "title": "Switchable Claude billing mode (subscription | api_key) without a restart, with per-execution attribution",
+        "status": "dispatched",
+        "concepts": [
+          "billing",
+          "key-source",
+          "env-scrub",
+          "usage-limit",
+          "config"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6016"
         ]
       }
     },
@@ -9810,6 +9850,45 @@
         ],
         "confidence": 0.95,
         "created": "2026-11-01"
+      },
+      "mem-277": {
+        "type": "pitfall",
+        "summary": "executions.key_source is an env-var label (PILOT_ANTHROPIC_KEY_SOURCE, stamped once at lifecycle.Begin), not derived from the credential the claude subprocess actually used; it means platform-vs-own owner, not subscription-vs-api_key. Any billing-mode feature needs its own credential-derived column; quality gates and git inherit the full daemon env (quality/runner.go:509, git.go:1073), so ANTHROPIC_API_KEY reaches project test commands today.",
+        "path": "memories/pitfalls/mem-277.md",
+        "confidence": 0.85,
+        "concepts": [
+          "key-source",
+          "billing",
+          "env-scrub"
+        ],
+        "created": "2026-11-03",
+        "last_validated": "2026-11-03"
+      },
+      "mem-278": {
+        "type": "pattern",
+        "summary": "The only hook for acting on a Claude usage-limit failure is Dispatcher worker.onRateLimited (single func field, dispatcher.go:3444) wired to armUsageLimitPause (dispatcher.go:3109); pause state is usageLimitResumeAt/usageLimitGen/usageLimitTimer with owner 'usage-limit' on PauseAdmissionFor. There is no runtime config path: Config.Reload has no callers, every 'pilot X set' edits config.yaml offline, the gateway has no config-mutating endpoint. A runtime override store is the missing primitive (TASK-631 A2, also needed for 'pilot pause').",
+        "path": "memories/patterns/mem-278.md",
+        "confidence": 0.85,
+        "concepts": [
+          "config",
+          "usage-limit",
+          "admission-pause"
+        ],
+        "created": "2026-11-03",
+        "last_validated": "2026-11-03"
+      },
+      "mem-279": {
+        "type": "learning",
+        "summary": "Dispatch flow as of 2026-11-03 is documented in SOP .agent/sops/development/dispatch-task-legs-to-pilot.md: task docs hold '### LEG <ID> \u2014 repo \u2014 title' blocks; scripts/nav-dispatch-legs.py pre-flights backticked paths and probe lines against origin/main, files with gh, writes '## Refs' back. The script passes ONE --label, so file with --label no-decompose first and add pilot with gh issue edit, so the poller sees both on first pickup. The nav-pilot skill's whole-doc --body-file flow is not used in this repo; CLAUDE.md and DEVELOPMENT-README point at the SOP.",
+        "path": "memories/learnings/mem-279.md",
+        "confidence": 0.9,
+        "concepts": [
+          "dispatch",
+          "pilot-issues",
+          "sop"
+        ],
+        "created": "2026-11-03",
+        "last_validated": "2026-11-03"
       }
     }
   },
@@ -14543,6 +14622,61 @@
       "from": "TASK-630",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-631",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-631",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-631",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-631",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-631",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-631",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-631",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-631",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "mem-277",
+      "to": "TASK-631",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-278",
+      "to": "TASK-631",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-279",
+      "to": "TASK-631",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -14777,7 +14911,8 @@
       "TASK-626",
       "TASK-627",
       "TASK-628",
-      "TASK-585"
+      "TASK-585",
+      "TASK-631"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -14909,7 +15044,8 @@
       "TASK-598",
       "TASK-599",
       "TASK-628",
-      "TASK-585"
+      "TASK-585",
+      "TASK-631"
     ],
     "auto-merge": [
       "mem-103"
@@ -15083,7 +15219,9 @@
       "close-rationale-cites-mode-the-component-cannot-see",
       "slack-routing-three-keys-alerts-vs-approvals-vs-chat",
       "mem-209",
-      "approver-identity-is-per-channel-approvers-by-channel"
+      "approver-identity-is-per-channel-approvers-by-channel",
+      "TASK-631",
+      "mem-278"
     ],
     "config-push": [
       "apply-script-silent-rollback-causes",
@@ -15285,7 +15423,8 @@
       "TASK-627",
       "TASK-628",
       "TASK-585",
-      "TASK-630"
+      "TASK-630",
+      "TASK-631"
     ],
     "conversational-bot": [
       "mem-036",
@@ -15433,7 +15572,8 @@
       "TASK-583",
       "mem-260",
       "TASK-589",
-      "TASK-585"
+      "TASK-585",
+      "TASK-631"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -15690,7 +15830,8 @@
       "TASK-626",
       "TASK-627",
       "TASK-628",
-      "TASK-585"
+      "TASK-585",
+      "TASK-631"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -15719,7 +15860,8 @@
       "verify-issue-premise-against-live-fleet-before-dispatch",
       "gh5468-unlisted-check-failure-blocks-gate-but-evidence-still-allowlist-scoped",
       "pre-pr-reviewer-treats-unsatisfiable-issue-requirement-as-blocking",
-      "parallel-explore-traces-per-defect-beat-one-research-pass"
+      "parallel-explore-traces-per-defect-beat-one-research-pass",
+      "mem-279"
     ],
     "dispatcher": [
       "alert-engine-counts-operator-cancels",
@@ -16261,7 +16403,8 @@
       "TASK-626",
       "TASK-627",
       "TASK-585",
-      "TASK-630"
+      "TASK-630",
+      "TASK-631"
     ],
     "labels": [
       "mem-100",
@@ -16920,7 +17063,8 @@
       "TASK-627",
       "TASK-628",
       "TASK-585",
-      "TASK-630"
+      "TASK-630",
+      "TASK-631"
     ],
     "testing-quality": [
       "TASK-384",
@@ -17095,7 +17239,8 @@
       "TASK-624",
       "TASK-625",
       "TASK-627",
-      "TASK-628"
+      "TASK-628",
+      "TASK-631"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -17200,7 +17345,8 @@
       "TASK-596",
       "TASK-600",
       "TASK-628",
-      "TASK-585"
+      "TASK-585",
+      "TASK-631"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -17491,7 +17637,9 @@
       "mem-213"
     ],
     "billing": [
-      "TASK-512"
+      "TASK-512",
+      "TASK-631",
+      "mem-277"
     ],
     "allowance": [
       "TASK-512",
@@ -17547,7 +17695,9 @@
       "founder-tenant-legacy-ssm-layout-key-source-unknown-unmetered"
     ],
     "key-source": [
-      "founder-tenant-legacy-ssm-layout-key-source-unknown-unmetered"
+      "founder-tenant-legacy-ssm-layout-key-source-unknown-unmetered",
+      "TASK-631",
+      "mem-277"
     ],
     "git-push": [
       "executor-swallowed-rejected-push-as-success-branch-exists-is-not-pushed",
@@ -17611,13 +17761,30 @@
       "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread",
       "gate-exit-2-no-rule-to-make-target-was-a-claude-fixable-failure",
       "hasmakefiletarget-is-the-make-target-probe-never-make-n-or-q"
+    ],
+    "env-scrub": [
+      "TASK-631",
+      "mem-277"
+    ],
+    "usage-limit": [
+      "TASK-631",
+      "mem-278"
+    ],
+    "admission-pause": [
+      "mem-278"
+    ],
+    "pilot-issues": [
+      "mem-279"
+    ],
+    "sop": [
+      "mem-279"
     ]
   },
-  "last_updated": "2026-11-02T19:01:29.741631+00:00",
+  "last_updated": "2026-11-03T10:32:14.482745+00:00",
   "stats": {
-    "total_nodes": 830,
-    "total_edges": 946,
-    "memory_count": 453
+    "total_nodes": 839,
+    "total_edges": 957,
+    "memory_count": 456
   },
   "metadata": {}
 }

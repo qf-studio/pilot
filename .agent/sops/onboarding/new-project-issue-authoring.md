@@ -141,7 +141,7 @@ In `~/.pilot/config.yaml` for the new project:
 - [ ] No two open issues create the same root files (Rule 4)
 - [ ] Title is `type(scope): description` (Rule 5)
 - [ ] Project entry + gates + token verified in config (Rule 6)
-- [ ] Issue authored via `nav-task` → task doc → `nav-pilot` handoff (not ad-hoc `gh issue create`)
+- [ ] Issue authored as a `### LEG` block in the task doc and filed by `scripts/nav-dispatch-legs.py` (SOP `development/dispatch-task-legs-to-pilot.md`), not ad-hoc `gh issue create`
 
 ## Refs
 
