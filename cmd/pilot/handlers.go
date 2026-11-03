@@ -1071,6 +1071,39 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: skipReasonNeedsHuman}, nil
 	}
 
+	// GH-6020: open-PR admission gate — an issue whose pilot branch already
+	// has an open PR must not start a second run. Autopilot's redrive
+	// (Controller.redriveHeldPR) deliberately strips pilot-needs-human when
+	// a new commit lands on a held PR, and a failed execution row is not
+	// terminal, so neither the label backstop above nor the SDK poller's
+	// candidate filter (which never looks at PRs) stops a fresh worktree
+	// being cut from origin/main and the PR's work re-implemented. A lookup
+	// error or missing client admits (fail open) so a GitHub blip can't
+	// wedge the queue.
+	if specClient != nil && repoOwner != "" && repoName != "" {
+		prBranch := fmt.Sprintf("pilot/%s", taskID)
+		hasOpenPR, prErr := specClient.FindOpenPRByBranch(ctx, repoOwner, repoName, prBranch)
+		switch {
+		case prErr != nil:
+			logging.WithComponent("github").Warn("SDK-dispatch: open-PR lookup failed, admitting issue",
+				slog.String("task_id", taskID),
+				slog.Any("error", prErr),
+			)
+		case hasOpenPR:
+			logging.WithComponent("github").Info("SDK-dispatch: skipping admission, pilot branch has an open PR",
+				slog.String("task_id", taskID),
+				slog.String("branch", prBranch),
+				slog.String("reason", skipReasonOpenPR),
+			)
+			// Same backoff arming as the needs-human park (GH-5072): the
+			// SDK bridge drops Skipped, so the poller re-picks every tick.
+			if dispatcher != nil {
+				repickBackoff.recordClaimLostDrop(backoffKey)
+			}
+			return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: skipReasonOpenPR}, nil
+		}
+	}
+
 	taskDesc := fmt.Sprintf("GitHub Issue %s: %s\n\n%s", taskID, title, ev.Body)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
@@ -1356,6 +1389,10 @@ const labelPilotNeedsHumanSDK = "pilot-needs-human"
 // const stands in until (if ever) the field survives the studio-sdk bridge
 // (GH-5072 nit fold-in).
 const skipReasonNeedsHuman = "needs_human"
+
+// skipReasonOpenPR is the host-only SkipReason for the GH-6020 open-PR
+// admission gate: the issue's pilot branch already has an open pull request.
+const skipReasonOpenPR = "open_pr"
 
 // githubTaskClientOpts are extra options for the per-event GitHub client
 // handleGithubIssueEventSDK builds. Production leaves it empty; tests point
