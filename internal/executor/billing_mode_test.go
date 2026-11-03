@@ -78,7 +78,8 @@ func TestBillingMode_ResolverModes(t *testing.T) {
 		wantErr   string
 		wantInErr string
 	}{
-		{name: "nil config is subscription", cfg: nil, wantMode: BillingModeSubscription},
+		{name: "nil config is unset", cfg: nil, wantMode: BillingModeUnset},
+		{name: "empty mode is unset", cfg: &BillingConfig{}, wantMode: BillingModeUnset},
 		{name: "explicit subscription adds nothing", cfg: &BillingConfig{Mode: BillingModeSubscription, APIKeyCommand: "echo ignored"}, wantMode: BillingModeSubscription},
 		{name: "command stdout is trimmed", cfg: apiKeyConfig("printf '  " + testBillingKey + "\\n'"), wantMode: BillingModeAPIKey, wantEnv: []string{"ANTHROPIC_API_KEY=" + testBillingKey}},
 		{name: "env var", cfg: &BillingConfig{Mode: BillingModeAPIKey, APIKeyEnv: "PILOT_TEST_BILLING_KEY"}, wantMode: BillingModeAPIKey, wantEnv: []string{"ANTHROPIC_API_KEY=" + testBillingKey}},
@@ -184,7 +185,7 @@ func TestBillingMode_CredentialZeroWipesKey(t *testing.T) {
 	}
 	var nilCred *BillingCredential
 	nilCred.Zero() // must not panic
-	if nilCred.MemoryMode() != "unknown" || nilCred.Mode() != BillingModeSubscription {
+	if nilCred.MemoryMode() != "unknown" || nilCred.Mode() != BillingModeUnset {
 		t.Errorf("nil credential = %q / %q", nilCred.MemoryMode(), nilCred.Mode())
 	}
 }
@@ -199,7 +200,7 @@ func TestModelSubprocessEnvFor_SubscriptionStripsInheritedKey(t *testing.T) {
 		"TELEGRAM_BOT_TOKEN=test-telegram-bot-token",
 	}
 	ctx := WithBillingCredential(context.Background(), &BillingCredential{mode: BillingModeSubscription})
-	for name, c := range map[string]context.Context{"subscription credential": ctx, "no credential": context.Background()} {
+	for name, c := range map[string]context.Context{"subscription credential": ctx} {
 		t.Run(name, func(t *testing.T) {
 			env := modelSubprocessEnvFor(c, base)
 			for _, banned := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "TELEGRAM_BOT_TOKEN"} {
@@ -517,8 +518,11 @@ func TestBillingMode_StampedOnExecution(t *testing.T) {
 	}
 }
 
-// Default config stamps subscription.
+// Default config with no key in the daemon env stamps subscription (derived,
+// GH-6032).
 func TestBillingMode_DefaultStampsSubscription(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	const proj = "/tmp/pilot-gh6016-c"
 	d, _ := newBillingDispatcher(t, &countingBackend{}, nil, newFakePauseClock(usageLimitTestNow))
 	execID, err := d.QueueTask(context.Background(), &Task{ID: "GH-6019", Title: "ok", ProjectPath: proj})

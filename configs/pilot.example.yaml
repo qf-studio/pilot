@@ -940,26 +940,34 @@ executor:
   #   # (counter pilot_executor_result_exit_grace_kills_total). Default: 30s;
   #   # negative disables.
   #   result_exit_grace: 30s
-  #   # billing (GH-6016): how model calls are paid for. subscription (default)
-  #   # runs the claude CLI on its OAuth login: ANTHROPIC_API_KEY and
-  #   # ANTHROPIC_AUTH_TOKEN inherited from the daemon environment are removed
-  #   # from every model subprocess (config api_auth_token is still injected for
-  #   # non-Anthropic providers). api_key resolves an Anthropic API key at each
-  #   # admission and gives it to every model subprocess of that execution (and
-  #   # each chat turn); the key never enters the daemon environment when it
-  #   # comes from api_key_command. Set exactly one of:
+  #   # billing (GH-6016, GH-6032): how model calls are paid for. Three states:
+  #   #   unset (default, no billing block or no mode): the daemon environment
+  #   #     passes through to every model subprocess untouched, so an inherited
+  #   #     ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN reaches the claude CLI.
+  #   #     Recommended for env-key deployments (hosted tenants, operators who
+  #   #     export ANTHROPIC_API_KEY) until the console sets the mode. The
+  #   #     recorded billing_mode is derived: api_key when the daemon env
+  #   #     carries either variable, otherwise subscription.
+  #   #   subscription: runs the claude CLI on its OAuth login; ANTHROPIC_API_KEY
+  #   #     and ANTHROPIC_AUTH_TOKEN inherited from the daemon environment are
+  #   #     removed from every model subprocess (config api_auth_token is still
+  #   #     injected for non-Anthropic providers).
+  #   #   api_key: resolves an Anthropic API key at each admission and gives it
+  #   #     (instead of any inherited key) to every model subprocess of that
+  #   #     execution and each chat turn; the key never enters the daemon
+  #   #     environment when it comes from api_key_command. Set exactly one of:
   #   #   api_key_command: a shell command, 10s timeout, trimmed stdout is the key.
   #   #                    stderr is logged at warn; stdout is never logged.
   #   #   api_key_env:     name of a daemon env var holding the key. The var
   #   #                    stays in the daemon env, so quality gates, git and gh
   #   #                    still see it.
-  #   # If the key cannot be resolved the execution fails with
+  #   # In api_key mode, if the key cannot be resolved the execution fails with
   #   # billing_key_unavailable, admission pauses (owner billing-key), a
   #   # billing_key_unavailable alert is sent, and the resolver re-runs every 5
   #   # minutes. It never falls back to the subscription. The mode is recorded
   #   # as billing_mode on executions, chat turns and usage events.
   #   billing:
-  #     mode: subscription          # subscription | api_key
+  #     mode: subscription          # subscription | api_key (omit = unset, passthrough)
   #     # api_key_command: "pass show anthropic/api-key"
   #     # api_key_env: PILOT_ANTHROPIC_API_KEY
 

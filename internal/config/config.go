@@ -1278,7 +1278,7 @@ func validateUsageLimitPause(p *executor.UsageLimitPauseConfig) error {
 }
 
 // validateBilling checks executor.claude_code.billing (GH-6016): the mode must
-// be subscription or api_key (empty = subscription), and api_key mode needs
+// be subscription, api_key or empty (empty = inherit the daemon environment), and api_key mode needs
 // exactly one of api_key_command and api_key_env.
 func validateBilling(b *executor.BillingConfig) error {
 	if b == nil {
