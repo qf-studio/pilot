@@ -70,6 +70,32 @@ func (c *BillingConfig) EffectiveMode() BillingMode {
 	return c.Mode
 }
 
+var (
+	processBillingMu  sync.RWMutex
+	processBillingVal = BillingModeUnset
+)
+
+// SetProcessBillingMode records the daemon's configured billing mode for spawn
+// sites whose ctx carries no BillingCredential (GH-6038). NewBillingResolver
+// and the Runner's construction call it, so the mode is known process-wide
+// without threading a credential to every classifier and planner.
+func SetProcessBillingMode(mode BillingMode) {
+	if mode == "" {
+		mode = BillingModeUnset
+	}
+	processBillingMu.Lock()
+	processBillingVal = mode
+	processBillingMu.Unlock()
+}
+
+// processBillingMode returns the mode recorded by SetProcessBillingMode,
+// BillingModeUnset until one was recorded.
+func processBillingMode() BillingMode {
+	processBillingMu.RLock()
+	defer processBillingMu.RUnlock()
+	return processBillingVal
+}
+
 // BillingKeyError is why an api_key mode key could not be resolved. Its text
 // starts with billing_key_unavailable and never carries the key value.
 type BillingKeyError struct {
@@ -173,7 +199,9 @@ type BillingResolver struct {
 }
 
 // NewBillingResolver builds a resolver for cfg; nil cfg means the unset mode.
+// It records cfg's mode as the process default (SetProcessBillingMode).
 func NewBillingResolver(cfg *BillingConfig) *BillingResolver {
+	SetProcessBillingMode(cfg.EffectiveMode())
 	return &BillingResolver{
 		cfg:     cfg,
 		getenv:  os.Getenv,

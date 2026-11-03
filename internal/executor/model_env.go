@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -198,8 +199,8 @@ func modelSubprocessEnv(base []string) []string {
 	return out
 }
 
-// modelEnvBillingCredentialNames are the Anthropic credential variables the
-// an explicit billing mode owns (GH-6016). Whatever the daemon environment
+// modelEnvBillingCredentialNames are the Anthropic credential variables an
+// explicit billing mode owns (GH-6016). Whatever the daemon environment
 // carries for them never reaches a model subprocess in that mode; the
 // per-execution credential does.
 var modelEnvBillingCredentialNames = map[string]bool{
@@ -214,11 +215,19 @@ var modelEnvBillingCredentialNames = map[string]bool{
 // credential's entries. So an explicit mode, not the daemon's ambient
 // environment, decides which credential the claude CLI bills.
 //
-// Decision (GH-6032): with the unset mode, or no credential on ctx at all, the
-// result is plain modelSubprocessEnv: the inherited key reaches the CLI as it
+// Decision (GH-6032): with the unset mode the result is plain
+// modelSubprocessEnv: the inherited key reaches the CLI as it
 // did before GH-6016. Env-key deployments (hosted tenants, operators who
 // export ANTHROPIC_API_KEY) have no billing block and no OAuth login, so
 // stripping the key there leaves the CLI without any credential.
+//
+// Decision (GH-6038): a ctx with no credential (the classifiers, subtask
+// parser, intent judge and planners spawn on a bare context) follows the
+// process-wide mode the daemon configured (processBillingMode): unset is the
+// plain scrub above, subscription strips the two credential names, api_key
+// strips them too and warns — a bare ctx has no resolved key to append (the
+// sibling gap of GH-6032, closed by threading a credential to those sites). A
+// credential on ctx always wins over the process default.
 //
 // Other ANTHROPIC_* names (ANTHROPIC_BASE_URL, ANTHROPIC_MODEL, ...) are
 // untouched; callers append config-driven values such as api_auth_token after
@@ -226,7 +235,15 @@ var modelEnvBillingCredentialNames = map[string]bool{
 func modelSubprocessEnvFor(ctx context.Context, base []string) []string {
 	scrubbed := modelSubprocessEnv(base)
 	cred := BillingCredentialFromContext(ctx)
-	if cred == nil || cred.Mode() == BillingModeUnset {
+	mode := processBillingMode()
+	if cred != nil {
+		mode = cred.Mode()
+	} else if mode == BillingModeAPIKey {
+		slog.Default().Warn("model subprocess spawned without a billing credential in api_key mode",
+			slog.String("component", modelEnvCallerComponent()),
+		)
+	}
+	if mode == BillingModeUnset {
 		return scrubbed
 	}
 	out := make([]string, 0, len(scrubbed)+1)
@@ -236,7 +253,28 @@ func modelSubprocessEnvFor(ctx context.Context, base []string) []string {
 		}
 		out = append(out, kv)
 	}
-	return append(out, cred.Env()...)
+	if mode == BillingModeAPIKey {
+		out = append(out, cred.Env()...)
+	}
+	return out
+}
+
+// modelEnvCallerComponent names the function that called modelSubprocessEnvFor
+// (two frames up), for the bare-ctx api_key warning.
+func modelEnvCallerComponent() string {
+	pc, _, _, ok := runtime.Caller(2)
+	if !ok {
+		return "unknown"
+	}
+	fn := runtime.FuncForPC(pc)
+	if fn == nil {
+		return "unknown"
+	}
+	name := fn.Name()
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	return name
 }
 
 // ModelSubprocessEnvForTest exposes modelSubprocessEnv to tests in other

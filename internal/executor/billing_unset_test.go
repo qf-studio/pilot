@@ -172,6 +172,7 @@ func TestBillingMode_UnsetDerivesAttribution(t *testing.T) {
 }
 
 func TestBillingMode_UnsetNoCredentialOnCtxPassesThrough(t *testing.T) {
+	setProcessModeForTest(t, BillingModeUnset)
 	base := []string{
 		"PATH=/usr/bin",
 		"ANTHROPIC_API_KEY=" + testAmbientAPIKey,

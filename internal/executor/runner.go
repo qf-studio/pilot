@@ -1482,6 +1482,14 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 		SetModelEnvPassthrough(config.ClaudeCode.EnvPassthrough)
 	}
 
+	// GH-6038: the configured billing mode is the process default for spawn
+	// sites that run on a bare ctx (classifiers, planners, intent judge).
+	var billingCfg *BillingConfig
+	if config.ClaudeCode != nil {
+		billingCfg = config.ClaudeCode.Billing
+	}
+	SetProcessBillingMode(billingCfg.EffectiveMode())
+
 	backend, err := NewBackend(config)
 	if err != nil {
 		return nil, err
