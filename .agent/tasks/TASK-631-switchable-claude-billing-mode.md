@@ -1,6 +1,6 @@
 # TASK-631: Switchable Claude billing mode (subscription | api_key) without a restart, with per-execution attribution
 
-**Status**: 🚀 **A1 DISPATCHED 2026-11-03 → [pilot#6016](https://github.com/qf-studio/pilot/issues/6016)** (`pilot` + `no-decompose`). Triage of [pilot#5955](https://github.com/qf-studio/pilot/issues/5955) (scrappydog): legitimate; reply + A1 link posted on the issue. D1–D4 accepted as proposed. A2 → B → C held until A1 is on a release.
+**Status**: 🚀 **A1 DISPATCHED 2026-11-03 → [pilot#6016](https://github.com/qf-studio/pilot/issues/6016)** (`pilot` + `no-decompose`). Triage of [pilot#5955](https://github.com/qf-studio/pilot/issues/5955) (scrappydog): legitimate; reply + A1 link posted on the issue. D1–D4 accepted as proposed. **A1 run → [PR#6017](https://github.com/qf-studio/pilot/pull/6017) 11:20Z; CI failed on `TestRecordCost_SplitsByKeySource` (the expected `costKey`s lack the new `BillingMode: "unknown"`); the autopilot CI-fix size guard declined to file (759 production additions > 200) → hand-filed [pilot#6019](https://github.com/qf-studio/pilot/issues/6019) in the autopilot-fix shape (footer `branch:pilot/GH-6016 pr:6017 iteration:1 source:6016`), picked up 11:52Z on the PR branch; #6016 carries `pilot-needs-human`, closes with the fix PR.** A2 → B → C held until A1 is on a release.
 **Created**: 2026-11-03
 **Assignee**: Pilot (after D1–D4)
 
