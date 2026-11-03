@@ -317,9 +317,9 @@ func TestRecordTokens(t *testing.T) {
 func TestRecordCost(t *testing.T) {
 	m := NewMetrics()
 
-	m.RecordCost("claude-sonnet-4-5", "unknown", 0.01)
-	m.RecordCost("claude-sonnet-4-5", "unknown", 0.02)
-	m.RecordCost("claude-opus-4-5", "unknown", 0.05)
+	m.RecordCost("claude-sonnet-4-5", "unknown", "unknown", 0.01)
+	m.RecordCost("claude-sonnet-4-5", "unknown", "unknown", 0.02)
+	m.RecordCost("claude-opus-4-5", "unknown", "unknown", 0.05)
 
 	snap := m.Snapshot()
 
@@ -359,14 +359,14 @@ func TestRecordExecution(t *testing.T) {
 func TestSnapshotIsolationNewMaps(t *testing.T) {
 	m := NewMetrics()
 	m.RecordTokens("model-a", "input", 100)
-	m.RecordCost("model-a", "unknown", 0.01)
+	m.RecordCost("model-a", "unknown", "unknown", 0.01)
 	m.RecordExecution("model-a", "success")
 
 	snap := m.Snapshot()
 
 	// Mutate after snapshot
 	m.RecordTokens("model-a", "input", 900)
-	m.RecordCost("model-a", "unknown", 0.99)
+	m.RecordCost("model-a", "unknown", "unknown", 0.99)
 	m.RecordExecution("model-a", "success")
 
 	tk := tokenKey{Model: "model-a", Direction: "input"}
@@ -416,7 +416,7 @@ func TestRecordCostRace(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func() {
 			for j := 0; j < 100; j++ {
-				m.RecordCost("model", "unknown", 0.001)
+				m.RecordCost("model", "unknown", "unknown", 0.001)
 				_ = m.Snapshot()
 			}
 			done <- struct{}{}
@@ -514,10 +514,10 @@ func TestHydrateCircuitBreakerTrips_MaxClamp(t *testing.T) {
 // is unchanged.
 func TestRecordCost_SplitsByKeySource(t *testing.T) {
 	m := NewMetrics()
-	m.RecordCost("m1", "platform", 1)
-	m.RecordCost("m1", "platform", 2)
-	m.RecordCost("m1", "own", 4)
-	m.RecordCost("m1", "sk-junk", 8)
+	m.RecordCost("m1", "platform", "unknown", 1)
+	m.RecordCost("m1", "platform", "unknown", 2)
+	m.RecordCost("m1", "own", "unknown", 4)
+	m.RecordCost("m1", "sk-junk", "unknown", 8)
 
 	snap := m.Snapshot()
 	for k, want := range map[costKey]float64{

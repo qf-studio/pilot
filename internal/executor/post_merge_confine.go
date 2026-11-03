@@ -2,6 +2,7 @@ package executor
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -137,8 +138,8 @@ func preparePostMergeReviewEnv(worktree string) (*postMergeReviewEnv, error) {
 // config dir pointed at the review's own home. When the ambient environment
 // carries no model credential, the CLI's login file is copied into that home —
 // the one secret the model call needs.
-func postMergeReviewEnviron(base []string, home string) []string {
-	scrubbed := modelSubprocessEnv(base)
+func postMergeReviewEnviron(ctx context.Context, base []string, home string) []string {
+	scrubbed := modelSubprocessEnvFor(ctx, base)
 	out := make([]string, 0, len(scrubbed)+2)
 	var ambientConfig string
 	hasAuth := false

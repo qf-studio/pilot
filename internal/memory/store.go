@@ -201,6 +201,10 @@ func (s *Store) migrate() error {
 		// estimated_cost_usd rather than replacing it.
 		`ALTER TABLE executions ADD COLUMN key_source TEXT`,
 		`ALTER TABLE executions ADD COLUMN reported_cost_usd REAL`,
+		// GH-6016: how the run was billed ('subscription', 'api_key',
+		// 'unknown'). Orthogonal to key_source (platform vs own key). Rows
+		// written before this column read back 'unknown'.
+		`ALTER TABLE executions ADD COLUMN billing_mode TEXT`,
 		// GH-5715: result of the needs_human branch push (1 pushed, 0 push
 		// failed, NULL no push attempted), so adapters read a structured signal
 		// instead of parsing the row error.
@@ -572,6 +576,10 @@ func (s *Store) migrate() error {
 			completed_at DATETIME NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_chat_turns_completed ON chat_turns(completed_at)`,
+		// GH-6016: billing_mode on the two tables created above (the ALTER
+		// must follow their CREATE; the column is added to fresh and existing databases alike).
+		`ALTER TABLE chat_turns ADD COLUMN billing_mode TEXT`,
+		`ALTER TABLE usage_events ADD COLUMN billing_mode TEXT`,
 		// GH-5992: the full NOT-VERIFIED set of a post-merge review, as a JSON
 		// array ('' for a review that carries none).
 		`ALTER TABLE pr_reviews ADD COLUMN not_verified TEXT NOT NULL DEFAULT ''`,
@@ -737,6 +745,9 @@ type Execution struct {
 	// KeySource is which Anthropic key paid for this execution: "platform",
 	// "own" or "unknown". Stamped when the execution row is created. GH-5676.
 	KeySource string
+	// BillingMode is how this execution was billed: "subscription", "api_key"
+	// or "unknown". Stamped when the execution row is created. GH-6016.
+	BillingMode string
 	// BranchPushed is holdPushedBranch's push result: true pushed, false the
 	// push failed, nil no push was attempted. GH-5715.
 	BranchPushed *bool
@@ -820,15 +831,15 @@ func (s *Store) SaveExecution(exec *Execution) error {
 				task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose,
 				task_source_adapter, task_source_issue_id, task_labels,
 				approval_request_id, effort_level, complexity_level, is_canary,
-				key_source, reported_cost_usd)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				key_source, reported_cost_usd, billing_mode)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, createdAt, completedAt,
 			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.TokensCacheRead, exec.TokensCacheWrite,
 			exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
 			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose,
 			exec.TaskSourceAdapter, exec.TaskSourceIssueID, labelsJSON,
 			exec.ApprovalRequestID, exec.EffortLevel, exec.ComplexityLevel, exec.IsCanary,
-			NormalizeKeySource(exec.KeySource), exec.ReportedCostUSD)
+			NormalizeKeySource(exec.KeySource), exec.ReportedCostUSD, NormalizeBillingMode(exec.BillingMode))
 		return err
 	})
 }
@@ -878,7 +889,7 @@ const executionDetailColumns = `
 	COALESCE(effort_level, ''), COALESCE(complexity_level, ''),
 	COALESCE(is_canary, 0),
 	COALESCE(NULLIF(key_source, ''), 'unknown'), reported_cost_usd, branch_pushed,
-	COALESCE(inherited_head, '')`
+	COALESCE(inherited_head, ''), COALESCE(NULLIF(billing_mode, ''), 'unknown')`
 
 // rowScanner abstracts *sql.Row and *sql.Rows so scanExecutionDetail serves both
 // a single QueryRow result and a Query loop (used by ListExecutionsForTask).
@@ -902,7 +913,7 @@ func scanExecutionDetail(row rowScanner) (*Execution, error) {
 		&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON,
 		&exec.ApprovalRequestID, &exec.ApprovalDecision, &approvalDecisionAt, &exec.ApprovalDecisionBy,
 		&exec.EffortLevel, &exec.ComplexityLevel, &exec.IsCanary,
-		&exec.KeySource, &reportedCost, &branchPushed, &exec.InheritedHead)
+		&exec.KeySource, &reportedCost, &branchPushed, &exec.InheritedHead, &exec.BillingMode)
 	if err != nil {
 		return nil, err
 	}
@@ -2531,6 +2542,26 @@ func NormalizeKeySource(v string) string {
 	}
 }
 
+// Billing modes recorded on executions.billing_mode, chat_turns.billing_mode
+// and usage_events.billing_mode (GH-6016). They mirror executor.BillingMode.
+const (
+	BillingModeSubscription = "subscription"
+	BillingModeAPIKey       = "api_key"
+	BillingModeUnknown      = "unknown"
+)
+
+// NormalizeBillingMode maps any value to one of subscription, api_key or
+// unknown, so the columns (and the Prometheus label derived from them) can
+// never carry free text.
+func NormalizeBillingMode(v string) string {
+	switch v {
+	case BillingModeSubscription, BillingModeAPIKey:
+		return v
+	default:
+		return BillingModeUnknown
+	}
+}
+
 // MaxExecutionUsageRows caps one GetExecutionUsageSince / GetUsageSince page
 // (GH-5676). A var only so tests can lower it; production never assigns it.
 var MaxExecutionUsageRows = 1000
@@ -2549,6 +2580,7 @@ type ExecutionUsage struct {
 	EstimatedCostUSD float64
 	ReportedCostUSD  *float64
 	KeySource        string
+	BillingMode      string // subscription | api_key | unknown (GH-6016)
 	StartedAt        *time.Time
 	CompletedAt      time.Time
 	PRUrl            string
@@ -2575,6 +2607,7 @@ func (s *Store) GetExecutionUsageSince(since time.Time, projectPath string) (row
 			COALESCE(tokens_cache_read, 0), COALESCE(tokens_cache_write, 0),
 			COALESCE(estimated_cost_usd, 0), reported_cost_usd,
 			COALESCE(NULLIF(key_source, ''), 'unknown'),
+			COALESCE(NULLIF(billing_mode, ''), 'unknown'),
 			started_at, completed_at, COALESCE(pr_url, '')
 		FROM (
 			SELECT * FROM executions
@@ -2595,7 +2628,7 @@ func (s *Store) GetExecutionUsageSince(since time.Time, projectPath string) (row
 		var started, completed sql.NullTime
 		if err := r.Scan(&u.ExecutionID, &u.TaskID, &u.ProjectPath, &u.Status, &u.Model,
 			&u.TokensInput, &u.TokensOutput, &u.TokensCacheRead, &u.TokensCacheWrite,
-			&u.EstimatedCostUSD, &reported, &u.KeySource, &started, &completed, &u.PRUrl); err != nil {
+			&u.EstimatedCostUSD, &reported, &u.KeySource, &u.BillingMode, &started, &completed, &u.PRUrl); err != nil {
 			return nil, false, fmt.Errorf("failed to scan execution usage: %w", err)
 		}
 		if reported.Valid {
@@ -2678,7 +2711,7 @@ func (s *Store) GetUsageSince(since time.Time, projectPath string) (rows []Usage
 				TokensInput: c.TokensInput, TokensOutput: c.TokensOutput,
 				TokensCacheRead: c.TokensCacheRead, TokensCacheWrite: c.TokensCacheWrite,
 				EstimatedCostUSD: c.EstimatedCostUSD, ReportedCostUSD: c.ReportedCostUSD,
-				KeySource: NormalizeKeySource(c.KeySource),
+				KeySource: NormalizeKeySource(c.KeySource), BillingMode: NormalizeBillingMode(c.BillingMode),
 				StartedAt: &started, CompletedAt: c.CompletedAt.UTC(),
 			},
 			Kind:           UsageKindChatTurn,
@@ -5166,14 +5199,16 @@ type ModelResultKey struct {
 type LifetimeCounterBaselines struct {
 	TokensByModelDirection  map[ModelDirectionKey]int64
 	CostByModel             map[string]float64
-	CostByModelKeySource    map[ModelKeySourceKey]float64 // GH-5676
+	CostByModelKeySource    map[ModelKeySourceKey]float64 // GH-5676; GH-6016 adds billing mode
 	ExecutionsByModelResult map[ModelResultKey]int64
 }
 
-// ModelKeySourceKey keys the per-model, per-Anthropic-key-source cost baseline (GH-5676).
+// ModelKeySourceKey keys the per-model, per-Anthropic-key-source, per-billing-mode
+// cost baseline (GH-5676, GH-6016).
 type ModelKeySourceKey struct {
-	Model     string
-	KeySource string
+	Model       string
+	KeySource   string
+	BillingMode string
 }
 
 // GetLifetimeCounterBaselines aggregates lifetime token, cost, and execution
@@ -5262,23 +5297,24 @@ func (s *Store) GetLifetimeCounterBaselines() (*LifetimeCounterBaselines, error)
 		SELECT
 			COALESCE(NULLIF(model_name, ''), 'unknown'),
 			COALESCE(NULLIF(key_source, ''), 'unknown'),
+			COALESCE(NULLIF(billing_mode, ''), 'unknown'),
 			COALESCE(SUM(estimated_cost_usd), 0)
 		FROM executions
 		WHERE tokens_total > 0 AND COALESCE(is_canary, 0) = 0
-		GROUP BY 1, 2
+		GROUP BY 1, 2, 3
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get lifetime cost-by-key-source baselines: %w", err)
 	}
 	defer func() { _ = costRows.Close() }()
 	for costRows.Next() {
-		var model, keySource string
+		var model, keySource, billingMode string
 		var cost float64
-		if err := costRows.Scan(&model, &keySource, &cost); err != nil {
+		if err := costRows.Scan(&model, &keySource, &billingMode, &cost); err != nil {
 			return nil, fmt.Errorf("failed to scan lifetime cost-by-key-source row: %w", err)
 		}
 		if cost != 0 {
-			baselines.CostByModelKeySource[ModelKeySourceKey{Model: model, KeySource: NormalizeKeySource(keySource)}] += cost
+			baselines.CostByModelKeySource[ModelKeySourceKey{Model: model, KeySource: NormalizeKeySource(keySource), BillingMode: NormalizeBillingMode(billingMode)}] += cost
 		}
 	}
 	if err := costRows.Err(); err != nil {

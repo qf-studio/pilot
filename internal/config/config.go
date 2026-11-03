@@ -1277,6 +1277,29 @@ func validateUsageLimitPause(p *executor.UsageLimitPauseConfig) error {
 	return nil
 }
 
+// validateBilling checks executor.claude_code.billing (GH-6016): the mode must
+// be subscription or api_key (empty = subscription), and api_key mode needs
+// exactly one of api_key_command and api_key_env.
+func validateBilling(b *executor.BillingConfig) error {
+	if b == nil {
+		return nil
+	}
+	switch b.Mode {
+	case "", executor.BillingModeSubscription:
+		return nil
+	case executor.BillingModeAPIKey:
+	default:
+		return fmt.Errorf("invalid executor.claude_code.billing.mode: %q (must be subscription or api_key)", b.Mode)
+	}
+	switch {
+	case b.APIKeyCommand != "" && b.APIKeyEnv != "":
+		return fmt.Errorf("invalid executor.claude_code.billing: set exactly one of api_key_command and api_key_env, not both")
+	case b.APIKeyCommand == "" && b.APIKeyEnv == "":
+		return fmt.Errorf("invalid executor.claude_code.billing: mode api_key requires one of api_key_command or api_key_env")
+	}
+	return nil
+}
+
 // validatePrePRReview checks executor.pre_pr_review (TASK-620): the mode must
 // be one of off, shadow, enforce (empty = off) and the durations and counts
 // must not be negative (0 = default).
@@ -1375,6 +1398,11 @@ func (c *Config) Validate() error {
 		}
 		if err := validatePrePRReview(c.Executor.PrePRReview); err != nil {
 			return err
+		}
+		if c.Executor.ClaudeCode != nil {
+			if err := validateBilling(c.Executor.ClaudeCode.Billing); err != nil {
+				return err
+			}
 		}
 		// GH-5900: 0 = per-backend default (2m Claude Code, 10m OpenCode); negative is a config mistake.
 		if c.Executor.SelfReviewTimeout < 0 {

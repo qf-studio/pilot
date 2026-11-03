@@ -163,7 +163,7 @@ func searchForScrubHelper(expr ast.Expr, varAssigns map[string][]ast.Expr, visit
 		}
 		switch v := n.(type) {
 		case *ast.CallExpr:
-			if id, ok := v.Fun.(*ast.Ident); ok && id.Name == "modelSubprocessEnv" {
+			if id, ok := v.Fun.(*ast.Ident); ok && (id.Name == "modelSubprocessEnv" || id.Name == "modelSubprocessEnvFor") {
 				found = true
 				return false
 			}

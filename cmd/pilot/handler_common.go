@@ -350,7 +350,9 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 				// logs "Failed to process issue" on any non-nil handler error).
 				logging.WithComponent("dispatch").Debug("Task already queued or running (race), skipping dispatch",
 					slog.String("task_id", taskID), slog.Any("error", qErr))
-			} else if errors.Is(qErr, executor.ErrDailyTicketCapReached) {
+			} else if errors.Is(qErr, executor.ErrDispatchGated) {
+				// GH-6016: a billing-key hold (executor.ErrBillingKeyHold) is
+				// handled the same way as the daily-cap hold below.
 				// GH-5808: the daily ticket cap holds this task. Not a failure
 				// and not a duplicate drop: nothing was claimed, so no
 				// failure alert, no repick-backoff growth (a held task is

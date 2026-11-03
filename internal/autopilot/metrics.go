@@ -19,11 +19,13 @@ type execKey struct {
 	Result string
 }
 
-// costKey identifies a cost bucket by model and Anthropic key source
-// (platform/own/unknown). GH-5676.
+// costKey identifies a cost bucket by model, Anthropic key source
+// (platform/own/unknown, GH-5676) and billing mode
+// (subscription/api_key/unknown, GH-6016).
 type costKey struct {
-	Model     string
-	KeySource string
+	Model       string
+	KeySource   string
+	BillingMode string
 }
 
 // pollerSkipKey identifies a poller skip event by repo and reason.
@@ -522,12 +524,13 @@ func (m *Metrics) RecordTokens(model, direction string, n int64) {
 
 // RecordCost adds costUSD to the per-model cumulative cost, and to the
 // per-{model,key_source} split exported as the key_source label (GH-5676).
-// keySource is normalised to platform, own or unknown.
-func (m *Metrics) RecordCost(model, keySource string, costUSD float64) {
+// keySource is normalised to platform, own or unknown, billingMode to
+// subscription, api_key or unknown (GH-6016).
+func (m *Metrics) RecordCost(model, keySource, billingMode string, costUSD float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ExecutionCostUSD[model] += costUSD
-	m.ExecutionCostByKeySource[costKey{Model: model, KeySource: memory.NormalizeKeySource(keySource)}] += costUSD
+	m.ExecutionCostByKeySource[costKey{Model: model, KeySource: memory.NormalizeKeySource(keySource), BillingMode: memory.NormalizeBillingMode(billingMode)}] += costUSD
 }
 
 // RecordExecution increments the {model, result} execution counter.

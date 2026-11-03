@@ -51,7 +51,7 @@ func HydrateFromStore(ctx context.Context, store *memory.Store, metrics *Metrics
 	// GH-5676: hydrate cost per {model, key_source} so the key_source label
 	// survives restarts; RecordCost also feeds the per-model total.
 	for key, cost := range baselines.CostByModelKeySource {
-		metrics.RecordCost(key.Model, key.KeySource, cost)
+		metrics.RecordCost(key.Model, key.KeySource, key.BillingMode, cost)
 	}
 	for key, n := range baselines.ExecutionsByModelResult {
 		metrics.HydrateExecutions(key.Model, key.Result, n)

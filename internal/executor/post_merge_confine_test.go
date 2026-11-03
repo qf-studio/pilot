@@ -358,15 +358,22 @@ func TestPostMergeCheckoutConfinement_Environ(t *testing.T) {
 		wantKept      []string
 		wantCopied    bool
 		wantConfigDir string
+		cred          *BillingCredential // billing credential on the context (GH-6016)
 	}{
-		{"api key authenticates", append([]string{"HOME=" + realHome, "PATH=/bin", "ANTHROPIC_API_KEY=fake-api-key"}, secrets...), []string{"PATH=/bin", "ANTHROPIC_API_KEY=fake-api-key"}, false, filepath.Join(home, ".claude")},
-		{"login file authenticates", append([]string{"HOME=" + realHome, "PATH=/bin"}, secrets...), []string{"PATH=/bin"}, true, filepath.Join(home, ".claude")},
-		{"ambient config dir is replaced", append([]string{"HOME=" + realHome, "CLAUDE_CONFIG_DIR=" + filepath.Join(realHome, ".claude"), "PATH=/bin"}, secrets...), []string{"PATH=/bin"}, true, filepath.Join(home, ".claude")},
+		// GH-6016: the key comes from the billing credential, never the ambient env.
+		{"injected api key authenticates", append([]string{"HOME=" + realHome, "PATH=/bin"}, secrets...), []string{"PATH=/bin", "ANTHROPIC_API_KEY=fake-api-key"}, false, filepath.Join(home, ".claude"), &BillingCredential{mode: BillingModeAPIKey, key: []byte("fake-api-key")}},
+		{"inherited api key is dropped, login file authenticates", append([]string{"HOME=" + realHome, "PATH=/bin", "ANTHROPIC_API_KEY=ambient-fake-key"}, secrets...), []string{"PATH=/bin"}, true, filepath.Join(home, ".claude"), nil},
+		{"login file authenticates", append([]string{"HOME=" + realHome, "PATH=/bin"}, secrets...), []string{"PATH=/bin"}, true, filepath.Join(home, ".claude"), nil},
+		{"ambient config dir is replaced", append([]string{"HOME=" + realHome, "CLAUDE_CONFIG_DIR=" + filepath.Join(realHome, ".claude"), "PATH=/bin"}, secrets...), []string{"PATH=/bin"}, true, filepath.Join(home, ".claude"), nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_ = os.RemoveAll(filepath.Join(home, ".claude"))
-			got := postMergeReviewEnviron(tt.base, home)
+			ctx := context.Background()
+			if tt.cred != nil {
+				ctx = WithBillingCredential(ctx, tt.cred)
+			}
+			got := postMergeReviewEnviron(ctx, tt.base, home)
 			set := map[string]bool{}
 			for _, kv := range got {
 				set[kv] = true
@@ -378,6 +385,9 @@ func TestPostMergeCheckoutConfinement_Environ(t *testing.T) {
 				}
 				if name == "HOME" && kv != "HOME="+home {
 					t.Errorf("HOME = %q, want the review home", kv)
+				}
+				if kv == "ANTHROPIC_API_KEY=ambient-fake-key" {
+					t.Errorf("inherited ANTHROPIC_API_KEY reached the review subprocess")
 				}
 			}
 			for _, want := range append(tt.wantKept, "HOME="+home, "CLAUDE_CONFIG_DIR="+tt.wantConfigDir) {

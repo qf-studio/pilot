@@ -144,6 +144,11 @@ const (
 	// usage-limit failure) and the dispatcher paused task admission until the
 	// reported reset. Emitted once per pause episode.
 	AlertTypeUsageLimitPause AlertType = "usage_limit_pause"
+
+	// AlertTypeBillingKeyUnavailable (GH-6016): billing.mode is api_key and the
+	// key could not be resolved, so the dispatcher failed the execution closed
+	// and paused task admission until the key resolves again.
+	AlertTypeBillingKeyUnavailable AlertType = "billing_key_unavailable"
 )
 
 // HandlerEmittedAlertTypes lists every AlertType whose handler
@@ -169,6 +174,7 @@ var HandlerEmittedAlertTypes = []AlertType{
 	AlertTypeEnvClassFailureStreak,
 	AlertTypeDailyTicketCapHit,
 	AlertTypeUsageLimitPause,
+	AlertTypeBillingKeyUnavailable,
 }
 
 // CoverageGaps returns the subset of HandlerEmittedAlertTypes that cfg has
@@ -723,6 +729,18 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    0,
 			Description: "Alert when a Claude usage-limit failure pauses task admission until the reported reset (executor.usage_limit_pause)",
+		},
+		// GH-6016: emitted once per outage when billing.mode is api_key and the
+		// key cannot be resolved; admission stays paused until a retry succeeds.
+		{
+			Name:        "billing_key_unavailable",
+			Type:        AlertTypeBillingKeyUnavailable,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    0,
+			Description: "Alert when billing.mode is api_key and the API key cannot be resolved, so task admission is paused (executor.claude_code.billing)",
 		},
 		// GH-5498: emitted by the executor's HeartbeatCallback right before it
 		// kills a Claude subprocess that produced no stream events for longer

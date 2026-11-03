@@ -31,6 +31,9 @@ type UsageEvent struct {
 	TotalCost   float64                `json:"total_cost"`
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 	ExecutionID string                 `json:"execution_id,omitempty"` // Link to execution
+	// BillingMode is subscription, api_key or unknown; copied from the
+	// execution row for per-task events (GH-6016).
+	BillingMode string `json:"billing_mode,omitempty"`
 }
 
 // UsageSummary holds aggregated usage for a period
@@ -112,15 +115,23 @@ func (s *Store) RecordUsageEvent(event *UsageEvent) error {
 	metadata, _ := json.Marshal(event.Metadata)
 
 	_, err := s.db.Exec(`
-		INSERT INTO usage_events (id, timestamp, user_id, project_id, event_type, quantity, unit_cost, total_cost, metadata, execution_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, event.ID, event.Timestamp, event.UserID, event.ProjectID, event.EventType, event.Quantity, event.UnitCost, event.TotalCost, string(metadata), event.ExecutionID)
+		INSERT INTO usage_events (id, timestamp, user_id, project_id, event_type, quantity, unit_cost, total_cost, metadata, execution_id, billing_mode)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, event.ID, event.Timestamp, event.UserID, event.ProjectID, event.EventType, event.Quantity, event.UnitCost, event.TotalCost, string(metadata), event.ExecutionID, NormalizeBillingMode(event.BillingMode))
 	return err
 }
 
 // RecordTaskUsage records usage for a completed task
 func (s *Store) RecordTaskUsage(executionID, userID, projectID string, durationMs, tokensInput, tokensOutput int64) error {
 	now := time.Now()
+
+	// GH-6016: every event of one execution carries the mode the execution
+	// row was stamped with. A missing row or column reads as unknown.
+	var billingMode string
+	if err := s.db.QueryRow(`SELECT COALESCE(billing_mode, '') FROM executions WHERE id = ?`, executionID).Scan(&billingMode); err != nil {
+		billingMode = ""
+	}
+	billingMode = NormalizeBillingMode(billingMode)
 
 	// Record task event
 	taskEvent := &UsageEvent{
@@ -133,6 +144,7 @@ func (s *Store) RecordTaskUsage(executionID, userID, projectID string, durationM
 		UnitCost:    PricePerTask,
 		TotalCost:   PricePerTask,
 		ExecutionID: executionID,
+		BillingMode: billingMode,
 	}
 	if err := s.RecordUsageEvent(taskEvent); err != nil {
 		return fmt.Errorf("failed to record task event: %w", err)
@@ -151,6 +163,7 @@ func (s *Store) RecordTaskUsage(executionID, userID, projectID string, durationM
 			UnitCost:    tokenCost / float64(tokensInput+tokensOutput),
 			TotalCost:   tokenCost,
 			ExecutionID: executionID,
+			BillingMode: billingMode,
 			Metadata: map[string]interface{}{
 				"input_tokens":  tokensInput,
 				"output_tokens": tokensOutput,
@@ -174,6 +187,7 @@ func (s *Store) RecordTaskUsage(executionID, userID, projectID string, durationM
 			UnitCost:    PricePerComputeMinute,
 			TotalCost:   computeCost,
 			ExecutionID: executionID,
+			BillingMode: billingMode,
 			Metadata: map[string]interface{}{
 				"duration_ms": durationMs,
 			},
@@ -433,7 +447,7 @@ func (s *Store) GetUsageEvents(query UsageQuery, limit int) ([]*UsageEvent, erro
 	args = append(args, limit)
 
 	rows, err := s.db.Query(`
-		SELECT id, timestamp, user_id, project_id, event_type, quantity, unit_cost, total_cost, metadata, COALESCE(execution_id, '')
+		SELECT id, timestamp, user_id, project_id, event_type, quantity, unit_cost, total_cost, metadata, COALESCE(execution_id, ''), COALESCE(NULLIF(billing_mode, ''), 'unknown')
 		FROM usage_events
 		`+whereClause+`
 		ORDER BY timestamp DESC
@@ -449,7 +463,7 @@ func (s *Store) GetUsageEvents(query UsageQuery, limit int) ([]*UsageEvent, erro
 		var e UsageEvent
 		var metadataStr string
 		var eventType string
-		if err := rows.Scan(&e.ID, &e.Timestamp, &e.UserID, &e.ProjectID, &eventType, &e.Quantity, &e.UnitCost, &e.TotalCost, &metadataStr, &e.ExecutionID); err != nil {
+		if err := rows.Scan(&e.ID, &e.Timestamp, &e.UserID, &e.ProjectID, &eventType, &e.Quantity, &e.UnitCost, &e.TotalCost, &metadataStr, &e.ExecutionID, &e.BillingMode); err != nil {
 			return nil, err
 		}
 		e.EventType = UsageEventType(eventType)

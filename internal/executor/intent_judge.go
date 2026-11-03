@@ -205,9 +205,9 @@ func (j *IntentJudge) runCmdInHome(ctx context.Context, dir, home string, args .
 	cmd.Dir = dir
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.
-	cmd.Env = modelSubprocessEnv(os.Environ())
+	cmd.Env = modelSubprocessEnvFor(ctx, os.Environ())
 	if home != "" {
-		cmd.Env = postMergeReviewEnviron(cmd.Env, home)
+		cmd.Env = postMergeReviewEnviron(ctx, cmd.Env, home)
 	}
 	var stdout bytes.Buffer
 	stderr := newBoundedBuffer(maxJudgeStderrCaptureBytes)

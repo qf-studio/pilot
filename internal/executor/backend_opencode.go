@@ -119,7 +119,7 @@ func (b *OpenCodeBackend) startServer(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.
-	cmd.Env = modelSubprocessEnv(os.Environ())
+	cmd.Env = modelSubprocessEnvFor(ctx, os.Environ())
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start OpenCode server: %w", err)
 	}

@@ -560,6 +560,7 @@ type executionUsageRow struct {
 	EstimatedCostUSD float64  `json:"estimatedCostUSD"`
 	ReportedCostUSD  *float64 `json:"reportedCostUSD"` // null when the CLI reported no cost
 	KeySource        string   `json:"keySource"`       // platform | own | unknown
+	BillingMode      string   `json:"billingMode"`     // subscription | api_key | unknown (GH-6016)
 	StartedAt        *string  `json:"startedAt"`       // RFC3339, null if never started
 	CompletedAt      string   `json:"completedAt"`     // RFC3339
 	PRUrl            string   `json:"prUrl"`
@@ -635,6 +636,7 @@ func (s *Server) handleExecutionsUsage(w http.ResponseWriter, r *http.Request) {
 			EstimatedCostUSD: u.EstimatedCostUSD,
 			ReportedCostUSD:  u.ReportedCostUSD,
 			KeySource:        u.KeySource,
+			BillingMode:      u.BillingMode,
 			CompletedAt:      u.CompletedAt.UTC().Format(time.RFC3339Nano),
 			PRUrl:            u.PRUrl,
 		}

@@ -268,7 +268,7 @@ func (p *ParallelRunner) executeSubagent(ctx context.Context, projectPath string
 	cmd.Dir = projectPath
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.
-	cmd.Env = modelSubprocessEnv(os.Environ())
+	cmd.Env = modelSubprocessEnvFor(ctx, os.Environ())
 
 	// GH-4503: same fix as the primary backends — own process group so
 	// Cancel() and ctx-cancellation can reach any children this subagent

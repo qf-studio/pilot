@@ -234,6 +234,7 @@ func (l *ExecutionLifecycle) Begin(task *Task, initial Status, generation ...int
 		TaskLabels:        task.Labels,
 		IsCanary:          task.IsCanary,
 		KeySource:         KeySourceFromEnv(), // GH-5676
+		BillingMode:       task.billingMode,   // GH-6016
 	}
 	if err := l.store.SaveExecution(exec); err != nil {
 		return execID, fmt.Errorf("failed to save execution: %w", err)
