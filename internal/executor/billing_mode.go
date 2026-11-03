@@ -250,7 +250,7 @@ func (r *BillingResolver) resolveKey(ctx context.Context) ([]byte, error) {
 // fails closed rather than running on the subscription. The returned release
 // wipes a credential this call resolved.
 func (r *Runner) prepareBilling(ctx context.Context, task *Task) (context.Context, func(), error) {
-	ctx, cred, release, err := r.billingContext(ctx)
+	ctx, cred, release, err := r.billingContext(ctx, task.ID, task.ProjectPath)
 	if err != nil {
 		return ctx, release, err
 	}
@@ -263,8 +263,11 @@ func (r *Runner) prepareBilling(ctx context.Context, task *Task) (context.Contex
 // billingContext returns ctx carrying a billing credential: the one already on
 // ctx, or a freshly resolved one whose release wipes it. A backend other than
 // the claude CLI has no billing mode: the credential is nil and the mode
-// unknown.
-func (r *Runner) billingContext(ctx context.Context) (context.Context, *BillingCredential, func(), error) {
+// unknown. A fail-closed api_key resolution raises one billing key alert
+// (GH-6022): callers outside the dispatcher have no admission pause to surface
+// the outage, so the alert rule's cooldown is what bounds repetition. taskID
+// and project are attribution for that alert, empty when not known.
+func (r *Runner) billingContext(ctx context.Context, taskID, project string) (context.Context, *BillingCredential, func(), error) {
 	noop := func() {}
 	if r.config != nil && r.config.Type != "" && r.config.Type != BackendTypeClaudeCode {
 		return ctx, nil, noop, nil
@@ -278,6 +281,15 @@ func (r *Runner) billingContext(ctx context.Context) (context.Context, *BillingC
 	}
 	cred, err := NewBillingResolver(cfg).Resolve(ctx)
 	if err != nil {
+		if IsBillingKeyUnavailable(err) {
+			r.emitAlertEvent(AlertEvent{
+				Type:      AlertEventTypeBillingKeyUnavailable,
+				TaskID:    taskID,
+				Project:   project,
+				Error:     err.Error(),
+				Timestamp: time.Now(),
+			})
+		}
 		return ctx, nil, noop, err
 	}
 	return WithBillingCredential(ctx, cred), cred, cred.Zero, nil

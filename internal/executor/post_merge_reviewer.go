@@ -255,7 +255,10 @@ type PostMergeReviewer struct {
 	// passes is the number of claude invocations per checkout review: 1 (the
 	// default) or 2 (hunk pass, then adjacent pass; GH-5977).
 	passes int
-	log    *slog.Logger
+	// billing resolves the per-review credential (GH-6022); nil leaves the
+	// review on whatever credential its ctx already carries.
+	billing *BillingResolver
+	log     *slog.Logger
 	// cmdRunner runs the CLI with args in dir ("" = the daemon's directory).
 	// A non-empty home is the review's own HOME (GH-5920): the runner builds
 	// the CLI environment from it with postMergeReviewEnviron.
@@ -301,6 +304,12 @@ func (r *PostMergeReviewer) SetPasses(n int) {
 	}
 	r.passes = n
 }
+
+// SetBillingResolver makes Review resolve a billing credential (GH-6016) for
+// the spawn: in api_key mode the review bills the key, and an unresolvable key
+// fails the review closed instead of billing the subscription (GH-6022).
+// Nil keeps the review on the credential its ctx carries, if any.
+func (r *PostMergeReviewer) SetBillingResolver(b *BillingResolver) { r.billing = b }
 
 // Passes returns the configured number of review passes.
 func (r *PostMergeReviewer) Passes() int { return r.passes }
@@ -403,6 +412,18 @@ const postMergeMemoriesHeader = "## Known pitfalls from project memory (review c
 func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput) (*PostMergeReview, error) {
 	if strings.TrimSpace(in.Diff) == "" {
 		return nil, fmt.Errorf("empty diff")
+	}
+
+	// Decision: a credential already on ctx wins and is left to its owner (the
+	// pre-PR review runs inside Execute with one); only a bare ctx — autopilot's
+	// WithoutCancel context, pilot review-merge — resolves here and wipes it.
+	if r.billing != nil && BillingCredentialFromContext(ctx) == nil {
+		cred, err := r.billing.Resolve(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer cred.Zero()
+		ctx = WithBillingCredential(ctx, cred)
 	}
 
 	maxChars := r.maxDiffChars

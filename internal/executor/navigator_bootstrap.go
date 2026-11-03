@@ -93,10 +93,6 @@ func (r *Runner) ExecuteNavigatorBootstrap(ctx context.Context, projectPath stri
 	if r.backend == nil {
 		return nil, errors.New("navigator bootstrap: no backend configured")
 	}
-	if err := ensureNavigatorScaffold(r, projectPath); err != nil {
-		return nil, err
-	}
-
 	now := time.Now()
 	date := now.Format("2006-01-02")
 	out := &NavigatorBootstrapResult{
@@ -104,9 +100,23 @@ func (r *Runner) ExecuteNavigatorBootstrap(ctx context.Context, projectPath stri
 		KeySource: KeySourceFromEnv(),
 	}
 
+	// GH-6022: the session is a model spawn like any execution. Inside a task
+	// ctx already carries the credential; the standalone CLI resolves here and
+	// in api_key mode fails closed (with the billing key alert) before any
+	// scaffold or spawn rather than billing the subscription.
+	ctx, cred, release, billErr := r.billingContext(ctx, out.TaskID, projectPath)
+	if billErr != nil {
+		return nil, billErr
+	}
+	defer release()
+
+	if err := ensureNavigatorScaffold(r, projectPath); err != nil {
+		return nil, err
+	}
+
 	lifecycle := NewExecutionLifecycle(r.logStore)
 	lifecycle.SetAlertProcessor(r.AlertProcessor())
-	task := &Task{ID: out.TaskID, Title: "Navigator bootstrap", ProjectPath: projectPath}
+	task := &Task{ID: out.TaskID, Title: "Navigator bootstrap", ProjectPath: projectPath, billingMode: cred.MemoryMode()}
 	out.ExecutionID = r.beginBootstrapExecution(lifecycle, task)
 
 	tctx, cancel := context.WithTimeout(ctx, navigatorBootstrapTimeout)

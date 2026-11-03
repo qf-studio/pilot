@@ -118,8 +118,10 @@ func (b *OpenCodeBackend) startServer(ctx context.Context) error {
 
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	// GH-5278: scrub the ambient environment before this model-controlled
-	// subprocess inherits it.
-	cmd.Env = modelSubprocessEnvFor(ctx, os.Environ())
+	// subprocess inherits it. Plain scrub, not modelSubprocessEnvFor: billing
+	// mode (GH-6016) applies to the claude backend only, so OpenCode keeps the
+	// ANTHROPIC_API_KEY it reads from its process env (GH-6022).
+	cmd.Env = modelSubprocessEnv(os.Environ())
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start OpenCode server: %w", err)
 	}
@@ -142,8 +144,9 @@ func (b *OpenCodeBackend) startServer(ctx context.Context) error {
 // providerAPIKeyEnvVar returns the conventional environment variable name
 // OpenCode looks up for a given provider's API key (e.g. "openrouter" ->
 // "OPENROUTER_API_KEY"). Returns "" for an empty provider or "anthropic",
-// which survives the model-env scrub on its own via the ANTHROPIC_* keep
-// prefix (model_env.go) and needs no passthrough entry.
+// whose key passes through the ANTHROPIC_ keep-prefix of the model-env scrub
+// (model_env.go) and needs no passthrough entry; billing mode applies to the
+// claude backend only and does not strip it here.
 func providerAPIKeyEnvVar(provider string) string {
 	p := strings.ToLower(strings.TrimSpace(provider))
 	if p == "" || p == "anthropic" {
