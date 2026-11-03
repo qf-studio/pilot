@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Acceptance-evidence gate (GH-5435, revised by GH-5437 and GH-5438).
@@ -323,9 +324,31 @@ const (
 	maxEvidenceOutputLines = evidenceHeadLines + evidenceTailLines
 )
 
+// evidenceFailureLineBudget is the most failure-pattern lines (GH-6035) kept
+// from the omitted middle of an over-cap output, so the hard cap on a trimmed
+// block is maxEvidenceOutputLines + evidenceFailureLineBudget lines (plus the
+// marker line).
+const evidenceFailureLineBudget = 30
+
+var (
+	// evidenceFailureLineRe matches the lines that name a failure: a failed
+	// test, a panic, a data race report or a FAIL status line.
+	evidenceFailureLineRe = regexp.MustCompile(`^(?:--- FAIL:|panic:|WARNING: DATA RACE|FAIL\b)`)
+	// evidenceFailLocationRe matches the indented "file_test.go:12: msg" line
+	// `go test` prints under a "--- FAIL:" line.
+	evidenceFailLocationRe = regexp.MustCompile(`^\s+\S+_test\.go:\d+:`)
+	evidenceFailTestNameRe = regexp.MustCompile(`(?m)^\s*--- FAIL: (\S+)`)
+)
+
 // trimOutputForEvidence trims output to at most maxEvidenceOutputLines lines.
 // Over the cap it emits the first evidenceHeadLines lines, a
 // "... <k> lines omitted ..." marker, and the last evidenceTailLines lines.
+//
+// GH-6035: a log-heavy `go test` run can bury the "--- FAIL: TestX", "panic:"
+// and "WARNING: DATA RACE" lines in the omitted middle, leaving a FAILS heading
+// with no test name (PR #6030). When the middle holds such lines, up to
+// evidenceFailureLineBudget of them are kept between the head and the tail and
+// the marker becomes "... <k> lines omitted; <m> failure lines kept: ...".
 func trimOutputForEvidence(output string) string {
 	output = strings.TrimRight(output, "\n")
 	if output == "" {
@@ -335,10 +358,49 @@ func trimOutputForEvidence(output string) string {
 	if len(lines) <= maxEvidenceOutputLines {
 		return strings.Join(lines, "\n")
 	}
-	omitted := len(lines) - maxEvidenceOutputLines
 	head := strings.Join(lines[:evidenceHeadLines], "\n")
 	tail := strings.Join(lines[len(lines)-evidenceTailLines:], "\n")
-	return fmt.Sprintf("%s\n... %d lines omitted ...\n%s", head, omitted, tail)
+	middle := lines[evidenceHeadLines : len(lines)-evidenceTailLines]
+	kept := evidenceFailureLines(middle)
+	if len(kept) == 0 {
+		return fmt.Sprintf("%s\n... %d lines omitted ...\n%s", head, len(lines)-maxEvidenceOutputLines, tail)
+	}
+	return fmt.Sprintf("%s\n... %d lines omitted; %d failure lines kept: ...\n%s\n%s",
+		head, len(middle)-len(kept), len(kept), strings.Join(kept, "\n"), tail)
+}
+
+// evidenceFailureLines returns the failure-pattern lines of lines in order,
+// at most evidenceFailureLineBudget of them. A "file_test.go:N:" location line
+// counts only when it directly follows a "--- FAIL:" line (or another such
+// location line of the same failure).
+func evidenceFailureLines(lines []string) []string {
+	var kept []string
+	afterFail := false
+	for _, l := range lines {
+		if len(kept) >= evidenceFailureLineBudget {
+			break
+		}
+		switch {
+		case evidenceFailureLineRe.MatchString(l):
+			kept = append(kept, l)
+			afterFail = strings.HasPrefix(l, "--- FAIL:")
+		case afterFail && evidenceFailLocationRe.MatchString(l):
+			kept = append(kept, l)
+		default:
+			afterFail = false
+		}
+	}
+	return kept
+}
+
+// evidenceFailedTestNames returns the names on the first max "--- FAIL:" lines
+// of raw (untrimmed) command output.
+func evidenceFailedTestNames(raw string, max int) []string {
+	var names []string
+	for _, m := range evidenceFailTestNameRe.FindAllStringSubmatch(raw, max) {
+		names = append(names, m[1])
+	}
+	return names
 }
 
 // evidenceFailLineRe matches a Go test failure line anywhere in captured
@@ -486,6 +548,15 @@ type AcceptanceCommandResult struct {
 	// FromQualityGate is true when Output was reused from the matching
 	// quality-gate run instead of executing the command again (GH-5867).
 	FromQualityGate bool
+	// ExitCode, Duration and FailedTests describe a command that ran and
+	// exited non-zero (GH-6035): the exit code, the wall time and the first
+	// names on "--- FAIL:" lines of the raw output, kept for the daemon log
+	// because the pasted Output may be trimmed. Zero/nil otherwise.
+	ExitCode    int
+	Duration    time.Duration
+	FailedTests []string
+	// Failed is true when the command ran and exited non-zero.
+	Failed bool
 }
 
 // MutationOutcome is the outcome of applying a mutation-style acceptance
