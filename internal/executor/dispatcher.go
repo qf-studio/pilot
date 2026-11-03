@@ -1778,7 +1778,30 @@ const (
 	deterministicFailureReasonPrefix   = "deterministic failure (will not retry): "
 	identicalFailureStreakReasonPrefix = "consecutive identical failures (will not retry): "
 	noProgressRepickReasonPrefix       = "no-progress repick cap reached (will not retry): "
+	declinedStalledReasonPrefix        = "declined after one run (will not retry): "
 )
+
+// declinedErrorPrefix starts the error text of a declined row that carries
+// Claude's DECLINED:<reason> reason (ExecutionLifecycle.Classify, GH-6033).
+const declinedErrorPrefix = "declined: "
+
+// declinedStallReason returns the quoted decline reason when exec is a
+// declined row, not a refusal, whose error carries one (declinedErrorPrefix).
+// A decline is a judgement on the issue body, so re-running the same body
+// cannot change it. A decline without a parsed reason (or a refusal, which
+// escalateRefusal handles) reports false and falls through to the generic
+// no-progress cap. GH-6033.
+func declinedStallReason(exec *memory.Execution) (string, bool) {
+	if exec == nil || exec.Status != string(ExecStatusDeclined) || IsRefusalFailure(exec.Error) {
+		return "", false
+	}
+	reason, ok := strings.CutPrefix(exec.Error, declinedErrorPrefix)
+	reason = strings.TrimSpace(reason)
+	if !ok || reason == "" {
+		return "", false
+	}
+	return reason, true
+}
 
 // isNoProgressOutcome reports whether exec ended in an outcome that counts
 // toward dispatcherNoProgressRepickCap: status "declined", or status "no_op"
@@ -1904,7 +1927,8 @@ func (d *Dispatcher) priorClaimWasEscalatedForOperatorAttention(taskID, projectP
 	}
 	if strings.HasPrefix(exec.Error, deterministicFailureReasonPrefix) ||
 		strings.HasPrefix(exec.Error, identicalFailureStreakReasonPrefix) ||
-		strings.HasPrefix(exec.Error, noProgressRepickReasonPrefix) {
+		strings.HasPrefix(exec.Error, noProgressRepickReasonPrefix) ||
+		strings.HasPrefix(exec.Error, declinedStalledReasonPrefix) {
 		return true, exec.Error
 	}
 	return false, ""
@@ -2151,6 +2175,16 @@ func (d *Dispatcher) beginClaimWithGenerationRetry(task *Task, initial Status) (
 	if isDeterministic, errStr := d.priorClaimWasDeterministicFailure(task.ID, task.ProjectPath); isDeterministic {
 		d.escalateDeterministicFailure(task, gen, errStr)
 		return "", nil
+	}
+
+	// GH-6033: a decline is a judgement on the issue body, which a re-run
+	// cannot change — stall on the first one and quote its reason instead of
+	// spending dispatcherNoProgressRepickCap runs.
+	if execs, lerr := d.store.ListExecutionsForTask(task.ID, task.ProjectPath); lerr == nil && len(execs) > 0 {
+		if reason, ok := declinedStallReason(execs[0]); ok {
+			d.stallTaskAfterDecline(task, gen, reason)
+			return "", nil
+		}
 	}
 
 	// GH-5800: a declined or no-commit no_op prior claim is not terminal-done,
@@ -2492,6 +2526,18 @@ func (d *Dispatcher) stallTaskAfterInfraCap(task *Task, gen, infraDrops int) {
 		"reason":      "infra_repick_cap_stalled",
 		"infra_drops": fmt.Sprintf("%d", infraDrops),
 		"infra_cap":   fmt.Sprintf("%d", dispatcherInfraRepickCap),
+	})
+}
+
+// stallTaskAfterDecline stalls the task on the first declined run (GH-6033),
+// through the same escalate-and-hold path as the other caps. The reason
+// carries declinedStalledReasonPrefix so priorClaimWasEscalatedForOperatorAttention
+// keeps the task pinned on later ticks, and stalledIssueComment quotes the
+// decline reason verbatim.
+func (d *Dispatcher) stallTaskAfterDecline(task *Task, gen int, declineReason string) {
+	d.escalateStalledTask(task, gen, 1, declinedStalledReasonPrefix+declineReason, map[string]string{
+		"reason":         "declined_stalled",
+		"decline_reason": declineReason,
 	})
 }
 
@@ -2861,6 +2907,9 @@ func (d *Dispatcher) surfaceStalledIssue(task *Task, reason string) {
 // rebases -B onto origin/main) or failed to push over it (non-fast-forward
 // against the already-pushed preserved sha).
 func stalledIssueComment(reason string, issueNum int) string {
+	if declineReason, ok := strings.CutPrefix(reason, declinedStalledReasonPrefix); ok {
+		return fmt.Sprintf("Pilot declined this issue after one run: %s. Rescope the issue body or close it; re-add the `pilot` label to re-arm.", declineReason)
+	}
 	comment := fmt.Sprintf(
 		"Pilot stopped retrying (repick hard cap): %s\n\n"+
 			"Labeled `pilot-blocked` so this issue stops winning scope-overlap "+

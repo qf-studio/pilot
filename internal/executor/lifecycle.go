@@ -317,6 +317,15 @@ func (l *ExecutionLifecycle) Classify(result *ExecutionResult, execErr error, ov
 	if len(override) > 0 {
 		outcome.Status = override[0]
 	}
+
+	// GH-6033: persist the decline reason on the row so the dispatcher can
+	// stall on the first decline and quote it (declinedStallReason). A
+	// refusal-classed error keeps its own text so IsRefusalFailure still
+	// matches it.
+	if outcome.Status == ExecStatusDeclined && result != nil && result.Declined &&
+		result.DeclinedReason != "" && !IsRefusalFailure(outcome.Error) {
+		outcome.Error = declinedErrorPrefix + result.DeclinedReason
+	}
 	return outcome
 }
 
