@@ -1,6 +1,6 @@
 # TASK-634: A declined run is re-picked, its reason is lost, and a FAIL in pasted evidence files a fix issue that green CI already refutes
 
-**Status**: 🚀 **DISPATCHED 2026-11-03 17:4xZ** — A1 [pilot#6033](https://github.com/qf-studio/pilot/issues/6033) · B1 [pilot#6034](https://github.com/qf-studio/pilot/issues/6034) · C1 [pilot#6035](https://github.com/qf-studio/pilot/issues/6035) (`pilot` + `no-decompose`, one PR each). Incident: GH-6031 (closed not-planned 16:5xZ).
+**Status**: 🚀 **DISPATCHED 2026-11-03 16:30Z** — A1 [pilot#6033](https://github.com/qf-studio/pilot/issues/6033) · B1 [pilot#6034](https://github.com/qf-studio/pilot/issues/6034) · C1 [pilot#6035](https://github.com/qf-studio/pilot/issues/6035) (`pilot` + `no-decompose`, one PR each). Incident: GH-6031 (closed not-planned 16:22Z).
 **Created**: 2026-11-03
 **Assignee**: Pilot
 
@@ -164,7 +164,7 @@ The head and tail budgets, the per-command timeout (`defaultAcceptanceEvidenceCo
 
 ## Refs
 
-- GH-6031 (closed not-planned 2026-11-03, comment carries the decline reason and the laptop `ok` line)
+- GH-6031 (closed not-planned 2026-11-03 16:22Z, comment carries the decline reason and the laptop `ok` line)
 - PR#6030 · GH-6028 · TASK-633 F3 (#6026 / PR#6027, the tests involved)
 - TASK-614 (severity contract) · TASK-620 (reviewer program) · GH-5568 (evidence heading) · GH-5139 (re-arm)
 

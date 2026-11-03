@@ -1,6 +1,6 @@
 # TASK-633: Billing mode fast-follow — PR#6017 post-merge review notes verified on main, two fix legs
 
-**Status**: 🔴 **F4 [pilot#6032](https://github.com/qf-studio/pilot/issues/6032) P1 DISPATCHED 2026-11-03 ~15:50Z — v2.310.0 regression: unset `billing.mode` = subscription = inherited `ANTHROPIC_API_KEY` stripped from every model subprocess; every hosted tenant (env key, no OAuth login) breaks on upgrade. None exposed yet (tenants on 2.282.0 / 2.277.4). HOLD: no AMI bake (infra#23) or SSM hop to 2.310.0 until F4 is released.** Shipped in v2.310.0: A1 PR#6017 · F1 #6021→PR#6024 · F2 #6022→PR#6025 · F3 #6026→PR#6027; box on it since 14:16Z (OAuth, unaffected), 4 tasks completed. Parent: TASK-631.
+**Status**: 🟡 **F4 [pilot#6032](https://github.com/qf-studio/pilot/issues/6032) → [PR#6036](https://github.com/qf-studio/pilot/pull/6036) OPEN 16:41Z, CI test running, pre-PR shadow REQUEST-CHANGES (1 real blocking: bare-ctx spawn sites keep the inherited key under an explicit `subscription`; no live instance) → `pilot-review-rc` label → autopilot escalates to approval on green. Navigator review posted 16:48Z: APPROVE-w-notes, merge now, fast-follow F5 (§ LEG F5, not filed). Release v2.311.0 after merge, then lift the fleet hold.** Was: P1 DISPATCHED 2026-11-03 ~15:50Z — v2.310.0 regression: unset `billing.mode` = subscription = inherited `ANTHROPIC_API_KEY` stripped from every model subprocess; every hosted tenant (env key, no OAuth login) breaks on upgrade. None exposed yet (tenants on 2.282.0 / 2.277.4). HOLD: no AMI bake (infra#23) or SSM hop to 2.310.0 until F4 is released.** Shipped in v2.310.0: A1 PR#6017 · F1 #6021→PR#6024 · F2 #6022→PR#6025 · F3 #6026→PR#6027; box on it since 14:16Z (OAuth, unaffected), 4 tasks completed. Parent: TASK-631.
 **Created**: 2026-11-03
 **Assignee**: Pilot
 
@@ -314,6 +314,40 @@ The runtime switch (A2), the usage-limit fallback (B), budget scope (C). Any con
 ## Refs
 
 - v2.310.0 release (PR#6017, #6024, #6025, #6027); #5955 item 3; Navigator TASK-633 in this repo
+
+### LEG F5 — repo: qf-studio/pilot — title: fix(executor): spawn sites with no billing credential on ctx follow the configured billing mode — an explicit subscription block strips the inherited key everywhere
+
+## Context
+
+PR#6036 (GH-6032) made modelSubprocessEnvFor in `internal/executor/model_env.go` (near line 216) return the plain scrub when the ctx carries no BillingCredential or an unset one. That restores passthrough for the unset mode, as intended. It also changes the explicit subscription mode at every spawn site that passes a bare context: the effort classifier (`internal/executor/model_routing.go` near lines 73 and 220 call Classify with context.Background(), reaching `internal/executor/effort_classifier.go` near line 116), the complexity classifier (`internal/executor/complexity_classifier.go` near line 75), the subtask parser (`internal/executor/subtask_parser.go` near line 71), the intent judge (`internal/executor/intent_judge.go` near line 208), the epic planner (`internal/executor/epic.go` near line 284) and parallel (`internal/executor/parallel.go` near line 271). Before PR#6036 those sites stripped ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN unconditionally; now they keep them. The spec sentence of GH-6032 says an explicit subscription mode strips inherited keys, so this is a regression of that sentence. No deployment runs an explicit subscription block together with an exported key today (box: no billing block, OAuth token; tenants: no block), which is why the merge went ahead. Found by the pre-PR shadow review of PR#6036 (first blocking defect) and confirmed in the Navigator review.
+
+probe: present qf-studio/pilot func[[:space:]]modelSubprocessEnvFor\(
+probe: present qf-studio/pilot BillingModeUnset[[:space:]]+BillingMode
+probe: present qf-studio/pilot effortClassifier\.Classify\(context\.Background\(\)
+probe: absent qf-studio/pilot func[[:space:]]SetProcessBillingMode\(
+
+## Scope
+
+- Process-wide default: add SetProcessBillingMode(mode BillingMode) and processBillingMode() in `internal/executor/billing_mode.go`, guarded by a mutex, default BillingModeUnset. NewBillingResolver records cfg.EffectiveMode() there, and the Runner's billing setup calls it once at construction, so the daemon's configured mode is known to every spawn site without threading a credential.
+- modelSubprocessEnvFor: when the ctx carries no credential, use processBillingMode() as the mode in force: unset → plain scrub (as today); subscription → strip the two credential names, append nothing; api_key → strip the two names and append nothing (a bare ctx in api_key mode is still the GH-6032 sibling gap A; log one WARN "model subprocess spawned without a billing credential in api_key mode" with the caller's component, no behaviour change beyond the strip). A credential on the ctx wins over the process default as today.
+- Minors from the PR#6036 pre-PR review: the validation error text in `internal/config/config.go` (near line 1292) names the accepted states as subscription, api_key or empty; the comment at `internal/executor/model_env.go` near line 201 reads "the Anthropic credential variables an explicit billing mode owns"; TestModelSubprocessEnvFor_SubscriptionStripsInheritedKey in `internal/executor/billing_mode_test.go` loses its one-entry map loop.
+- No new config key. Tests must reset the process mode with t.Cleanup.
+
+Tests to add in a new file, plain text: internal/executor/billing_process_mode_test.go — named exactly: TestBillingMode_ExplicitSubscriptionStripsAtBareCtxSites (process mode subscription, ANTHROPIC_API_KEY in the env, drive ModelRouter.resolveComplexity with a fake CLI and assert the effort classifier's recorded env has no ANTHROPIC_API_KEY and no ANTHROPIC_AUTH_TOKEN), TestBillingMode_UnsetProcessModeBareCtxPassesThrough (process mode unset, same drive, the key is present), TestBillingMode_APIKeyProcessModeBareCtxStripsAndWarns (process mode api_key, bare ctx, key stripped, WARN logged once), TestBillingMode_CtxCredentialWinsOverProcessMode (process mode subscription, ctx credential api_key with a key, the resolved key is present and the inherited one is not).
+
+## Acceptance
+
+- [ ] `go test -race ./internal/executor/ -run TestBillingMode_` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/executor/ -run TestModelSubprocessEnvFor` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/config/ -run TestConfig_Validate_Billing` passes; paste the output into the PR body.
+- [ ] make modelSubprocessEnvFor ignore the process mode when the ctx has no credential -> TestBillingMode_ExplicitSubscriptionStripsAtBareCtxSites fails
+- [ ] make the process mode win over a credential on the ctx -> TestBillingMode_CtxCredentialWinsOverProcessMode fails
+- [ ] drop the WARN in api_key mode with a bare ctx -> TestBillingMode_APIKeyProcessModeBareCtxStripsAndWarns fails
+- [ ] Do not re-run make build, make test or make lint as evidence: the daemon's quality gates already run them on this repo.
+
+## Out of scope
+
+Threading a credential through the classifier and planner call paths (that is the real fix for gap A and belongs to the TASK-631 A2 runtime switch), any change to the unset-mode passthrough, attribution, the console, or key_source.
 
 ## Refs
 
