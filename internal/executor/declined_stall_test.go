@@ -1,9 +1,15 @@
 package executor
 
 import (
+	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 const declineReasonForTest = "the issue body names a file that does not exist on main"
@@ -83,8 +89,10 @@ func TestDispatcher_DeclinedRunStallsWithoutRepick(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	// SourceAdapter left empty so surfaceStalledIssue skips the gh CLI.
-	task := &Task{ID: "GH-6033", ProjectPath: "/project-gh-6033-stall"}
+	// A non-GitHub SourceAdapter makes surfaceStalledIssue return before the
+	// gh CLI (an empty adapter does not); the fake gh proves it is never run.
+	logFile := setupFakeGhCLI(t)
+	task := &Task{ID: "GH-6033", ProjectPath: t.TempDir(), SourceAdapter: "linear"}
 	seedNoProgressRow(t, store, task, 0, ExecStatusDeclined, declinedErrorPrefix+declineReasonForTest)
 	dispatcher := NewDispatcher(store, NewRunner(), nil)
 
@@ -103,6 +111,11 @@ func TestDispatcher_DeclinedRunStallsWithoutRepick(t *testing.T) {
 	}
 	if want := declinedStalledReasonPrefix + declineReasonForTest; claimed.Error != want {
 		t.Errorf("stall reason = %q, want %q", claimed.Error, want)
+	}
+	// GH-6042 item 5 mutation pin: with an empty SourceAdapter the stall
+	// reaches the gh path, so this fails.
+	if _, err := os.ReadFile(logFile); err == nil {
+		t.Error("a non-GitHub SourceAdapter must not invoke the gh CLI")
 	}
 }
 
@@ -123,24 +136,170 @@ func TestDispatcher_DeclinedWithoutReasonUsesGenericCap(t *testing.T) {
 	}
 }
 
-// TestDispatcher_StallCommentCarriesDeclineReason: the posted comment quotes
-// the decline reason verbatim and tells the operator how to re-arm.
+// TestDispatcher_StallCommentCarriesDeclineReason: the comment surfaceStalledIssue
+// actually posts through the gh CLI quotes the decline reason verbatim and
+// tells the operator how to re-arm. GH-6042 item 4 mutation pin: it reads the
+// posted `gh issue comment` argv, so dropping the reason at the real sink fails it.
 func TestDispatcher_StallCommentCarriesDeclineReason(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	task := &Task{ID: "GH-6033", ProjectPath: "/project-gh-6033-comment"}
+	logFile := setupFakeGhCLI(t)
+	stubFetchIssueState(t, func(_ context.Context, _ *Runner, _ *Task, _ string) (IssueState, error) {
+		return IssueState{Closed: false}, nil
+	})
+
+	task := &Task{ID: "GH-6033", ProjectPath: t.TempDir(), SourceAdapter: "github"}
 	seedNoProgressRow(t, store, task, 0, ExecStatusDeclined, declinedErrorPrefix+declineReasonForTest)
 	dispatcher := NewDispatcher(store, NewRunner(), nil)
 	if execID, err := dispatcher.beginWithGenerationRetry(task, ExecStatusQueued); err != nil || execID != "" {
 		t.Fatalf("pick must stall, got execID=%q err=%v", execID, err)
 	}
-	_, claimed := latestClaimStatus(t, store, task)
 
-	want := "Pilot declined this issue after one run: " + declineReasonForTest +
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("read gh CLI log: %v", err)
+	}
+	want := "issue comment 6033 --body Pilot declined this issue after one run: " + declineReasonForTest +
 		". Rescope the issue body or close it; re-add the `pilot` label to re-arm."
-	if got := stalledIssueComment(claimed.Error, 6033); got != want {
-		t.Errorf("comment = %q, want %q", got, want)
+	var got string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "issue comment ") {
+			got = line
+		}
+	}
+	if got != want {
+		t.Errorf("posted gh call = %q, want %q", got, want)
+	}
+}
+
+// TestDispatcher_DeclineStallJudgesClaimedRow: the decline check reads the row
+// the claim ledger points at, the one escalateStalledTask would stall, not the
+// newest row for the task. GH-6042 item 1 mutation pin: with the newest
+// (unclaimed, declined) row judged instead, the claimed failed row is stalled.
+func TestDispatcher_DeclineStallJudgesClaimedRow(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-6033", ProjectPath: "/project-gh-6033-claimed", SourceAdapter: "linear"}
+	claimedID := seedNoProgressRow(t, store, task, 0, ExecStatusFailed, "transient: connection reset")
+	newer := &memory.Execution{
+		ID:          uuid.New().String(),
+		TaskID:      task.ID,
+		ProjectPath: task.ProjectPath,
+		Status:      string(ExecStatusDeclined),
+		CreatedAt:   time.Now().Add(time.Hour),
+	}
+	if err := store.SaveExecution(newer); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if err := store.UpdateExecutionStatus(newer.ID, string(ExecStatusDeclined), declinedErrorPrefix+declineReasonForTest); err != nil {
+		t.Fatalf("UpdateExecutionStatus: %v", err)
+	}
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+
+	_, _ = dispatcher.beginWithGenerationRetry(task, ExecStatusQueued)
+
+	claimed, err := store.GetExecution(claimedID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if claimed.Status == string(ExecStatusStalled) || strings.HasPrefix(claimed.Error, declinedStalledReasonPrefix) {
+		t.Errorf("claimed non-declined row was stalled as a decline: status=%q error=%q", claimed.Status, claimed.Error)
+	}
+}
+
+// TestDispatcher_DeclineStallAlertMetadata: the task-failed alert escalateStalledTask
+// emits for a decline stall carries reason=declined_stalled and the decline
+// reason. GH-6042 item 6 mutation pin: dropping either key fails it.
+func TestDispatcher_DeclineStallAlertMetadata(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunner()
+	processor := &fakeAlertProcessor{}
+	runner.SetAlertProcessor(processor)
+
+	task := &Task{ID: "GH-6033", ProjectPath: "/project-gh-6033-alert", SourceAdapter: "linear"}
+	seedNoProgressRow(t, store, task, 0, ExecStatusDeclined, declinedErrorPrefix+declineReasonForTest)
+	dispatcher := NewDispatcher(store, runner, nil)
+	if execID, err := dispatcher.beginWithGenerationRetry(task, ExecStatusQueued); err != nil || execID != "" {
+		t.Fatalf("pick must stall, got execID=%q err=%v", execID, err)
+	}
+
+	if len(processor.events) != 1 {
+		t.Fatalf("want exactly 1 alert event, got %d: %+v", len(processor.events), processor.events)
+	}
+	ev := processor.events[0]
+	if ev.Type != AlertEventTypeTaskFailed {
+		t.Errorf("alert type = %q, want %q", ev.Type, AlertEventTypeTaskFailed)
+	}
+	if got := ev.Metadata["reason"]; got != "declined_stalled" {
+		t.Errorf("metadata reason = %q, want declined_stalled", got)
+	}
+	if got := ev.Metadata["decline_reason"]; got != declineReasonForTest {
+		t.Errorf("metadata decline_reason = %q, want %q", got, declineReasonForTest)
+	}
+}
+
+// TestEpicCoverageGapDecline_DoesNotStallOnFirstRun: an epic coverage-gap decline
+// can be transient, so it carries no DeclinedReason and Classify leaves its
+// error text unprefixed (it keeps riding the generic cap). GH-6042 item 2
+// mutation pin: setting DeclinedReason on the result fails it.
+func TestEpicCoverageGapDecline_DoesNotStallOnFirstRun(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	gapErr := &SubIssueCoverageGapError{}
+	result := epicCoverageGapDeclinedResult("GH-6033", &EpicPlan{}, gapErr, time.Now())
+	if !result.Declined {
+		t.Fatal("coverage-gap result must be declined")
+	}
+
+	task := &Task{ID: "GH-6033", ProjectPath: "/project-gh-6033-gap"}
+	lifecycle := NewExecutionLifecycle(store)
+	execID, err := lifecycle.Begin(task, ExecStatusRunning, 0)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	outcome := lifecycle.Classify(result, nil)
+	if err := lifecycle.Persist(execID, outcome, result, time.Second); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+	exec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != string(ExecStatusDeclined) {
+		t.Fatalf("row status = %q, want declined", exec.Status)
+	}
+	if reason, ok := declinedStallReason(exec); ok {
+		t.Errorf("coverage-gap decline must not be a first-run stall, got reason %q", reason)
+	}
+	if strings.HasPrefix(exec.Error, declinedErrorPrefix) {
+		t.Errorf("row error %q must not carry %q", exec.Error, declinedErrorPrefix)
+	}
+}
+
+// TestTerminalOutcomeText_DeclinedPrefixNotDoubled: progress text for a decline
+// reads "declined: <reason>", not "declined: declined: <reason>". GH-6042 item 3
+// mutation pin: rendering outcome.Error unstripped fails it.
+func TestTerminalOutcomeText_DeclinedPrefixNotDoubled(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome FinishOutcome
+		want    string
+	}{
+		{"declined with persisted prefix", FinishOutcome{Status: ExecStatusDeclined, Error: declinedErrorPrefix + declineReasonForTest}, "declined: " + declineReasonForTest},
+		{"refusal-classed decline unchanged", FinishOutcome{Status: ExecStatusDeclined, Error: "refusal: policy: not allowed"}, "declined: refusal: policy: not allowed"},
+		{"other status unchanged", FinishOutcome{Status: ExecStatusFailed, Error: "declined: kept"}, "failed: declined: kept"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := terminalOutcomeText(tt.outcome, 200); got != tt.want {
+				t.Errorf("terminalOutcomeText = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
