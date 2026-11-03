@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-10-26T17:30:00+00:00",
+  "updated": "2026-11-03T16:28:26.152856+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -3679,6 +3679,22 @@
           "markers",
           "api",
           "context"
+        ]
+      },
+      "TASK-634": {
+        "path": ".agent/tasks/TASK-634-declined-run-repick-and-evidence-fail-false-fix-issue.md",
+        "title": "A declined run is re-picked, its reason is lost, and a FAIL in pasted evidence files a fix issue that green CI already refutes",
+        "status": "dispatched",
+        "concepts": [
+          "autopilot",
+          "review",
+          "autopilot-fix",
+          "dispatch"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6033",
+          "https://github.com/qf-studio/pilot/issues/6034",
+          "https://github.com/qf-studio/pilot/issues/6035"
         ]
       }
     },
@@ -10089,6 +10105,19 @@
         ],
         "created": "2026-11-03",
         "last_validated": "2026-11-03"
+      },
+      "declined-run-repicked-and-evidence-fail-files-false-fix-issue": {
+        "type": "learning",
+        "summary": "GH-6031 (2026-11-03): the runner's evidence paste ended FAIL 585s from a loaded -race run, the head/tail trim dropped the --- FAIL line, CI was green, the post-merge reviewer blocked by contract and filed an autopilot-fix issue; Pilot reproduced ok on main and DECLINED: with a full reason, but the dispatcher counts declined as no-progress, re-picked it, and stalled it with a generic comment \u2014 the decline reason lives only in daemon.log. Fix: TASK-634 A1/B1/C1.",
+        "file": ".agent/knowledge/memories/learnings/declined-run-repicked-and-evidence-fail-files-false-fix-issue.md",
+        "concepts": [
+          "autopilot",
+          "review",
+          "autopilot-fix",
+          "dispatch"
+        ],
+        "confidence": 0.95,
+        "created": "2026-11-03"
       }
     }
   },
@@ -15017,6 +15046,46 @@
       "from": "mem-281",
       "to": "TASK-633",
       "type": "learned-from"
+    },
+    {
+      "from": "declined-run-repicked-and-evidence-fail-files-false-fix-issue",
+      "to": "TASK-634",
+      "type": "learned-from"
+    },
+    {
+      "from": "declined-run-repicked-and-evidence-fail-files-false-fix-issue",
+      "to": "TASK-633",
+      "type": "learned-from"
+    },
+    {
+      "from": "declined-run-repicked-and-evidence-fail-files-false-fix-issue",
+      "to": "TASK-620",
+      "type": "learned-from"
+    },
+    {
+      "from": "TASK-634",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-634",
+      "to": "markers",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-634",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-634",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-634",
+      "to": "deployment",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -15474,7 +15543,9 @@
       "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal",
       "approval-cards-are-in-slack-a-tap-on-the-wrong-card-approves-another-pr",
       "post-merge-reviewer-loops-on-pr-body-only-defects",
-      "autopilot-hold-redrive-strips-pilot-needs-human-failed-issue-with-open-pr-re-picked"
+      "autopilot-hold-redrive-strips-pilot-needs-human-failed-issue-with-open-pr-re-picked",
+      "declined-run-repicked-and-evidence-fail-files-false-fix-issue",
+      "TASK-634"
     ],
     "aws": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -15779,7 +15850,8 @@
       "TASK-631",
       "TASK-633",
       "mem-280",
-      "TASK-632"
+      "TASK-632",
+      "TASK-634"
     ],
     "conversational-bot": [
       "mem-036",
@@ -16191,7 +16263,8 @@
       "TASK-585",
       "TASK-631",
       "TASK-633",
-      "TASK-632"
+      "TASK-632",
+      "TASK-634"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -16225,7 +16298,9 @@
       "parallel-console-legs-with-migrations-collide-on-the-number",
       "epic-children-on-shared-files-conflict-multi-part-leg-needs-no-decompose",
       "fix-issue-on-borrowed-branch-never-closes-and-blocked-by-fix-deadlocks",
-      "running-execution-cannot-be-cancelled-kill-the-claude-process-group-not-the-gate"
+      "running-execution-cannot-be-cancelled-kill-the-claude-process-group-not-the-gate",
+      "declined-run-repicked-and-evidence-fail-files-false-fix-issue",
+      "TASK-634"
     ],
     "dispatcher": [
       "alert-engine-counts-operator-cancels",
@@ -16854,7 +16929,8 @@
       "TASK-626",
       "TASK-627",
       "TASK-633",
-      "TASK-632"
+      "TASK-632",
+      "TASK-634"
     ],
     "memory": [
       "TASK-358",
@@ -17443,7 +17519,8 @@
       "TASK-630",
       "TASK-631",
       "TASK-633",
-      "TASK-632"
+      "TASK-632",
+      "TASK-634"
     ],
     "testing-quality": [
       "TASK-384",
@@ -17620,7 +17697,8 @@
       "TASK-627",
       "TASK-628",
       "TASK-631",
-      "TASK-633"
+      "TASK-633",
+      "TASK-634"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -17728,7 +17806,8 @@
       "TASK-585",
       "TASK-631",
       "TASK-633",
-      "TASK-632"
+      "TASK-632",
+      "TASK-634"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -17783,7 +17862,9 @@
       "pre-pr-reviewer-treats-unsatisfiable-issue-requirement-as-blocking",
       "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread",
       "approval-cards-are-in-slack-a-tap-on-the-wrong-card-approves-another-pr",
-      "post-merge-reviewer-loops-on-pr-body-only-defects"
+      "post-merge-reviewer-loops-on-pr-body-only-defects",
+      "declined-run-repicked-and-evidence-fail-files-false-fix-issue",
+      "TASK-634"
     ],
     "operations": [
       "dead-cdk-stack-carried-live-founder-box-backup-policy",
@@ -17911,7 +17992,9 @@
       "ci-post-merge-fix-issue-borrows-merged-branch-short-circuits",
       "executor-swallowed-rejected-push-as-success-branch-exists-is-not-pushed",
       "autopilot-selfclose-handoff-leaves-original-task-repickable",
-      "hand-file-the-ci-fix-issue-in-autopilot-fix-shape-when-the-size-guard-declines"
+      "hand-file-the-ci-fix-issue-in-autopilot-fix-shape-when-the-size-guard-declines",
+      "declined-run-repicked-and-evidence-fail-files-false-fix-issue",
+      "TASK-634"
     ],
     "ci_post_merge": [
       "ci-post-merge-fix-issue-borrows-merged-branch-short-circuits"
@@ -18177,11 +18260,11 @@
       "mem-281"
     ]
   },
-  "last_updated": "2026-11-03T16:10:18.311137+00:00",
+  "last_updated": "2026-11-03T16:28:33.626422+00:00",
   "stats": {
-    "total_nodes": 854,
-    "total_edges": 985,
-    "memory_count": 468
+    "total_nodes": 856,
+    "total_edges": 993,
+    "memory_count": 469
   },
   "metadata": {
     "last_updated": null
