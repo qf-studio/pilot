@@ -60,6 +60,13 @@ func newPostMergeReviewer(cfg *config.Config) (*executor.PostMergeReviewer, erro
 	r := executor.NewPostMergeReviewer(claudeCmd, model, pmr.Timeout)
 	r.SetMaxDiffChars(pmr.MaxDiffChars)
 	r.SetPasses(pmr.Passes)
+	// GH-6022: the review runs outside the dispatcher, so it resolves its own
+	// billing credential from the same executor.claude_code.billing block.
+	var billing *executor.BillingConfig
+	if cfg.Executor != nil && cfg.Executor.ClaudeCode != nil {
+		billing = cfg.Executor.ClaudeCode.Billing
+	}
+	r.SetBillingResolver(executor.NewBillingResolver(billing))
 	return r, nil
 }
 
