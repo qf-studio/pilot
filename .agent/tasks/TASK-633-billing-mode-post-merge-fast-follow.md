@@ -1,6 +1,6 @@
 # TASK-633: Billing mode fast-follow — PR#6017 post-merge review notes verified on main, two fix legs
 
-**Status**: 🚀 **F1 + F2 DISPATCHED 2026-11-03 → [pilot#6021](https://github.com/qf-studio/pilot/issues/6021) · [pilot#6022](https://github.com/qf-studio/pilot/issues/6022)** (`pilot` + `no-decompose`). Parent: TASK-631 A1 → pilot#6016 → PR#6017 merged 12:14Z, Opus post-merge APPROVE-WITH-NOTES (9 minors, 8 confirmed + 2 new by navigator-research).
+**Status**: 🚀 **F1 MERGED 2026-11-03 13:29Z → [PR#6024](https://github.com/qf-studio/pilot/pull/6024)** (715/−11, 6 files; pre-PR shadow APPROVE-w-notes: sweep zeroes a key in the queued→running gap before the worker takes it (re-resolve covers it; false outage only if that fails) · Transition-failure path leaks the stash · discard after a failed DeleteExecution · two test-depth notes). **F2 [pilot#6022](https://github.com/qf-studio/pilot/issues/6022) in progress.** **F3 [pilot#6026](https://github.com/qf-studio/pilot/issues/6026) dispatched 13:5xZ** (sweep keeps queued **or** running rows, drop on Transition failure, retry tests assert the real subprocess env). Post-merge Opus review of PR#6024 still pending; new notes → F4 only if real. Parent: TASK-631 A1 → PR#6017.
 **Created**: 2026-11-03
 **Assignee**: Pilot
 
@@ -216,10 +216,59 @@ Worker failure state, outage row class, credential sweep, subtask and retry attr
 
 - PR#6017 post-merge review comment (nine minors); GH-6016; Navigator TASK-633 in this repo
 
+### LEG F3 — repo: qf-studio/pilot — title: fix(executor): billing credential stash — keep the key while the row is queued or running, drop it when the move to running fails, assert the real subprocess env in the retry tests
+
+## Context
+
+Pre-PR review notes on PR#6024 (GH-6021, billing-mode fast-follow F1), verified on main after the merge. Two state gaps and two test-depth gaps; none blocks.
+
+- Sweep race (`internal/executor/billing_admission.go` near line 267): sweepBillingCredentials keeps a stashed key only while its execution row is queued. The worker moves the row to running with lifecycle.Transition (`internal/executor/dispatcher.go` near line 3983), then runs the merged-PR network check (near line 4000), and only then takes the key with billingCredentialForRun (near line 4049). The sweep runs on the stale-recovery loop every 5 minutes (`internal/executor/dispatcher.go` near line 658). A tick inside that gap zeroes a key that admission already resolved. billingCredentialForRun then resolves again (fallback near line 232 of the admission file, Resolve on context.Background); if that second resolve fails, the run fails closed although admission succeeded, and the api_key_command runs twice per task in the race.
+- Transition-failure leak (`internal/executor/dispatcher.go` near lines 3983-3986): when the move to running fails the worker logs and runs continue without dropBillingCredential. The row stays queued, so the sweep keeps the key too. The stash leaks until Stop.
+- Retry tests (`internal/executor/billing_fastfollow_test.go` near line 463): both retry-ctx tests read BillingCredentialFromContext on the ctx inside a fake backend. They do not assert the env that modelSubprocessEnvFor builds for the subprocess, so a regression between ctx and env would pass.
+- Skip-path test (`internal/executor/billing_fastfollow_test.go` near line 339): TestBillingCredential_WorkerSkipPathsDiscard covers the merged-PR short-circuit and the terminal-success ledger guard only; the base-presence park and the supersede paths that F1 also changed are untested.
+- Not a defect, decision recorded: discardBillingCredential after a failed DeleteExecution in stale recovery (near lines 1077 and 1096) is kept. A key must not outlive the decision to drop the row; a later pickup re-resolves through the fallback.
+
+probe: present qf-studio/pilot func[[:space:]]\(d[[:space:]]\*Dispatcher\)[[:space:]]sweepBillingCredentials\(
+probe: present qf-studio/pilot func[[:space:]]\(w[[:space:]]\*ProjectWorker\)[[:space:]]dropBillingCredential\(
+probe: present qf-studio/pilot Status[[:space:]]==[[:space:]]string\(ExecStatusQueued\)
+probe: absent qf-studio/pilot func[[:space:]]+billingStashRowLive\(
+
+## Scope
+
+- Sweep predicate: a new helper billingStashRowLive(status string) bool in `internal/executor/billing_admission.go` returns true for queued and running. sweepBillingCredentials keeps an entry when the row exists and billingStashRowLive is true, and discards it when the row is missing or in any other status. A row the worker is between Transition and the key take is running, so its key survives the tick; a row whose worker already took the key has no stash entry, so nothing changes there.
+- Transition failure: in the worker loop, when lifecycle.Transition to running returns an error, call dropBillingCredential for the row before continue.
+- Retry tests: both retry-ctx tests build the subprocess env with modelSubprocessEnvFor over the retry ctx inside the recording backend and assert that env carries ANTHROPIC_API_KEY equal to the credential's key and that the base env's inherited key is absent.
+- Skip-path test: extend the worker skip-path coverage so a task parked by the base-presence hold and a task superseded both end with an empty stash.
+
+Tests to add, named exactly: TestBillingCredential_SweepKeepsRunningRowUntilTaken, TestBillingCredential_SweepDropsTerminalAndMissingRows, TestBillingCredential_TransitionFailureDrops, TestBillingRetryCtx_SubprocessEnvCarriesKey, TestBillingCredential_WorkerSkipPathsDiscard_ParkAndSupersede.
+
+## Acceptance
+
+- [ ] `go test -race ./internal/executor/ -run TestBillingCredential` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/executor/ -run TestBillingRetryCtx` passes; paste the output into the PR body.
+- [ ] A test stashes a credential, moves the row to running without taking the key, runs one sweep and asserts the stash still holds the credential unzeroed; then takes the key and asserts the stash is empty.
+- [ ] A test stashes credentials for a failed row and for a deleted row, runs one sweep and asserts both entries are gone and zeroed.
+- [ ] A test makes the queued-to-running Transition fail and asserts the stash is empty after the worker iteration.
+- [ ] A test asserts the subprocess env built from the smart-retry ctx and from the gate-feedback retry ctx each carry the credential's key once and no inherited key.
+- [ ] A test asserts the base-presence park path and the supersede path each leave an empty stash.
+- [ ] keep the sweep predicate at queued only -> TestBillingCredential_SweepKeepsRunningRowUntilTaken fails
+- [ ] remove the drop on the Transition failure path -> TestBillingCredential_TransitionFailureDrops fails
+- [ ] make billingStashRowLive return true for every status -> TestBillingCredential_SweepDropsTerminalAndMissingRows fails
+- [ ] Do not re-run make build, make test or make lint as evidence: the daemon's quality gates already run them on this repo.
+
+## Out of scope
+
+Paths outside the dispatcher (OpenCode/Qwen, reviewer, bootstrap, alerts: GH-6022). Reordering the worker so the key is taken before the Transition. Any change to discard-after-failed-delete. Any change to key_source or the migrations.
+
+## Refs
+
+- PR#6024 pre-PR review notes; GH-6021; GH-6016 / PR#6017; Navigator TASK-633 in this repo
+
 ## Refs
 
 - F1 → https://github.com/qf-studio/pilot/issues/6021
 - F2 → https://github.com/qf-studio/pilot/issues/6022
+- F3 → https://github.com/qf-studio/pilot/issues/6026
 
 - Parent: TASK-631 · [pilot#6016](https://github.com/qf-studio/pilot/issues/6016) → PR#6017 (merged 2026-11-03 12:14Z)
 - Post-merge review: Opus APPROVE-WITH-NOTES on PR#6017, 12:18Z
