@@ -200,20 +200,16 @@ func TestModelSubprocessEnvFor_SubscriptionStripsInheritedKey(t *testing.T) {
 		"TELEGRAM_BOT_TOKEN=test-telegram-bot-token",
 	}
 	ctx := WithBillingCredential(context.Background(), &BillingCredential{mode: BillingModeSubscription})
-	for name, c := range map[string]context.Context{"subscription credential": ctx} {
-		t.Run(name, func(t *testing.T) {
-			env := modelSubprocessEnvFor(c, base)
-			for _, banned := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "TELEGRAM_BOT_TOKEN"} {
-				if v, ok := billingEnvValue(env, banned); ok {
-					t.Errorf("%s=%q reached the subprocess env", banned, v)
-				}
-			}
-			for name, want := range map[string]string{"ANTHROPIC_BASE_URL": testBillingBaseURL, "ANTHROPIC_MODEL": "claude-test-model", "PATH": "/usr/bin"} {
-				if got, _ := billingEnvValue(env, name); got != want {
-					t.Errorf("%s = %q, want %q", name, got, want)
-				}
-			}
-		})
+	env := modelSubprocessEnvFor(ctx, base)
+	for _, banned := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "TELEGRAM_BOT_TOKEN"} {
+		if v, ok := billingEnvValue(env, banned); ok {
+			t.Errorf("%s=%q reached the subprocess env", banned, v)
+		}
+	}
+	for name, want := range map[string]string{"ANTHROPIC_BASE_URL": testBillingBaseURL, "ANTHROPIC_MODEL": "claude-test-model", "PATH": "/usr/bin"} {
+		if got, _ := billingEnvValue(env, name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
 	}
 }
 

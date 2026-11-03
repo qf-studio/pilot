@@ -1289,7 +1289,7 @@ func validateBilling(b *executor.BillingConfig) error {
 		return nil
 	case executor.BillingModeAPIKey:
 	default:
-		return fmt.Errorf("invalid executor.claude_code.billing.mode: %q (must be subscription or api_key)", b.Mode)
+		return fmt.Errorf("invalid executor.claude_code.billing.mode: %q (must be subscription, api_key or empty)", b.Mode)
 	}
 	switch {
 	case b.APIKeyCommand != "" && b.APIKeyEnv != "":
