@@ -287,3 +287,65 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestExecutionUsage_RowJSONCarriesBillingMode pins the GH-6016 wire field:
+// every usage row, execution or chat turn, carries the literal key
+// "billingMode", with unknown for rows stamped before the column existed.
+func TestExecutionUsage_RowJSONCarriesBillingMode(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	for i, mode := range []string{"api_key", "subscription", ""} {
+		done := base.Add(time.Duration(i+1) * time.Minute)
+		if err := store.SaveExecution(&memory.Execution{
+			ID: "exec-" + mode, TaskID: "GH-6016", ProjectPath: "/p", Status: "completed",
+			KeySource: "own", BillingMode: mode, CreatedAt: base, CompletedAt: &done,
+		}); err != nil {
+			t.Fatalf("SaveExecution: %v", err)
+		}
+	}
+	if err := store.SaveChatTurn(&memory.ChatTurn{
+		ID: "chat-1", ConversationID: "web:c", ProjectPath: "/p", KeySource: "own", BillingMode: "api_key",
+		Status: memory.ChatTurnCompleted, StartedAt: base, CompletedAt: base.Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("SaveChatTurn: %v", err)
+	}
+
+	s := newTestServerWithDashboard(store)
+	req := httpTestRequest(t, http.MethodGet, "/api/v1/executions/usage?since="+base.Add(-time.Minute).Format(time.RFC3339Nano), nil)
+	w := newTestResponseRecorder()
+	s.handleExecutionsUsage(w, req)
+	if w.status != http.StatusOK {
+		t.Fatalf("status = %d", w.status)
+	}
+	var body struct {
+		Executions []map[string]any `json:"executions"`
+	}
+	if err := json.Unmarshal(w.body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := map[string]string{
+		"exec-api_key": "api_key", "exec-subscription": "subscription", "exec-": "unknown", "chat-1": "api_key",
+	}
+	if len(body.Executions) != len(want) {
+		t.Fatalf("got %d rows, want %d: %v", len(body.Executions), len(want), body.Executions)
+	}
+	for _, row := range body.Executions {
+		id, _ := row["executionId"].(string)
+		got, present := row["billingMode"]
+		if !present {
+			t.Errorf("row %s has no billingMode key: %v", id, row)
+			continue
+		}
+		if got != want[id] {
+			t.Errorf("row %s billingMode = %v, want %q", id, got, want[id])
+		}
+		if row["keySource"] != "own" {
+			t.Errorf("row %s keySource = %v, want own (unchanged)", id, row["keySource"])
+		}
+	}
+}

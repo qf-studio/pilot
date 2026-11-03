@@ -4621,6 +4621,52 @@ func TestHandleUsageLimitPause(t *testing.T) {
 	}
 }
 
+// TestBillingKeyUnavailable covers GH-6016: the dispatcher's
+// billing_key_unavailable event fires the default warning rule, and is not
+// silently dropped when the default rule set is in force.
+func TestBillingKeyUnavailable(t *testing.T) {
+	var rule AlertRule
+	for _, r := range DefaultConfig().Rules {
+		if r.Type == AlertTypeBillingKeyUnavailable {
+			rule = r
+		}
+	}
+	if rule.Name == "" || !rule.Enabled || rule.Severity != SeverityWarning {
+		t.Fatalf("default rule = %+v, want an enabled warning billing_key_unavailable rule", rule)
+	}
+	rule.Channels = []string{"test-channel"}
+	config := &AlertConfig{
+		Enabled:  true,
+		Defaults: DefaultConfig().Defaults,
+		Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+		Rules:    []AlertRule{rule},
+	}
+	mockCh := newMockChannel("test-channel", "webhook")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	engine.ProcessEvent(Event{
+		Type:      EventTypeBillingKeyUnavailable,
+		TaskID:    "GH-6016",
+		Error:     "billing_key_unavailable: api_key_command exited with code 1",
+		Timestamp: time.Now(),
+	})
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
+	got := mockCh.getAlerts()
+	if len(got) != 1 || got[0].Type != AlertTypeBillingKeyUnavailable || got[0].Severity != SeverityWarning {
+		t.Fatalf("alerts = %+v, want one warning billing_key_unavailable", got)
+	}
+	for _, want := range []string{"GH-6016", "exited with code 1"} {
+		if !strings.Contains(got[0].Message, want) {
+			t.Errorf("message %q missing %q", got[0].Message, want)
+		}
+	}
+}
+
 // TestHandleDailyTicketCapHit covers GH-5808: the executor's daily cap gate
 // emits daily_ticket_cap_hit once per org-local day. The rule cooldown is per
 // rule, so the day rides in the message: the same day dedupes, the next day

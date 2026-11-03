@@ -1312,6 +1312,10 @@ type ClaudeCodeConfig struct {
 	// finalized as a success with the parsed result. Zero means the default
 	// (DefaultResultExitGrace); a negative value disables the kill.
 	ResultExitGrace time.Duration `yaml:"result_exit_grace,omitempty"`
+
+	// Billing chooses how model calls are paid for: the Claude subscription
+	// (default) or an Anthropic API key resolved per execution (GH-6016).
+	Billing *BillingConfig `yaml:"billing,omitempty"`
 }
 
 // DefaultResultExitGrace is the default ClaudeCodeConfig.ResultExitGrace (GH-5530).

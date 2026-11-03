@@ -296,7 +296,7 @@ func TestPrometheusExporter_TokenCostExecutionMetrics(t *testing.T) {
 	m := autopilot.NewMetrics()
 	m.RecordTokens("claude-sonnet-4-5", "input", 1000)
 	m.RecordTokens("claude-sonnet-4-5", "output", 250)
-	m.RecordCost("claude-sonnet-4-5", "platform", 0.005)
+	m.RecordCost("claude-sonnet-4-5", "platform", "subscription", 0.005)
 	m.RecordExecution("claude-sonnet-4-5", "success")
 	m.RecordExecution("claude-sonnet-4-5", "failed")
 
@@ -312,9 +312,9 @@ func TestPrometheusExporter_TokenCostExecutionMetrics(t *testing.T) {
 		"# TYPE pilot_tokens_consumed_total counter",
 		`pilot_tokens_consumed_total{model="claude-sonnet-4-5",direction="input"} 1000`,
 		`pilot_tokens_consumed_total{model="claude-sonnet-4-5",direction="output"} 250`,
-		"# HELP pilot_execution_cost_usd_total Total execution cost in USD by model and Anthropic key source (platform, own, unknown)",
+		"# HELP pilot_execution_cost_usd_total Total execution cost in USD by model, Anthropic key source (platform, own, unknown) and billing mode (subscription, api_key, unknown)",
 		"# TYPE pilot_execution_cost_usd_total counter",
-		`pilot_execution_cost_usd_total{model="claude-sonnet-4-5",key_source="platform"} 0.005`,
+		`pilot_execution_cost_usd_total{model="claude-sonnet-4-5",key_source="platform",billing_mode="subscription"} 0.005`,
 		"# HELP pilot_executions_total Total executions by model and result",
 		"# TYPE pilot_executions_total counter",
 		`pilot_executions_total{model="claude-sonnet-4-5",result="success"} 1`,

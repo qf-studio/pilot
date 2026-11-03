@@ -77,6 +77,9 @@ type ChatTurnResult struct {
 	ReportedCostUSD *float64
 	Model           string
 	Duration        time.Duration
+	// BillingMode is the mode the turn ran in: subscription, api_key or
+	// unknown (GH-6016).
+	BillingMode string
 }
 
 // ExecuteChatTurn runs one read-only chat turn through the backend.
@@ -85,6 +88,19 @@ type ChatTurnResult struct {
 // branch or worktree, no quality gates, no PR. It therefore passes a nil task
 // to backendExecute, for which the worktree-isolation guard never fires.
 func (r *Runner) ExecuteChatTurn(ctx context.Context, turn ChatTurn, onProgress func(message string)) (ChatTurnResult, error) {
+	// GH-6016: one credential resolution per chat turn, before the spawn. An
+	// api_key mode key that does not resolve fails the turn closed.
+	ctx, cred, release, err := r.billingContext(ctx)
+	if err != nil {
+		return ChatTurnResult{BillingMode: string(BillingModeAPIKey)}, err
+	}
+	defer release()
+	result, err := r.executeChatTurn(ctx, turn, onProgress)
+	result.BillingMode = cred.MemoryMode()
+	return result, err
+}
+
+func (r *Runner) executeChatTurn(ctx context.Context, turn ChatTurn, onProgress func(message string)) (ChatTurnResult, error) {
 	if r.backend == nil {
 		return ChatTurnResult{}, errors.New("chat turn: no backend configured")
 	}

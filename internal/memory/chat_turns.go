@@ -29,7 +29,9 @@ type ChatTurn struct {
 	// ReportedCostUSD is the CLI-reported cost; nil when none was reported.
 	ReportedCostUSD *float64
 	// KeySource is platform, own or unknown.
-	KeySource   string
+	KeySource string
+	// BillingMode is subscription, api_key or unknown (GH-6016).
+	BillingMode string
 	Status      string
 	Error       string
 	DurationMs  int64
@@ -52,6 +54,7 @@ type ChatKeySourceTotals struct {
 // SaveChatTurn inserts one chat turn row.
 func (s *Store) SaveChatTurn(t *ChatTurn) error {
 	t.KeySource = NormalizeKeySource(t.KeySource)
+	t.BillingMode = NormalizeBillingMode(t.BillingMode)
 	if t.Status == "" {
 		t.Status = ChatTurnCompleted
 	}
@@ -62,12 +65,12 @@ func (s *Store) SaveChatTurn(t *ChatTurn) error {
 	_, err := s.db.Exec(`INSERT INTO chat_turns (
 			id, conversation_id, project_path, model,
 			tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
-			estimated_cost_usd, reported_cost_usd, key_source, status, error,
+			estimated_cost_usd, reported_cost_usd, key_source, billing_mode, status, error,
 			duration_ms, tool_calls, partial, started_at, completed_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.ConversationID, t.ProjectPath, t.Model,
 		t.TokensInput, t.TokensOutput, t.TokensCacheRead, t.TokensCacheWrite,
-		t.EstimatedCostUSD, reported, t.KeySource, t.Status, t.Error,
+		t.EstimatedCostUSD, reported, t.KeySource, t.BillingMode, t.Status, t.Error,
 		t.DurationMs, t.ToolCalls, t.Partial, t.StartedAt.UTC(), t.CompletedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("failed to save chat turn: %w", err)
@@ -84,7 +87,7 @@ func (s *Store) ListChatTurnsSince(since time.Time, projectPath string, limit in
 	}
 	q := `SELECT id, conversation_id, project_path, model,
 			tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
-			estimated_cost_usd, reported_cost_usd, key_source, status, error,
+			estimated_cost_usd, reported_cost_usd, key_source, COALESCE(NULLIF(billing_mode, ''), 'unknown'), status, error,
 			duration_ms, tool_calls, partial, started_at, completed_at
 		FROM chat_turns WHERE completed_at >= ?`
 	args := []interface{}{since.UTC()}
@@ -109,7 +112,7 @@ func (s *Store) ListChatTurnsSince(since time.Time, projectPath string, limit in
 		)
 		if err := rows.Scan(&t.ID, &t.ConversationID, &t.ProjectPath, &t.Model,
 			&t.TokensInput, &t.TokensOutput, &t.TokensCacheRead, &t.TokensCacheWrite,
-			&t.EstimatedCostUSD, &reported, &t.KeySource, &t.Status, &t.Error,
+			&t.EstimatedCostUSD, &reported, &t.KeySource, &t.BillingMode, &t.Status, &t.Error,
 			&t.DurationMs, &t.ToolCalls, &t.Partial, &t.StartedAt, &t.CompletedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan chat turn: %w", err)
 		}

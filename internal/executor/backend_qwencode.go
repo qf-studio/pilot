@@ -200,7 +200,7 @@ func (b *QwenCodeBackend) IsAvailable() bool {
 	// Execute() spawn below — no functional need (no prompt/tool use), but
 	// it keeps every qwen invocation in this file routed the same way.
 	cmd := exec.Command(path, "--version")
-	cmd.Env = modelSubprocessEnv(os.Environ())
+	cmd.Env = modelSubprocessEnvFor(context.Background(), os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		b.log.Warn("qwen-code: could not determine version", "error", err)
@@ -254,7 +254,7 @@ func (b *QwenCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Ba
 	// (Bash-capable, --yolo == --dangerously-skip-permissions) as Claude Code
 	// and OpenCode, so it gets the same ambient-env scrub (GH-5275/GH-5278)
 	// rather than staying a silent, undocumented exception.
-	cmd.Env = modelSubprocessEnv(os.Environ())
+	cmd.Env = modelSubprocessEnvFor(ctx, os.Environ())
 
 	// GH-4503: same fix as the Claude Code backend — give the subprocess its
 	// own process group so every kill path below reaches any children it

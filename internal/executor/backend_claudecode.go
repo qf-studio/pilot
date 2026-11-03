@@ -654,7 +654,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	// before layering the explicit appends below, so this model-controlled
 	// subprocess never inherits adapter secrets (TELEGRAM_BOT_TOKEN,
 	// SLACK_BOT_TOKEN, LINEAR_API_KEY, AWS_SECRET_*, ...).
-	env := append(modelSubprocessEnv(os.Environ()), "PILOT_EXECUTOR=1")
+	env := append(modelSubprocessEnvFor(ctx, os.Environ()), "PILOT_EXECUTOR=1")
 	// GH-2371: route the CC subprocess to the configured provider when set.
 	// Values are appended after os.Environ() so they win on Node's last-write
 	// lookup if the user's shell also exports ANTHROPIC_*.

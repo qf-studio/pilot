@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"log/slog"
 	"strings"
 	"sync"
@@ -195,6 +196,33 @@ func modelSubprocessEnv(base []string) []string {
 	}
 
 	return out
+}
+
+// modelEnvBillingCredentialNames are the Anthropic credential variables the
+// billing mode owns (GH-6016). Whatever the daemon environment carries for
+// them never reaches a model subprocess; the per-execution credential does.
+var modelEnvBillingCredentialNames = map[string]bool{
+	"ANTHROPIC_API_KEY":    true,
+	"ANTHROPIC_AUTH_TOKEN": true,
+}
+
+// modelSubprocessEnvFor is modelSubprocessEnv for one execution (GH-6016): it
+// runs the same scrub, removes ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN
+// inherited from the daemon environment, then appends the entries of the
+// BillingCredential on ctx. So the mode in force, not the daemon's ambient
+// environment, decides which credential the claude CLI bills. Other
+// ANTHROPIC_* names (ANTHROPIC_BASE_URL, ANTHROPIC_MODEL, ...) are untouched;
+// callers append config-driven values such as api_auth_token after this.
+func modelSubprocessEnvFor(ctx context.Context, base []string) []string {
+	scrubbed := modelSubprocessEnv(base)
+	out := make([]string, 0, len(scrubbed)+1)
+	for _, kv := range scrubbed {
+		if name, _, ok := strings.Cut(kv, "="); ok && modelEnvBillingCredentialNames[name] {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, BillingCredentialFromContext(ctx).Env()...)
 }
 
 // ModelSubprocessEnvForTest exposes modelSubprocessEnv to tests in other

@@ -274,6 +274,7 @@ func (h *Handler) recordChatTurn(contextID, projectPath string, startedAt time.T
 		EstimatedCostUSD: result.EstimatedCostUSD,
 		ReportedCostUSD:  result.ReportedCostUSD,
 		KeySource:        executor.KeySourceFromEnv(),
+		BillingMode:      result.BillingMode, // GH-6016
 		Status:           memory.ChatTurnCompleted,
 		DurationMs:       duration.Milliseconds(),
 		ToolCalls:        result.ToolCalls,

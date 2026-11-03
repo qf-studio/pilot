@@ -4913,9 +4913,10 @@ type fakeMetricsRecorder struct {
 		n                int64
 	}
 	costCalls []struct {
-		model     string
-		keySource string
-		costUSD   float64
+		model       string
+		keySource   string
+		billingMode string
+		costUSD     float64
 	}
 	execCalls     []struct{ model, result string }
 	durationCalls []time.Duration
@@ -4930,14 +4931,15 @@ func (f *fakeMetricsRecorder) RecordTokens(model, direction string, n int64) {
 	}{model, direction, n})
 }
 
-func (f *fakeMetricsRecorder) RecordCost(model, keySource string, costUSD float64) {
+func (f *fakeMetricsRecorder) RecordCost(model, keySource, billingMode string, costUSD float64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.costCalls = append(f.costCalls, struct {
-		model     string
-		keySource string
-		costUSD   float64
-	}{model, keySource, costUSD})
+		model       string
+		keySource   string
+		billingMode string
+		costUSD     float64
+	}{model, keySource, billingMode, costUSD})
 }
 
 func (f *fakeMetricsRecorder) RecordExecution(model, result string) {

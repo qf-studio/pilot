@@ -89,6 +89,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeDailyTicketCapHit: {"daily_ticket_cap_hit", true},
 		// Usage-limit admission pause (GH-5862)
 		AlertTypeUsageLimitPause: {"usage_limit_pause", true},
+		// Billing key unavailable (GH-6016)
+		AlertTypeBillingKeyUnavailable: {"billing_key_unavailable", true},
 		// Executor heartbeat timeout (GH-5498)
 		AlertTypeHeartbeatTimeout: {"heartbeat_timeout", true},
 		// Task timeout and watchdog kill (GH-5500)

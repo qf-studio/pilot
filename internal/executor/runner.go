@@ -814,6 +814,10 @@ type Task struct {
 	// here; pushBranchWithRetry may lease on exactly this SHA and no other.
 	// Never set for autopilot-fix continuations (FromPR > 0).
 	inheritedHeadSHA string
+	// billingMode is how this task's execution row is billed (GH-6016), set by
+	// the dispatcher from the resolved credential before ExecutionLifecycle.Begin
+	// stamps it. Empty reads back as unknown.
+	billingMode string
 	// SourceAdapter identifies the adapter that originated this task (GH-1471).
 	// Examples: "github", "linear", "jira", "gitlab", "azuredevops"
 	// When non-empty and not "github", epic sub-issue creation uses the SubIssueCreator
@@ -2490,6 +2494,11 @@ func (r *Runner) EmitProgress(taskID, phase string, progress int, message string
 // split into subtasks that run sequentially (GH-218). Only the final subtask
 // creates a PR, accumulating all changes from previous subtasks.
 func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, error) {
+	ctx, release, err := r.prepareBilling(ctx, task)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	return r.executeWithOptions(ctx, task, true)
 }
 
@@ -5751,7 +5760,7 @@ retrySucceeded:
 		if result.CacheReadInputTokens > 0 {
 			r.metricsRecorder.RecordTokens(model, "cache_read", result.CacheReadInputTokens)
 		}
-		r.metricsRecorder.RecordCost(model, KeySourceFromEnv(), result.EstimatedCostUSD)
+		r.metricsRecorder.RecordCost(model, KeySourceFromEnv(), task.billingMode, result.EstimatedCostUSD)
 		outcomeLabel := "success"
 		if !result.Success {
 			outcomeLabel = "failed"
@@ -9498,7 +9507,7 @@ func (r *Runner) getPostExecutionSummary(ctx context.Context, dir string) (*Post
 	cmd.Dir = dir
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.
-	cmd.Env = modelSubprocessEnv(os.Environ())
+	cmd.Env = modelSubprocessEnvFor(ctx, os.Environ())
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -9552,7 +9561,7 @@ func (r *Runner) getContractEvidence(ctx context.Context, dir string, fields []s
 	cmd.Dir = dir
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.
-	cmd.Env = modelSubprocessEnv(os.Environ())
+	cmd.Env = modelSubprocessEnvFor(ctx, os.Environ())
 
 	output, err := cmd.Output()
 	if err != nil {

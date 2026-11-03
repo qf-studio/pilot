@@ -117,6 +117,12 @@ const (
 	// alerts.EventTypeUsageLimitPause ("usage_limit_pause") byte-for-byte.
 	// Dispatcher.armUsageLimitPause emits it once per pause episode.
 	AlertEventTypeUsageLimitPause AlertEventType = "usage_limit_pause"
+
+	// AlertEventTypeBillingKeyUnavailable (GH-6016) mirrors
+	// alerts.EventTypeBillingKeyUnavailable ("billing_key_unavailable")
+	// byte-for-byte. Dispatcher.failBillingKeyUnavailable emits it once per
+	// outage, when the first resolver failure pauses admission.
+	AlertEventTypeBillingKeyUnavailable AlertEventType = "billing_key_unavailable"
 )
 
 // ReviewFixDeadManTrackerName is the alerts.DeadManTracker registration

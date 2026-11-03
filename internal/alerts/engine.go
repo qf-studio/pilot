@@ -231,6 +231,11 @@ const (
 	// none parsed) and resumes_at (RFC 3339).
 	EventTypeUsageLimitPause EventType = "usage_limit_pause"
 
+	// EventTypeBillingKeyUnavailable (GH-6016) mirrors
+	// executor.AlertEventTypeBillingKeyUnavailable byte-for-byte: billing.mode
+	// is api_key, the key did not resolve, and admission is paused.
+	EventTypeBillingKeyUnavailable EventType = "billing_key_unavailable"
+
 	// Heartbeat timeout events (GH-5498): fired by the executor's
 	// HeartbeatCallback (Runner.heartbeatTimeoutCallback) just before the
 	// Claude subprocess is killed for producing no stream events for longer
@@ -747,6 +752,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleDailyTicketCapHit(ctx, event)
 	case EventTypeUsageLimitPause:
 		e.handleUsageLimitPause(ctx, event)
+	case EventTypeBillingKeyUnavailable:
+		e.handleBillingKeyUnavailable(ctx, event)
 	case EventTypeHeartbeatTimeout:
 		e.handleHeartbeatTimeout(ctx, event)
 	case EventTypeTaskTimeout:
@@ -1231,6 +1238,29 @@ func (e *Engine) handleUsageLimitPause(ctx context.Context, event Event) {
 	}
 	if !matched {
 		e.logger.Warn("usage limit pause event has no matching rule — alert dropped silently",
+			slog.String("task_id", event.TaskID))
+	}
+}
+
+// handleBillingKeyUnavailable fires AlertTypeBillingKeyUnavailable rules when
+// the dispatcher fails an execution closed because billing.mode is api_key and
+// the key did not resolve (GH-6016). The emitter already gated on once-per-outage.
+func (e *Engine) handleBillingKeyUnavailable(ctx context.Context, event Event) {
+	matched := false
+	for _, rule := range e.config.Rules {
+		if rule.Type != AlertTypeBillingKeyUnavailable {
+			continue
+		}
+		matched = true
+		if rule.Enabled && e.shouldFire(rule) {
+			message := fmt.Sprintf("Billing API key unavailable (task %s): task admission paused until it resolves: %s",
+				event.TaskID, event.Error)
+			alert := e.createAlert(rule, event, message)
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+	if !matched {
+		e.logger.Warn("billing key unavailable event has no matching rule — alert dropped silently",
 			slog.String("task_id", event.TaskID))
 	}
 }

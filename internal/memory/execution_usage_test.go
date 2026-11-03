@@ -159,9 +159,9 @@ func TestLifetimeCounterBaselines_CostByKeySource(t *testing.T) {
 		t.Fatalf("GetLifetimeCounterBaselines: %v", err)
 	}
 	want := map[ModelKeySourceKey]float64{
-		{Model: "m1", KeySource: "platform"}: 3,
-		{Model: "m1", KeySource: "own"}:      4,
-		{Model: "m1", KeySource: "unknown"}:  8,
+		{Model: "m1", KeySource: "platform", BillingMode: "unknown"}: 3,
+		{Model: "m1", KeySource: "own", BillingMode: "unknown"}:      4,
+		{Model: "m1", KeySource: "unknown", BillingMode: "unknown"}:  8,
 	}
 	for k, w := range want {
 		if got := b.CostByModelKeySource[k]; got != w {

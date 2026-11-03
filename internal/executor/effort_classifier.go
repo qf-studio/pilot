@@ -113,7 +113,7 @@ func (c *EffortClassifier) defaultCmdRunner(ctx context.Context, args ...string)
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.
-	cmd.Env = modelSubprocessEnv(os.Environ())
+	cmd.Env = modelSubprocessEnvFor(ctx, os.Environ())
 	return cmd.Output()
 }
 

@@ -1258,6 +1258,55 @@ func TestLoad_UsageLimitPause(t *testing.T) {
 	}
 }
 
+func TestConfig_Validate_Billing(t *testing.T) {
+	tests := []struct {
+		name      string
+		billing   *executor.BillingConfig
+		errSubstr string
+	}{
+		{name: "nil is subscription"},
+		{name: "empty mode is subscription", billing: &executor.BillingConfig{}},
+		{name: "subscription", billing: &executor.BillingConfig{Mode: executor.BillingModeSubscription}},
+		{name: "api_key with command", billing: &executor.BillingConfig{Mode: executor.BillingModeAPIKey, APIKeyCommand: "pass show anthropic"}},
+		{name: "api_key with env", billing: &executor.BillingConfig{Mode: executor.BillingModeAPIKey, APIKeyEnv: "PILOT_BILLING_KEY"}},
+		{name: "api_key with neither", billing: &executor.BillingConfig{Mode: executor.BillingModeAPIKey}, errSubstr: "requires one of"},
+		{name: "api_key with both", billing: &executor.BillingConfig{Mode: executor.BillingModeAPIKey, APIKeyCommand: "x", APIKeyEnv: "Y"}, errSubstr: "exactly one"},
+		{name: "unknown mode", billing: &executor.BillingConfig{Mode: "token"}, errSubstr: "billing.mode"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Executor = &executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{Billing: tt.billing}}
+			err := cfg.Validate()
+			if tt.errSubstr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.errSubstr) {
+				t.Fatalf("err = %v, want substring %q", err, tt.errSubstr)
+			}
+		})
+	}
+}
+
+func TestLoad_Billing(t *testing.T) {
+	path := t.TempDir() + "/config.yaml"
+	body := "executor:\n  claude_code:\n    billing:\n      mode: api_key\n      api_key_command: \"pass show anthropic\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	b := cfg.Executor.ClaudeCode.Billing
+	if b == nil || b.Mode != executor.BillingModeAPIKey || b.APIKeyCommand != "pass show anthropic" || b.APIKeyEnv != "" {
+		t.Errorf("got %+v, want api_key / pass show anthropic", b)
+	}
+}
+
 func TestConfig_Validate_WeeklyBriefDay(t *testing.T) {
 	tests := []struct {
 		day     string

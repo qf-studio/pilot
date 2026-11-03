@@ -255,6 +255,15 @@ type Dispatcher struct {
 	usageLimitTimer    pauseTimer // pending resume
 	// clock is the usage-limit pause's time seam; nil means the real clock.
 	clock pauseClock
+
+	// Billing-key admission state (GH-6016); see billing_admission.go.
+	billingMu       sync.Mutex
+	billingHeld     bool
+	billingGen      uint64
+	billingTimer    pauseTimer
+	billingLastErr  error
+	billingCreds    map[string]*BillingCredential // execID -> credential awaiting its worker
+	billingResolver *BillingResolver              // test seam; nil builds one from config
 }
 
 // NewDispatcher creates a new task dispatcher.
@@ -693,6 +702,7 @@ func (d *Dispatcher) Stop() {
 	d.log.Info("Stopping dispatcher")
 	d.cancel()
 	d.stopUsageLimitPauseTimer()
+	d.stopBillingState()
 
 	// Stop all workers
 	d.mu.Lock()
@@ -2026,7 +2036,7 @@ func (d *Dispatcher) nextRetryGeneration(taskID, projectPath string) (generation
 // pickup case) or a dead owner whose task is already done and must not be
 // re-armed (GH-4350's no_op invariant). A genuine store error still
 // surfaces.
-func (d *Dispatcher) beginWithGenerationRetry(task *Task, initial Status) (string, error) {
+func (d *Dispatcher) beginClaimWithGenerationRetry(task *Task, initial Status) (string, error) {
 	lifecycle := NewExecutionLifecycle(d.store)
 	lifecycle.SetDailyCapGate(d.runner.DailyCapGate())
 	execID, err := lifecycle.Begin(task, initial)
@@ -2897,8 +2907,8 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 	// 0 forever.
 	parentExecID, err := d.beginWithGenerationRetry(parent, ExecStatusDecomposed)
 	if err != nil {
-		if errors.Is(err, ErrDailyTicketCapReached) {
-			return "", err // GH-5808: held, not a failed save
+		if errors.Is(err, ErrDispatchGated) {
+			return "", err // GH-5808, GH-6016: held, not a failed save
 		}
 		return "", fmt.Errorf("failed to save decomposed parent: %w", err)
 	}
@@ -2964,8 +2974,8 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 	// 0 forever — this is the poller's primary re-pick path.
 	execID, err := d.beginWithGenerationRetry(task, ExecStatusQueued)
 	if err != nil {
-		if errors.Is(err, ErrDailyTicketCapReached) {
-			return "", err // GH-5808: held, not a failed save
+		if errors.Is(err, ErrDispatchGated) {
+			return "", err // GH-5808, GH-6016: held, not a failed save
 		}
 		return "", fmt.Errorf("failed to save execution: %w", err)
 	}
@@ -3107,6 +3117,7 @@ func (d *Dispatcher) ensureWorker(projectPath string) {
 	worker := NewProjectWorker(projectPath, d.store, d.runner, d.log)
 	worker.setAdmissionPaused(d.admissionPaused)
 	worker.onRateLimited = d.armUsageLimitPause
+	worker.billingCredentialFor = d.billingCredentialForRun
 	worker.setBasePresenceHoldMaxCycles(d.config.BasePresenceHoldMaxCycles)
 	d.workers[projectPath] = worker
 
@@ -3442,6 +3453,12 @@ type ProjectWorker struct {
 	// is persisted (GH-5862). Wired by Dispatcher.ensureWorker; nil for a
 	// directly constructed worker.
 	onRateLimited func(taskID, projectPath, errMsg string)
+
+	// billingCredentialFor, when set, returns the billing credential of the
+	// queued execution about to run, or the fail-closed error (GH-6016).
+	// Wired by Dispatcher.ensureWorker; nil for a directly constructed worker,
+	// whose runs then carry no credential.
+	billingCredentialFor func(execID, taskID, projectPath string) (*BillingCredential, error)
 
 	// basePresenceHoldMaxCycles mirrors DispatcherConfig.BasePresenceHoldMaxCycles
 	// (GH-5045/GH-5052), threaded in post-construction the same way
@@ -4000,6 +4017,29 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			}
 		}
 
+		// GH-6016: the credential of this run, from admission or resolved now.
+		// A key that cannot be resolved fails the run closed, before any
+		// backend starts; it never falls back to the subscription.
+		execCtx := withProjectWorkerIdentity(ctx, w.projectPath)
+		var billingCred *BillingCredential
+		if w.billingCredentialFor != nil {
+			cred, credErr := w.billingCredentialFor(exec.ID, exec.TaskID, exec.ProjectPath)
+			if credErr != nil {
+				w.log.Warn("Billing key unavailable, failing execution without starting the backend",
+					slog.String("task_id", exec.TaskID),
+					slog.String("execution_id", exec.ID),
+					slog.Any("error", credErr))
+				w.recordExecutionEvent(exec.ID, memory.StageFailed, credErr.Error())
+				if _, finErr := w.lifecycle.Finish(exec.ID, nil, credErr, 0); finErr != nil {
+					w.log.Error("Failed to persist billing-key failure", slog.Any("error", finErr))
+				}
+				w.currentTaskID.Store("")
+				continue
+			}
+			billingCred = cred
+			execCtx = WithBillingCredential(execCtx, cred)
+		}
+
 		// Execute (blocking)
 		start := time.Now()
 		// GH-4536 (TASK-419): mark ctx as executing on THIS project's
@@ -4007,7 +4047,8 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		// synchronously by the dispatcher — so a queued epic sub-issue owned
 		// by this same project (reconcileChildOutcome, epic.go) can be
 		// recognized as self-owned rather than waited on forever.
-		result, execErr := w.runner.Execute(withProjectWorkerIdentity(ctx, w.projectPath), task)
+		result, execErr := w.runner.Execute(execCtx, task)
+		billingCred.Zero()
 		duration := time.Since(start)
 
 		// GH-4243: single chokepoint classifies the outcome (TerminalStatus).
@@ -4502,6 +4543,7 @@ func buildTaskFromExecution(exec *memory.Execution) *Task {
 		IsCanary:      exec.IsCanary,
 
 		inheritedHeadSHA: exec.InheritedHead,
+		billingMode:      exec.BillingMode, // GH-6016
 
 		AcceptanceCriteria: acceptance.Extract(exec.TaskDescription),
 	}
