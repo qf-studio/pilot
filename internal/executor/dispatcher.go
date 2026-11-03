@@ -3615,6 +3615,10 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 	// heldThisCycle maps execution ID -> task ID for rows the base-presence
 	// gate held during this processQueue call (GH-5572).
 	heldThisCycle := make(map[string]string)
+	// GH-6028: execution IDs whose move to running failed during this call.
+	// The row is still queued, so without this the next iteration would
+	// re-pick it at once with no backoff; the next poll retries it instead.
+	transitionFailed := make(map[string]struct{})
 
 	for {
 		// Check if we should stop
@@ -3642,7 +3646,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		// Held rows stay queued/pending in the store, so the next processQueue
 		// cycle (every poll / wakeHeldWorkers tick) re-checks them first —
 		// hold semantics (re-check per poll, escalation count) are unchanged.
-		tasks, err := w.store.GetQueuedTasksForProject(w.projectPath, len(heldThisCycle)+1)
+		tasks, err := w.store.GetQueuedTasksForProject(w.projectPath, len(heldThisCycle)+len(transitionFailed)+1)
 		if err != nil {
 			w.log.Error("Failed to get queued tasks", slog.Any("error", err))
 			return
@@ -3650,10 +3654,14 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 
 		var exec *memory.Execution
 		for _, cand := range tasks {
-			if _, held := heldThisCycle[cand.ID]; !held {
-				exec = cand
-				break
+			if _, held := heldThisCycle[cand.ID]; held {
+				continue
 			}
+			if _, failed := transitionFailed[cand.ID]; failed {
+				continue
+			}
+			exec = cand
+			break
 		}
 		if exec == nil {
 			return // Queue empty, or only held tasks remain
@@ -3984,6 +3992,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			w.log.Error("Failed to update status to running", slog.Any("error", err))
 			// GH-6026: the row stays queued, so the sweep would keep its key.
 			w.dropBillingCredential(exec.ID)
+			transitionFailed[exec.ID] = struct{}{}
 			continue
 		}
 
