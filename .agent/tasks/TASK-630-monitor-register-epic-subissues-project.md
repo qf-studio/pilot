@@ -1,6 +1,6 @@
 # TASK-630: Dashboard shows epic sub-issues as "(no project)" with the id as title — register children with the Monitor
 
-**Status**: 🚀 DISPATCHED 2026-11-02 → [pilot#6014](https://github.com/qf-studio/pilot/issues/6014) (`pilot` + `no-decompose`)
+**Status**: ✅ MERGED 2026-11-02 19:46Z — [pilot#6014](https://github.com/qf-studio/pilot/issues/6014) → PR#6015; ships in v2.309.0 (cutting 11-03). Done check: the next epic on the box shows its children under the project on the grid.
 **Created**: 2026-11-02
 **Assignee**: Pilot
 

@@ -9889,6 +9889,88 @@
         ],
         "created": "2026-11-03",
         "last_validated": "2026-11-03"
+      },
+      "parallel-console-legs-with-migrations-collide-on-the-number": {
+        "type": "pitfall",
+        "summary": "Two console legs dispatched together that each add a migration pick the same next number: C10 (console#460) merged 0039_chat_turn_cap_50 at 16:17Z while C5 (console#459, cut earlier from 3b012c2) also used 0039 \u2192 every DB test failed on the merge ref with 'duplicate migration file: 0039_drafts.down.sql' and the size guard refused a fix issue (1149 prod additions). Fix was a hand-filed revision renumbering to 0040 (console#465). Rule: when two legs with migrations go out at once, name the migration number in each leg body or serialize them (dispatch the second after the first merges).",
+        "path": "memories/pitfalls/parallel-console-legs-with-migrations-collide-on-the-number.md",
+        "confidence": 0.95,
+        "concepts": [
+          "issue-authoring",
+          "database",
+          "dispatch",
+          "ci"
+        ],
+        "created": "2026-11-03",
+        "last_validated": "2026-11-03"
+      },
+      "epic-children-on-shared-files-conflict-multi-part-leg-needs-no-decompose": {
+        "type": "pitfall",
+        "summary": "A multi-part leg filed without no-decompose gets epic-split into children that touch the same files; children cut from the same base re-implement each other and conflict once the first merges. 2026-11-02: C4 (console#469 \u2192 #470/#471: both re-implemented Decide(reason)+PostLearning; PR#473 needs-manual-rebase) and U10 (ui#287 \u2192 #288/#289/#290: three PRs on types.ts/httpAdapter.ts/mockAdapter.ts; PR#292 also bound a route the console never had). Cost: three hand-filed revisions (console#474, ui#296, ui#297). Rule: every leg whose scope spans more than one file group goes out with the no-decompose token; split by hand into legs with disjoint files if parallelism is wanted.",
+        "path": "memories/pitfalls/epic-children-on-shared-files-conflict-multi-part-leg-needs-no-decompose.md",
+        "confidence": 0.95,
+        "concepts": [
+          "issue-authoring",
+          "decomposition",
+          "epic",
+          "dispatch"
+        ],
+        "created": "2026-11-03",
+        "last_validated": "2026-11-03"
+      },
+      "fix-issue-on-borrowed-branch-never-closes-and-blocked-by-fix-deadlocks": {
+        "type": "pitfall",
+        "summary": "A hand-filed revision/fix issue in the autopilot-fix shape (autopilot-meta branch:pilot/GH-N) is NOT closed by the daemon when its PR merges \u2014 only the original issue closes via the lifted 'Closes #N'. The fix issue stays open with pilot-in-progress (ui#296, console#465, console#474 on 2026-11-02/03). A sibling issue gated with 'Blocked by: #<fix issue>' therefore never dispatches (ui#297 waited on ui#296 until a human closed it). Rule: close fix issues by hand after the PR merges, and never gate on a fix-issue number; gate on the original issue or dispatch after the merge.",
+        "path": "memories/pitfalls/fix-issue-on-borrowed-branch-never-closes-and-blocked-by-fix-deadlocks.md",
+        "confidence": 0.9,
+        "concepts": [
+          "autopilot",
+          "dispatch",
+          "github",
+          "merge"
+        ],
+        "created": "2026-11-03",
+        "last_validated": "2026-11-03"
+      },
+      "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal": {
+        "type": "pitfall",
+        "summary": "GitHub can leave refs/pull/N/merge stale after a push (PR#293 on 2026-11-03: head moved to ec1d01a, merge ref still yesterday's merge of the old head; mergeable UNKNOWN for 45 min; no pull_request run because the workflow runs on the merge ref; Vercel suite queued forever; githubstatus green). An empty commit, the update-branch API and a base-branch toggle (base_ref_changed events recorded) did NOT recompute it. Close + reopen via the API (two PATCH calls, 2 s apart) rebuilt the merge ref and fired CI at once. Autopilot risk: an external close past the grace window is treated as a rejection and deletes the branch \u2014 keep a local backup tag of the head and do the two calls back-to-back. Separately, autopilot's 30-min CI-timeout moves the PR to terminal StageFailed (TerminalLabel pilot-failed, no HoldActive) with no revival on later green \u2014 the merge is then a hand click.",
+        "path": "memories/pitfalls/github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal.md",
+        "confidence": 0.9,
+        "concepts": [
+          "github",
+          "ci",
+          "autopilot",
+          "merge"
+        ],
+        "created": "2026-11-03",
+        "last_validated": "2026-11-03"
+      },
+      "approval-cards-are-in-slack-a-tap-on-the-wrong-card-approves-another-pr": {
+        "type": "learning",
+        "summary": "Autopilot merge-approval requests (resolvedApprovalSource) post Slack cards, not Telegram; the daemon log line is 'Slack approval interaction received request_id=pr-N-\u2026'. On 2026-11-02 the founder's first tap landed on the pr-292 card while the ask was pr-476; the wrong PR advanced to merging and the right one stayed in awaiting_approval. When asking for an approval, name the PR number AND the request id prefix (pr-476-\u2026) and say Slack.",
+        "path": "memories/learnings/approval-cards-are-in-slack-a-tap-on-the-wrong-card-approves-another-pr.md",
+        "confidence": 0.85,
+        "concepts": [
+          "approval",
+          "autopilot",
+          "review"
+        ],
+        "created": "2026-11-03",
+        "last_validated": "2026-11-03"
+      },
+      "post-merge-reviewer-loops-on-pr-body-only-defects": {
+        "type": "learning",
+        "summary": "The post-merge reviewer (TASK-620) filed a fix issue whose only defect was a missing note in an already-merged PR body (console#468 after #462 \u2192 #466 \u2192 #467). Pre-flight declined it as reject_vague ('no change to code or docs can satisfy it'). Rule for the reviewer: a defect that only the merged PR body could satisfy must be dropped or downgraded to a note, never filed as a fix issue; humans close such loops as not-planned.",
+        "path": "memories/learnings/post-merge-reviewer-loops-on-pr-body-only-defects.md",
+        "confidence": 0.85,
+        "concepts": [
+          "review",
+          "autopilot",
+          "navigator"
+        ],
+        "created": "2026-11-03",
+        "last_validated": "2026-11-03"
       }
     }
   },
@@ -14677,6 +14759,36 @@
       "from": "mem-279",
       "to": "TASK-631",
       "type": "learned-from"
+    },
+    {
+      "from": "parallel-console-legs-with-migrations-collide-on-the-number",
+      "to": "TASK-585",
+      "type": "learned-from"
+    },
+    {
+      "from": "epic-children-on-shared-files-conflict-multi-part-leg-needs-no-decompose",
+      "to": "TASK-585",
+      "type": "learned-from"
+    },
+    {
+      "from": "fix-issue-on-borrowed-branch-never-closes-and-blocked-by-fix-deadlocks",
+      "to": "TASK-585",
+      "type": "learned-from"
+    },
+    {
+      "from": "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal",
+      "to": "TASK-585",
+      "type": "learned-from"
+    },
+    {
+      "from": "approval-cards-are-in-slack-a-tap-on-the-wrong-card-approves-another-pr",
+      "to": "TASK-585",
+      "type": "learned-from"
+    },
+    {
+      "from": "post-merge-reviewer-loops-on-pr-body-only-defects",
+      "to": "TASK-620",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -14923,7 +15035,8 @@
       "approval-no-handler-returns-success-wall-clock-applies-default-action",
       "pr-numbers-collide-across-repos-approval-must-key-on-owner-repo",
       "approver-identity-is-per-channel-approvers-by-channel",
-      "box-slack-socket-mode-config-false-but-socket-mode-starts"
+      "box-slack-socket-mode-config-false-but-socket-mode-starts",
+      "approval-cards-are-in-slack-a-tap-on-the-wrong-card-approves-another-pr"
     ],
     "architecture": [
       "mem-148"
@@ -15125,7 +15238,11 @@
       "gh5468-unlisted-check-failure-blocks-gate-but-evidence-still-allowlist-scoped",
       "post-merge-fix-blames-merged-pr-for-preexisting-flake",
       "mem-271",
-      "mem-272"
+      "mem-272",
+      "fix-issue-on-borrowed-branch-never-closes-and-blocked-by-fix-deadlocks",
+      "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal",
+      "approval-cards-are-in-slack-a-tap-on-the-wrong-card-approves-another-pr",
+      "post-merge-reviewer-loops-on-pr-body-only-defects"
     ],
     "aws": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -15185,7 +15302,9 @@
       "console-ci-shared-postgres-truncate-races-instances-e2e",
       "test-db-migrations-race-on-cluster-wide-roles-need-base-db-advisory-lock",
       "executor-box-has-no-postgres-db-test-evidence-invalid",
-      "post-merge-fix-blames-merged-pr-for-preexisting-flake"
+      "post-merge-fix-blames-merged-pr-for-preexisting-flake",
+      "parallel-console-legs-with-migrations-collide-on-the-number",
+      "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal"
     ],
     "ci-gates": [
       "bake-workflow-tee-masked-failure-promoted-source-ami"
@@ -15573,13 +15692,15 @@
       "mem-260",
       "TASK-589",
       "TASK-585",
-      "TASK-631"
+      "TASK-631",
+      "parallel-console-legs-with-migrations-collide-on-the-number"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
       "mem-141",
       "mem-151",
-      "pilot-issue-missing-no-decompose-fragments-single-fix"
+      "pilot-issue-missing-no-decompose-fragments-single-fix",
+      "epic-children-on-shared-files-conflict-multi-part-leg-needs-no-decompose"
     ],
     "dedup": [
       "mem-143"
@@ -15861,7 +15982,10 @@
       "gh5468-unlisted-check-failure-blocks-gate-but-evidence-still-allowlist-scoped",
       "pre-pr-reviewer-treats-unsatisfiable-issue-requirement-as-blocking",
       "parallel-explore-traces-per-defect-beat-one-research-pass",
-      "mem-279"
+      "mem-279",
+      "parallel-console-legs-with-migrations-collide-on-the-number",
+      "epic-children-on-shared-files-conflict-multi-part-leg-needs-no-decompose",
+      "fix-issue-on-borrowed-branch-never-closes-and-blocked-by-fix-deadlocks"
     ],
     "dispatcher": [
       "alert-engine-counts-operator-cancels",
@@ -15904,7 +16028,8 @@
     "epic": [
       "epic-waiter-misreads-takeover-stalled-row",
       "mem-100",
-      "takeover-execution-never-finalized-stale-subexecid"
+      "takeover-execution-never-finalized-stale-subexecid",
+      "epic-children-on-shared-files-conflict-multi-part-leg-needs-no-decompose"
     ],
     "epic-decomposition": [
       "mem-023",
@@ -16176,7 +16301,9 @@
       "slack-connector-returns-text-only-colleague-attachments-need-a-pr",
       "org-runner-group-repo-access-needs-admin-org-scope",
       "github-matching-refs-ignores-per-page-and-page",
-      "gh5468-unlisted-check-failure-blocks-gate-but-evidence-still-allowlist-scoped"
+      "gh5468-unlisted-check-failure-blocks-gate-but-evidence-still-allowlist-scoped",
+      "fix-issue-on-borrowed-branch-never-closes-and-blocked-by-fix-deadlocks",
+      "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal"
     ],
     "github-adapter": [
       "TASK-379",
@@ -16268,7 +16395,9 @@
       "evidence-runner-pastes-nonzero-exit-under-passes-bullet",
       "verify-issue-premise-against-live-fleet-before-dispatch",
       "pre-pr-reviewer-treats-unsatisfiable-issue-requirement-as-blocking",
-      "dispatch-leg-hygiene-test-names-shipped-symbols-refs-boundary"
+      "dispatch-leg-hygiene-test-names-shipped-symbols-refs-boundary",
+      "parallel-console-legs-with-migrations-collide-on-the-number",
+      "epic-children-on-shared-files-conflict-multi-part-leg-needs-no-decompose"
     ],
     "knowledge": [
       "TASK-368",
@@ -16496,7 +16625,9 @@
       "s6-lite-cutover-recipe"
     ],
     "merge": [
-      "mem-160"
+      "mem-160",
+      "fix-issue-on-borrowed-branch-never-closes-and-blocked-by-fix-deadlocks",
+      "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal"
     ],
     "nat-gateway": [
       "cdk-untagged-estate-invisible-to-cost-view"
@@ -17399,7 +17530,9 @@
       "mem-221",
       "evidence-runner-pastes-nonzero-exit-under-passes-bullet",
       "pre-pr-reviewer-treats-unsatisfiable-issue-requirement-as-blocking",
-      "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread"
+      "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread",
+      "approval-cards-are-in-slack-a-tap-on-the-wrong-card-approves-another-pr",
+      "post-merge-reviewer-loops-on-pr-body-only-defects"
     ],
     "operations": [
       "dead-cdk-stack-carried-live-founder-box-backup-policy",
@@ -17754,7 +17887,8 @@
       "mem-264",
       "mem-273",
       "parallel-explore-traces-per-defect-beat-one-research-pass",
-      "dispatch-leg-hygiene-test-names-shipped-symbols-refs-boundary"
+      "dispatch-leg-hygiene-test-names-shipped-symbols-refs-boundary",
+      "post-merge-reviewer-loops-on-pr-body-only-defects"
     ],
     "quality-gate": [
       "mem-268",
@@ -17780,11 +17914,11 @@
       "mem-279"
     ]
   },
-  "last_updated": "2026-11-03T10:32:14.482745+00:00",
+  "last_updated": "2026-11-03T10:54:34.722072+00:00",
   "stats": {
-    "total_nodes": 839,
-    "total_edges": 957,
-    "memory_count": 456
+    "total_nodes": 845,
+    "total_edges": 963,
+    "memory_count": 462
   },
   "metadata": {}
 }
