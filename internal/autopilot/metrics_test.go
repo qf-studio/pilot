@@ -521,9 +521,9 @@ func TestRecordCost_SplitsByKeySource(t *testing.T) {
 
 	snap := m.Snapshot()
 	for k, want := range map[costKey]float64{
-		{Model: "m1", KeySource: "platform"}: 3,
-		{Model: "m1", KeySource: "own"}:      4,
-		{Model: "m1", KeySource: "unknown"}:  8,
+		{Model: "m1", KeySource: "platform", BillingMode: "unknown"}: 3,
+		{Model: "m1", KeySource: "own", BillingMode: "unknown"}:      4,
+		{Model: "m1", KeySource: "unknown", BillingMode: "unknown"}:  8,
 	} {
 		if got := snap.ExecutionCostByKeySource[k]; got != want {
 			t.Errorf("ExecutionCostByKeySource[%+v] = %v, want %v", k, got, want)
