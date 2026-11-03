@@ -3604,6 +3604,9 @@
         "concepts": [
           "quality-gate",
           "review"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6037"
         ]
       },
       "TASK-585": {
