@@ -286,6 +286,9 @@ func TestAttemptMechanicalConflictResolution_ResetsCIWaitClock_GH4855(t *testing
 // PR#4846 incident fingerprint — but (pre-fix) with no TerminalLabel, so a
 // later external close of the stranded PR would default to
 // pilot-retry-ready and re-dispatch already-shipped (or never-run) work.
+// GH-6056: the failure is now reached when a CI-poll API outage outlasts
+// ci_checks.api_outage_budget, not at the fifth error; the terminal label and
+// the external-close behaviour are unchanged.
 func TestHandleWaitingCI_FiveConsecutiveAPIFailures_StampsTerminalLabel_GH4855(t *testing.T) {
 	const sha = "gh4855apifail01"
 	var labelsAdded []string
@@ -318,25 +321,31 @@ func TestHandleWaitingCI_FiveConsecutiveAPIFailures_StampsTerminalLabel_GH4855(t
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
 	prState := &PRState{
-		PRNumber:               4859,
-		IssueNumber:            4858,
-		HeadSHA:                sha,
-		Stage:                  StageWaitingCI,
-		CIStatus:               CIPending,
-		CIWaitStartedAt:        time.Now(),
-		ConsecutiveAPIFailures: 4, // one more failure crosses the >=5 threshold
+		PRNumber:        4859,
+		IssueNumber:     4858,
+		HeadSHA:         sha,
+		Stage:           StageWaitingCI,
+		CIStatus:        CIPending,
+		CIWaitStartedAt: time.Now(),
+		// GH-6056: the fifth error now starts a hold; only an outage past the
+		// budget fails the PR, so seed a hold that is already 31m old.
+		ConsecutiveAPIFailures: 9,
+		APIOutageHoldActive:    true,
+		APIOutageSince:         time.Now().Add(-31 * time.Minute),
+		APIOutageNextPoll:      time.Now().Add(-time.Second),
 	}
 	c.mu.Lock()
 	c.activePRs[4859] = prState
 	c.mu.Unlock()
 
 	ghPR := &github.PullRequest{Number: 4859, Head: github.PRRef{SHA: sha}, Base: github.PRRef{Ref: "main"}}
+	c.redriveAPIOutageHeldPR(context.Background(), prState, ghPR)
 	if err := c.ProcessPR(context.Background(), 4859, ghPR); err != nil {
 		t.Fatalf("ProcessPR returned unexpected error: %v", err)
 	}
 
 	if prState.Stage != StageFailed {
-		t.Fatalf("Stage = %s, want %s (5th consecutive API failure)", prState.Stage, StageFailed)
+		t.Fatalf("Stage = %s, want %s (API outage budget elapsed)", prState.Stage, StageFailed)
 	}
 	if prState.TerminalLabel != github.LabelFailed {
 		t.Fatalf("TerminalLabel = %q, want %q — 5 consecutive CI-check API failures is terminal and must not be silently re-queued", prState.TerminalLabel, github.LabelFailed)

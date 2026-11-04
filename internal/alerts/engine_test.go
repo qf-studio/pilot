@@ -4924,3 +4924,73 @@ func TestBillingModeChangedAlert_RuleAndPayload(t *testing.T) {
 		}
 	}
 }
+
+// TestCIPollAPIOutage covers GH-6056: the default rule exists, the hold event
+// fires it at warning severity, and a budget_exhausted event is raised to
+// critical.
+func TestCIPollAPIOutage(t *testing.T) {
+	var rule AlertRule
+	for _, r := range DefaultConfig().Rules {
+		if r.Type == AlertTypeCIPollAPIOutage {
+			rule = r
+		}
+	}
+	if rule.Name == "" || !rule.Enabled || rule.Severity != SeverityWarning {
+		t.Fatalf("default rule = %+v, want an enabled warning ci_poll_api_outage rule", rule)
+	}
+	rule.Channels = []string{"test-channel"}
+	config := &AlertConfig{
+		Enabled:  true,
+		Defaults: DefaultConfig().Defaults,
+		Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+		Rules:    []AlertRule{rule},
+	}
+	mockCh := newMockChannel("test-channel", "webhook")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	engine.ProcessEvent(Event{
+		Type:  EventTypeCIPollAPIOutage,
+		Error: "HTTP 500",
+		Metadata: map[string]string{
+			"repo": "owner/repo", "pr": "6055", "outcome": "hold",
+			"failures": "5", "since": "2026-11-04T12:00:00Z", "budget": "30m0s",
+		},
+		Timestamp: time.Now(),
+	})
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
+
+	engine.ProcessEvent(Event{
+		Type:  EventTypeCIPollAPIOutage,
+		Error: "HTTP 500",
+		Metadata: map[string]string{
+			"repo": "owner/repo", "pr": "6055", "outcome": "budget_exhausted",
+			"failures": "12", "elapsed": "32m10s", "budget": "30m0s",
+		},
+		Timestamp: time.Now(),
+	})
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
+
+	got := mockCh.getAlerts()
+	if len(got) != 2 {
+		t.Fatalf("alerts = %d, want 2", len(got))
+	}
+	if got[0].Type != AlertTypeCIPollAPIOutage || got[0].Severity != SeverityWarning {
+		t.Errorf("hold alert = %s/%s, want ci_poll_api_outage/warning", got[0].Type, got[0].Severity)
+	}
+	if got[1].Type != AlertTypeCIPollAPIOutage || got[1].Severity != SeverityCritical {
+		t.Errorf("budget alert = %s/%s, want ci_poll_api_outage/critical", got[1].Type, got[1].Severity)
+	}
+	for i, want := range []string{"6055", "holding at waiting_ci"} {
+		if !strings.Contains(got[0].Message, want) {
+			t.Errorf("hold message %q missing %q (%d)", got[0].Message, want, i)
+		}
+	}
+	if !strings.Contains(got[1].Message, "32m10s") || !strings.Contains(got[1].Message, "failed") {
+		t.Errorf("budget message %q missing elapsed/failed", got[1].Message)
+	}
+}

@@ -135,6 +135,13 @@ const (
 	// byte-for-byte. Dispatcher.SetBillingOverride, ClearBillingOverride and the
 	// override's expiry emit it on every change of the mode in force.
 	AlertEventTypeBillingModeChanged AlertEventType = "billing_mode_changed"
+
+	// AlertEventTypeCIPollAPIOutage (GH-6056) mirrors
+	// alerts.EventTypeCIPollAPIOutage ("ci_poll_api_outage") byte-for-byte.
+	// Autopilot emits it directly on the alerts engine (it cannot import this
+	// package's processor seam without a cycle); the constant pins the
+	// shared wire value for AlertEvent producers.
+	AlertEventTypeCIPollAPIOutage AlertEventType = "ci_poll_api_outage"
 )
 
 // ReviewFixDeadManTrackerName is the alerts.DeadManTracker registration

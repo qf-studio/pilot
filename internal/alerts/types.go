@@ -153,6 +153,12 @@ const (
 	// AlertTypeBillingModeChanged (GH-6052): the billing mode in force changed
 	// through a runtime override (set, cleared or expired).
 	AlertTypeBillingModeChanged AlertType = "billing_mode_changed"
+
+	// AlertTypeCIPollAPIOutage (GH-6056): CheckCI errored five times in a row
+	// and autopilot holds the PR at waiting_ci with backoff instead of failing
+	// it. Emitted once when the hold starts (warning) and once more if the
+	// ci_checks.api_outage_budget elapses and the PR is failed (error).
+	AlertTypeCIPollAPIOutage AlertType = "ci_poll_api_outage"
 )
 
 // HandlerEmittedAlertTypes lists every AlertType whose handler
@@ -180,6 +186,7 @@ var HandlerEmittedAlertTypes = []AlertType{
 	AlertTypeUsageLimitPause,
 	AlertTypeBillingKeyUnavailable,
 	AlertTypeBillingModeChanged,
+	AlertTypeCIPollAPIOutage,
 }
 
 // CoverageGaps returns the subset of HandlerEmittedAlertTypes that cfg has
@@ -758,6 +765,19 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    0,
 			Description: "Alert when the billing mode in force changes through a runtime override (gateway or CLI), its clear or its expiry",
+		},
+		// GH-6056: emitted by autopilot when CheckCI errors five times in a row
+		// and the PR is held at waiting_ci with backoff (warning), and again at
+		// critical severity if the api_outage_budget elapses and the PR is failed.
+		{
+			Name:        "ci_poll_api_outage",
+			Type:        AlertTypeCIPollAPIOutage,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    0,
+			Description: "Alert when consecutive CI-poll API errors hold a PR at waiting_ci (ci_checks.api_outage_budget); critical severity when the budget elapses and the PR is failed",
 		},
 		// GH-5498: emitted by the executor's HeartbeatCallback right before it
 		// kills a Claude subprocess that produced no stream events for longer

@@ -246,6 +246,13 @@ const (
 	// (cli, gateway, fallback, config) and set_by.
 	EventTypeBillingModeChanged EventType = "billing_mode_changed"
 
+	// EventTypeCIPollAPIOutage (GH-6056) mirrors
+	// executor.AlertEventTypeCIPollAPIOutage byte-for-byte: consecutive CheckCI
+	// errors hold a PR at waiting_ci. Metadata carries repo, pr, outcome
+	// ("hold" or "budget_exhausted"), failures, since (RFC 3339), elapsed and
+	// budget; outcome budget_exhausted fires at critical severity.
+	EventTypeCIPollAPIOutage EventType = "ci_poll_api_outage"
+
 	// Heartbeat timeout events (GH-5498): fired by the executor's
 	// HeartbeatCallback (Runner.heartbeatTimeoutCallback) just before the
 	// Claude subprocess is killed for producing no stream events for longer
@@ -789,6 +796,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleUsageLimitPause(ctx, event)
 	case EventTypeBillingKeyUnavailable:
 		e.handleBillingKeyUnavailable(ctx, event)
+	case EventTypeCIPollAPIOutage:
+		e.handleCIPollAPIOutage(ctx, event)
 	case EventTypeBillingModeChanged:
 		e.handleBillingModeChanged(ctx, event)
 	case EventTypeHeartbeatTimeout:
@@ -1325,6 +1334,40 @@ func billingModeChangedMessage(event Event) string {
 		msg += " until " + until
 	}
 	return msg
+}
+
+// handleCIPollAPIOutage fires AlertTypeCIPollAPIOutage rules when autopilot
+// holds a PR at waiting_ci because CheckCI keeps erroring (GH-6056). The
+// emitter already gated on once-per-transition (hold start, budget exhausted),
+// so no Condition-based counting happens here. The rule's severity applies to
+// the hold; a budget_exhausted outcome is raised to SeverityCritical (the
+// highest level this package has; there is no separate error level).
+func (e *Engine) handleCIPollAPIOutage(ctx context.Context, event Event) {
+	md := event.Metadata
+	matched := false
+	for _, rule := range e.config.Rules {
+		if rule.Type != AlertTypeCIPollAPIOutage {
+			continue
+		}
+		matched = true
+		if rule.Enabled && e.shouldFire(rule) {
+			message := fmt.Sprintf("CI poll API outage on %s PR #%s: holding at waiting_ci after %s consecutive errors (outage since %s, budget %s)",
+				md["repo"], md["pr"], md["failures"], md["since"], md["budget"])
+			if md["outcome"] == "budget_exhausted" {
+				message = fmt.Sprintf("CI poll API outage on %s PR #%s outlasted its %s budget (%s elapsed, %s consecutive errors): PR failed",
+					md["repo"], md["pr"], md["budget"], md["elapsed"], md["failures"])
+			}
+			alert := e.createAlert(rule, event, message)
+			if md["outcome"] == "budget_exhausted" {
+				alert.Severity = SeverityCritical
+			}
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+	if !matched {
+		e.logger.Warn("ci poll api outage event has no matching rule — alert dropped silently",
+			slog.String("pr", md["pr"]))
+	}
 }
 
 // handleBillingModeChanged fires AlertTypeBillingModeChanged rules when the

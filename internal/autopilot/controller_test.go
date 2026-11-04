@@ -4382,7 +4382,8 @@ func TestController_ConsecutiveAPIFailures(t *testing.T) {
 		}
 	}
 
-	// 5th failure should transition to StageFailed
+	// 5th failure starts the CI-poll API outage hold (GH-6056): the PR stays at
+	// waiting_ci instead of failing.
 	err := c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR 5th iteration error: %v", err)
@@ -4392,11 +4393,14 @@ func TestController_ConsecutiveAPIFailures(t *testing.T) {
 	if prState.ConsecutiveAPIFailures != 5 {
 		t.Errorf("after 5 failures: ConsecutiveAPIFailures = %d, want 5", prState.ConsecutiveAPIFailures)
 	}
-	if prState.Stage != StageFailed {
-		t.Errorf("after 5 failures: Stage = %s, want %s", prState.Stage, StageFailed)
+	if prState.Stage != StageWaitingCI {
+		t.Errorf("after 5 failures: Stage = %s, want %s", prState.Stage, StageWaitingCI)
 	}
-	if !strings.Contains(prState.Error, "CI check API failed 5 consecutive times") {
-		t.Errorf("Error = %q, should contain consecutive API failure message", prState.Error)
+	if !prState.APIOutageHoldActive {
+		t.Error("after 5 failures: APIOutageHoldActive = false, want true")
+	}
+	if prState.TerminalLabel != "" {
+		t.Errorf("after 5 failures: TerminalLabel = %q, want empty", prState.TerminalLabel)
 	}
 }
 
