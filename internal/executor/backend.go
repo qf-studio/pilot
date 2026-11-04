@@ -1553,6 +1553,7 @@ const (
 //	    enabled: true
 //	    max_pause: 6h
 //	    fallback_pause: 30m
+//	    fallback: pause
 type UsageLimitPauseConfig struct {
 	// Enabled turns the pause on. Nil (omitted) means true.
 	Enabled *bool `yaml:"enabled,omitempty"`
@@ -1564,6 +1565,25 @@ type UsageLimitPauseConfig struct {
 	// FallbackPause is the pause used when no reset time parses. Zero means
 	// DefaultUsageLimitFallbackPause.
 	FallbackPause time.Duration `yaml:"fallback_pause,omitempty"`
+
+	// Fallback is what a subscription usage limit does: pause (default) holds
+	// admission until the reset; api_key switches the daemon to the billing API
+	// key through the runtime override until the reset instead.
+	Fallback string `yaml:"fallback,omitempty"`
+}
+
+// Accepted values of UsageLimitPauseConfig.Fallback.
+const (
+	UsageLimitFallbackPause  = "pause"
+	UsageLimitFallbackAPIKey = "api_key"
+)
+
+// EffectiveFallback returns Fallback, or pause when empty.
+func (c *UsageLimitPauseConfig) EffectiveFallback() string {
+	if c == nil || c.Fallback == "" {
+		return UsageLimitFallbackPause
+	}
+	return c.Fallback
 }
 
 // IsEnabled reports whether the pause is on; a nil receiver or nil Enabled is on.

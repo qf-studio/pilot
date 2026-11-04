@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"log/slog"
 	"sort"
 	"time"
@@ -86,6 +87,13 @@ func (d *Dispatcher) usageLimitPauseConfig() *UsageLimitPauseConfig {
 // now. A reset that already passed (GH-5879) resumes at now plus RetryBuffer. A later call while paused only moves the resume later; it never adds an
 // owner and never alerts again. Running tasks are untouched and the single
 // task's own re-queue at reset time stays with the poller's Scheduler.
+//
+// With usage_limit_pause.fallback api_key and the subscription in force
+// (GH-6069), the episode switches the daemon to the API key until the same
+// resumeAt through the runtime billing override and does not pause admission;
+// the override's own expiry timer is the revert. When the key does not resolve
+// the pause applies as without the fallback, and one
+// billing_fallback_unavailable alert accompanies the usage_limit_pause alert.
 func (d *Dispatcher) armUsageLimitPause(taskID, projectPath, errMsg string) {
 	cfg := d.usageLimitPauseConfig()
 	if !cfg.IsEnabled() {
@@ -110,6 +118,23 @@ func (d *Dispatcher) armUsageLimitPause(taskID, projectPath, errMsg string) {
 	// parsed reset can never wedge admission for more than the operator allows.
 	if limit := now.Add(cfg.EffectiveMaxPause()); resumeAt.After(limit) {
 		resumeAt = limit
+	}
+
+	var fallbackErr error
+	if cfg.EffectiveFallback() == UsageLimitFallbackAPIKey && d.billingApplies() &&
+		d.billingResolverOrConfig().Mode() == BillingModeSubscription {
+		// Decision: a limit while the mode in force is already api_key (the
+		// fallback override, or a config/operator choice) is an API-side limit,
+		// so only the subscription mode falls back and the override is never
+		// extended.
+		if fallbackErr = d.switchToAPIKeyFallback(resumeAt); fallbackErr == nil {
+			attrs := []any{slog.String("task_id", taskID), slog.Time("until", resumeAt)}
+			if !resetAt.IsZero() {
+				attrs = append(attrs, slog.Time("reset_at", resetAt))
+			}
+			d.log.Info("usage limit hit, billing switched to api_key until the reset", attrs...)
+			return
+		}
 	}
 
 	d.usageLimitMu.Lock()
@@ -151,6 +176,9 @@ func (d *Dispatcher) armUsageLimitPause(taskID, projectPath, errMsg string) {
 	d.log.Info(msg, attrs...)
 	if !extended {
 		d.emitUsageLimitPauseAlert(taskID, projectPath, resetAt, resumeAt)
+		if fallbackErr != nil {
+			d.emitBillingFallbackUnavailableAlert(taskID, projectPath, resetAt, resumeAt, fallbackErr)
+		}
 	}
 }
 
@@ -195,6 +223,47 @@ func (d *Dispatcher) emitUsageLimitPauseAlert(taskID, projectPath string, resetA
 		Type:      AlertEventTypeUsageLimitPause,
 		TaskID:    taskID,
 		Project:   projectPath,
+		Metadata:  meta,
+		Timestamp: d.pauseClockOrReal().Now(),
+	})
+}
+
+// switchToAPIKeyFallback checks that the billing API key resolves without
+// changing the mode, then installs the api_key override until until with
+// source fallback (GH-6069). The resolved key is zeroed at once: admission
+// resolves its own while the override is in force. The error is the resolver's
+// or the override's and never carries the key.
+func (d *Dispatcher) switchToAPIKeyFallback(until time.Time) error {
+	resolver := d.billingResolverOrConfig()
+	if resolver.cfg == nil {
+		return &BillingKeyError{Reason: "no billing key source configured", ExitCode: -1}
+	}
+	key, err := resolver.resolveKey(context.Background())
+	if err != nil {
+		return err
+	}
+	for i := range key {
+		key[i] = 0
+	}
+	return d.SetBillingOverride(string(BillingModeAPIKey), until, BillingModeSourceFallback)
+}
+
+func (d *Dispatcher) emitBillingFallbackUnavailableAlert(taskID, projectPath string, resetAt, until time.Time, cause error) {
+	if d.runner == nil || d.runner.AlertProcessor() == nil {
+		return
+	}
+	meta := map[string]string{
+		"until": until.Format(time.RFC3339),
+		"error": cause.Error(),
+	}
+	if !resetAt.IsZero() {
+		meta["reset_at"] = resetAt.Format(time.RFC3339)
+	}
+	d.runner.AlertProcessor().ProcessEvent(AlertEvent{
+		Type:      AlertEventTypeBillingFallbackUnavailable,
+		TaskID:    taskID,
+		Project:   projectPath,
+		Error:     cause.Error(),
 		Metadata:  meta,
 		Timestamp: d.pauseClockOrReal().Now(),
 	})
