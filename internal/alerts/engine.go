@@ -246,6 +246,13 @@ const (
 	// (cli, gateway, fallback, config) and set_by.
 	EventTypeBillingModeChanged EventType = "billing_mode_changed"
 
+	// EventTypeBillingFallbackUnavailable (GH-6069) mirrors
+	// executor.AlertEventTypeBillingFallbackUnavailable byte-for-byte: a usage
+	// limit hit with usage_limit_pause.fallback api_key, but the API key did not
+	// resolve, so admission is paused. Metadata carries reset_at (RFC 3339,
+	// empty when no reset parsed), until and error.
+	EventTypeBillingFallbackUnavailable EventType = "billing_fallback_unavailable"
+
 	// EventTypeCIPollAPIOutage (GH-6056) mirrors
 	// executor.AlertEventTypeCIPollAPIOutage byte-for-byte: consecutive CheckCI
 	// errors hold a PR at waiting_ci. Metadata carries repo, pr, outcome
@@ -800,6 +807,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleCIPollAPIOutage(ctx, event)
 	case EventTypeBillingModeChanged:
 		e.handleBillingModeChanged(ctx, event)
+	case EventTypeBillingFallbackUnavailable:
+		e.handleBillingFallbackUnavailable(ctx, event)
 	case EventTypeHeartbeatTimeout:
 		e.handleHeartbeatTimeout(ctx, event)
 	case EventTypeTaskTimeout:
@@ -1388,6 +1397,31 @@ func (e *Engine) handleBillingModeChanged(ctx context.Context, event Event) {
 	if !matched {
 		e.logger.Warn("billing mode changed event has no matching rule — alert dropped silently",
 			slog.String("to", event.Metadata["to"]))
+	}
+}
+
+// handleBillingFallbackUnavailable fires AlertTypeBillingFallbackUnavailable
+// rules when a usage limit could not fall back to the API key and admission is
+// paused instead (GH-6069). The emitter fires once per episode, so no
+// Condition-based counting happens here.
+func (e *Engine) handleBillingFallbackUnavailable(ctx context.Context, event Event) {
+	matched := false
+	for _, rule := range e.config.Rules {
+		if rule.Type != AlertTypeBillingFallbackUnavailable {
+			continue
+		}
+		matched = true
+		if rule.Enabled && e.shouldFire(rule) {
+			md := event.Metadata
+			message := fmt.Sprintf("Usage limit hit and the api_key fallback is unavailable (%s); admission paused until %s",
+				md["error"], md["until"])
+			alert := e.createAlert(rule, event, message)
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+	if !matched {
+		e.logger.Warn("billing fallback unavailable event has no matching rule — alert dropped silently",
+			slog.String("task_id", event.TaskID))
 	}
 }
 

@@ -154,6 +154,11 @@ const (
 	// through a runtime override (set, cleared or expired).
 	AlertTypeBillingModeChanged AlertType = "billing_mode_changed"
 
+	// AlertTypeBillingFallbackUnavailable (GH-6069): a usage limit hit with
+	// usage_limit_pause.fallback api_key, but the API key did not resolve, so
+	// task admission is paused until the reset as without the fallback.
+	AlertTypeBillingFallbackUnavailable AlertType = "billing_fallback_unavailable"
+
 	// AlertTypeCIPollAPIOutage (GH-6056): CheckCI errored five times in a row
 	// and autopilot holds the PR at waiting_ci with backoff instead of failing
 	// it. Emitted once when the hold starts (warning) and once more if the
@@ -186,6 +191,7 @@ var HandlerEmittedAlertTypes = []AlertType{
 	AlertTypeUsageLimitPause,
 	AlertTypeBillingKeyUnavailable,
 	AlertTypeBillingModeChanged,
+	AlertTypeBillingFallbackUnavailable,
 	AlertTypeCIPollAPIOutage,
 }
 
@@ -765,6 +771,19 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    0,
 			Description: "Alert when the billing mode in force changes through a runtime override (gateway or CLI), its clear or its expiry",
+		},
+		// GH-6069: emitted once per episode when a usage limit cannot fall back
+		// to the API key (usage_limit_pause.fallback: api_key) and admission is
+		// paused instead.
+		{
+			Name:        "billing_fallback_unavailable",
+			Type:        AlertTypeBillingFallbackUnavailable,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    0,
+			Description: "Alert when a usage limit hits with usage_limit_pause.fallback api_key but the API key cannot be resolved, so task admission is paused",
 		},
 		// GH-6056: emitted by autopilot when CheckCI errors five times in a row
 		// and the PR is held at waiting_ci with backoff (warning), and again at

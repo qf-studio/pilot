@@ -1365,6 +1365,8 @@ Talks to the daemon's gateway (`/api/v1/billing-mode`), so a switch takes effect
 
 `api_key` needs `api_key_command` or `api_key_env` in `executor.claude_code.billing`. Exit code 1 carries the gateway's message (for example an unknown mode); exit code 2 means `daemon not reachable at <url>`.
 
+With `executor.usage_limit_pause.fallback: api_key`, a subscription usage limit switches the daemon to the API key until the subscription resets (the reset plus the retry buffer, capped by `max_pause`) instead of pausing admission: queued tasks keep running on the key, with no operator action and no restart. `pilot billing-mode status` shows source `fallback` while it is in force, the mode reverts to the config's at the expiry, and `pilot billing-mode set config` ends it early. If the key does not resolve, admission is paused as without the fallback and a `billing_fallback_unavailable` alert is raised. A second usage limit while the fallback is in force is an API-side limit and pauses admission as usual. The fallback needs `api_key_command` or `api_key_env` in `executor.claude_code.billing`.
+
 #### Examples
 
 ```bash

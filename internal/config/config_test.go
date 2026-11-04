@@ -2965,3 +2965,56 @@ func TestLoad_UseWorktreeTriState(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateUsageLimitPause_Fallback(t *testing.T) {
+	env := &executor.BillingConfig{Mode: executor.BillingModeSubscription, APIKeyEnv: "PILOT_TEST_KEY"}
+	cmd := &executor.BillingConfig{Mode: executor.BillingModeSubscription, APIKeyCommand: "pass show anthropic"}
+	tests := []struct {
+		name     string
+		fallback string
+		billing  *executor.BillingConfig
+		wantErr  []string
+	}{
+		{name: "empty is pause", fallback: "", billing: nil},
+		{name: "pause without a key source", fallback: "pause", billing: nil},
+		{name: "api_key with api_key_env", fallback: "api_key", billing: env},
+		{name: "api_key with api_key_command", fallback: "api_key", billing: cmd},
+		{name: "subscription rejected", fallback: "subscription", billing: env, wantErr: []string{`"subscription"`, "pause", "api_key"}},
+		{name: "api_key without billing block", fallback: "api_key", billing: nil, wantErr: []string{"api_key_command", "api_key_env"}},
+		{name: "api_key without key source", fallback: "api_key", billing: &executor.BillingConfig{Mode: executor.BillingModeSubscription}, wantErr: []string{"api_key_command", "api_key_env"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateUsageLimitPause(&executor.UsageLimitPauseConfig{Fallback: tt.fallback}, tt.billing)
+			if len(tt.wantErr) == 0 {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			for _, want := range tt.wantErr {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+		})
+	}
+
+	t.Run("wired into Validate", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Executor = &executor.BackendConfig{
+			UsageLimitPause: &executor.UsageLimitPauseConfig{Fallback: "api_key"},
+			ClaudeCode:      &executor.ClaudeCodeConfig{},
+		}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "usage_limit_pause.fallback") {
+			t.Fatalf("Validate() = %v, want a usage_limit_pause.fallback error", err)
+		}
+		cfg.Executor.ClaudeCode.Billing = env
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() with a key source = %v", err)
+		}
+	})
+}

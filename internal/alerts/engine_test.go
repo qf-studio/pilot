@@ -4994,3 +4994,73 @@ func TestCIPollAPIOutage(t *testing.T) {
 		t.Errorf("budget message %q missing elapsed/failed", got[1].Message)
 	}
 }
+
+// TestBillingFallbackUnavailableAlert_RuleAndPayload covers GH-6069: a default
+// warning rule exists, the executor's event type string matches the engine's,
+// and the alert carries the key error and the pause end.
+func TestBillingFallbackUnavailableAlert_RuleAndPayload(t *testing.T) {
+	if string(executor.AlertEventTypeBillingFallbackUnavailable) != string(EventTypeBillingFallbackUnavailable) {
+		t.Fatalf("executor event type %q != alerts event type %q",
+			executor.AlertEventTypeBillingFallbackUnavailable, EventTypeBillingFallbackUnavailable)
+	}
+	var rule AlertRule
+	for _, r := range DefaultConfig().Rules {
+		if r.Type == AlertTypeBillingFallbackUnavailable {
+			rule = r
+		}
+	}
+	if rule.Name == "" || !rule.Enabled || rule.Severity != SeverityWarning {
+		t.Fatalf("default rule = %+v, want an enabled warning billing_fallback_unavailable rule", rule)
+	}
+	listed := false
+	for _, typ := range HandlerEmittedAlertTypes {
+		listed = listed || typ == AlertTypeBillingFallbackUnavailable
+	}
+	if !listed {
+		t.Error("AlertTypeBillingFallbackUnavailable is missing from HandlerEmittedAlertTypes")
+	}
+
+	rule.Channels = []string{"test-channel"}
+	config := &AlertConfig{
+		Enabled:  true,
+		Defaults: DefaultConfig().Defaults,
+		Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+		Rules:    []AlertRule{rule},
+	}
+	mockCh := newMockChannel("test-channel", "webhook")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	resetAt := time.Date(2026, 11, 5, 14, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	until := time.Date(2026, 11, 5, 14, 5, 0, 0, time.UTC).Format(time.RFC3339)
+	engine.ProcessEvent(Event{
+		Type:   EventTypeBillingFallbackUnavailable,
+		TaskID: "GH-6069",
+		Metadata: map[string]string{
+			"reset_at": resetAt, "until": until, "error": "billing_key_unavailable: api_key_command failed (exit code 1)",
+		},
+		Timestamp: time.Now(),
+	})
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
+	got := mockCh.getAlerts()
+	if len(got) != 1 {
+		t.Fatalf("alerts = %d, want 1", len(got))
+	}
+	a := got[0]
+	if a.Type != AlertTypeBillingFallbackUnavailable || a.Severity != SeverityWarning {
+		t.Errorf("alert = %+v, want a warning billing_fallback_unavailable", a)
+	}
+	want := "Usage limit hit and the api_key fallback is unavailable (billing_key_unavailable: api_key_command failed (exit code 1)); admission paused until " + until
+	if a.Message != want {
+		t.Errorf("message = %q, want %q", a.Message, want)
+	}
+	for _, k := range []string{"reset_at", "until", "error"} {
+		if a.Metadata[k] == "" {
+			t.Errorf("payload missing %q: %v", k, a.Metadata)
+		}
+	}
+}

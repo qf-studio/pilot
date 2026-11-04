@@ -1259,9 +1259,10 @@ func validateReleaseTriggerFields(pathPrefix, trigger, schedule, timezone string
 }
 
 // validateUsageLimitPause checks executor.usage_limit_pause (GH-5862): durations
-// must not be negative, and the fallback pause cannot exceed the max pause that
-// caps it.
-func validateUsageLimitPause(p *executor.UsageLimitPauseConfig) error {
+// must not be negative, the fallback pause cannot exceed the max pause that
+// caps it, and fallback is pause or api_key (the latter needs a billing key
+// source to switch to).
+func validateUsageLimitPause(p *executor.UsageLimitPauseConfig, b *executor.BillingConfig) error {
 	if p == nil {
 		return nil
 	}
@@ -1273,6 +1274,15 @@ func validateUsageLimitPause(p *executor.UsageLimitPauseConfig) error {
 	}
 	if p.EffectiveFallbackPause() > p.EffectiveMaxPause() {
 		return fmt.Errorf("invalid executor.usage_limit_pause: fallback_pause %s exceeds max_pause %s", p.EffectiveFallbackPause(), p.EffectiveMaxPause())
+	}
+	switch p.Fallback {
+	case "", executor.UsageLimitFallbackPause:
+	case executor.UsageLimitFallbackAPIKey:
+		if b == nil || (b.APIKeyCommand == "" && b.APIKeyEnv == "") {
+			return fmt.Errorf("invalid executor.usage_limit_pause.fallback: api_key needs api_key_command or api_key_env in executor.claude_code.billing")
+		}
+	default:
+		return fmt.Errorf("invalid executor.usage_limit_pause.fallback: %q (accepted values: %s, %s)", p.Fallback, executor.UsageLimitFallbackPause, executor.UsageLimitFallbackAPIKey)
 	}
 	return nil
 }
@@ -1393,7 +1403,11 @@ func (c *Config) Validate() error {
 		if err := validateDailyTicketCapTimezone(c.Executor.DailyTicketCapTimezone); err != nil {
 			return err
 		}
-		if err := validateUsageLimitPause(c.Executor.UsageLimitPause); err != nil {
+		var billing *executor.BillingConfig
+		if c.Executor.ClaudeCode != nil {
+			billing = c.Executor.ClaudeCode.Billing
+		}
+		if err := validateUsageLimitPause(c.Executor.UsageLimitPause, billing); err != nil {
 			return err
 		}
 		if err := validatePrePRReview(c.Executor.PrePRReview); err != nil {

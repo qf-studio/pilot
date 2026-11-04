@@ -727,6 +727,7 @@ executor:
   #   enabled: true          # default true
   #   max_pause: 6h          # cap when the parsed reset is further away (default 6h)
   #   fallback_pause: 30m    # used when no reset time parses (default 30m)
+  #   fallback: pause        # api_key switches the daemon to the API key until the reset instead of pausing (needs a billing key source); `pilot billing-mode status` shows source fallback while it is in force
 
   # Non-Anthropic provider routing (GH-2287, GH-2371)
   # Configure once here — Pilot injects ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL

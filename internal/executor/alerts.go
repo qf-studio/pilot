@@ -136,6 +136,13 @@ const (
 	// override's expiry emit it on every change of the mode in force.
 	AlertEventTypeBillingModeChanged AlertEventType = "billing_mode_changed"
 
+	// AlertEventTypeBillingFallbackUnavailable (GH-6069) mirrors
+	// alerts.EventTypeBillingFallbackUnavailable
+	// ("billing_fallback_unavailable") byte-for-byte. armUsageLimitPause emits
+	// it once per episode when usage_limit_pause.fallback is api_key but the key
+	// does not resolve, so the usual admission pause applies.
+	AlertEventTypeBillingFallbackUnavailable AlertEventType = "billing_fallback_unavailable"
+
 	// AlertEventTypeCIPollAPIOutage (GH-6056) mirrors
 	// alerts.EventTypeCIPollAPIOutage ("ci_poll_api_outage") byte-for-byte.
 	// Autopilot emits it directly on the alerts engine (it cannot import this
