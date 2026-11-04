@@ -1,6 +1,6 @@
 # TASK-583: Wave 1 — design update + proof surface (Run Story, Review needed, briefs, pen test)
 
-**Status**: 🚧 **11-02 audit — wave-1 code complete except the briefs trio; exit evidence open.** MERGED + LIVE (console `prod-0.1.51` = main; UI deploy 10-27 at main `659063ae5`): U1–U5, U9, U8, U6 (ui#277), U7 (ui#282 → PR#285), U19 (ui#280 → PR#284), X2 (ui#283 → PR#286), TASK-590 W1 (ui#279 → PR#281) · C1 (console#440 → PR#442), C2 (#450 → PR#452), C3, C7, C8 (#424: $300 ceiling + packs), C14 (#449 → PR#451), X1 (#453 → PR#454) · P1, P9 (+ fixes #5812–#5814), P10, P11 fix (#5798 → PR#5819), P16, P18 (#5857 → PR#5859). **Still held**: C6 brief store + Briefs API + SES email — gated on **I3 only** (Nelya SES sender; P9 merged 10-22) → U11, U12 after C6. **Wave-1 exit NOT met**: the P11 real run with agent turns is not archived on pilot#5793 (hard gate, line 5) and I2 (pen test on canary, Nelya) waits on it; Run Story on a Done card, share page, Context panel and the daily-cap banner are not exercised on the canary after 10-27 (the console smoke 10-26 12:30Z predates them). Open: pilot#5810 (P17 chat events, design; U9 renders `—`), ui#266 (mode-pills decision, founder), D1–D5/D7 Figma (founder; gate U11/U12 only). **Unfiled from the PR#451 (C14) review**: ordinal read outside the org lock · lossy 0037 down path · standing reader built twice · no RLS on `ticket_pack_draws`. History to 10-26 15:10Z: git log on this line + README Recent 10-22/10-26.
+**Status**: 🚀 **11-04 ALIGNMENT AUDIT — three gaps behind ✅ rows found on main + the live tenant, DISPATCHED (`pilot` + `no-decompose`): U20 [ui#298](https://github.com/qf-studio/pilot-console-ui/issues/298) → **PR#300 merged 13:45Z, deployed 13:49Z, verified live (GH-3 ticket page shows the completed run timeline); review APPROVE** · U21 [ui#302](https://github.com/qf-studio/pilot-console-ui/issues/302) (queue meta line still gated off though console PR#439 serves `durationMs`; bounded fetch for the ≤9 rendered rows) — **first filing ui#299 was a FALSE DONE**: the daemon stamped `pilot-done` at 13:23Z with no run because the SDK's merged-PR title search for "GH-299" matched PR#163 ("…hardcoded $299"; GitHub tokenises GH-299 as GH + 299, `SearchMergedPRsForIssueOnBase` trusts total_count); a label cycle re-stamps on every poll → closed not-planned, refiled as #302 (search pre-checked 0); SDK/daemon defect filed by the Pilots session (pitfall `poller-branch-lookup-marks-issue-done-from-another-issues-pr`, recurrence) · C15 [console#481](https://github.com/qf-studio/pilot-console/issues/481) (`stats.medianTimeToPrMs` from the ticket ledger; U2's Time to PR has no source) → PR#482 failed the wire-contract check → autopilot #483 → **PR#484 open, checks green bar `test`** → held U22 (UI binds it) after C15.** Verified correct on the live tenant 11-04 (UI main 9f20516, console prod-0.1.60): U1–U3, U4 grouping, U5 layout, U6 Run Story with all five rows, U7 share toggle, U8 Review empty state. Still open: U9 tree/Context "—" until pilot#5810 (P17, Pilots session) · U5 "Read by Pilot this week" "—" on live (P18 merged; tenant daemon version unchecked) · U8 PR#276 + C1 PR#442 unreviewed · ui#266 decision · legacy "Overview" header + range/project filters above the Figma header (founder call) · hidden mobile glance renders "Cost / shipped $" (U17 scope). Was: 🚧 **11-02 audit — wave-1 code complete except the briefs trio; exit evidence open.** MERGED + LIVE (console `prod-0.1.51` = main; UI deploy 10-27 at main `659063ae5`): U1–U5, U9, U8, U6 (ui#277), U7 (ui#282 → PR#285), U19 (ui#280 → PR#284), X2 (ui#283 → PR#286), TASK-590 W1 (ui#279 → PR#281) · C1 (console#440 → PR#442), C2 (#450 → PR#452), C3, C7, C8 (#424: $300 ceiling + packs), C14 (#449 → PR#451), X1 (#453 → PR#454) · P1, P9 (+ fixes #5812–#5814), P10, P11 fix (#5798 → PR#5819), P16, P18 (#5857 → PR#5859). **Still held**: C6 brief store + Briefs API + SES email — gated on **I3 only** (Nelya SES sender; P9 merged 10-22) → U11, U12 after C6. **Wave-1 exit NOT met**: the P11 real run with agent turns is not archived on pilot#5793 (hard gate, line 5) and I2 (pen test on canary, Nelya) waits on it; Run Story on a Done card, share page, Context panel and the daily-cap banner are not exercised on the canary after 10-27 (the console smoke 10-26 12:30Z predates them). Open: pilot#5810 (P17 chat events, design; U9 renders `—`), ui#266 (mode-pills decision, founder), D1–D5/D7 Figma (founder; gate U11/U12 only). **Unfiled from the PR#451 (C14) review**: ordinal read outside the org lock · lossy 0037 down path · standing reader built twice · no RLS on `ticket_pack_draws`. History to 10-26 15:10Z: git log on this line + README Recent 10-22/10-26.
 
 **P11 hard gate (10-22 review):** PR#5795 merged with a report of 8 PASS, but every executor run had failed in ~2 s (`exit status 1`) and the harness only errors on a nil result → false-success. Fix filed as #5798; the gate stays open until a real run with agent turns is archived.
 **Created**: 2026-10-22
@@ -443,6 +443,90 @@ probe: absent  qf-studio/pilot-console-ui /api/v1/share/
 - Share analytics or expiry.
 - Roles beyond owner (D4).
 
+### LEG U20 — repo: qf-studio/pilot-console-ui — title: fix(task-id): pilotTaskId keeps a sequenceId that already carries the provider prefix, so queue rows and the ticket page stop asking the daemon for GH-GH-N
+
+## Context
+The console serves a GitHub card's `link.sequenceId` as the daemon task id itself. On the live tenant (2026-11-04) GET /api/v1/board/cards returns sequenceId "GH-3" and the console treats sequence_id as the daemon task key everywhere (approvals, drafts: "GH-83", "GH-4817"). `src/lib/pilotTaskId.ts` strips only a leading "#" and then prepends "GH-", so "GH-3" becomes "GH-GH-3". Two surfaces break. The dashboard queue row id renders "GH-GH-3" and wraps onto two lines. The ticket page run-events fetch in `src/views/IssueView.vue` (near line 152) calls GET /api/v1/instances/{id}/pilot/tasks/GH-GH-3/events, gets 404, and renders "No run yet for this issue"; the same call with GH-3 returns 200. The fixture in `src/views/__tests__/IssueView.spec.ts` uses sequenceId "#87", a shape the console never emits.
+
+probe: present qf-studio/pilot-console-ui export function pilotTaskId
+probe: present qf-studio/pilot-console-ui sequenceId: '#87'
+
+## Scope
+- `src/lib/pilotTaskId.ts`: for github, return sequenceId unchanged when it already starts with "GH-"; keep the "#" strip for a bare number. Apply the same guard for jira ("JIRA-") and linear ("LIN-"). State the console's real wire value in the doc comment.
+- New file, plain text: src/lib/__tests__/pilotTaskId.spec.ts covering the three providers with a prefixed id, a bare number and a "#"-prefixed number.
+- `src/views/__tests__/IssueView.spec.ts`: change the fixture to sequenceId "GH-87" and keep the assertion that getPilotTaskEvents receives "GH-87"; add one case with "#87" that still yields "GH-87".
+- `src/components/dashboard/__tests__/DashboardQueue.spec.ts`: a card whose link has sequenceId "GH-3" renders the row id "GH-3".
+
+## Acceptance
+- [ ] `npm test` passes; paste the output into the PR body.
+- [ ] Remove the prefix guard in pilotTaskId -> pilotTaskId.spec.ts fails
+- [ ] Remove the prefix guard in pilotTaskId -> the IssueView.spec.ts "GH-87" assertion fails
+- [ ] `npm run build` passes; paste the output into the PR body.
+- [ ] `npm run lint` passes; paste the output into the PR body.
+
+## Out of scope
+The console's sequence_id shape. Any change to the daemon converters.
+
+## Refs
+- Navigator TASK-583 (2026-11-04 wave-1 alignment audit) · ui#242 (U4) · ui#272
+
+### LEG U21 — repo: qf-studio/pilot-console-ui — title: feat(queue): dashboard queue rows show the duration and diff meta from the execution join now that the console serves durationMs
+
+## Context
+`src/components/dashboard/DashboardQueue.vue` keeps executions empty on purpose (comment near line 21: the console serves no durationMs yet, qf-studio/pilot-console#436). That premise is gone. Console PR#439 (closes #436) ships durationMs, linesAdded and linesRemoved on GET /api/v1/board/cards/{id}/execution (live tenant 2026-11-04: GH-3 returns durationMs 79145; the lines fields are absent when zero) and project/parentId on the cards list. `src/components/dashboard/queue.ts` already has buildMeta, which formats "12 min · +184 −32" from a CardExecution and omits absent parts. The adapter method getCardExecution exists in `src/lib/api/httpAdapter.ts` and `src/lib/api/mockAdapter.ts`. The queue caps at 3 groups × 3 rows, so a fetch per rendered row is bounded at 9 requests, never one per card on the board.
+
+probe: present qf-studio/pilot-console-ui getCardExecution\(cardId
+probe: present qf-studio/pilot-console durationMs,omitempty
+probe: present qf-studio/pilot-console-ui executions stay empty
+
+Depends on: #{{U20}}
+
+## Scope
+- `src/components/dashboard/DashboardQueue.vue`: after listCards, build the queue once with empty executions, collect the card ids of the rendered rows (at most 9), call getCardExecution for each with Promise.allSettled, store the fulfilled results by card id and recompute the queue. A rejected fetch leaves that row's meta empty and never blocks the others. Remove the #436 gate comments. Tokens and cost stay off the row.
+- `src/components/dashboard/__tests__/DashboardQueue.spec.ts`: with a mock adapter whose getCardExecution resolves durationMs 79145, linesAdded 12, linesRemoved 3 for one card and rejects for another, the first row shows "1 min · +12 −3" and the second row shows empty meta; getCardExecution is called once per rendered row and not for rows hidden behind the 3×3 cap.
+- `src/lib/api/mockAdapter.ts`: getCardExecution returns a duration for the mock's done cards so the mock dashboard shows meta.
+
+## Acceptance
+- [ ] `npm test` passes; paste the output into the PR body.
+- [ ] Remove the getCardExecution calls from DashboardQueue.vue -> the DashboardQueue.spec.ts meta assertion fails
+- [ ] Fetch executions for every card instead of the rendered rows -> the DashboardQueue.spec.ts call-count assertion fails
+- [ ] `npm run build` passes; paste the output into the PR body.
+- [ ] `npm run lint` passes; paste the output into the PR body.
+
+## Out of scope
+Epic trees stay as built. No change to the console cards-list payload. No tokens or USD on rows.
+
+## Refs
+- Navigator TASK-583 (2026-11-04 wave-1 alignment audit) · ui#242 (U4) · ui#272 · qf-studio/pilot-console#436 · qf-studio/pilot-console PR#439
+
+### LEG C15 — repo: qf-studio/pilot-console — title: feat(dashboard): stats.medianTimeToPrMs on GET /api/v1/dashboard — median run duration of succeeded executions in the window, from the ticket ledger
+
+## Context
+GET /api/v1/dashboard returns stats with only shipped and needsYou (`internal/dashboardapi/dto.go`, statsDTO). The UI's "Time to PR" card (U2, ui#240 and ui#249) renders "—" with the note "Available when your box reports metrics." because no field exists. The ticket ledger (`internal/db/migrations/0028_ticket_ledger.up.sql`) holds one row per execution with status, started_at, completed_at and pr_url, ingested from the daemon's per-task usage rows by `internal/fleet/usagepoller.go` (console PR#405, PR#410, PR#412). For a Pilot run, completed_at is the moment the PR is open; the merge happens later in autopilot. So completed_at minus started_at over succeeded execution rows is the "Issue to PR" that the run story shows per card (live tenant: "Issue to PR 1m 21s" on GH-3). Nothing computes a median. The daemon metrics passthrough carries no median either. `internal/fleet/ledger_store.go` already has org-scoped ledger readers (ListTicketLedger, DailyLedgerRows) and the succeeded-status predicate (SucceededExecutionTaskIDs).
+
+probe: present qf-studio/pilot-console type statsDTO struct
+probe: present qf-studio/pilot-console func \(o \*orgScope\) DailyLedgerRows
+probe: absent  qf-studio/pilot-console MedianTimeToPrMs[[:space:]]+\*int64
+
+## Scope
+- `internal/fleet/ledger_store.go`: a new org-scoped reader that returns the median of completed_at minus started_at in milliseconds over ticket_ledger rows with kind execution, the succeeded status the poller writes (reuse the predicate SucceededExecutionTaskIDs uses), completed_at not null and completed_at inside the half-open window [since, until). Use percentile_cont(0.5) in SQL. Return nil when no row qualifies.
+- `internal/dashboardapi/routes.go`: Deps gains a Ledger dependency, an interface with that one method, in the style of BoardStore. `internal/dashboardapi/handlers.go` calls it with the resolved window and sets a new statsDTO field MedianTimeToPrMs of type pointer to int64 with the json tag medianTimeToPrMs and omitempty, so the key is absent when there is no row. A ledger error logs at Warn and leaves the field absent; it never fails the dashboard.
+- Wire the dependency where the dashboard routes are registered, from the org-scoped fleet store the usage API already uses.
+- Tests: `internal/fleet/ticket_ledger_test.go` gains a case with three succeeded rows of 60 s, 120 s and 600 s (median 120000) plus one row outside the window and one failed row, both excluded. `internal/dashboardapi/handlers_test.go` wire-contract fixture gains medianTimeToPrMs and a no-rows case asserts the key is absent from the raw body.
+
+## Acceptance
+- [ ] `go test -race ./internal/fleet/ -run TicketLedger` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/dashboardapi/` passes; paste the output into the PR body.
+- [ ] Replace percentile_cont(0.5) with avg -> the three-row ledger test fails
+- [ ] Drop the window predicate from the query -> the ledger test fails
+- [ ] Remove omitempty from the new json tag -> the no-rows wire-contract test fails
+
+## Out of scope
+The UI binding of the field (held leg U22, filed after this merges). PR-to-merge timings. Per-project medians.
+
+## Refs
+- Navigator TASK-583 (2026-11-04 wave-1 alignment audit) · ui#240 (U2) · console#405 (ticket ledger)
+
 ## Held legs (filed when upstream merges)
 
 | Leg | Repo | After | Body source |
@@ -453,6 +537,7 @@ probe: absent  qf-studio/pilot-console-ui /api/v1/share/
 | I2 pen test on canary | infra (Nelya) | P11 merged | §8.8 D1 |
 | I3 SES sender | infra (Nelya) | — | §8.7 |
 | D1–D5, D7 | Figma (founder) | — | §6, §8.1, §8.2, §8.7 |
+| U22 Time to PR card binds stats.medianTimeToPrMs; note goes away when present | pilot-console-ui | C15 merged | LEG C15 |
 
 ## Refs
 
@@ -478,6 +563,9 @@ probe: absent  qf-studio/pilot-console-ui /api/v1/share/
 - U19 → https://github.com/qf-studio/pilot-console-ui/issues/280 (TASK-589)
 - X1 → https://github.com/qf-studio/pilot-console/issues/453 (TASK-592)
 - X2 → https://github.com/qf-studio/pilot-console-ui/issues/283
+- U20 → https://github.com/qf-studio/pilot-console-ui/issues/298
+- U21 → https://github.com/qf-studio/pilot-console-ui/issues/302 (refiled 11-04 13:59Z; ui#299 closed not-planned — the daemon's merged-PR title search for "GH-299" matched PR#163 "…hardcoded $299" and stamped pilot-done with no run; studio-sdk SearchMergedPRsForIssueOnBase trusts total_count)
+- C15 → https://github.com/qf-studio/pilot-console/issues/481
 - Follow-ups from the 10-22 reviews (third batch): pilot#5837 (brief kind filter) · pilot#5838 (example config + CLI window)
 - Follow-ups from the 10-22 reviews (second batch): ui#271 (U5 fix) · ui#272 (U4 fix) · console#436 (card/execution DTO fields) · pilot#5816 (P18 docs summary) · pilot#5812/#5813/#5814 (P9 fixes)
 - Follow-ups from the 10-22 reviews: ui#262 (U2 fix) · ui#263 (USD absent) · ui#264 (U3 fix) · ui#265 (chat confirmation) · ui#266 (mode decision) · console#430 (activity since) · console#431 (proxy USD) · console#432 (allowance hygiene) · pilot#5810 (P17 subagent events, design)

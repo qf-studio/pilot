@@ -3399,20 +3399,20 @@
         ]
       },
       "TASK-583": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-583-wave1-design-update-proof-surface.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/pilot-console-nav-start-521e07/.agent/tasks/TASK-583-wave1-design-update-proof-surface.md",
         "title": "Wave 1 \u2014 design update + proof surface (Run Story, Review needed, briefs, pen test)",
-        "status": "blocked",
+        "status": "completed",
         "concepts": [
-          "markers",
           "database",
-          "deployment",
-          "context",
           "authentication",
+          "markers",
           "theory of mind",
           "testing",
+          "frontend",
           "api",
           "knowledge",
-          "frontend"
+          "context",
+          "deployment"
         ]
       },
       "TASK-589": {
@@ -18305,7 +18305,7 @@
       "mem-281"
     ]
   },
-  "last_updated": "2026-11-04T11:37:22.297675+00:00",
+  "last_updated": "2026-11-04T13:59:51.714807+00:00",
   "stats": {
     "total_nodes": 857,
     "total_edges": 998,
