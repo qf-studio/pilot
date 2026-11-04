@@ -6763,8 +6763,16 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 		wg.Wait()
 
+		// GH-6037: the acceptance evidence runs before the review so the reviewer
+		// reads it as the PR body; nil when the review will not run or there is no
+		// time for both, and the evidence then runs at PR creation as before.
+		var prePREvidence *AcceptanceEvidenceCollection
+		if git != nil {
+			prePREvidence = r.collectAcceptanceEvidenceForReview(ctx, task, git.ProjectPath(), result.QualityGates)
+		}
+
 		// TASK-620: pre-PR review after the gates; shadow mode only records.
-		result.PrePRReview = r.runPrePRReview(ctx, task, executionPath, git, state, result.QualityGates)
+		result.PrePRReview = r.runPrePRReview(ctx, task, executionPath, git, state, result.QualityGates, prePREvidence)
 
 		// Handle self-review result
 		if runSelfReview && selfReviewErr != nil {
@@ -6781,6 +6789,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		// reads the finalize window for what comes after.
 		if fix := r.runReviewFix(taskCtx, taskCtxWasDone, task, executionPath, git, state, result.PrePRReview); fix != nil && fix.Status == ReviewFixFixed {
 			r.stampQualityGatesHead(ctx, git, result.QualityGates, log)
+			// GH-6037: the fix moved HEAD, so the first evidence result describes a
+			// tree that is not pushed; the PR body carries the rerun instead.
+			prePREvidence = r.evidenceAfterFixRound(ctx, task, git.ProjectPath(), fix, prePREvidence)
 		}
 
 		// Handle intent judge result
@@ -7373,7 +7384,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			if creatorKind == prCreatorKindGitHubSDK {
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
-				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates)
+				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates, prePREvidence)
 				prBody += RenderPrePRReviewSection(result.PrePRReview)  // TASK-620
 				prBody += selfReviewPRNote(result.SelfReviewTerminated) // GH-5900
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
@@ -7415,7 +7426,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// GH-5583: on the project-keyed path "Closes #" is emitted only
 				// for gitlab-sourced tasks (see mrSourceSuffix).
 				prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, mrSourceSuffix(task, creatorKind), task.Description)
-				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates)
+				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates, prePREvidence)
 				prBody += RenderPrePRReviewSection(result.PrePRReview)  // TASK-620
 				prBody += selfReviewPRNote(result.SelfReviewTerminated) // GH-5900
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
@@ -7453,7 +7464,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// GitHub: use gh CLI with auto-close keyword
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
-				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates)
+				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates, prePREvidence)
 				prBody += RenderPrePRReviewSection(result.PrePRReview)  // TASK-620
 				prBody += selfReviewPRNote(result.SelfReviewTerminated) // GH-5900
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
