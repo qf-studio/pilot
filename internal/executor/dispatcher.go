@@ -264,6 +264,12 @@ type Dispatcher struct {
 	billingLastErr  error
 	billingCreds    map[string]*BillingCredential // execID -> credential awaiting its worker
 	billingResolver *BillingResolver              // test seam; nil builds one from config
+
+	// Runtime billing-mode override (GH-6052); see billing_override.go.
+	billingOverrideMu    sync.Mutex
+	billingOverrideState *billingOverrideState // nil when the config decides
+	billingOverrideGen   uint64                // bumped per (re)arm and clear so a stale expiry is a no-op
+	billingOverrideTimer pauseTimer            // pending expiry
 }
 
 // NewDispatcher creates a new task dispatcher.
@@ -322,6 +328,10 @@ func (d *Dispatcher) SetDecomposer(decomposer *TaskDecomposer) {
 // periodic stale-recovery loop. The provided context controls the loop lifetime.
 func (d *Dispatcher) Start(ctx context.Context) error {
 	d.log.Info("Starting dispatcher")
+
+	// GH-6052: restore the persisted billing-mode override before any
+	// admission can run.
+	d.loadBillingOverride()
 
 	// GH-4392: reconcile dead-owner claimed executions before any other
 	// recovery/adoption step and before any worker exists for this process.
@@ -704,6 +714,7 @@ func (d *Dispatcher) Stop() {
 	d.cancel()
 	d.stopUsageLimitPauseTimer()
 	d.stopBillingState()
+	d.stopBillingOverrideTimer()
 
 	// Stop all workers
 	d.mu.Lock()

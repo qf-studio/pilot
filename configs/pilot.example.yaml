@@ -966,6 +966,8 @@ executor:
   #   # billing_key_unavailable alert is sent, and the resolver re-runs every 5
   #   # minutes. It never falls back to the subscription. The mode is recorded
   #   # as billing_mode on executions, chat turns and usage events.
+  #   # A runtime override set through the gateway (POST /api/v1/billing-mode) or
+  #   # the CLI wins over `mode` until it is cleared or its `until` passes (GH-6052).
   #   billing:
   #     mode: subscription          # subscription | api_key (omit = unset, passthrough)
   #     # api_key_command: "pass show anthropic/api-key"

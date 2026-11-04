@@ -129,6 +129,12 @@ const (
 	// byte-for-byte. Dispatcher.failBillingKeyUnavailable emits it once per
 	// outage, when the first resolver failure pauses admission.
 	AlertEventTypeBillingKeyUnavailable AlertEventType = "billing_key_unavailable"
+
+	// AlertEventTypeBillingModeChanged (GH-6052) mirrors
+	// alerts.EventTypeBillingModeChanged ("billing_mode_changed")
+	// byte-for-byte. Dispatcher.SetBillingOverride, ClearBillingOverride and the
+	// override's expiry emit it on every change of the mode in force.
+	AlertEventTypeBillingModeChanged AlertEventType = "billing_mode_changed"
 )
 
 // ReviewFixDeadManTrackerName is the alerts.DeadManTracker registration

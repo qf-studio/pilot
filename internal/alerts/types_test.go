@@ -91,6 +91,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeUsageLimitPause: {"usage_limit_pause", true},
 		// Billing key unavailable (GH-6016)
 		AlertTypeBillingKeyUnavailable: {"billing_key_unavailable", true},
+		// Billing mode changed (GH-6052)
+		AlertTypeBillingModeChanged: {"billing_mode_changed", true},
 		// Executor heartbeat timeout (GH-5498)
 		AlertTypeHeartbeatTimeout: {"heartbeat_timeout", true},
 		// Task timeout and watchdog kill (GH-5500)

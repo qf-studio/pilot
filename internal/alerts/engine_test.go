@@ -4844,3 +4844,83 @@ func TestHandleDailyTicketCapHit(t *testing.T) {
 		}
 	})
 }
+
+// TestBillingModeChangedAlert_RuleAndPayload covers GH-6052: a default info
+// rule exists, the executor's event type string matches the engine's, and the
+// alert carries the change in its message and payload.
+func TestBillingModeChangedAlert_RuleAndPayload(t *testing.T) {
+	if string(executor.AlertEventTypeBillingModeChanged) != string(EventTypeBillingModeChanged) {
+		t.Fatalf("executor event type %q != alerts event type %q",
+			executor.AlertEventTypeBillingModeChanged, EventTypeBillingModeChanged)
+	}
+	var rule AlertRule
+	for _, r := range DefaultConfig().Rules {
+		if r.Type == AlertTypeBillingModeChanged {
+			rule = r
+		}
+	}
+	if rule.Name == "" || !rule.Enabled || rule.Severity != SeverityInfo {
+		t.Fatalf("default rule = %+v, want an enabled info billing_mode_changed rule", rule)
+	}
+	if gaps := CoverageGaps(DefaultConfig()); len(gaps) != 0 {
+		t.Errorf("default config leaves handler-emitted types without a rule: %v", gaps)
+	}
+
+	rule.Channels = []string{"test-channel"}
+	config := &AlertConfig{
+		Enabled:  true,
+		Defaults: DefaultConfig().Defaults,
+		Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+		Rules:    []AlertRule{rule},
+	}
+	mockCh := newMockChannel("test-channel", "webhook")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	until := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	engine.ProcessEvent(Event{
+		Type: EventTypeBillingModeChanged,
+		Metadata: map[string]string{
+			"from": "subscription", "to": "api_key", "until": until, "source": "gateway", "set_by": "gateway",
+		},
+		Timestamp: time.Now(),
+	})
+	engine.ProcessEvent(Event{
+		Type:      EventTypeBillingModeChanged,
+		Metadata:  map[string]string{"from": "api_key", "to": "subscription", "until": "", "source": "config", "set_by": "expiry"},
+		Timestamp: time.Now(),
+	})
+	waitForAlerts(t, mockCh, 2, 2*time.Second)
+	got := mockCh.getAlerts()
+	if len(got) != 2 {
+		t.Fatalf("alerts = %d, want 2", len(got))
+	}
+	for _, a := range got {
+		if a.Type != AlertTypeBillingModeChanged || a.Severity != SeverityInfo {
+			t.Errorf("alert = %+v, want an info billing_mode_changed", a)
+		}
+	}
+	byTo := map[string]*Alert{}
+	for _, a := range got {
+		byTo[a.Metadata["to"]] = a
+	}
+	set, expired := byTo["api_key"], byTo["subscription"]
+	if set == nil || expired == nil {
+		t.Fatalf("alerts by to = %v, want api_key and subscription", byTo)
+	}
+	if want := "Billing mode changed subscription → api_key by gateway (gateway) until " + until; set.Message != want {
+		t.Errorf("message = %q, want %q", set.Message, want)
+	}
+	if want := "Billing mode changed api_key → subscription by expiry (config)"; expired.Message != want {
+		t.Errorf("message = %q, want %q", expired.Message, want)
+	}
+	for _, k := range []string{"from", "to", "until", "source", "set_by"} {
+		if _, ok := set.Metadata[k]; !ok {
+			t.Errorf("payload missing %q: %v", k, set.Metadata)
+		}
+	}
+}

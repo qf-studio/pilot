@@ -87,6 +87,16 @@ type AdmissionStatusSource interface {
 	AdmissionStatus() executor.AdmissionStatus
 }
 
+// BillingOverrideSource exposes the runtime billing-mode override (GH-6052) to
+// /api/v1/billing-mode and /api/v1/status. *executor.Dispatcher implements it.
+// SetBillingOverride wraps executor.ErrBillingOverrideInvalid for a request
+// that can never succeed as written.
+type BillingOverrideSource interface {
+	BillingOverride() executor.BillingOverrideStatus
+	SetBillingOverride(mode string, until time.Time, setBy string) error
+	ClearBillingOverride(setBy string) error
+}
+
 // PollerUpSource exposes per-adapter poller up/down state for the
 // pilot_poller_up Prometheus gauge (GH-5588). An AdapterHealthSource that also
 // implements it is wired into the exporter automatically.
@@ -120,6 +130,7 @@ type Server struct {
 	autopilotProvider        AutopilotProvider
 	adapterHealthSource      AdapterHealthSource
 	admissionSource          AdmissionStatusSource // GH-5862: admission pause on /api/v1/status
+	billingOverrideSource    BillingOverrideSource // GH-6052: runtime billing-mode override
 	dashboardStore           DashboardStore
 	dashboardProjectPath     string           // Project path filter for dashboard metrics/queue/history APIs ("" = all projects)
 	dashboardStatsWindowDays int              // GH-4735: rolling window (days) for windowed cost/success stats; 0 = use default
@@ -269,6 +280,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Protected API endpoints (auth required when configured)
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/api/v1/status", s.handleStatus)
+	apiMux.HandleFunc("/api/v1/billing-mode", s.handleBillingMode) // GH-6052
 	apiMux.HandleFunc("/api/v1/tasks", s.handleTasks)
 	apiMux.HandleFunc("/api/v1/autopilot", s.handleAutopilot)
 	apiMux.HandleFunc("/api/v1/metrics", s.handleDashboardMetrics)
@@ -486,6 +498,15 @@ func (s *Server) SetAdmissionStatusSource(source AdmissionStatusSource) {
 	s.admissionSource = source
 }
 
+// SetBillingOverrideSource wires the dispatcher's runtime billing-mode override
+// into /api/v1/billing-mode and /api/v1/status (GH-6052). Call it next to
+// SetAdmissionStatusSource.
+func (s *Server) SetBillingOverrideSource(source BillingOverrideSource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.billingOverrideSource = source
+}
+
 // SetGitGraphPath sets the project path used by the /api/v1/gitgraph endpoint.
 // Defaults to "." if not set.
 func (s *Server) SetGitGraphPath(path string) {
@@ -701,6 +722,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	v := s.version
 	ahSource := s.adapterHealthSource
 	admSource := s.admissionSource
+	billingSource := s.billingOverrideSource
 	s.mu.RUnlock()
 
 	resp := map[string]interface{}{
@@ -722,6 +744,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		if !adm.UsageLimitResumesAt.IsZero() {
 			resp["admission_resumes_at"] = adm.UsageLimitResumesAt
 		}
+	}
+
+	if billingSource != nil {
+		st := billingSource.BillingOverride()
+		resp["billing_mode"] = st.Mode
+		resp["billing_mode_source"] = st.Source
+		resp["billing_mode_until"] = formatBillingUntil(st.Until)
+		resp["billing_config_mode"] = st.ConfigMode
 	}
 
 	_ = json.NewEncoder(w).Encode(resp)

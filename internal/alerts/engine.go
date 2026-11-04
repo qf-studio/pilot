@@ -239,6 +239,13 @@ const (
 	// is api_key, the key did not resolve, and admission is paused.
 	EventTypeBillingKeyUnavailable EventType = "billing_key_unavailable"
 
+	// EventTypeBillingModeChanged (GH-6052) mirrors
+	// executor.AlertEventTypeBillingModeChanged byte-for-byte: the billing mode
+	// in force changed through a runtime override, its clear or its expiry.
+	// Metadata carries from, to, until (RFC 3339, empty when none), source
+	// (cli, gateway, fallback, config) and set_by.
+	EventTypeBillingModeChanged EventType = "billing_mode_changed"
+
 	// Heartbeat timeout events (GH-5498): fired by the executor's
 	// HeartbeatCallback (Runner.heartbeatTimeoutCallback) just before the
 	// Claude subprocess is killed for producing no stream events for longer
@@ -782,6 +789,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleUsageLimitPause(ctx, event)
 	case EventTypeBillingKeyUnavailable:
 		e.handleBillingKeyUnavailable(ctx, event)
+	case EventTypeBillingModeChanged:
+		e.handleBillingModeChanged(ctx, event)
 	case EventTypeHeartbeatTimeout:
 		e.handleHeartbeatTimeout(ctx, event)
 	case EventTypeTaskTimeout:
@@ -1305,6 +1314,37 @@ func (e *Engine) handleBillingKeyUnavailable(ctx context.Context, event Event) {
 	if !matched {
 		e.logger.Warn("billing key unavailable event has no matching rule — alert dropped silently",
 			slog.String("task_id", event.TaskID))
+	}
+}
+
+// billingModeChangedMessage words the billing mode change alert (GH-6052).
+func billingModeChangedMessage(event Event) string {
+	md := event.Metadata
+	msg := fmt.Sprintf("Billing mode changed %s → %s by %s (%s)", md["from"], md["to"], md["set_by"], md["source"])
+	if until := md["until"]; until != "" {
+		msg += " until " + until
+	}
+	return msg
+}
+
+// handleBillingModeChanged fires AlertTypeBillingModeChanged rules when the
+// dispatcher's billing mode override is set, cleared or expires (GH-6052). The
+// emitter only emits on a change, so no Condition-based counting happens here.
+func (e *Engine) handleBillingModeChanged(ctx context.Context, event Event) {
+	matched := false
+	for _, rule := range e.config.Rules {
+		if rule.Type != AlertTypeBillingModeChanged {
+			continue
+		}
+		matched = true
+		if rule.Enabled && e.shouldFire(rule) {
+			alert := e.createAlert(rule, event, billingModeChangedMessage(event))
+			e.fireAlert(ctx, rule, alert)
+		}
+	}
+	if !matched {
+		e.logger.Warn("billing mode changed event has no matching rule — alert dropped silently",
+			slog.String("to", event.Metadata["to"]))
 	}
 }
 
