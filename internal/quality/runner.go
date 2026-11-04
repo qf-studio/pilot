@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -504,6 +505,7 @@ func (r *Runner) executeCommand(ctx context.Context, gate *Gate, command string,
 
 	// Use shell to execute command (supports pipes, redirects, etc.)
 	cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
+	configureGateProcessGroup(cmd)
 	cmd.Dir = r.projectDir
 	// Later entries win over inherited duplicates (os/exec dedups keeping the last).
 	cmd.Env = append(os.Environ(), scope.env()...)
@@ -513,6 +515,12 @@ func (r *Runner) executeCommand(ctx context.Context, gate *Gate, command string,
 	cmd.Stderr = &stderr
 
 	err := cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) {
+		// The shell exited with status 0 but a descendant (for example a background
+		// server) still held the output pipes after WaitDelay. The gate itself ran
+		// to completion, so keep its exit status instead of reporting an error.
+		err = nil
+	}
 
 	// Combine stdout and stderr
 	output := stdout.String()
