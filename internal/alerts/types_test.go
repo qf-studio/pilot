@@ -93,6 +93,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeBillingKeyUnavailable: {"billing_key_unavailable", true},
 		// Billing mode changed (GH-6052)
 		AlertTypeBillingModeChanged: {"billing_mode_changed", true},
+		// CI poll API outage hold (GH-6056)
+		AlertTypeCIPollAPIOutage: {"ci_poll_api_outage", true},
 		// Executor heartbeat timeout (GH-5498)
 		AlertTypeHeartbeatTimeout: {"heartbeat_timeout", true},
 		// Task timeout and watchdog kill (GH-5500)

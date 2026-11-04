@@ -484,6 +484,11 @@ type CIChecksConfig struct {
 
 	// DiscoveryGracePeriod: how long to wait for checks to appear (default 60s).
 	DiscoveryGracePeriod time.Duration `yaml:"discovery_grace_period"`
+
+	// APIOutageBudget (GH-6056): how long a PR may sit held at waiting_ci
+	// while CheckCI keeps erroring (five consecutive errors start the hold)
+	// before it is failed. Default 30m; non-positive means the default.
+	APIOutageBudget time.Duration `yaml:"api_outage_budget"`
 }
 
 // ProjectCIChecksOverride lets a per-project controller override the global
@@ -775,6 +780,7 @@ func DefaultConfig() *Config {
 			Exclude:              []string{},
 			Required:             []string{},
 			DiscoveryGracePeriod: 60 * time.Second,
+			APIOutageBudget:      30 * time.Minute,
 		},
 		ReviewFeedback: &ReviewFeedbackConfig{
 			Enabled:       true,
@@ -1480,6 +1486,25 @@ type PRState struct {
 	// forever — it eventually stays parked for a human. Never reset
 	// (lifetime counter for the PR). Persisted.
 	BreakerReadoptCount int
+	// APIOutageHoldActive is true while this PR sits at StageWaitingCI under a
+	// CI-poll API outage hold (GH-6056): CheckCI errored
+	// apiOutageFailureThreshold times in a row, which is evidence about the
+	// GitHub API, not the PR. The PR is NOT failed and carries no label; the
+	// poll is backed off (APIOutageNextPoll) until a CheckCI succeeds
+	// (redriveAPIOutageHeldPR / handleWaitingCI clear the hold) or the
+	// ci_checks.api_outage_budget elapses since APIOutageSince. Persisted so
+	// the hold survives a daemon restart.
+	APIOutageHoldActive bool
+	// APIOutageSince is the time the hold started (the fifth consecutive
+	// CheckCI error); it anchors the outage budget and the CIWaitStartedAt
+	// correction. Persisted.
+	APIOutageSince time.Time
+	// APIOutageNextPoll is the earliest time the next CheckCI may run while the
+	// hold is active; the interval doubles from 30s to a 5min cap. Persisted.
+	APIOutageNextPoll time.Time
+	// apiOutageBackoff is the current backoff interval. In-memory only: after a
+	// restart the backoff simply restarts at its floor.
+	apiOutageBackoff time.Duration
 	// SizeGuardHoldActive and SizeGuardHoldHeadSHA are the GH-5378 size-guard
 	// hold pair, superseded by HoldActive/HoldHeadSHA (GH-5643).
 	//
@@ -1620,6 +1645,10 @@ func (ps *PRState) snapshot() *PRState {
 		PostMergeCINoWorkflowChecked: ps.PostMergeCINoWorkflowChecked,
 		BreakerHoldActive:            ps.BreakerHoldActive,
 		BreakerReadoptCount:          ps.BreakerReadoptCount,
+		APIOutageHoldActive:          ps.APIOutageHoldActive,
+		APIOutageSince:               ps.APIOutageSince,
+		APIOutageNextPoll:            ps.APIOutageNextPoll,
+		apiOutageBackoff:             ps.apiOutageBackoff,
 		SizeGuardHoldActive:          ps.SizeGuardHoldActive,
 		SizeGuardHoldHeadSHA:         ps.SizeGuardHoldHeadSHA,
 		HoldActive:                   ps.HoldActive,

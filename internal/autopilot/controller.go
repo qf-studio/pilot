@@ -896,6 +896,11 @@ type Controller struct {
 	// when set — nil in production, used by tests to simulate backoff and
 	// the abandon threshold's wall-clock window without real sleeps.
 	releaseBackfillClock func() time.Time
+	// ciPollClock overrides time.Now() for the waiting-CI check and the
+	// CI-poll API outage hold (GH-6056) when set — nil in production, used by
+	// tests to walk the backoff, the budget and the CI-timeout correction
+	// without real sleeps.
+	ciPollClock func() time.Time
 	// releaseBackfillCursor is where the next reconcileReleaseBackfill pass
 	// resumes in its due-row list, so the per-pass row cap rotates through all
 	// rows instead of re-touching the first few forever (GH-5657). Guarded by
@@ -3437,7 +3442,16 @@ func (c *Controller) handlePRCreated(ctx context.Context, prState *PRState, ghPR
 func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR *github.PullRequest) error {
 	// Initialize CIWaitStartedAt if not set (backwards compatibility)
 	if prState.CIWaitStartedAt.IsZero() {
-		prState.CIWaitStartedAt = time.Now()
+		prState.CIWaitStartedAt = c.ciNow()
+	}
+
+	// GH-6056: a PR under a CI-poll API outage hold is not polled here. The
+	// backed-off poll belongs to redriveAPIOutageHeldPR (processOnePR), which
+	// clears the hold on the first good poll and fails the PR once the outage
+	// budget elapses; until then there is nothing to evaluate, and no CI
+	// verdict (least of all a timeout) can be trusted.
+	if prState.APIOutageHoldActive {
+		return nil
 	}
 
 	// Check for CI timeout: use the minimum of CIWaitTimeout and the environment's CITimeout.
@@ -3448,7 +3462,7 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 	if envCITimeout > 0 && (ciTimeout == 0 || envCITimeout < ciTimeout) {
 		ciTimeout = envCITimeout
 	}
-	deadlineExceeded := time.Since(prState.CIWaitStartedAt) > ciTimeout
+	deadlineExceeded := c.ciNow().Sub(prState.CIWaitStartedAt) > ciTimeout
 
 	// GH-5066 (parent title clause 2, "no re-arm on base retarget"): a PR
 	// parked below via parkForBaseMismatch stays in StageWaitingCI, so it
@@ -3471,7 +3485,7 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 				"pr", prState.PRNumber, "issue", prState.IssueNumber, "prior_reason", prState.EscalationReason)
 			prState.Parked = false
 			prState.EscalationReason = ""
-			prState.CIWaitStartedAt = time.Now()
+			prState.CIWaitStartedAt = c.ciNow()
 			deadlineExceeded = false
 			if prState.IssueNumber > 0 {
 				if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, labelParkedAwaitingApproval); err != nil {
@@ -3521,7 +3535,7 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 			// before this refresh ran. Clearing deadlineExceeded here keeps
 			// the GH-4851 same-tick-success-wins ordering intact: applyCIOutcome
 			// below still short-circuits on CISuccess regardless of this flag.
-			prState.CIWaitStartedAt = time.Now()
+			prState.CIWaitStartedAt = c.ciNow()
 			deadlineExceeded = false
 		} else if sha == "" {
 			c.log.Info("refreshed empty HeadSHA from GitHub",
@@ -3545,35 +3559,7 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 	// Non-blocking CI status check
 	status, err := c.ciMonitor.CheckCI(ctx, sha)
 	if err != nil {
-		prState.ConsecutiveAPIFailures++
-		c.log.Warn("CI status check failed",
-			"pr", prState.PRNumber,
-			"sha", ShortSHA(sha),
-			"consecutive_failures", prState.ConsecutiveAPIFailures,
-			"error", err)
-
-		// If we've had 5 consecutive failures, transition to failed stage
-		if prState.ConsecutiveAPIFailures >= 5 {
-			prState.Stage = StageFailed
-			prState.Error = fmt.Sprintf("CI check API failed %d consecutive times: %v",
-				prState.ConsecutiveAPIFailures, err)
-			// GH-4855: this branch produces the exact GH-4851 incident
-			// fingerprint — zero successful polls, ci_status still at its
-			// adoption default, and (without this) no TerminalLabel. Without
-			// a TerminalLabel, a later external close of this stranded PR
-			// (notifyExternalClose, GH-3806) would default to
-			// pilot-retry-ready and silently re-dispatch the issue, even
-			// though autopilot never got a single successful read on this
-			// PR's CI. Mirrors the confirmed-CI-timeout branch above
-			// (checkPRWaitingCI, GH-4851/#4853) — this is just as terminal.
-			prState.TerminalLabel = github.LabelFailed
-			c.log.Error("PR transitioned to failed due to consecutive API failures",
-				"pr", prState.PRNumber,
-				"consecutive_failures", prState.ConsecutiveAPIFailures)
-			return nil
-		}
-
-		// Don't fail the PR on transient errors, will retry next poll cycle
+		c.handleCIPollError(prState, sha, err)
 		return nil
 	}
 
@@ -3604,7 +3590,7 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 	}
 
 	if deadlineExceeded {
-		waited := time.Since(prState.CIWaitStartedAt)
+		waited := c.ciNow().Sub(prState.CIWaitStartedAt)
 		// GH-5066: a PR stacked on a non-default base (sibling pilot/GH-*
 		// branch) never reaches handleMerging's parkForBaseMismatch guard
 		// when the repo's CI workflow is scoped to the default branch only
@@ -3688,6 +3674,198 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 	}
 
 	return nil
+}
+
+// CI-poll API outage hold (GH-6056). CheckCI erroring five times in a row is
+// evidence about the GitHub API, not about the PR: on 2026-11-04 five HTTP 500s
+// in 45 s failed PR#6055 while its CI run was green, and no redrive applies to
+// that stage. The PR now stays at waiting_ci under APIOutageHoldActive, polled
+// on a doubling backoff, until a poll succeeds or ci_checks.api_outage_budget
+// elapses.
+const (
+	// apiOutageFailureThreshold is the consecutive CheckCI error count that
+	// starts the hold (and, before GH-6056, failed the PR).
+	apiOutageFailureThreshold = 5
+	// apiOutageBackoffFloor is the wait before the first poll of a hold.
+	apiOutageBackoffFloor = 30 * time.Second
+	// apiOutageBackoffCap bounds the doubling backoff.
+	apiOutageBackoffCap = 5 * time.Minute
+	// DefaultAPIOutageBudget is how long a hold may last before the PR is
+	// failed when ci_checks.api_outage_budget is unset.
+	DefaultAPIOutageBudget = 30 * time.Minute
+)
+
+// ciNow returns the waiting-CI clock: time.Now() unless a test installed
+// ciPollClock.
+func (c *Controller) ciNow() time.Time {
+	if c.ciPollClock != nil {
+		return c.ciPollClock()
+	}
+	return time.Now()
+}
+
+// apiOutageBudget resolves ci_checks.api_outage_budget for this controller
+// (project overlay wins over the global block); non-positive means default.
+func (c *Controller) apiOutageBudget() time.Duration {
+	var cc *CIChecksConfig
+	if c.projectCIChecks != nil && c.projectCIChecks.CIChecks != nil {
+		cc = c.projectCIChecks.CIChecks
+	} else if c.config != nil {
+		cc = c.config.CIChecks
+	}
+	if cc == nil || cc.APIOutageBudget <= 0 {
+		return DefaultAPIOutageBudget
+	}
+	return cc.APIOutageBudget
+}
+
+// nextAPIOutageBackoff doubles the current backoff from the floor up to the cap.
+func nextAPIOutageBackoff(cur time.Duration) time.Duration {
+	if cur < apiOutageBackoffFloor {
+		return apiOutageBackoffFloor
+	}
+	if next := cur * 2; next < apiOutageBackoffCap {
+		return next
+	}
+	return apiOutageBackoffCap
+}
+
+// handleCIPollError records a failed CheckCI for prState. Below
+// apiOutageFailureThreshold it just counts and the next normal poll retries.
+// The threshold error starts the hold (stays at waiting_ci, no label, one
+// warning alert). Errors seen while already held back the poll off and, once
+// the outage budget has elapsed, fail the PR exactly as the pre-GH-6056 fifth
+// error did.
+func (c *Controller) handleCIPollError(prState *PRState, sha string, err error) {
+	prState.ConsecutiveAPIFailures++
+	c.log.Warn("CI status check failed",
+		"pr", prState.PRNumber,
+		"sha", ShortSHA(sha),
+		"consecutive_failures", prState.ConsecutiveAPIFailures,
+		"error", err)
+
+	if prState.ConsecutiveAPIFailures < apiOutageFailureThreshold {
+		// Don't fail the PR on transient errors, will retry next poll cycle
+		return
+	}
+
+	now := c.ciNow()
+	if !prState.APIOutageHoldActive {
+		prState.APIOutageHoldActive = true
+		prState.APIOutageSince = now
+		prState.apiOutageBackoff = apiOutageBackoffFloor
+		prState.APIOutageNextPoll = now.Add(prState.apiOutageBackoff)
+		c.log.Warn("CI poll API outage: holding PR",
+			"pr", prState.PRNumber,
+			"sha", ShortSHA(sha),
+			"consecutive_failures", prState.ConsecutiveAPIFailures,
+			"budget", c.apiOutageBudget(),
+			"next_poll", prState.APIOutageNextPoll,
+			"error", err)
+		c.emitCIPollAPIOutageAlert(prState, "hold", 0, err)
+		return
+	}
+
+	elapsed := now.Sub(prState.APIOutageSince)
+	if elapsed > c.apiOutageBudget() {
+		prState.APIOutageHoldActive = false
+		prState.Stage = StageFailed
+		prState.Error = fmt.Sprintf("CI check API failed %d consecutive times over %s: %v",
+			prState.ConsecutiveAPIFailures, elapsed.Round(time.Second), err)
+		// GH-4855: this branch produces the exact GH-4851 incident
+		// fingerprint — zero successful polls, ci_status still at its
+		// adoption default, and (without this) no TerminalLabel. Without
+		// a TerminalLabel, a later external close of this stranded PR
+		// (notifyExternalClose, GH-3806) would default to
+		// pilot-retry-ready and silently re-dispatch the issue, even
+		// though autopilot never got a single successful read on this
+		// PR's CI. Mirrors the confirmed-CI-timeout branch in
+		// handleWaitingCI (GH-4851/#4853) — this is just as terminal.
+		prState.TerminalLabel = github.LabelFailed
+		c.log.Error("PR transitioned to failed due to consecutive API failures",
+			"pr", prState.PRNumber,
+			"consecutive_failures", prState.ConsecutiveAPIFailures,
+			"outage", elapsed,
+			"budget", c.apiOutageBudget())
+		c.emitCIPollAPIOutageAlert(prState, "budget_exhausted", elapsed, err)
+		return
+	}
+
+	prState.apiOutageBackoff = nextAPIOutageBackoff(prState.apiOutageBackoff)
+	prState.APIOutageNextPoll = now.Add(prState.apiOutageBackoff)
+}
+
+// emitCIPollAPIOutageAlert sends the ci_poll_api_outage event: once when the
+// hold starts and once more if the budget elapses and the PR is failed.
+func (c *Controller) emitCIPollAPIOutageAlert(prState *PRState, outcome string, elapsed time.Duration, cause error) {
+	if c.alertsEngine == nil {
+		return
+	}
+	c.alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventTypeCIPollAPIOutage,
+		Error:     cause.Error(),
+		Timestamp: c.ciNow(),
+		Metadata: map[string]string{
+			"repo":     c.repoKey(),
+			"pr":       strconv.Itoa(prState.PRNumber),
+			"outcome":  outcome,
+			"failures": strconv.Itoa(prState.ConsecutiveAPIFailures),
+			"since":    prState.APIOutageSince.Format(time.RFC3339),
+			"elapsed":  elapsed.Round(time.Second).String(),
+			"budget":   c.apiOutageBudget().String(),
+		},
+	})
+}
+
+// redriveAPIOutageHeldPR is GH-6056's third redrive (after reAdoptHeldRebasePR
+// and redriveFailedPRForBaseRetarget). It owns the polling of a PR held under
+// APIOutageHoldActive: when the backoff has elapsed it asks CheckCI for the
+// live head. A successful read — not a head-SHA change — clears the hold, resets
+// the failure counter and backoff, and moves CIWaitStartedAt forward by the
+// outage length so the outage never counts toward the CI timeout; the normal
+// waiting-CI check then continues in ProcessPR. A failed read backs the poll off
+// further or, past the budget, fails the PR (handleCIPollError). Attempt
+// counters are untouched. A no-op for every PR not currently held.
+func (c *Controller) redriveAPIOutageHeldPR(ctx context.Context, prState *PRState, ghPR *github.PullRequest) {
+	if !prState.APIOutageHoldActive {
+		return
+	}
+	if prState.Stage != StageWaitingCI {
+		// The PR left waiting_ci some other way; don't leave a stale hold behind.
+		prState.APIOutageHoldActive = false
+		prState.APIOutageNextPoll = time.Time{}
+		prState.apiOutageBackoff = 0
+		return
+	}
+	now := c.ciNow()
+	if now.Before(prState.APIOutageNextPoll) {
+		return
+	}
+	sha := prState.HeadSHA
+	if ghPR != nil && ghPR.Head.SHA != "" {
+		sha = ghPR.Head.SHA
+	}
+	if sha == "" {
+		return
+	}
+	if _, err := c.ciMonitor.CheckCI(ctx, sha); err != nil {
+		c.handleCIPollError(prState, sha, err)
+		return
+	}
+
+	outage := now.Sub(prState.APIOutageSince)
+	if !prState.CIWaitStartedAt.IsZero() && outage > 0 {
+		prState.CIWaitStartedAt = prState.CIWaitStartedAt.Add(outage)
+	}
+	prState.APIOutageHoldActive = false
+	prState.APIOutageSince = time.Time{}
+	prState.APIOutageNextPoll = time.Time{}
+	prState.apiOutageBackoff = 0
+	prState.ConsecutiveAPIFailures = 0
+	c.log.Info("CI poll API outage over",
+		"pr", prState.PRNumber,
+		"sha", ShortSHA(sha),
+		"outage", outage.Round(time.Second))
 }
 
 // applyCIOutcome transitions prState based on a freshly-read, same-tick CI
@@ -10516,6 +10694,11 @@ func (c *Controller) processOnePR(ctx context.Context, snap *PRState) (stopTick 
 	// also run before ProcessPR for the same reason as reAdoptHeldRebasePR
 	// above.
 	c.redriveFailedPRForBaseRetarget(ctx, pr, ghPR)
+
+	// GH-6056: poll a PR held under a CI-poll API outage on its backoff and
+	// release the hold on the first good read — a no-op for every PR not
+	// currently held. Also before ProcessPR, which leaves a held PR alone.
+	c.redriveAPIOutageHeldPR(ctx, pr, ghPR)
 
 	// GH-5378: revive a CI-fix-size-guard hold back into the pipeline
 	// once its branch has moved — a no-op for every PR not currently
