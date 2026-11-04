@@ -1,6 +1,6 @@
 # TASK-583: Wave 1 — design update + proof surface (Run Story, Review needed, briefs, pen test)
 
-**Status**: 🚀 **11-04 ALIGNMENT AUDIT — three gaps behind ✅ rows found on main + the live tenant, DISPATCHED (`pilot` + `no-decompose`): U20 [ui#298](https://github.com/qf-studio/pilot-console-ui/issues/298) → **PR#300 merged 13:45Z, deployed 13:49Z, verified live (GH-3 ticket page shows the completed run timeline); review APPROVE** · U21 [ui#302](https://github.com/qf-studio/pilot-console-ui/issues/302) (queue meta line still gated off though console PR#439 serves `durationMs`; bounded fetch for the ≤9 rendered rows) — **first filing ui#299 was a FALSE DONE**: the daemon stamped `pilot-done` at 13:23Z with no run because the SDK's merged-PR title search for "GH-299" matched PR#163 ("…hardcoded $299"; GitHub tokenises GH-299 as GH + 299, `SearchMergedPRsForIssueOnBase` trusts total_count); a label cycle re-stamps on every poll → closed not-planned, refiled as #302 (search pre-checked 0); SDK/daemon defect filed by the Pilots session (pitfall `poller-branch-lookup-marks-issue-done-from-another-issues-pr`, recurrence) · C15 [console#481](https://github.com/qf-studio/pilot-console/issues/481) (`stats.medianTimeToPrMs` from the ticket ledger; U2's Time to PR has no source) → PR#482 failed the wire-contract check → autopilot #483 → **PR#484 open, checks green bar `test`** → held U22 (UI binds it) after C15.** Verified correct on the live tenant 11-04 (UI main 9f20516, console prod-0.1.60): U1–U3, U4 grouping, U5 layout, U6 Run Story with all five rows, U7 share toggle, U8 Review empty state. Still open: U9 tree/Context "—" until pilot#5810 (P17, Pilots session) · U5 "Read by Pilot this week" "—" on live (P18 merged; tenant daemon version unchecked) · U8 PR#276 + C1 PR#442 unreviewed · ui#266 decision · legacy "Overview" header + range/project filters above the Figma header (founder call) · hidden mobile glance renders "Cost / shipped $" (U17 scope). Was: 🚧 **11-02 audit — wave-1 code complete except the briefs trio; exit evidence open.** MERGED + LIVE (console `prod-0.1.51` = main; UI deploy 10-27 at main `659063ae5`): U1–U5, U9, U8, U6 (ui#277), U7 (ui#282 → PR#285), U19 (ui#280 → PR#284), X2 (ui#283 → PR#286), TASK-590 W1 (ui#279 → PR#281) · C1 (console#440 → PR#442), C2 (#450 → PR#452), C3, C7, C8 (#424: $300 ceiling + packs), C14 (#449 → PR#451), X1 (#453 → PR#454) · P1, P9 (+ fixes #5812–#5814), P10, P11 fix (#5798 → PR#5819), P16, P18 (#5857 → PR#5859). **Still held**: C6 brief store + Briefs API + SES email — gated on **I3 only** (Nelya SES sender; P9 merged 10-22) → U11, U12 after C6. **Wave-1 exit NOT met**: the P11 real run with agent turns is not archived on pilot#5793 (hard gate, line 5) and I2 (pen test on canary, Nelya) waits on it; Run Story on a Done card, share page, Context panel and the daily-cap banner are not exercised on the canary after 10-27 (the console smoke 10-26 12:30Z predates them). Open: pilot#5810 (P17 chat events, design; U9 renders `—`), ui#266 (mode-pills decision, founder), D1–D5/D7 Figma (founder; gate U11/U12 only). **Unfiled from the PR#451 (C14) review**: ordinal read outside the org lock · lossy 0037 down path · standing reader built twice · no RLS on `ticket_pack_draws`. History to 10-26 15:10Z: git log on this line + README Recent 10-22/10-26.
+**Status**: 🚀 **11-04 16:00Z board — U21 [ui#302](https://github.com/qf-studio/pilot-console-ui/issues/302) LANDED (PR#305 14:28Z; live rows show `1 min` meta) · U23 [ui#307](https://github.com/qf-studio/pilot-console-ui/issues/307) LANDED (PR#312 15:17Z + minors #313 → PR#317 15:46Z; RightRail, AppHeader only below md) · U25 [ui#309](https://github.com/qf-studio/pilot-console-ui/issues/309) landed with a pre-PR REQUEST-CHANGES in shadow (PR#316 15:40Z: padding differs, composer not pinned, not the same place on both pages) → post-merge fix [ui#318](https://github.com/qf-studio/pilot-console-ui/issues/318) auto-filed · U22 [ui#306](https://github.com/qf-studio/pilot-console-ui/issues/306) HOLDING on CI fix PR#320 (#315; PR#314 closed) · U24 #308 holding on U22 · U26 #310 cleared (U25 closed) · U27 #311 airborne · ui#304 (vague PR-body-only post-merge issue from PR#303) closed not-planned. Desktop shell not yet verified live: the founder's Chrome window is 610 px wide, so the mobile layout renders; verify after #318 lands.** Earlier: **FOUNDER DESIGN WALK-THROUGH → SIX UI LEGS DISPATCHED (`pilot` + `no-decompose`, numbers pre-checked 0 against the merged-PR title search): U22 [ui#306](https://github.com/qf-studio/pilot-console-ui/issues/306) Time to PR binds `stats.medianTimeToPrMs` (C15 PR#484 merged 14:16Z) · U23 [ui#307](https://github.com/qf-studio/pilot-console-ui/issues/307) shell: no top bar on desktop, RightRail with avatar/bell/chat circles, org name as the title · U24 [ui#308](https://github.com/qf-studio/pilot-console-ui/issues/308) Home: drop the Overview row + window/project pills, window fixed 30 d, right column 344 px (after U22) · U25 [ui#309](https://github.com/qf-studio/pilot-console-ui/issues/309) Research view in the Home geometry, 344 px Context panel with per-run numbers, composer in place → a send reads as an in-place swap (after U23) · U26 [ui#310](https://github.com/qf-studio/pilot-console-ui/issues/310) typed response blocks (steps · report · chart · cards) from a pinned wire contract (after U25; daemon emission = a pilot leg for the Pilots session) · U27 [ui#311](https://github.com/qf-studio/pilot-console-ui/issues/311) no side chat on desktop, the chat circle opens Research (after U25).** Founder rules recorded 11-04: the empty circles in the frames are today's controls moved (left rail = nav, top-right stack = avatar, bell, chat); the org name is the page title; no top bar; no date selectors now (a settings home later); keep "Last shipped · Pool" (§6.5) over the frame's "tokens · hours" for now; the Home composer IS the chat — on send the page content is replaced by the Research session (13-994) with blocks (execution steps, results, graphs, card/ticket lists), and the small side chat goes. Also: docs PR pilot#6063 merged 14:25Z; C15 merged. Earlier today: **ALIGNMENT AUDIT — three gaps behind ✅ rows found on main + the live tenant, DISPATCHED (`pilot` + `no-decompose`): U20 [ui#298](https://github.com/qf-studio/pilot-console-ui/issues/298) → **PR#300 merged 13:45Z, deployed 13:49Z, verified live (GH-3 ticket page shows the completed run timeline); review APPROVE** · U21 [ui#302](https://github.com/qf-studio/pilot-console-ui/issues/302) (queue meta line still gated off though console PR#439 serves `durationMs`; bounded fetch for the ≤9 rendered rows) — **first filing ui#299 was a FALSE DONE**: the daemon stamped `pilot-done` at 13:23Z with no run because the SDK's merged-PR title search for "GH-299" matched PR#163 ("…hardcoded $299"; GitHub tokenises GH-299 as GH + 299, `SearchMergedPRsForIssueOnBase` trusts total_count); a label cycle re-stamps on every poll → closed not-planned, refiled as #302 (search pre-checked 0); SDK/daemon defect filed by the Pilots session (pitfall `poller-branch-lookup-marks-issue-done-from-another-issues-pr`, recurrence) · C15 [console#481](https://github.com/qf-studio/pilot-console/issues/481) (`stats.medianTimeToPrMs` from the ticket ledger; U2's Time to PR has no source) → PR#482 failed the wire-contract check → autopilot #483 → **PR#484 open, checks green bar `test`** → held U22 (UI binds it) after C15.** Verified correct on the live tenant 11-04 (UI main 9f20516, console prod-0.1.60): U1–U3, U4 grouping, U5 layout, U6 Run Story with all five rows, U7 share toggle, U8 Review empty state. Still open: U9 tree/Context "—" until pilot#5810 (P17, Pilots session) · U5 "Read by Pilot this week" "—" on live (P18 merged; tenant daemon version unchecked) · U8 PR#276 + C1 PR#442 unreviewed · ui#266 decision · legacy "Overview" header + range/project filters above the Figma header (founder call) · hidden mobile glance renders "Cost / shipped $" (U17 scope). Was: 🚧 **11-02 audit — wave-1 code complete except the briefs trio; exit evidence open.** MERGED + LIVE (console `prod-0.1.51` = main; UI deploy 10-27 at main `659063ae5`): U1–U5, U9, U8, U6 (ui#277), U7 (ui#282 → PR#285), U19 (ui#280 → PR#284), X2 (ui#283 → PR#286), TASK-590 W1 (ui#279 → PR#281) · C1 (console#440 → PR#442), C2 (#450 → PR#452), C3, C7, C8 (#424: $300 ceiling + packs), C14 (#449 → PR#451), X1 (#453 → PR#454) · P1, P9 (+ fixes #5812–#5814), P10, P11 fix (#5798 → PR#5819), P16, P18 (#5857 → PR#5859). **Still held**: C6 brief store + Briefs API + SES email — gated on **I3 only** (Nelya SES sender; P9 merged 10-22) → U11, U12 after C6. **Wave-1 exit NOT met**: the P11 real run with agent turns is not archived on pilot#5793 (hard gate, line 5) and I2 (pen test on canary, Nelya) waits on it; Run Story on a Done card, share page, Context panel and the daily-cap banner are not exercised on the canary after 10-27 (the console smoke 10-26 12:30Z predates them). Open: pilot#5810 (P17 chat events, design; U9 renders `—`), ui#266 (mode-pills decision, founder), D1–D5/D7 Figma (founder; gate U11/U12 only). **Unfiled from the PR#451 (C14) review**: ordinal read outside the org lock · lossy 0037 down path · standing reader built twice · no RLS on `ticket_pack_draws`. History to 10-26 15:10Z: git log on this line + README Recent 10-22/10-26.
 
 **P11 hard gate (10-22 review):** PR#5795 merged with a report of 8 PASS, but every executor run had failed in ~2 s (`exit status 1`) and the harness only errors on a nil result → false-success. Fix filed as #5798; the gate stays open until a real run with agent turns is archived.
 **Created**: 2026-10-22
@@ -527,6 +527,178 @@ The UI binding of the field (held leg U22, filed after this merges). PR-to-merge
 ## Refs
 - Navigator TASK-583 (2026-11-04 wave-1 alignment audit) · ui#240 (U2) · console#405 (ticket ledger)
 
+### LEG U22 — repo: qf-studio/pilot-console-ui — title: feat(dashboard): Time to PR card binds stats.medianTimeToPrMs from GET /api/v1/dashboard; the degrade note shows only when the key is absent
+
+## Context
+Console PR#484 (closes qf-studio/pilot-console#481, merged 2026-11-04 14:16Z) adds medianTimeToPrMs to the stats object of GET /api/v1/dashboard: a number of milliseconds, the key absent when no succeeded run falls inside the window. The UI's "Time to PR" StatCard in `src/views/DashboardView.vue` (near line 367) renders a fixed "—" with DEGRADED_METRIC_NOTE from `src/lib/dashboardMetrics.ts`. The wire type WireDashboardStats in `src/lib/api/httpAdapter.ts` (near line 1066) and DashboardStats in `src/lib/api/types.ts` (near line 677) carry only shipped and needsYou. The Figma Home frame shows "~6 m" as the value with a muted unit, the StatCard value plus unit variant from GH-248.
+
+probe: present qf-studio/pilot-console-ui interface WireDashboardStats
+probe: absent  qf-studio/pilot-console-ui medianTimeToPrMs
+
+## Scope
+- `src/lib/api/types.ts` and `src/lib/api/httpAdapter.ts`: DashboardStats and WireDashboardStats gain an optional medianTimeToPrMs number; the decoder copies it when present and leaves it undefined when absent. `src/lib/api/mockAdapter.ts` returns a value for the mock dashboard.
+- `src/views/DashboardView.vue`: the Time to PR StatCard renders the median as a value with a muted unit, "~6 m" for minutes under 60 and "~1.2 h" above, rounded as the Delivered card rounds; when the key is absent it keeps "—" and DEGRADED_METRIC_NOTE.
+- `src/views/__tests__/DashboardView.spec.ts`: a dashboard payload with medianTimeToPrMs 81000 renders "~1 m" and no degrade note; a payload without the key renders "—" and the note. `src/lib/api/__tests__/httpAdapter.spec.ts`: the raw-body wire-contract fixture includes the key once and omits it once.
+
+## Acceptance
+- [ ] `npm test` passes; paste the output into the PR body.
+- [ ] Render the median without the absent-key branch -> the DashboardView.spec.ts degrade-note assertion fails
+- [ ] Drop medianTimeToPrMs from the decoder -> the httpAdapter.spec.ts wire-contract assertion fails
+- [ ] `npm run build` passes; paste the output into the PR body.
+- [ ] `npm run lint` passes; paste the output into the PR body.
+
+## Out of scope
+The console computation. Per-project medians. The window selector, which U24 removes.
+
+## Refs
+- Navigator TASK-583 (2026-11-04) · ui#240 (U2) · qf-studio/pilot-console#481 (C15) · qf-studio/pilot-console PR#484
+
+### LEG U23 — repo: qf-studio/pilot-console-ui — title: feat(shell): no top bar on desktop — the left rail keeps the nav, a new right rail holds the avatar, bell and chat circles, the page title is the org name
+
+## Context
+Figma Home frame 7-2 (file BfAqtVPBp0i4iWHg2jzAnB, founder 2026-11-04): the shell is a left rail of circles (logo, three nav items, one bottom item), a 707 px main column that starts with the org name as the title, a 344 px right column, and a vertical stack of three circles top right (avatar, bell, chat). There is no top bar. The live shell `src/layouts/AppShell.vue` renders AppRail, then a column with AppHeader, the main slot and MobileTabBar, then a 350 px chat aside and ChatOverlay. `src/design-system/components/AppHeader.vue` holds the page title with a mark icon, the org chip, the "Operator chat" button (useChatUiStore), the "Notifications" button with BellPopover, and the avatar menu (toggleAvatarMenu). Every page renders inside this shell. The founder's rule: the empty circles in the frame are the controls that exist today, moved; the org name becomes the title; no date selectors.
+
+probe: present qf-studio/pilot-console-ui <AppHeader />
+probe: present qf-studio/pilot-console-ui aria-label="Operator chat"
+probe: absent  qf-studio/pilot-console-ui RightRail
+
+## Scope
+- New file, plain text: src/design-system/components/RightRail.vue — a fixed-width column on the far right with three 40 px and 24 px circles stacked from the top: the avatar button with the existing avatar menu, the Notifications button with BellPopover, the Operator chat button. Move the three controls and their handlers out of AppHeader into it; keep their aria-labels and data attributes so the existing AppHeader tests move with them.
+- `src/layouts/AppShell.vue`: on md and up render AppRail, the main column without AppHeader, then RightRail. On narrower viewports keep AppHeader and MobileTabBar as they are today (the mobile re-land is U17).
+- Page titles: AppHeader's title row goes away on desktop, so each desktop view shows its own first row. DashboardView already shows the org name (data-header-org); the other views (Board, Review, Connections, Instances, Docs, Settings, Chat) show their page title in the same 15 px row style as the dashboard org name, left, with the org name omitted. No new design-system token.
+- `src/layouts/__tests__/AppShell.spec.ts`: at desktop width the shell contains RightRail and no AppHeader; at mobile width it contains AppHeader. `src/design-system/components/__tests__/AppHeader.spec.ts` cases for the chat, bell and avatar move to a new RightRail spec; the bell count and the avatar menu open from the rail.
+
+## Acceptance
+- [ ] `npm test` passes; paste the output into the PR body.
+- [ ] Render AppHeader at desktop width -> the AppShell.spec.ts desktop case fails
+- [ ] Remove the Notifications button from RightRail -> the RightRail spec bell case fails
+- [ ] `npm run build` passes; paste the output into the PR body.
+- [ ] `npm run lint` passes; paste the output into the PR body.
+
+## Out of scope
+The dashboard's own Overview row (U24). The chat aside and ChatOverlay (U27). Mobile layout (U17). Rail icons stay as they are.
+
+## Refs
+- Navigator TASK-583 (2026-11-04 founder design walk-through) · Figma 7-2 · ui#239 (U1)
+
+### LEG U24 — repo: qf-studio/pilot-console-ui — title: feat(dashboard): drop the Overview row with the window and project pills; the Home page starts with the org name and "Last shipped · Pool", window fixed at 30 days
+
+## Context
+Figma Home frame 7-2 starts the main column with the org name on the left and one meta line on the right, then the four stat cards. The live `src/views/DashboardView.vue` renders above that an "Overview" h1 with two PillDropdown controls, "Last N Days" (WINDOW_OPTIONS 7, 14, 30, 60, 90; windowDays) and "All N Projects" (selectedProjectKeys), near lines 283 to 335. The frame has neither; the founder decision 2026-11-04 is to remove them now and revisit a settings home for them later. The org name row with "Last shipped X ago · Pool N%" (data-dashboard-header, near line 346) stays as the §6.5 decision; the frame's "tokens · hours" text is not used. The chart keeps its own 1D / 7D / 30D switch (U3). The right column in the live grid is 270 px; the frame's is 344 px.
+
+probe: present qf-studio/pilot-console-ui WINDOW_OPTIONS
+probe: present qf-studio/pilot-console-ui data-dashboard-header
+probe: present qf-studio/pilot-console-ui xl:grid-cols-\[minmax\(0,1fr\)_270px\]
+
+Depends on: #{{U22}}
+
+## Scope
+- `src/views/DashboardView.vue`: remove the Overview heading, both PillDropdown controls, WINDOW_OPTIONS, windowDays as state (the fetch uses the constant 30), selectedProjectKeys and the project filter helpers; every project renders. The org name row becomes the first row of the main column. The right column width becomes 344 px to match the frame. Remove the PillDropdown import if nothing else uses it in this file.
+- `src/views/__tests__/DashboardView.spec.ts`: delete the window-pill and project-pill cases; add one case that the first rendered row is the org name row and that getDashboard is called with 30; keep the stat-card, chart and queue cases.
+- No change to the chart's range switch, the queue, the Context panel or the composer.
+
+## Acceptance
+- [ ] `npm test` passes; paste the output into the PR body.
+- [ ] Call getDashboard with 7 -> the DashboardView.spec.ts window case fails
+- [ ] Put the Overview heading back above the org row -> the first-row assertion fails
+- [ ] `npm run build` passes; paste the output into the PR body.
+- [ ] `npm run lint` passes; paste the output into the PR body.
+
+## Out of scope
+A settings page for the window and project filters. The shell (U23). Mobile (U17).
+
+## Refs
+- Navigator TASK-583 (2026-11-04 founder design walk-through) · Figma 7-2 · ui#240 and ui#249 (U2) · positioning §6.5
+
+### LEG U25 — repo: qf-studio/pilot-console-ui — title: feat(research): the Research view uses the Home geometry — same main column, the 344 px Context panel with per-run numbers, the composer in the same place — so a send from Home reads as an in-place swap
+
+## Context
+Founder design rule 2026-11-04: the "Ask your pilot…" composer on Home is the chat. On send the page content is replaced by the Research session (Figma frame 13-994): the question, the sub-agent tree, the report, and the right column becomes Context with per-run numbers; the composer stays at the bottom in the same place. Today `src/views/DashboardView.vue` (near line 133) pushes the chat route with q and mode, and `src/views/ChatView.vue` renders its own layout: a 220 px aside (data-research-context) with two text lines, a different padding, and the composer at its own bottom. The Context cards component `src/design-system/components/ContextPanel.vue` takes docs, summary and now props and renders the Docs, Memory and Graph cards used on Home. ChatView computes readLine and createdLine from the context events (docsRead, memoriesRead, memoriesCreated).
+
+probe: present qf-studio/pilot-console-ui data-research-context
+probe: present qf-studio/pilot-console-ui w-\[220px\]
+probe: present qf-studio/pilot-console-ui name: 'chat'
+
+Depends on: #{{U23}}
+
+## Scope
+- `src/views/ChatView.vue`: adopt the Home grid, the main column plus a 344 px right column, with the same outer padding and gaps as DashboardView; the title row shows "Research" left and the run's token-free meta right (the frame shows "0 t · 0 h"; render duration only, per §6 research rule 2). The right column renders ContextPanel with the same docs and summary inputs Home uses, headed "Context" with the per-run line "Read N docs · M memories · Created K" above the cards. The composer stays pinned at the bottom of the main column at the same height as on Home.
+- Shared layout: extract the two-column grid and the composer slot into one layout component used by both views, so the geometry cannot drift. Name it in the design-system folder.
+- `src/views/__tests__/ChatView.spec.ts`: the view renders ContextPanel; the per-run line reflects the context events; the composer is present with the same data attribute as on Home. `src/views/__tests__/DashboardView.spec.ts`: Home uses the shared layout component.
+
+## Acceptance
+- [ ] `npm test` passes; paste the output into the PR body.
+- [ ] Remove ContextPanel from the Research view -> the ChatView.spec.ts context case fails
+- [ ] Render the Research view outside the shared layout -> the ChatView.spec.ts layout assertion fails
+- [ ] `npm run build` passes; paste the output into the PR body.
+- [ ] `npm run lint` passes; paste the output into the PR body.
+
+## Out of scope
+New block types in the report (U26). The side chat (U27). Daemon events (pilot#5810).
+
+## Refs
+- Navigator TASK-583 (2026-11-04 founder design walk-through) · Figma 13-994 · ui#244 (U9) · ui#287 (U10)
+
+### LEG U26 — repo: qf-studio/pilot-console-ui — title: feat(research): typed response blocks in the Research view — execution steps, report, chart, card list — rendered from chat events with a pinned wire contract and honest empty states
+
+## Context
+Founder design rule 2026-11-04: the Research view is where the pilot answers with blocks, not only text: execution steps, results, graphs, and lists of complete cards or tickets (a roadmap, for example), in the same row style as the Home queue. Today `src/views/ChatView.vue` renders the sub-agent tree (ListRow with a Done chip), the markdown report (reportMarkdown), the Create tickets button, ConfirmationCard items for drafts, and a progress line. ChatEvent in `src/lib/api/types.ts` (near line 596) is an open vocabulary: type text is the only confirmed kind; subagent and context are assumed; drafts arrive on the event. The daemon does not emit chart data or card lists yet; that is a daemon leg filed separately from this one.
+
+probe: present qf-studio/pilot-console-ui data-subagent-tree
+probe: present qf-studio/pilot-console-ui ConfirmationCard
+probe: absent  qf-studio/pilot-console-ui ResearchBlock
+
+Depends on: #{{U25}}
+
+## Scope
+- A block vocabulary in `src/lib/api/types.ts`: a ChatEvent of type block carries a block object with kind in steps, report, chart, cards, and a payload per kind: steps is an ordered list of stage, label, state (done, running, failed), occurredAt; report is markdown text; chart is a series list of label and number pairs with one unit string; cards is a list of rows with id, title, meta, chip (CI, PILOT, DONE, QUEUED, FAILED, BLOCKED) and an optional cardId link. Unknown kinds degrade to the text renderer, never throw.
+- New files, plain text: src/design-system/components/ResearchBlock.vue dispatches on kind; src/design-system/components/StepsBlock.vue (stage rows with a state chip), ChartBlock.vue (the DashboardActivityChart bar style, one series), CardsBlock.vue (ListRow rows with the Home queue chips; a row with cardId links to the ticket page). The report kind reuses reportMarkdown.
+- `src/views/ChatView.vue`: render blocks in event order between the question and the Create tickets button; the existing subagent tree and the drafts keep their place.
+- `src/lib/api/mockAdapter.ts`: one mock turn emits all four kinds so the mock Research view shows them.
+- Tests: a raw-body wire fixture per kind decodes; an unknown kind renders as text; CardsBlock renders a chip per row and never a token or USD string; StepsBlock marks the running step.
+
+## Acceptance
+- [ ] `npm test` passes; paste the output into the PR body.
+- [ ] Throw on an unknown block kind -> the unknown-kind test fails
+- [ ] Render a USD string on a CardsBlock row -> the CardsBlock no-cost test fails
+- [ ] `npm run build` passes; paste the output into the PR body.
+- [ ] `npm run lint` passes; paste the output into the PR body.
+
+## Out of scope
+Daemon emission of block events (filed on qf-studio/pilot from the pinned contract). Interactive charts. Editing cards inside the Research view beyond the existing draft flow.
+
+## Refs
+- Navigator TASK-583 (2026-11-04 founder design walk-through) · Figma 13-994 · ui#244 (U9) · ui#287 (U10) · pilot#5810 (P17)
+
+### LEG U27 — repo: qf-studio/pilot-console-ui — title: feat(chat): no side chat on desktop — the chat circle in the right rail opens the Research view; the chat aside and ChatOverlay go; mobile keeps its Chat tab
+
+## Context
+Founder decision 2026-11-04: users should not chat in the small side window. The Home composer plus the Research view is the chat. Today `src/layouts/AppShell.vue` renders a 350 px aside (data-testid chat-region) with ChatPanel when the chatUi store is open and not expanded, and `src/design-system/components/ChatOverlay.vue` when expanded; the Operator chat button toggles that store (`src/stores/chatUi.ts`). The mobile Chat tab in `src/design-system/components/MobileTabBar.vue` routes to the chat view.
+
+probe: present qf-studio/pilot-console-ui data-testid="chat-region"
+probe: present qf-studio/pilot-console-ui ChatOverlay v-if
+probe: present qf-studio/pilot-console-ui useChatUiStore
+
+Depends on: #{{U25}}
+
+## Scope
+- `src/layouts/AppShell.vue`: remove the chat aside and the ChatOverlay render on desktop. The RightRail chat circle (U23) navigates to the Research view; with a turn in progress it navigates to that conversation, else to the empty Research view with the composer focused.
+- `src/stores/chatUi.ts`: remove the open and expanded state if nothing else reads it; keep anything the mobile Chat tab needs. Delete `src/design-system/components/ChatOverlay.vue`, `src/design-system/components/ChatPanel.vue` and their specs only when no remaining import exists; otherwise leave them and say so in the PR body.
+- Tests: `src/layouts/__tests__/AppShell.spec.ts` asserts no chat-region on desktop; a RightRail spec case asserts the chat circle pushes the chat route.
+
+## Acceptance
+- [ ] `npm test` passes; paste the output into the PR body.
+- [ ] Render the chat aside on desktop -> the AppShell.spec.ts no-chat-region case fails
+- [ ] Make the chat circle toggle the store instead of a route push -> the RightRail spec chat case fails
+- [ ] `npm run build` passes; paste the output into the PR body.
+- [ ] `npm run lint` passes; paste the output into the PR body.
+
+## Out of scope
+Mobile chat (U17). The confirmation cards on mobile Chat (ui#265 stays as is).
+
+## Refs
+- Navigator TASK-583 (2026-11-04 founder design walk-through) · Figma 7-2 · ui#244 (U9)
+
 ## Held legs (filed when upstream merges)
 
 | Leg | Repo | After | Body source |
@@ -537,7 +709,6 @@ The UI binding of the field (held leg U22, filed after this merges). PR-to-merge
 | I2 pen test on canary | infra (Nelya) | P11 merged | §8.8 D1 |
 | I3 SES sender | infra (Nelya) | — | §8.7 |
 | D1–D5, D7 | Figma (founder) | — | §6, §8.1, §8.2, §8.7 |
-| U22 Time to PR card binds stats.medianTimeToPrMs; note goes away when present | pilot-console-ui | C15 merged | LEG C15 |
 
 ## Refs
 
@@ -566,6 +737,12 @@ The UI binding of the field (held leg U22, filed after this merges). PR-to-merge
 - U20 → https://github.com/qf-studio/pilot-console-ui/issues/298
 - U21 → https://github.com/qf-studio/pilot-console-ui/issues/302 (refiled 11-04 13:59Z; ui#299 closed not-planned — the daemon's merged-PR title search for "GH-299" matched PR#163 "…hardcoded $299" and stamped pilot-done with no run; studio-sdk SearchMergedPRsForIssueOnBase trusts total_count)
 - C15 → https://github.com/qf-studio/pilot-console/issues/481
+- U22 → https://github.com/qf-studio/pilot-console-ui/issues/306
+- U23 → https://github.com/qf-studio/pilot-console-ui/issues/307
+- U24 → https://github.com/qf-studio/pilot-console-ui/issues/308
+- U25 → https://github.com/qf-studio/pilot-console-ui/issues/309
+- U26 → https://github.com/qf-studio/pilot-console-ui/issues/310
+- U27 → https://github.com/qf-studio/pilot-console-ui/issues/311
 - Follow-ups from the 10-22 reviews (third batch): pilot#5837 (brief kind filter) · pilot#5838 (example config + CLI window)
 - Follow-ups from the 10-22 reviews (second batch): ui#271 (U5 fix) · ui#272 (U4 fix) · console#436 (card/execution DTO fields) · pilot#5816 (P18 docs summary) · pilot#5812/#5813/#5814 (P9 fixes)
 - Follow-ups from the 10-22 reviews: ui#262 (U2 fix) · ui#263 (USD absent) · ui#264 (U3 fix) · ui#265 (chat confirmation) · ui#266 (mode decision) · console#430 (activity since) · console#431 (proxy USD) · console#432 (allowance hygiene) · pilot#5810 (P17 subagent events, design)
