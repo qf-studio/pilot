@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/alerts"
+	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/testutil"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
@@ -32,6 +33,8 @@ type ciOutageFixture struct {
 	c       *Controller
 	pr      *PRState
 	sink    *fakeAlertSink
+	store   *StateStore
+	mem     *memory.Store
 	now     time.Time
 	mode    atomic.Int32
 	ciCalls atomic.Int32
@@ -80,7 +83,23 @@ func newCIOutageFixture(t *testing.T, mutate func(*Config)) *ciOutageFixture {
 		mutate(cfg)
 	}
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL)
-	f.c = NewController(cfg, ghClient, nil, "owner", "repo")
+	f.c = NewController(cfg, ghClient, nil, "owner", "repo", WithProjectPath("/proj/pilot"))
+	// A real SQLite state store and memory store, so the tests see what a
+	// restart would see rather than only the in-memory PRState.
+	f.store = newTestStateStore(t)
+	f.c.SetStateStore(f.store)
+	mem, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = mem.Close() })
+	if err := mem.SaveExecution(&memory.Execution{
+		ID: "exec-10", TaskID: "GH-10", ProjectPath: "/proj/pilot", Status: "completed",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	f.mem = mem
+	f.c.SetMemoryStore(mem)
 	f.c.SetAlertsEngine(f.sink)
 	f.c.ciPollClock = func() time.Time { return f.now }
 	f.c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
@@ -291,6 +310,35 @@ func TestWaitingCI_APIOutageBudgetFails(t *testing.T) {
 	}
 	if f.pr.APIOutageHoldActive {
 		t.Error("APIOutageHoldActive still set on a failed PR")
+	}
+
+	// The failure happens in the redrive, before ProcessPR (which returns early
+	// on StageFailed), so it must be saved there: read the row back from SQLite.
+	saved, err := f.store.GetPRState("owner/repo", 42)
+	if err != nil || saved == nil {
+		t.Fatalf("GetPRState = %v, %v", saved, err)
+	}
+	if saved.Stage != StageFailed {
+		t.Errorf("persisted Stage = %s, want %s — budget failure was never saved", saved.Stage, StageFailed)
+	}
+	if saved.APIOutageHoldActive {
+		t.Error("persisted APIOutageHoldActive still set on a failed PR")
+	}
+	if saved.Error != f.pr.Error {
+		t.Errorf("persisted Error = %q, want %q", saved.Error, f.pr.Error)
+	}
+	events, err := f.mem.ListExecutionEvents("exec-10")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents: %v", err)
+	}
+	var failedEvents int
+	for _, e := range events {
+		if e.Stage == memory.StageFailed {
+			failedEvents++
+		}
+	}
+	if failedEvents != 1 {
+		t.Errorf("failed audit events = %d, want 1 (events: %+v)", failedEvents, events)
 	}
 
 	evs := f.outageEvents()

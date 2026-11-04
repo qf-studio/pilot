@@ -319,6 +319,8 @@ func TestHandleWaitingCI_FiveConsecutiveAPIFailures_StampsTerminalLabel_GH4855(t
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	store := newTestStateStore(t)
+	c.SetStateStore(store)
 
 	prState := &PRState{
 		PRNumber:        4859,
@@ -346,6 +348,13 @@ func TestHandleWaitingCI_FiveConsecutiveAPIFailures_StampsTerminalLabel_GH4855(t
 
 	if prState.Stage != StageFailed {
 		t.Fatalf("Stage = %s, want %s (API outage budget elapsed)", prState.Stage, StageFailed)
+	}
+	saved, err := store.GetPRState("owner/repo", 4859)
+	if err != nil || saved == nil {
+		t.Fatalf("GetPRState = %v, %v", saved, err)
+	}
+	if saved.Stage != StageFailed {
+		t.Fatalf("persisted Stage = %s, want %s — the budget failure must survive a restart", saved.Stage, StageFailed)
 	}
 	if prState.TerminalLabel != github.LabelFailed {
 		t.Fatalf("TerminalLabel = %q, want %q — 5 consecutive CI-check API failures is terminal and must not be silently re-queued", prState.TerminalLabel, github.LabelFailed)

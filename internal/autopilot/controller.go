@@ -3850,6 +3850,13 @@ func (c *Controller) redriveAPIOutageHeldPR(ctx context.Context, prState *PRStat
 	}
 	if _, err := c.ciMonitor.CheckCI(ctx, sha); err != nil {
 		c.handleCIPollError(prState, sha, err)
+		if prState.Stage == StageFailed {
+			// Decision: the budget failure happens here, before ProcessPR, which
+			// returns early on StageFailed and so never reaches its tail persist,
+			// transition log or audit event. Do all three here or a restart brings
+			// the PR back held at waiting_ci without TerminalLabel/Error.
+			c.finishAPIOutageBudgetFailure(prState)
+		}
 		return
 	}
 
@@ -3866,6 +3873,29 @@ func (c *Controller) redriveAPIOutageHeldPR(ctx context.Context, prState *PRStat
 		"pr", prState.PRNumber,
 		"sha", ShortSHA(sha),
 		"outage", outage.Round(time.Second))
+}
+
+// finishAPIOutageBudgetFailure does for an outage-budget failure what
+// ProcessPR does for any other stage transition: log it, reset the deadlock
+// progress clock, write the failed audit event and persist the row. The caller
+// holds prState.mu (persistPRState contract).
+func (c *Controller) finishAPIOutageBudgetFailure(prState *PRState) {
+	c.log.Info("PR stage transition",
+		"pr", prState.PRNumber,
+		"from", StageWaitingCI,
+		"to", prState.Stage,
+		"env", c.config.EnvironmentName(),
+	)
+	c.mu.Lock()
+	c.lastProgressAt = time.Now()
+	c.deadlockAlertSent = false
+	c.mu.Unlock()
+
+	if eventStage, ok := executionEventStageFor(prState.Stage); ok {
+		detail := fmt.Sprintf("pr #%d: %s -> %s", prState.PRNumber, StageWaitingCI, prState.Stage)
+		c.recordExecutionEvent(prState, StageWaitingCI, eventStage, detail)
+	}
+	c.persistPRState(prState)
 }
 
 // applyCIOutcome transitions prState based on a freshly-read, same-tick CI
