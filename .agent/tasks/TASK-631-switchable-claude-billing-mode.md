@@ -1,6 +1,6 @@
 # TASK-631: Switchable Claude billing mode (subscription | api_key) without a restart, with per-execution attribution
 
-**Status**: 🚀 **A1 DISPATCHED 2026-11-03 → [pilot#6016](https://github.com/qf-studio/pilot/issues/6016)** (`pilot` + `no-decompose`). Triage of [pilot#5955](https://github.com/qf-studio/pilot/issues/5955) (scrappydog): legitimate; reply + A1 link posted on the issue. D1–D4 accepted as proposed. **A1 run → [PR#6017](https://github.com/qf-studio/pilot/pull/6017) 11:20Z; CI failed on `TestRecordCost_SplitsByKeySource` (the expected `costKey`s lack the new `BillingMode: "unknown"`); the autopilot CI-fix size guard declined to file (759 production additions > 200) → hand-filed [pilot#6019](https://github.com/qf-studio/pilot/issues/6019) in the autopilot-fix shape (footer `branch:pilot/GH-6016 pr:6017 iteration:1 source:6016`), picked up 11:52Z on the PR branch → **PR#6017 MERGED 12:14Z as `f72c25810`** (#6016 closed `pilot-done`; #6019 closed by hand 12:25Z — borrowed-branch fix issues never self-close). Post-merge review APPROVE-WITH-NOTES, nine minors (no sink: `file_minors` off on the box): OpenCode anthropic backend now starts without `ANTHROPIC_API_KEY` and its :144 comment is stale · autopilot post-merge review bills the subscription in api_key mode · worker billing-key failure `continue`s past `EmitProgress(Failed)`/`monitor.Fail` (card stays running) · first outage row is a real claim → repick backoff on a task that never ran · non-dispatcher `Runner.Execute` path gets no admission pause/alert · decomposed subtasks carry no `billingMode` (cost labelled unknown) · stashed key lives until `stopBillingState` on cancelled/stale rows · resolver half of the api_key acceptance test is hand-built. **Carried into [TASK-633](TASK-633-billing-mode-post-merge-fast-follow.md) same day (nav-research on main confirmed 8 of 9 + found 2: retry ctx from `context.Background()` drops the credential; Navigator bootstrap has none) → F1 [pilot#6021](https://github.com/qf-studio/pilot/issues/6021) · F2 [pilot#6022](https://github.com/qf-studio/pilot/issues/6022) dispatched 13:3xZ.** **Daemon defect seen on this run → [TASK-632](TASK-632-restart-repick-failed-with-open-pr.md) → [pilot#6020](https://github.com/qf-studio/pilot/issues/6020):** when #6019's fix commit landed on the PR branch, autopilot's `redriveHeldPR` re-adopted PR#6017 and `releaseHoldLabels` stripped `pilot-needs-human` from #6016 (11:53:50Z); a `failed` row is not terminal and admission has no PR-awareness, so the poller re-picked #6016 19 s later and a fresh worktree off `f5488f74a` re-implemented the merged work (12:01Z; the 2.309.0 hot-upgrade restart was incidental). Killed by hand at 12:37Z after its gates failed and a Claude retry started (`status=infra`); stray `pilot/GH-6016` at `b5b3564` left on origin. A2 → B → C held until A1 + TASK-633 are on a release (next cut after v2.309.0).
+**Status**: 🚀 **A2 → [pilot#6052](https://github.com/qf-studio/pilot/issues/6052) + A3 → [pilot#6053](https://github.com/qf-studio/pilot/issues/6053) DISPATCHED 11-04 10:0xZ (`pilot` + `no-decompose`; A3 depends on A2; endpoint and command named billing-mode because the console's /api/v1/billing/... is Paddle) (§ Dispatched legs: A2 store + resolver override + expiry + GET/POST /api/v1/billing + billing_mode_changed alert; A3 pilot billing-mode status/set + pilot status line + TUI chip, depends on A2). A1 ✅ shipped in v2.310.0; F1–F6 in TASK-633 (F4 v2.311.0 fixed the unset-mode regression, F5 process-wide mode, F6 pilot#6050 open).** Was: 🚀 **A1 DISPATCHED 2026-11-03 → [pilot#6016](https://github.com/qf-studio/pilot/issues/6016)** (`pilot` + `no-decompose`). Triage of [pilot#5955](https://github.com/qf-studio/pilot/issues/5955) (scrappydog): legitimate; reply + A1 link posted on the issue. D1–D4 accepted as proposed. **A1 run → [PR#6017](https://github.com/qf-studio/pilot/pull/6017) 11:20Z; CI failed on `TestRecordCost_SplitsByKeySource` (the expected `costKey`s lack the new `BillingMode: "unknown"`); the autopilot CI-fix size guard declined to file (759 production additions > 200) → hand-filed [pilot#6019](https://github.com/qf-studio/pilot/issues/6019) in the autopilot-fix shape (footer `branch:pilot/GH-6016 pr:6017 iteration:1 source:6016`), picked up 11:52Z on the PR branch → **PR#6017 MERGED 12:14Z as `f72c25810`** (#6016 closed `pilot-done`; #6019 closed by hand 12:25Z — borrowed-branch fix issues never self-close). Post-merge review APPROVE-WITH-NOTES, nine minors (no sink: `file_minors` off on the box): OpenCode anthropic backend now starts without `ANTHROPIC_API_KEY` and its :144 comment is stale · autopilot post-merge review bills the subscription in api_key mode · worker billing-key failure `continue`s past `EmitProgress(Failed)`/`monitor.Fail` (card stays running) · first outage row is a real claim → repick backoff on a task that never ran · non-dispatcher `Runner.Execute` path gets no admission pause/alert · decomposed subtasks carry no `billingMode` (cost labelled unknown) · stashed key lives until `stopBillingState` on cancelled/stale rows · resolver half of the api_key acceptance test is hand-built. **Carried into [TASK-633](TASK-633-billing-mode-post-merge-fast-follow.md) same day (nav-research on main confirmed 8 of 9 + found 2: retry ctx from `context.Background()` drops the credential; Navigator bootstrap has none) → F1 [pilot#6021](https://github.com/qf-studio/pilot/issues/6021) · F2 [pilot#6022](https://github.com/qf-studio/pilot/issues/6022) dispatched 13:3xZ.** **Daemon defect seen on this run → [TASK-632](TASK-632-restart-repick-failed-with-open-pr.md) → [pilot#6020](https://github.com/qf-studio/pilot/issues/6020):** when #6019's fix commit landed on the PR branch, autopilot's `redriveHeldPR` re-adopted PR#6017 and `releaseHoldLabels` stripped `pilot-needs-human` from #6016 (11:53:50Z); a `failed` row is not terminal and admission has no PR-awareness, so the poller re-picked #6016 19 s later and a fresh worktree off `f5488f74a` re-implemented the merged work (12:01Z; the 2.309.0 hot-upgrade restart was incidental). Killed by hand at 12:37Z after its gates failed and a Claude retry started (`status=infra`); stray `pilot/GH-6016` at `b5b3564` left on origin. A2 → B → C held until A1 + TASK-633 are on a release (next cut after v2.309.0).
 **Created**: 2026-11-03
 **Assignee**: Pilot (after D1–D4)
 
@@ -221,6 +221,100 @@ Runtime switch and persistence (pilot billing set, gateway endpoint, status fiel
 - TASK-546 (hosted allowance → own-key fallback), TASK-502 (platform key pool), memory `feedback_subprocess_not_api`
 - `pilot-console/internal/fleet/configpush.go:603` — the hosted restart this primitive could remove
 
+### LEG A2 — repo: qf-studio/pilot — title: feat(executor): runtime billing-mode override — runtime_overrides store, resolver precedence override > config, expiry timer, GET/POST /api/v1/billing-mode, billing_mode_changed alert
+
+## Context
+
+A1 (PR#6017) and the fast-follows F1–F5 (TASK-633) shipped the per-execution credential resolver: BillingResolver in `internal/executor/billing_mode.go` (NewBillingResolver near line 203, Mode near line 214, Resolve near line 225) reads only the config block; the mode in force is cfg.EffectiveMode(), which is BillingModeUnset when the block or the field is empty (GH-6032, passthrough of the daemon environment), subscription or api_key. NewBillingResolver and the Runner constructor (`internal/executor/runner.go` near line 1491) also publish that mode process-wide through SetProcessBillingMode (GH-6038), which modelSubprocessEnvFor in `internal/executor/model_env.go` consults for spawn sites with no credential on the ctx. The credential is resolved once per execution by admitBilling in `internal/executor/billing_admission.go` (near line 53) and frozen on the execution ctx; a usage-limit pause already uses a clock-driven timer with a generation counter in `internal/executor/usage_limit_pause.go` (near lines 127–133 and 162–166). The gateway exposes admission state through the AdmissionStatusSource interface in `internal/gateway/server.go` (near line 86) that *executor.Dispatcher implements, wired by SetAdmissionStatusSource (near line 483); handleStatus (near line 697) already writes admission_paused and admission_pause_owners; protected routes hang off apiMux (near line 271). Alerts: the executor emits AlertEventTypeBillingKeyUnavailable (`internal/executor/alerts.go` near line 125), mirrored by EventTypeBillingKeyUnavailable in `internal/alerts/engine.go` (near line 237) with a ProcessEvent case (near line 755), an AlertType in `internal/alerts/types.go` (near line 151) and a default rule (near line 736). The store adds columns with the ALTER-with-ignore idiom in `internal/memory/store.go` (near line 207) and tables with CREATE TABLE IF NOT EXISTS (near line 431).
+
+Today a mode change is a config edit plus a restart. The requester's workaround (#5955) and the hosted console's key switch (configpush.go, TASK-631 D4) both need a restart. Naming: the hosted console already serves /api/v1/billing/... for Paddle (customer billing), so the daemon's endpoint and command are billing-mode, matching the billing_mode column; they never touch customer billing. This leg adds the first runtime override store (founder decision D2: SQLite table in the existing store, survives restarts) and the daemon-side switch. The CLI and the status surfaces are leg A3.
+
+probe: present qf-studio/pilot func[[:space:]]NewBillingResolver\(
+probe: present qf-studio/pilot func[[:space:]]SetProcessBillingMode\(
+probe: present qf-studio/pilot type[[:space:]]AdmissionStatusSource[[:space:]]interface
+probe: present qf-studio/pilot ALTER TABLE executions ADD COLUMN billing_mode TEXT
+probe: present qf-studio/pilot AlertEventTypeBillingKeyUnavailable[[:space:]]+AlertEventType
+probe: absent qf-studio/pilot CREATE TABLE IF NOT EXISTS runtime_overrides
+probe: absent qf-studio/pilot AlertEventTypeBillingModeChanged
+probe: absent qf-studio/pilot \"/api/v1/billing-mode\"
+
+## Scope
+
+- Store (`internal/memory/store.go`): table runtime_overrides (key TEXT PRIMARY KEY, value TEXT NOT NULL, until DATETIME NULL, set_by TEXT NOT NULL DEFAULT '', set_at DATETIME NOT NULL) created with the CREATE TABLE IF NOT EXISTS idiom; methods GetRuntimeOverride(key) (value, until, setBy, setAt, found, err), SetRuntimeOverride(key, value, until, setBy), DeleteRuntimeOverride(key). Key for this leg: billing.mode. Values: subscription or api_key only; an absent row means "config decides".
+- Resolver precedence (`internal/executor/billing_mode.go`): BillingResolver gains SetOverrideSource(func() (mode BillingMode, source string, until time.Time, ok bool)). Mode() returns the override when ok, else cfg.EffectiveMode(). Resolve() is unchanged otherwise, so a running execution keeps the credential it froze at admission; the switch applies from the next admitBilling.
+- Dispatcher (`internal/executor/dispatcher.go` plus a new file, plain text: internal/executor/billing_override.go): BillingOverride() (mode, source, until) and SetBillingOverride(mode BillingMode, until time.Time, setBy string) and ClearBillingOverride(setBy string). Set persists the row, calls SetProcessBillingMode(mode), installs the resolver override source, logs one INFO line, emits the alert, arms an expiry timer with the usage_limit_pause.go clock + generation pattern when until is non-zero (a later Set replaces the timer, never stacks). Clear deletes the row, restores SetProcessBillingMode(cfg.EffectiveMode()), clears the source, logs and alerts. A switch away from api_key while admission is paused for owner billing-key resumes that owner. At boot the dispatcher loads the row, drops it when until is in the past, otherwise applies it and arms the remaining timer.
+- Source values: cli, gateway, fallback (reserved for leg B), config (reported when no override is in force).
+- Gateway (`internal/gateway/server.go`): interface BillingOverrideSource { BillingOverride() executor.BillingOverrideStatus; SetBillingOverride(mode string, until time.Time, setBy string) error; ClearBillingOverride(setBy string) error } wired by SetBillingOverrideSource next to SetAdmissionStatusSource; route /api/v1/billing-mode on apiMux: GET returns {mode, source, until, config_mode}; POST with JSON {"mode": "subscription" | "api_key" | "config", "until": RFC3339 optional} sets or, for "config", clears; invalid mode → 400 with the accepted values; no source wired → 503. handleStatus gains billing_mode, billing_mode_source, billing_mode_until (empty string when none) and billing_config_mode. AdmissionStatus and the existing fields are unchanged.
+- Alert: AlertEventTypeBillingModeChanged = "billing_mode_changed" in `internal/executor/alerts.go`; EventTypeBillingModeChanged, a ProcessEvent case and handleBillingModeChanged in `internal/alerts/engine.go` modelled on handleUsageLimitPause; AlertTypeBillingModeChanged in `internal/alerts/types.go` with a default rule, SeverityInfo; payload fields from, to, until, source, set_by. Message: "Billing mode changed <from> → <to> by <set_by> (<source>)" plus "until <time>" when set.
+- Runner-side: SetProcessBillingMode stays the single publication point for bare-ctx spawn sites; no spawn site changes.
+- Config: no new key. `configs/pilot.example.yaml` billing block gains two comment lines that say a runtime override set through the gateway or the CLI wins over mode until cleared or expired.
+
+Tests to add, named exactly: TestBillingOverride_SetAppliesToNextAdmissionOnly (new file, plain text: internal/executor/billing_override_test.go — a task admitted before the switch keeps its credential, the next one resolves the new mode), TestBillingOverride_SurvivesRestart (set, build a second dispatcher on the same store, mode and until restored), TestBillingOverride_ExpiryRevertsToConfig (fake clock past until → config mode, row gone, alert emitted), TestBillingOverride_SwitchPublishesProcessMode (after Set the effort classifier's env under a bare ctx follows the override), TestBillingOverride_ClearResumesBillingKeyPause, TestRuntimeOverrides_StoreRoundTrip (`internal/memory/store_test.go` or a new file, plain text: internal/memory/runtime_overrides_test.go), TestGateway_BillingEndpoint (`internal/gateway/server_test.go`: GET, POST set, POST config clears, 400 on a bad mode, 503 without a source, auth as the other apiMux routes), TestStatus_CarriesBillingFields, TestBillingModeChangedAlert_RuleAndPayload (`internal/alerts/engine_test.go`).
+
+## Acceptance
+
+- [ ] `go test -race ./internal/executor/ -run TestBillingOverride` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/memory/ -run TestRuntimeOverrides` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/gateway/ -run TestGateway_BillingEndpoint` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/gateway/ -run TestStatus_CarriesBillingFields` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/alerts/ -run TestBillingModeChangedAlert` passes; paste the output into the PR body.
+- [ ] apply the override to a credential already frozen on a running execution -> TestBillingOverride_SetAppliesToNextAdmissionOnly fails
+- [ ] skip the boot-time load of the row -> TestBillingOverride_SurvivesRestart fails
+- [ ] drop the expiry timer -> TestBillingOverride_ExpiryRevertsToConfig fails
+- [ ] skip SetProcessBillingMode on Set -> TestBillingOverride_SwitchPublishesProcessMode fails
+- [ ] accept an unknown mode on POST -> TestGateway_BillingEndpoint fails
+- [ ] emit the alert without a default rule -> TestBillingModeChangedAlert_RuleAndPayload fails
+- [ ] Do not re-run make build, make test or make lint as evidence: the daemon's quality gates already run them on this repo.
+
+## Out of scope
+
+The CLI command, the pilot status line and the TUI chip (leg A3); the usage-limit fallback that writes an override with source fallback (leg B); budget scope (leg C); any config.yaml write; the hosted console's configpush.go (TASK-631 D4); key_source; the unset-mode passthrough and the process-wide fallback semantics (GH-6032, GH-6038) beyond calling SetProcessBillingMode on a switch.
+
+## Refs
+
+- #5955 (request) · PR#6017 (A1) · TASK-633 F1–F6 · GH-5862 (usage-limit pause timer, admission owners) · Navigator TASK-631 in this repo
+
+### LEG A3 — repo: qf-studio/pilot — title: feat(cli): pilot billing-mode status and set through the gateway, a billing line in pilot status, a billing chip in the TUI header
+
+## Context
+
+Leg A2 adds GET/POST /api/v1/billing-mode on the gateway and billing_mode, billing_mode_source, billing_mode_until and billing_config_mode on /api/v1/status. Operators still have no command for it. Existing set commands (`cmd/pilot/budget.go` near line 426, `cmd/pilot/backend.go` near line 270) edit config.yaml offline and need a restart; this command must not. pilot status in `cmd/pilot/commands.go` (near line 196) already fetches /api/v1/status through fetchAdmissionPauseLine (near line 309) with a 2 s client and renders admissionPauseLine; the TUI is the bubbletea Model in `internal/dashboard/tui.go` whose View (near line 1395) renders the header.
+
+Depends on: #{{A2}}
+
+probe: present qf-studio/pilot func[[:space:]]fetchAdmissionPauseLine\(
+probe: present qf-studio/pilot func[[:space:]]admissionPauseLine\(
+probe: absent qf-studio/pilot Use:[[:space:]]+"billing-mode"
+
+## Scope
+
+- New command file, plain text: cmd/pilot/billing_mode.go — `pilot billing-mode status` prints mode, source, until and the config mode from GET /api/v1/billing-mode; `pilot billing-mode set <subscription|api_key|config> [--until <RFC3339|duration>]` posts to /api/v1/billing-mode with set_by cli and prints the resulting status; exit 1 with the gateway's message on 400, exit 2 with "daemon not reachable at <url>" when the gateway does not answer. The base URL and auth come from the same helpers pilot status uses. No config.yaml write.
+- `pilot status`: one line after the admission line, "billing: <mode> (<source>)" plus ", back to <config mode> at <until>" when an override has an expiry; omitted when the status body has no billing_mode field (older daemon).
+- TUI: the header in `internal/dashboard/tui.go` gains one chip "billing <mode>" fed by a new dashboard message BillingModeMsg{Mode, Source, Until} that the daemon sends at boot and on every switch (from the dispatcher's Set and Clear via the existing program.Send path in `cmd/pilot/main.go`); source config renders the mode only, an override renders "<mode>·<source>".
+- Docs: one page section in `docs/content/` for the billing block if a billing or configuration page exists there, with the three commands; otherwise no docs change.
+
+Tests to add, named exactly: TestBillingCmd_StatusAndSet (`cmd/pilot/`, new file plain text: cmd/pilot/billing_mode_test.go — httptest gateway, both commands, 400 and unreachable exit codes), TestStatusCmd_BillingLine (the new file: line present with an override, absent on an older body), TestTUI_HeaderBillingChip (`internal/dashboard/tui_test.go`: chip text for config and override sources).
+
+## Acceptance
+
+- [ ] `go test -race ./cmd/pilot/ -run TestBillingCmd` passes; paste the output into the PR body.
+- [ ] `go test -race ./cmd/pilot/ -run TestStatusCmd_BillingLine` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/dashboard/ -run TestTUI_HeaderBillingChip` passes; paste the output into the PR body.
+- [ ] write the mode into config.yaml instead of posting -> TestBillingCmd_StatusAndSet fails
+- [ ] print the billing line for a status body without billing_mode -> TestStatusCmd_BillingLine fails
+- [ ] render the chip without the source for an override -> TestTUI_HeaderBillingChip fails
+- [ ] Do not re-run make build, make test or make lint as evidence: the daemon's quality gates already run them on this repo.
+
+## Out of scope
+
+The gateway endpoint and the store (leg A2), the usage-limit fallback (leg B), budget scope (leg C), any change to admission or spawn sites, the hosted console.
+
+## Refs
+
+- Leg A2 (endpoint) · #5955 · Navigator TASK-631 in this repo
+
 ## Refs
 
 - A1 → https://github.com/qf-studio/pilot/issues/6016
+- A2 → https://github.com/qf-studio/pilot/issues/6052
+- A3 → https://github.com/qf-studio/pilot/issues/6053
