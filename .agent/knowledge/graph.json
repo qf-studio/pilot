@@ -3403,16 +3403,16 @@
         "title": "Wave 1 \u2014 design update + proof surface (Run Story, Review needed, briefs, pen test)",
         "status": "completed",
         "concepts": [
-          "database",
-          "authentication",
-          "markers",
-          "theory of mind",
-          "testing",
           "frontend",
-          "api",
+          "authentication",
+          "testing",
+          "database",
+          "theory of mind",
           "knowledge",
-          "context",
-          "deployment"
+          "deployment",
+          "api",
+          "markers",
+          "context"
         ]
       },
       "TASK-589": {
@@ -18305,7 +18305,7 @@
       "mem-281"
     ]
   },
-  "last_updated": "2026-11-04T13:59:51.714807+00:00",
+  "last_updated": "2026-11-04T15:01:27.142631+00:00",
   "stats": {
     "total_nodes": 857,
     "total_edges": 998,
