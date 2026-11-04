@@ -38,9 +38,14 @@ import (
 // removed/altered hook call, independent of runner.go's current source.
 
 // reassignsPRBodyFromEvidenceHook reports whether stmt is `prBody =
-// <expr>.appendAcceptanceEvidence(...)`. The receiver is matched by method
-// name only (not by identifier, e.g. requiring "r") so the detector isn't
-// brittle to an unrelated rename of the Runner receiver variable.
+// <expr>.appendAcceptanceEvidence(...)` and the call hands over the evidence
+// the pre-PR review already read (GH-6051): either `prePREvidence` as the last
+// argument, or — on the epic and timeout-salvage paths, where no review runs —
+// a literal nil quality-gates argument and nothing cached. A direct-path site
+// that drops the cached argument would run the evidence commands a second time
+// at PR creation. The receiver is matched by method name only (not by
+// identifier, e.g. requiring "r") so the detector isn't brittle to an
+// unrelated rename of the Runner receiver variable.
 func reassignsPRBodyFromEvidenceHook(stmt ast.Stmt) bool {
 	as, ok := stmt.(*ast.AssignStmt)
 	if !ok || as.Tok != token.ASSIGN || len(as.Lhs) != 1 || len(as.Rhs) != 1 {
@@ -55,10 +60,26 @@ func reassignsPRBodyFromEvidenceHook(stmt ast.Stmt) bool {
 		return false
 	}
 	sel, ok := call.Fun.(*ast.SelectorExpr)
-	if !ok {
+	if !ok || sel.Sel.Name != "appendAcceptanceEvidence" {
 		return false
 	}
-	return sel.Sel.Name == "appendAcceptanceEvidence"
+	return passesCachedEvidence(call)
+}
+
+// passesCachedEvidence reports whether call is
+// appendAcceptanceEvidence(ctx, task, workDir, body, gates, prePREvidence) or
+// the review-less form (ctx, task, workDir, body, nil).
+func passesCachedEvidence(call *ast.CallExpr) bool {
+	const gatesIdx = 4
+	switch len(call.Args) {
+	case gatesIdx + 2:
+		cached, ok := call.Args[gatesIdx+1].(*ast.Ident)
+		return ok && cached.Name == "prePREvidence"
+	case gatesIdx + 1:
+		gates, ok := call.Args[gatesIdx].(*ast.Ident)
+		return ok && gates.Name == "nil"
+	}
+	return false
 }
 
 // isPRBodyDefine reports whether stmt is a `prBody := ...` short variable
@@ -145,7 +166,7 @@ func TestWiringSiteDetectionLogic(t *testing.T) {
 
 func f(r *Runner) string {
 	prBody := "x"
-	prBody = r.appendAcceptanceEvidence(nil, nil, "", prBody)
+	prBody = r.appendAcceptanceEvidence(nil, nil, "", prBody, nil, prePREvidence)
 	return prBody
 }
 `,
@@ -194,7 +215,7 @@ func f(r *Runner, useSDK bool) string {
 	var prURL string
 	if useSDK {
 		prBody := "sdk"
-		prBody = r.appendAcceptanceEvidence(nil, nil, "", prBody)
+		prBody = r.appendAcceptanceEvidence(nil, nil, "", prBody, nil, prePREvidence)
 		prURL = prBody
 	} else {
 		prBody := "cli"
@@ -211,6 +232,43 @@ func f(r *Runner, useSDK bool) string {
 		t.Run(tt.name, func(t *testing.T) {
 			fset := token.NewFileSet()
 			file, err := parser.ParseFile(fset, "snippet.go", tt.src, 0)
+			if err != nil {
+				t.Fatalf("parse snippet: %v", err)
+			}
+			failures := findPRBodyWiringGaps(fset, "snippet.go", file)
+			if tt.wantFailure && len(failures) == 0 {
+				t.Errorf("expected a wiring-gap failure, got none")
+			}
+			if !tt.wantFailure && len(failures) != 0 {
+				t.Errorf("expected no failures, got: %v", failures)
+			}
+		})
+	}
+}
+
+// TestWiringSiteChecksCachedEvidenceArgument pins the GH-6051 tightening of the
+// static wiring check: a PR-body site that calls appendAcceptanceEvidence but
+// leaves out, or swaps, the evidence the review already read is a gap. Reverting
+// reassignsPRBodyFromEvidenceHook to a selector-name-only match makes the
+// "dropped" and "wrong value" cases pass the check and this test fail.
+func TestWiringSiteChecksCachedEvidenceArgument(t *testing.T) {
+	tests := []struct {
+		name        string
+		call        string
+		wantFailure bool
+	}{
+		{"cached evidence passed", `r.appendAcceptanceEvidence(ctx, task, dir, prBody, gates, prePREvidence)`, false},
+		{"review-less site with nil gates", `r.appendAcceptanceEvidence(ctx, task, dir, prBody, nil)`, false},
+		{"cached evidence dropped", `r.appendAcceptanceEvidence(ctx, task, dir, prBody, gates)`, true},
+		{"cached evidence replaced by nil", `r.appendAcceptanceEvidence(ctx, task, dir, prBody, gates, nil)`, true},
+		{"another value passed as the cached evidence", `r.appendAcceptanceEvidence(ctx, task, dir, prBody, gates, other)`, true},
+		{"gates dropped", `r.appendAcceptanceEvidence(ctx, task, dir, prBody)`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := "package executor\n\nfunc f(r *Runner) string {\n\tprBody := \"x\"\n\tprBody = " + tt.call + "\n\treturn prBody\n}\n"
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "snippet.go", src, 0)
 			if err != nil {
 				t.Fatalf("parse snippet: %v", err)
 			}

@@ -2,6 +2,9 @@ package executor
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,9 +77,8 @@ type evidenceExecuteEnv struct {
 
 func newEvidenceExecuteEnv(t *testing.T, mode string, review *PostMergeReview, cmd *sequenceEvidenceRunner) *evidenceExecuteEnv {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("end-to-end: real git, skipped under -short")
-	}
+	// No testing.Short() skip: make test-short and test-changed run with -short
+	// and would never reach these pins (TestEvidenceExecutePinsRunUnderShort).
 	const branch = "pilot/GH-6048-evidence"
 	dir, _ := setupFreshnessRepo(t)
 	runGit(t, dir, "checkout", "-b", branch)
@@ -180,8 +182,30 @@ func TestExecute_EvidenceRunsOnceAcrossReviewAndEveryCreatePRSite(t *testing.T) 
 
 // TestExecute_FixRoundSwapsEvidenceIntoPRBody fails when Execute stops storing
 // the rerun after a ReviewFixFixed round: the PR body would keep the first,
-// failing result for a tree that is no longer the one pushed.
+// failing result for a tree that is no longer the one pushed. Quality gates are
+// off here, so the round ends at the no-re-gate return in runReviewFix.
 func TestExecute_FixRoundSwapsEvidenceIntoPRBody(t *testing.T) {
+	runFixRoundSwapsEvidence(t, nil)
+}
+
+// TestExecute_FixRoundAfterReGateSwapsEvidenceIntoPRBody is the same pin for a
+// fix that passes the quality-gate re-check (the second ReviewFixFixed return
+// in runReviewFix, pre_pr_fix.go): with gates configured the round does not
+// take the no-re-gate early return. Setting task.SkipQualityGates back to true
+// leaves the re-gate unreached and fails the checker-call assertion.
+func TestExecute_FixRoundAfterReGateSwapsEvidenceIntoPRBody(t *testing.T) {
+	checker := &fakeRegateChecker{passed: true}
+	runFixRoundSwapsEvidence(t, checker)
+	// One check for the task's own gate run, one for the fix's re-gate.
+	if n := checker.callCount(); n != 2 {
+		t.Errorf("quality checker ran %d times, want 2 (the gate run, then the re-gate after the fix)", n)
+	}
+}
+
+// runFixRoundSwapsEvidence drives one enforce-mode fix round. A non-nil checker
+// turns the quality gates on, so the fix is re-gated.
+func runFixRoundSwapsEvidence(t *testing.T, checker *fakeRegateChecker) {
+	t.Helper()
 	cmd := &sequenceEvidenceRunner{
 		outputs: []string{evidenceFailOutput, evidencePassOutput},
 		errs:    []error{exitOneError(t), nil},
@@ -194,6 +218,10 @@ func TestExecute_FixRoundSwapsEvidenceIntoPRBody(t *testing.T) {
 		FilesRead: 4,
 	}
 	e := newEvidenceExecuteEnv(t, PrePRReviewModeEnforce, review, cmd)
+	if checker != nil {
+		e.task.SkipQualityGates = false
+		e.runner.qualityCheckerFactory = func(string, string, string) QualityChecker { return checker }
+	}
 	creator := &bodyCapturingPRCreator{}
 	e.task.SourceAdapter = "linear"
 	e.runner.SetPRCreator(creator)
@@ -216,4 +244,29 @@ func TestExecute_FixRoundSwapsEvidenceIntoPRBody(t *testing.T) {
 	if !strings.Contains(body, "ok  \tgithub.com/example/pkg") {
 		t.Errorf("PR body lacks the rerun after the fix:\n%s", body)
 	}
+}
+
+// TestEvidenceExecutePinsRunUnderShort fails when this file calls
+// testing.Short(): make test-short and make test-changed pass -short, so a skip
+// would leave the runner-level evidence pins to CI alone.
+func TestEvidenceExecutePinsRunUnderShort(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "pre_pr_evidence_execute_test.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Short" {
+			return true
+		}
+		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "testing" {
+			t.Errorf("%s: testing.Short() skips these pins under make test-short/test-changed", fset.Position(call.Pos()))
+		}
+		return true
+	})
 }
