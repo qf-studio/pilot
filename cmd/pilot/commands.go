@@ -33,6 +33,7 @@ import (
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/dashboard"
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/gateway"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/pilot"
@@ -232,7 +233,7 @@ func newStatusCmd() *cobra.Command {
 			fmt.Println("───────────────────────────────────────")
 			fmt.Printf("Gateway: %s\n", gatewayBaseURL(cfg))
 			// GH-5862, GH-6053: best-effort — a stopped daemon just prints nothing.
-			if st, ok := fetchStatusBody(gatewayBaseURL(cfg)); ok {
+			if st, ok := fetchStatusBody(gatewayBaseURL(cfg), cfg.GatewayAuthConfig()); ok {
 				printStatusDaemonLines(os.Stdout, st)
 			}
 			fmt.Println()
@@ -324,9 +325,17 @@ func admissionPauseLine(st admissionStatusBody) string {
 
 // fetchStatusBody asks the running daemon for GET /api/v1/status; ok is false
 // when it does not answer.
-func fetchStatusBody(baseURL string) (st admissionStatusBody, ok bool) {
+func fetchStatusBody(baseURL string, auth *gateway.AuthConfig) (st admissionStatusBody, ok bool) {
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/status", nil)
+	if err != nil {
+		return st, false
+	}
+	// /api/v1/status is behind the gateway's auth; send the same token as pilot billing-mode.
+	if auth != nil {
+		req.Header.Set("Authorization", "Bearer "+auth.Token)
+	}
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(baseURL + "/api/v1/status")
+	resp, err := client.Do(req)
 	if err != nil {
 		return st, false
 	}
@@ -341,8 +350,8 @@ func fetchStatusBody(baseURL string) (st admissionStatusBody, ok bool) {
 }
 
 // fetchAdmissionPauseLine asks the running daemon for its admission state.
-func fetchAdmissionPauseLine(baseURL string) string {
-	st, ok := fetchStatusBody(baseURL)
+func fetchAdmissionPauseLine(baseURL string, auth *gateway.AuthConfig) string {
+	st, ok := fetchStatusBody(baseURL, auth)
 	if !ok {
 		return ""
 	}
