@@ -392,3 +392,47 @@ func TestBillingOverride_ObserverHearsEverySwitch(t *testing.T) {
 		}
 	}
 }
+
+// A task admitted and queued without a key keeps that mode when the override
+// later switches to api_key: the switch applies from the next admission only
+// (GH-6058). The real dispatcher stash and billingCredentialForRun are used.
+func TestBillingOverride_QueuedKeylessTaskKeepsModeAcrossSwitchToAPIKey(t *testing.T) {
+	for _, mode := range []BillingMode{BillingModeSubscription, BillingModeUnset} {
+		t.Run(string(mode), func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			t.Cleanup(cleanup)
+			t.Setenv(billingOverrideKeyEnv, testBillingKey)
+			cfg := &BillingConfig{Mode: mode, APIKeyEnv: billingOverrideKeyEnv}
+			d, _ := newOverrideDispatcher(t, store, cfg, newFakePauseClock(usageLimitTestNow))
+
+			queued := &Task{ID: "GH-6058-q", ProjectPath: "/tmp/pilot-gh6058-q"}
+			cred, err := d.admitBilling(queued)
+			if err != nil {
+				t.Fatalf("admitBilling before the switch: %v", err)
+			}
+			if len(cred.Env()) != 0 {
+				t.Fatalf("pre-switch credential env = %v, want none", cred.Env())
+			}
+			d.stashBillingCredential("exec-queued", cred)
+
+			if err := d.SetBillingOverride("api_key", time.Time{}, "cli"); err != nil {
+				t.Fatalf("SetBillingOverride: %v", err)
+			}
+
+			// The worker starts after the switch and must get the admitted credential.
+			got, err := d.billingCredentialForRun("exec-queued", queued.ID, queued.ProjectPath)
+			if err != nil {
+				t.Fatalf("billingCredentialForRun: %v", err)
+			}
+			if got.Mode() == BillingModeAPIKey || len(got.Env()) != 0 {
+				t.Errorf("queued task credential = %s env %v, want the keyless one it was admitted with", got.Mode(), got.Env())
+			}
+
+			// A task admitted after the switch does get the key.
+			next, err := d.admitBilling(&Task{ID: "GH-6058-n", ProjectPath: "/tmp/pilot-gh6058-q"})
+			if err != nil || next.Mode() != BillingModeAPIKey || len(next.Env()) != 1 {
+				t.Errorf("post-switch admission = %v, %v, want api_key with the key", next, err)
+			}
+		})
+	}
+}
