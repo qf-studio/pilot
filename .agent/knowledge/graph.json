@@ -3699,6 +3699,18 @@
           "https://github.com/qf-studio/pilot/issues/6034",
           "https://github.com/qf-studio/pilot/issues/6035"
         ]
+      },
+      "TASK-635": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-635-autopilot-ci-poll-api-outage-hold-not-terminal-failed.md",
+        "title": "An API outage during the CI poll is a hold with a redrive, not a terminal `failed` stage",
+        "status": "backlog",
+        "concepts": [
+          "deployment",
+          "context",
+          "api",
+          "testing",
+          "knowledge"
+        ]
       }
     },
     "memories": {
@@ -15089,6 +15101,31 @@
       "from": "TASK-634",
       "to": "deployment",
       "type": "implements"
+    },
+    {
+      "from": "TASK-635",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-635",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-635",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-635",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-635",
+      "to": "knowledge",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -15326,7 +15363,8 @@
       "TASK-585",
       "TASK-631",
       "TASK-633",
-      "TASK-632"
+      "TASK-632",
+      "TASK-635"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -15854,7 +15892,8 @@
       "TASK-633",
       "mem-280",
       "TASK-632",
-      "TASK-634"
+      "TASK-634",
+      "TASK-635"
     ],
     "conversational-bot": [
       "mem-036",
@@ -16267,7 +16306,8 @@
       "TASK-631",
       "TASK-633",
       "TASK-632",
-      "TASK-634"
+      "TASK-634",
+      "TASK-635"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -16853,7 +16893,8 @@
       "TASK-585",
       "TASK-630",
       "TASK-631",
-      "TASK-633"
+      "TASK-633",
+      "TASK-635"
     ],
     "labels": [
       "mem-100",
@@ -17523,7 +17564,8 @@
       "TASK-631",
       "TASK-633",
       "TASK-632",
-      "TASK-634"
+      "TASK-634",
+      "TASK-635"
     ],
     "testing-quality": [
       "TASK-384",
@@ -18263,10 +18305,10 @@
       "mem-281"
     ]
   },
-  "last_updated": "2026-11-03T16:28:33.626422+00:00",
+  "last_updated": "2026-11-04T11:37:22.297675+00:00",
   "stats": {
-    "total_nodes": 856,
-    "total_edges": 993,
+    "total_nodes": 857,
+    "total_edges": 998,
     "memory_count": 469
   },
   "metadata": {
