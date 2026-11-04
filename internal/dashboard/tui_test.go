@@ -2273,3 +2273,44 @@ func TestUpgradeRender_FailedShowsError(t *testing.T) {
 		t.Errorf("Failed render must not contain 'Restarting'; got:\n%s", out)
 	}
 }
+
+// GH-6053: the header carries one billing chip, fed by BillingModeMsg.
+func TestTUI_HeaderBillingChip(t *testing.T) {
+	apply := func(m Model, msg BillingModeMsg) Model {
+		next, _ := m.Update(msg)
+		return next.(Model)
+	}
+	updated := func(msg BillingModeMsg) Model { return apply(NewModel("test"), msg) }
+
+	t.Run("no chip before the daemon reports", func(t *testing.T) {
+		if header := NewModel("test").renderChromeHeader(); strings.Contains(header, "billing") {
+			t.Errorf("header shows a billing chip before any BillingModeMsg:\n%s", header)
+		}
+	})
+
+	t.Run("config source renders the mode only", func(t *testing.T) {
+		header := updated(BillingModeMsg{Mode: "subscription", Source: "config"}).renderChromeHeader()
+		if !strings.Contains(header, "billing subscription") {
+			t.Errorf("header lacks the chip \"billing subscription\":\n%s", header)
+		}
+		if strings.Contains(header, "billing subscription·") {
+			t.Errorf("config source must not render a source suffix:\n%s", header)
+		}
+	})
+
+	t.Run("override renders mode and source", func(t *testing.T) {
+		header := updated(BillingModeMsg{Mode: "api_key", Source: "cli", Until: time.Now().Add(time.Hour)}).renderChromeHeader()
+		if !strings.Contains(header, "billing api_key·cli") {
+			t.Errorf("header lacks the chip \"billing api_key·cli\":\n%s", header)
+		}
+	})
+
+	t.Run("a later message replaces the chip", func(t *testing.T) {
+		m := updated(BillingModeMsg{Mode: "api_key", Source: "gateway"})
+		m = apply(m, BillingModeMsg{Mode: "subscription", Source: "config"})
+		header := m.renderChromeHeader()
+		if strings.Contains(header, "api_key") || !strings.Contains(header, "billing subscription") {
+			t.Errorf("chip was not replaced:\n%s", header)
+		}
+	})
+}

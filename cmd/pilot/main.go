@@ -428,11 +428,12 @@ func main() {
 		newEvalCmd(),
 		newGhGuardCmd(),
 		newNavigatorCmd(),
+		newBillingModeCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(exitCodeOf(err))
 	}
 }
 
@@ -1207,6 +1208,7 @@ Examples:
 						tea.WithInput(os.Stdin),
 						tea.WithOutput(os.Stdout),
 					)
+					wireBillingChip(gwDispatcher, gwProgram) // GH-6053
 					// GH-2291: Progress/token callbacks are registered by runDashboardMode
 					// which merges task states from both adapter pollers and gateway webhooks.
 				}
@@ -3354,6 +3356,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			dispatcher = nil
 		} else {
 			logging.WithComponent("start").Info("Task dispatcher started")
+			wireBillingChip(dispatcher, program) // GH-6053
 		}
 	}
 

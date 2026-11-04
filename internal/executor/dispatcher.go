@@ -267,9 +267,10 @@ type Dispatcher struct {
 
 	// Runtime billing-mode override (GH-6052); see billing_override.go.
 	billingOverrideMu    sync.Mutex
-	billingOverrideState *billingOverrideState // nil when the config decides
-	billingOverrideGen   uint64                // bumped per (re)arm and clear so a stale expiry is a no-op
-	billingOverrideTimer pauseTimer            // pending expiry
+	billingOverrideState *billingOverrideState       // nil when the config decides
+	billingOverrideGen   uint64                      // bumped per (re)arm and clear so a stale expiry is a no-op
+	billingOverrideTimer pauseTimer                  // pending expiry
+	billingObserver      func(BillingOverrideStatus) // GH-6053: told after every switch (dashboard chip)
 }
 
 // NewDispatcher creates a new task dispatcher.

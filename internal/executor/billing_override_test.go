@@ -347,3 +347,48 @@ func TestBillingOverride_RejectsInvalidRequests(t *testing.T) {
 		t.Errorf("clear with no override: err %v, %d alerts", err, len(sink.modeChanges()))
 	}
 }
+
+// GH-6053: the observer hears every switch (set, clear, expiry) with the mode
+// then in force, and nothing for a clear that had nothing to clear.
+func TestBillingOverride_ObserverHearsEverySwitch(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	t.Cleanup(cleanup)
+	clock := newFakePauseClock(usageLimitTestNow)
+	d, _ := newOverrideDispatcher(t, store, overrideTestConfig(t), clock)
+
+	var got []BillingOverrideStatus
+	d.SetBillingObserver(func(st BillingOverrideStatus) { got = append(got, st) })
+
+	if err := d.ClearBillingOverride("cli"); err != nil {
+		t.Fatalf("ClearBillingOverride with nothing to clear: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("observer heard %d switches for a no-op clear, want 0", len(got))
+	}
+
+	if err := d.SetBillingOverride("api_key", usageLimitTestNow.Add(time.Hour), "cli"); err != nil {
+		t.Fatalf("SetBillingOverride: %v", err)
+	}
+	if err := d.ClearBillingOverride("cli"); err != nil {
+		t.Fatalf("ClearBillingOverride: %v", err)
+	}
+	if err := d.SetBillingOverride("api_key", usageLimitTestNow.Add(time.Hour), "gateway"); err != nil {
+		t.Fatalf("SetBillingOverride: %v", err)
+	}
+	clock.Advance(time.Hour)
+
+	want := []struct{ mode, source string }{
+		{"api_key", "cli"},
+		{"subscription", BillingModeSourceConfig},
+		{"api_key", "gateway"},
+		{"subscription", BillingModeSourceConfig},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("observer heard %d switches, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].Mode != w.mode || got[i].Source != w.source {
+			t.Errorf("switch %d = %s/%s, want %s/%s", i, got[i].Mode, got[i].Source, w.mode, w.source)
+		}
+	}
+}

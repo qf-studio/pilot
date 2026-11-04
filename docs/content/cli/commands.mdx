@@ -328,6 +328,7 @@ Displays current configuration state including gateway address, enabled adapters
 
 The command displays:
 - **Gateway**: HTTP endpoint address (host:port)
+- **Billing**: when the daemon is running, one line with the billing mode in force and where it came from, e.g. `billing: api_key (cli), back to subscription at 2026-11-05T09:00:00Z` (the `back to` part appears only while an override has an expiry; older daemons print no line)
 - **Adapters**: Status of each adapter (Linear, Slack, Telegram, GitHub)
 - **Projects**: Configured project paths with context intelligence detection
 
@@ -1335,6 +1336,41 @@ pilot patterns ignore pattern-abc123
 
 # Delete a pattern globally
 pilot patterns ignore pattern-abc123 --global
+```
+
+---
+
+### pilot billing-mode
+
+Show or switch the billing mode of the running daemon.
+
+```bash
+pilot billing-mode <subcommand>
+```
+
+Talks to the daemon's gateway (`/api/v1/billing-mode`), so a switch takes effect for every task admitted from then on without editing `config.yaml` or restarting. A task already running keeps the credential it started with. The override survives a daemon restart until its expiry. The dashboard header shows a `billing <mode>` chip, with `·<source>` while an override is in force.
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Print the mode in force, its source (`config`, `cli`, `gateway`, `fallback`), the expiry and the mode the config alone decides |
+| `set <subscription\|api_key\|config>` | Override the mode; `config` drops the override so the config decides again |
+
+#### Flags (`set`)
+
+| Flag | Description |
+|------|-------------|
+| `--until` | Expiry as an RFC 3339 time or a duration from now (`2h`); after it the mode reverts to the config's. Not valid with `config` |
+
+`api_key` needs `api_key_command` or `api_key_env` in `executor.claude_code.billing`. Exit code 1 carries the gateway's message (for example an unknown mode); exit code 2 means `daemon not reachable at <url>`.
+
+#### Examples
+
+```bash
+pilot billing-mode status
+pilot billing-mode set api_key --until 2h
+pilot billing-mode set config
 ```
 
 ---
