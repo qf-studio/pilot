@@ -5786,13 +5786,16 @@
       },
       "mem-152": {
         "type": "learning",
-        "summary": "Status reports to user must be scannable grouped lists (done / failed+reset / needs-attention / watch), one line per item \u2014 never narrative prose. Direct user feedback 2026-07-13.",
+        "summary": "Status reports to user must be scannable grouped lists (done / failed+reset / needs-attention / watch), one line per item \u2014 never narrative prose (2026-07-13). Update 2026-11-04: each status line carries one aviation-style state word \u2014 armed, holding (on a named gate), cleared, on the ground, diverted, landed \u2014 founder: 'it cuts the understanding time'.",
         "path": "memories/learnings/mem-152.md",
         "concepts": [
+          "communication",
+          "status-vocabulary",
           "workflow-discipline"
         ],
         "confidence": 0.95,
-        "created": "2026-07-13"
+        "created": "2026-07-13",
+        "last_validated": "2026-11-04"
       },
       "mem-153": {
         "type": "pitfall",
