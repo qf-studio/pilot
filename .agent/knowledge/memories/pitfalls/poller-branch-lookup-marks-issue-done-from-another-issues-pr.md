@@ -63,3 +63,5 @@ with `gh api search/issues` (total=1, PR#163). The studio-sdk#138 fix added
   (`GH-<new> in:title is:pr is:merged base:<default>` must return 0).
 - Fix: fetch the search items and require `prReferencesIssue` (title prefix
   `GH-<n>:` or `#<n>`) before marking done, same as the branch leg.
+- Filed upstream 2026-11-04: studio-sdk#156 (`bug` + `pilot` + `no-decompose`).
+  Pilot bumps the pin after release. Refile landed as ui#302.
