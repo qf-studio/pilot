@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -16,6 +18,8 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/gateway"
 )
 
 // billingTestGateway is an httptest gateway that records the billing-mode
@@ -276,6 +280,144 @@ func TestStatusCmd_BillingLine(t *testing.T) {
 		out := statusOutput(t, `{"status":"ok","admission_paused":false}`)
 		if strings.Contains(out, "billing") {
 			t.Errorf("status prints a billing line for a body without billing_mode:\n%s", out)
+		}
+		if !strings.Contains(out, "Pilot Status") {
+			t.Errorf("status output is missing entirely:\n%s", out)
+		}
+	})
+}
+
+// recordingBillingSource is a gateway.BillingOverrideSource that reports the
+// setBy it was given as the Source, as the dispatcher does.
+type recordingBillingSource struct {
+	mu     sync.Mutex
+	status executor.BillingOverrideStatus
+	setBys []string
+}
+
+func (r *recordingBillingSource) BillingOverride() executor.BillingOverrideStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.status
+}
+
+func (r *recordingBillingSource) SetBillingOverride(mode string, until time.Time, setBy string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.setBys = append(r.setBys, setBy)
+	r.status = executor.BillingOverrideStatus{Mode: mode, Source: setBy, Until: until, ConfigMode: "subscription"}
+	return nil
+}
+
+func (r *recordingBillingSource) ClearBillingOverride(setBy string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.setBys = append(r.setBys, setBy)
+	r.status = executor.BillingOverrideStatus{Mode: "subscription", Source: "config", ConfigMode: "subscription"}
+	return nil
+}
+
+// TestBillingCmd_SetReportsCLISource runs pilot billing-mode set against the
+// real gateway handler: the source cli on the printed status must come from the
+// set_by the command posts, not from a canned reply.
+func TestBillingCmd_SetReportsCLISource(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := l.Addr().String()
+	port := l.Addr().(*net.TCPAddr).Port
+	_ = l.Close()
+
+	src := &recordingBillingSource{status: executor.BillingOverrideStatus{Mode: "subscription", Source: "config", ConfigMode: "subscription"}}
+	server := gateway.NewServerWithAuth(&gateway.Config{Host: "127.0.0.1", Port: port},
+		&gateway.AuthConfig{Type: gateway.AuthTypeAPIToken, Token: "test-gateway-token"})
+	server.SetBillingOverrideSource(src)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = server.Start(ctx) }()
+	for i := 0; i < 50; i++ {
+		if c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
+			_ = c.Close()
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	useGatewayConfig(t, addr, true)
+
+	out, exit := runBillingModeCmd(t, "set", "api_key")
+	if exit != 0 {
+		t.Fatalf("exit = %d, output %q", exit, out)
+	}
+	if !strings.Contains(out, "api_key") || !strings.Contains(out, "cli") || strings.Contains(out, "gateway") {
+		t.Errorf("set did not report source cli:\n%s", out)
+	}
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if len(src.setBys) != 1 || src.setBys[0] != "cli" {
+		t.Errorf("source got setBy %v, want [cli]", src.setBys)
+	}
+}
+
+// TestStatusCmd_BillingLineAuthed: /api/v1/status is protected, so pilot status
+// must send the configured bearer token to print the billing line.
+func TestStatusCmd_BillingLineAuthed(t *testing.T) {
+	const body = `{"billing_mode":"api_key","billing_mode_source":"cli","billing_mode_until":"","billing_config_mode":"subscription"}`
+	var (
+		mu   sync.Mutex
+		auth []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth = append(auth, r.Header.Get("Authorization"))
+		mu.Unlock()
+		if r.Header.Get("Authorization") != "Bearer test-gateway-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = fmt.Fprint(w, body)
+	}))
+	t.Cleanup(srv.Close)
+
+	runStatus := func(t *testing.T) string {
+		t.Helper()
+		return captureStdout(func() {
+			cmd := newStatusCmd()
+			cmd.SetArgs(nil)
+			if err := cmd.Execute(); err != nil {
+				t.Errorf("pilot status: %v", err)
+			}
+		})
+	}
+
+	t.Run("token configured prints the billing line", func(t *testing.T) {
+		useGatewayConfig(t, srv.Listener.Addr().String(), true)
+		out := runStatus(t)
+		if !strings.Contains(out, "billing: api_key (cli)") {
+			t.Errorf("status output lacks the billing line:\n%s", out)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if got := auth[len(auth)-1]; got != "Bearer test-gateway-token" {
+			t.Errorf("Authorization = %q, want the configured bearer token", got)
+		}
+	})
+
+	t.Run("no token configured prints no billing line", func(t *testing.T) {
+		useGatewayConfig(t, srv.Listener.Addr().String(), false)
+		if out := runStatus(t); strings.Contains(out, "billing") {
+			t.Errorf("status printed a billing line the gateway refused:\n%s", out)
+		}
+	})
+
+	t.Run("daemon down prints no billing line", func(t *testing.T) {
+		down := httptest.NewServer(http.NotFoundHandler())
+		addr := down.Listener.Addr().String()
+		down.Close()
+		useGatewayConfig(t, addr, true)
+		out := runStatus(t)
+		if strings.Contains(out, "billing") {
+			t.Errorf("status printed a billing line with no daemon:\n%s", out)
 		}
 		if !strings.Contains(out, "Pilot Status") {
 			t.Errorf("status output is missing entirely:\n%s", out)

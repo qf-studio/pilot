@@ -35,10 +35,10 @@ func TestFetchAdmissionPauseLine(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if got := fetchAdmissionPauseLine(srv.URL); !strings.HasPrefix(got, "admission paused: usage limit, resumes at ") {
+	if got := fetchAdmissionPauseLine(srv.URL, nil); !strings.HasPrefix(got, "admission paused: usage limit, resumes at ") {
 		t.Fatalf("line = %q", got)
 	}
-	if got := fetchAdmissionPauseLine("http://127.0.0.1:1"); got != "" {
+	if got := fetchAdmissionPauseLine("http://127.0.0.1:1", nil); got != "" {
 		t.Fatalf("unreachable daemon should print nothing, got %q", got)
 	}
 }

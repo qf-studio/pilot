@@ -20,6 +20,9 @@ const (
 // billingModeAccepted names the POST modes in a 400 body.
 const billingModeAccepted = "subscription, api_key, config"
 
+// billingSetByAccepted names the POST set_by values in a 400 body.
+const billingSetByAccepted = "cli, gateway"
+
 // billingModeResponse is the body of GET and a successful POST
 // /api/v1/billing-mode. until is empty when there is none.
 type billingModeResponse struct {
@@ -32,6 +35,20 @@ type billingModeResponse struct {
 type billingModeRequest struct {
 	Mode  string `json:"mode"`
 	Until string `json:"until,omitempty"`
+	SetBy string `json:"set_by,omitempty"`
+}
+
+// billingModeSetBy resolves the posted set_by: empty means gateway, and only the
+// callers of this endpoint (cli, gateway) are accepted. fallback and config are
+// written by the daemon itself, never over HTTP.
+func billingModeSetBy(setBy string) (string, bool) {
+	switch setBy {
+	case "":
+		return executor.BillingModeSourceGateway, true
+	case executor.BillingModeSourceCLI, executor.BillingModeSourceGateway:
+		return setBy, true
+	}
+	return "", false
 }
 
 func formatBillingUntil(until time.Time) string {
@@ -52,7 +69,7 @@ func newBillingModeResponse(st executor.BillingOverrideStatus) billingModeRespon
 
 // handleBillingMode serves the runtime billing-mode override (GH-6052): GET
 // reports the mode in force; POST {"mode": "subscription"|"api_key"|"config",
-// "until": RFC3339} sets it or, for "config", clears it. The name keeps clear of
+// "until": RFC3339, "set_by": "cli"|"gateway"} sets it or, for "config", clears it. The name keeps clear of
 // the hosted console's /api/v1/billing routes, which are customer billing; this
 // endpoint never touches them. Same auth as the other apiMux routes.
 func (s *Server) handleBillingMode(w http.ResponseWriter, r *http.Request) {
@@ -94,11 +111,16 @@ func applyBillingModeRequest(w http.ResponseWriter, r *http.Request, src Billing
 		return http.StatusBadRequest, fmt.Sprintf("invalid mode %q: accepted values are %s", req.Mode, billingModeAccepted)
 	}
 
+	setBy, ok := billingModeSetBy(req.SetBy)
+	if !ok {
+		return http.StatusBadRequest, fmt.Sprintf("invalid set_by %q: accepted values are %s", req.SetBy, billingSetByAccepted)
+	}
+
 	if req.Mode == billingModeConfig {
 		if req.Until != "" {
 			return http.StatusBadRequest, `"until" does not apply to mode "config"`
 		}
-		if err := src.ClearBillingOverride(executor.BillingModeSourceGateway); err != nil {
+		if err := src.ClearBillingOverride(setBy); err != nil {
 			return http.StatusInternalServerError, err.Error()
 		}
 		return 0, ""
@@ -112,7 +134,7 @@ func applyBillingModeRequest(w http.ResponseWriter, r *http.Request, src Billing
 		}
 		until = t
 	}
-	if err := src.SetBillingOverride(req.Mode, until, executor.BillingModeSourceGateway); err != nil {
+	if err := src.SetBillingOverride(req.Mode, until, setBy); err != nil {
 		if errors.Is(err, executor.ErrBillingOverrideInvalid) {
 			return http.StatusBadRequest, err.Error()
 		}
