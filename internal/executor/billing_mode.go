@@ -73,6 +73,10 @@ func (c *BillingConfig) EffectiveMode() BillingMode {
 var (
 	processBillingMu  sync.RWMutex
 	processBillingVal = BillingModeUnset
+	// processBillingPinned is true while a runtime override owns
+	// processBillingVal (GH-6052): configured-mode publications are ignored so
+	// building a resolver or a Runner cannot undo the override.
+	processBillingPinned bool
 )
 
 // SetProcessBillingMode records the daemon's configured billing mode for spawn
@@ -85,6 +89,31 @@ func SetProcessBillingMode(mode BillingMode) {
 	}
 	processBillingMu.Lock()
 	processBillingVal = mode
+	processBillingMu.Unlock()
+}
+
+// publishConfiguredBillingMode records the config's mode as the process default
+// unless a runtime override is in force (GH-6052). NewBillingResolver and the
+// Runner's construction use it; the dispatcher's override uses
+// SetProcessBillingMode after setProcessBillingPinned.
+func publishConfiguredBillingMode(mode BillingMode) {
+	processBillingMu.Lock()
+	defer processBillingMu.Unlock()
+	if processBillingPinned {
+		return
+	}
+	if mode == "" {
+		mode = BillingModeUnset
+	}
+	processBillingVal = mode
+}
+
+// setProcessBillingPinned shields (or releases) the process default from
+// configured-mode publications. The caller publishes the mode itself with
+// SetProcessBillingMode, pinning first when it pins.
+func setProcessBillingPinned(pinned bool) {
+	processBillingMu.Lock()
+	processBillingPinned = pinned
 	processBillingMu.Unlock()
 }
 
@@ -196,12 +225,16 @@ type BillingResolver struct {
 	getenv  func(string) string
 	timeout time.Duration
 	log     *slog.Logger
+	// override is the runtime mode override (GH-6052); nil or ok=false means the
+	// config decides.
+	override func() (mode BillingMode, source string, until time.Time, ok bool)
 }
 
 // NewBillingResolver builds a resolver for cfg; nil cfg means the unset mode.
-// It records cfg's mode as the process default (SetProcessBillingMode).
+// It records cfg's mode as the process default unless a runtime override is in
+// force.
 func NewBillingResolver(cfg *BillingConfig) *BillingResolver {
-	SetProcessBillingMode(cfg.EffectiveMode())
+	publishConfiguredBillingMode(cfg.EffectiveMode())
 	return &BillingResolver{
 		cfg:     cfg,
 		getenv:  os.Getenv,
@@ -210,10 +243,24 @@ func NewBillingResolver(cfg *BillingConfig) *BillingResolver {
 	}
 }
 
-// Mode returns the configured mode. Safe on a nil receiver (unset).
+// SetOverrideSource installs the runtime override (GH-6052): while it reports
+// ok, Mode returns its mode instead of the config's. Resolve reads Mode at each
+// call, so a credential already resolved is never touched; a switch applies
+// from the next resolution. Call before the resolver is shared.
+func (r *BillingResolver) SetOverrideSource(fn func() (mode BillingMode, source string, until time.Time, ok bool)) {
+	r.override = fn
+}
+
+// Mode returns the mode in force: the runtime override when one is set, else
+// the configured mode. Safe on a nil receiver (unset).
 func (r *BillingResolver) Mode() BillingMode {
 	if r == nil {
 		return BillingModeUnset
+	}
+	if r.override != nil {
+		if mode, _, _, ok := r.override(); ok {
+			return mode
+		}
 	}
 	return r.cfg.EffectiveMode()
 }

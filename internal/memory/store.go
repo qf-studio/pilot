@@ -553,6 +553,16 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_pr_reviews_execution ON pr_reviews(execution_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr ON pr_reviews(project_path, pr_number)`,
+		// GH-6052: runtime overrides of config values, set through the gateway or
+		// the CLI and kept across restarts. An absent row means the config
+		// decides. until is NULL for an override that stays until cleared.
+		`CREATE TABLE IF NOT EXISTS runtime_overrides (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			until DATETIME NULL,
+			set_by TEXT NOT NULL DEFAULT '',
+			set_at DATETIME NOT NULL
+		)`,
 		// GH-5677: one row per web chat turn (tokens, cost, which Anthropic key
 		// paid), so chat spend is metered as its own unit next to executions.
 		`CREATE TABLE IF NOT EXISTS chat_turns (

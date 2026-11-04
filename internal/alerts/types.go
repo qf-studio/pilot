@@ -149,6 +149,10 @@ const (
 	// key could not be resolved, so the dispatcher failed the execution closed
 	// and paused task admission until the key resolves again.
 	AlertTypeBillingKeyUnavailable AlertType = "billing_key_unavailable"
+
+	// AlertTypeBillingModeChanged (GH-6052): the billing mode in force changed
+	// through a runtime override (set, cleared or expired).
+	AlertTypeBillingModeChanged AlertType = "billing_mode_changed"
 )
 
 // HandlerEmittedAlertTypes lists every AlertType whose handler
@@ -175,6 +179,7 @@ var HandlerEmittedAlertTypes = []AlertType{
 	AlertTypeDailyTicketCapHit,
 	AlertTypeUsageLimitPause,
 	AlertTypeBillingKeyUnavailable,
+	AlertTypeBillingModeChanged,
 }
 
 // CoverageGaps returns the subset of HandlerEmittedAlertTypes that cfg has
@@ -741,6 +746,18 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    0,
 			Description: "Alert when billing.mode is api_key and the API key cannot be resolved, so task admission is paused (executor.claude_code.billing)",
+		},
+		// GH-6052: emitted when the runtime billing mode override is set,
+		// cleared or expires, so a silent switch of what pays for runs is visible.
+		{
+			Name:        "billing_mode_changed",
+			Type:        AlertTypeBillingModeChanged,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityInfo,
+			Channels:    []string{},
+			Cooldown:    0,
+			Description: "Alert when the billing mode in force changes through a runtime override (gateway or CLI), its clear or its expiry",
 		},
 		// GH-5498: emitted by the executor's HeartbeatCallback right before it
 		// kills a Claude subprocess that produced no stream events for longer

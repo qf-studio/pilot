@@ -1488,7 +1488,7 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 	if config.ClaudeCode != nil {
 		billingCfg = config.ClaudeCode.Billing
 	}
-	SetProcessBillingMode(billingCfg.EffectiveMode())
+	publishConfiguredBillingMode(billingCfg.EffectiveMode())
 
 	backend, err := NewBackend(config)
 	if err != nil {

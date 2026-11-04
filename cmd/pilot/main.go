@@ -1425,6 +1425,7 @@ Examples:
 			// GH-5862: surface the dispatcher's admission pause on /api/v1/status.
 			if gwDispatcher != nil {
 				p.Gateway().SetAdmissionStatusSource(gwDispatcher)
+				p.Gateway().SetBillingOverrideSource(gwDispatcher) // GH-6052
 			}
 
 			// GH-1585: Wire autopilot provider to gateway so /api/v1/autopilot returns live PR data
@@ -3378,6 +3379,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// GH-5862: surface the admission pause on /api/v1/status in polling mode.
 	if gwServer != nil && dispatcher != nil {
 		gwServer.SetAdmissionStatusSource(dispatcher)
+		gwServer.SetBillingOverrideSource(dispatcher) // GH-6052
 	}
 
 	if dispatcher != nil {

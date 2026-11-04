@@ -21,12 +21,15 @@ const AdmissionPauseOwnerBillingKey = "billing-key"
 // declined, not failed, and callers leave it for the next poll.
 var ErrBillingKeyHold = fmt.Errorf("billing key unavailable, admission paused: %w", ErrDispatchGated)
 
-// billingResolverOrConfig returns the resolver for the current config.
+// billingResolverOrConfig returns the resolver for the current config, with the
+// runtime override (billing_override.go) installed.
 func (d *Dispatcher) billingResolverOrConfig() *BillingResolver {
 	if d.billingResolver != nil {
 		return d.billingResolver
 	}
-	return NewBillingResolver(d.billingConfig())
+	r := NewBillingResolver(d.billingConfig())
+	r.SetOverrideSource(d.billingOverrideSource)
+	return r
 }
 
 func (d *Dispatcher) billingConfig() *BillingConfig {
@@ -199,6 +202,29 @@ func (d *Dispatcher) retryBillingKey(gen uint64) {
 
 	d.ResumeAdmissionFor(AdmissionPauseOwnerBillingKey)
 	d.log.Info("billing api_key resolved, task admission resumed",
+		slog.String("owner", AdmissionPauseOwnerBillingKey))
+}
+
+// releaseBillingKeyHold lifts the billing-key pause when the mode in force no
+// longer needs a key (GH-6052): the retry timer would keep probing a key that
+// nothing asks for. No-op when the pause is not held.
+func (d *Dispatcher) releaseBillingKeyHold() {
+	d.billingMu.Lock()
+	if !d.billingHeld {
+		d.billingMu.Unlock()
+		return
+	}
+	d.billingHeld = false
+	d.billingLastErr = nil
+	d.billingGen++
+	if d.billingTimer != nil {
+		d.billingTimer.Stop()
+		d.billingTimer = nil
+	}
+	d.billingMu.Unlock()
+
+	d.ResumeAdmissionFor(AdmissionPauseOwnerBillingKey)
+	d.log.Info("billing mode no longer api_key, task admission resumed",
 		slog.String("owner", AdmissionPauseOwnerBillingKey))
 }
 
