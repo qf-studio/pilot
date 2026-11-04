@@ -1,6 +1,6 @@
 # TASK-633: Billing mode fast-follow — PR#6017 post-merge review notes verified on main, two fix legs
 
-**Status**: ✅ **F4 [pilot#6032](https://github.com/qf-studio/pilot/issues/6032) → [PR#6036](https://github.com/qf-studio/pilot/pull/6036) MERGED 16:56Z by hand (squash `cf93e82c6`; `gh pr review --approve` refused: same account as the PR author, so the merge is the approval). F5 [pilot#6038](https://github.com/qf-studio/pilot/issues/6038) DISPATCHED 16:5xZ (`pilot` + `no-decompose`). **v2.311.0 RELEASED 17:21Z** (tag on `cf93e82c6` after a 654 s gate; release run green, 6 assets, F4 line prepended to the notes; docs-version PR#6040 armed); **box hot-upgraded 17:27:01Z** (`upgrade verified complete from=2.310.0 to=v2.311.0`, 1 proc). **FLEET HOLD LIFTED**: the AMI bake and SSM hops may target v2.311.0; Nelya's golden AMI (16:54 CET) is on 2.309.0, pre-regression, so nothing was exposed. Nelya told 17:34Z in #infrastructure (ts `1793731657.978579`): 2.311.0 out, hold lifted, 2.310.0 never for tenant images, next re-bake on 2.311.0; we owe her a note after the console-api redeploy.** Was: PR OPEN 16:41Z, CI test running, pre-PR shadow REQUEST-CHANGES (1 real blocking: bare-ctx spawn sites keep the inherited key under an explicit `subscription`; no live instance) → `pilot-review-rc` label → autopilot escalates to approval on green. Navigator review posted 16:48Z: APPROVE-w-notes, merge now, fast-follow F5 (§ LEG F5, not filed). Release v2.311.0 after merge, then lift the fleet hold.** Was: P1 DISPATCHED 2026-11-03 ~15:50Z — v2.310.0 regression: unset `billing.mode` = subscription = inherited `ANTHROPIC_API_KEY` stripped from every model subprocess; every hosted tenant (env key, no OAuth login) breaks on upgrade. None exposed yet (tenants on 2.282.0 / 2.277.4). HOLD: no AMI bake (infra#23) or SSM hop to 2.310.0 until F4 is released.** Shipped in v2.310.0: A1 PR#6017 · F1 #6021→PR#6024 · F2 #6022→PR#6025 · F3 #6026→PR#6027; box on it since 14:16Z (OAuth, unaffected), 4 tasks completed. Parent: TASK-631.
+**Status**: 🚀 **F6 DISPATCHED 11-04 → [pilot#](https://github.com/qf-studio/pilot/issues/) (`pilot` + `no-decompose`) — the F1/F2 post-merge minors that F3 and F5 left (alert text + CLI runners drop the billing alert, post-merge reviewer resolver failure raises none, bootstrap scaffold order, discard after a failed delete, subtask cost assertion), one PR (§ LEG F6). F5 [pilot#6038](https://github.com/qf-studio/pilot/issues/6038) → PR#6046 MERGED 11-03 (`e599ff06b`, post-merge APPROVE-WITH-NOTES), unreleased (next tag). Held after F6: A2 runtime override + `pilot billing set` · B usage-limit fallback · C budget scope · console writes the billing block (TASK-631 D4).** · ✅ **F4 [pilot#6032](https://github.com/qf-studio/pilot/issues/6032) → [PR#6036](https://github.com/qf-studio/pilot/pull/6036) MERGED 16:56Z by hand (squash `cf93e82c6`; `gh pr review --approve` refused: same account as the PR author, so the merge is the approval). F5 [pilot#6038](https://github.com/qf-studio/pilot/issues/6038) DISPATCHED 16:5xZ (`pilot` + `no-decompose`). **v2.311.0 RELEASED 17:21Z** (tag on `cf93e82c6` after a 654 s gate; release run green, 6 assets, F4 line prepended to the notes; docs-version PR#6040 armed); **box hot-upgraded 17:27:01Z** (`upgrade verified complete from=2.310.0 to=v2.311.0`, 1 proc). **FLEET HOLD LIFTED**: the AMI bake and SSM hops may target v2.311.0; Nelya's golden AMI (16:54 CET) is on 2.309.0, pre-regression, so nothing was exposed. Nelya told 17:34Z in #infrastructure (ts `1793731657.978579`): 2.311.0 out, hold lifted, 2.310.0 never for tenant images, next re-bake on 2.311.0; we owe her a note after the console-api redeploy.** Was: PR OPEN 16:41Z, CI test running, pre-PR shadow REQUEST-CHANGES (1 real blocking: bare-ctx spawn sites keep the inherited key under an explicit `subscription`; no live instance) → `pilot-review-rc` label → autopilot escalates to approval on green. Navigator review posted 16:48Z: APPROVE-w-notes, merge now, fast-follow F5 (§ LEG F5, not filed). Release v2.311.0 after merge, then lift the fleet hold.** Was: P1 DISPATCHED 2026-11-03 ~15:50Z — v2.310.0 regression: unset `billing.mode` = subscription = inherited `ANTHROPIC_API_KEY` stripped from every model subprocess; every hosted tenant (env key, no OAuth login) breaks on upgrade. None exposed yet (tenants on 2.282.0 / 2.277.4). HOLD: no AMI bake (infra#23) or SSM hop to 2.310.0 until F4 is released.** Shipped in v2.310.0: A1 PR#6017 · F1 #6021→PR#6024 · F2 #6022→PR#6025 · F3 #6026→PR#6027; box on it since 14:16Z (OAuth, unaffected), 4 tasks completed. Parent: TASK-631.
 **Created**: 2026-11-03
 **Assignee**: Pilot
 
@@ -348,6 +348,54 @@ Tests to add in a new file, plain text: internal/executor/billing_process_mode_t
 ## Out of scope
 
 Threading a credential through the classifier and planner call paths (that is the real fix for gap A and belongs to the TASK-631 A2 runtime switch), any change to the unset-mode passthrough, attribution, the console, or key_source.
+
+### LEG F6 — repo: qf-studio/pilot — title: fix(executor): billing-mode residue — the billing key alert reaches CLI runners and the post-merge reviewer with the right text, the bootstrap scaffolds before it resolves a key, a failed delete keeps the stashed key, subtask cost rows are asserted
+
+## Context
+
+Post-merge reviews of PR#6024 (F1) and PR#6025 (F2), both APPROVE-WITH-NOTES, verified 2026-11-04 on main after F3 (PR#6027), F4 (PR#6036) and F5 (PR#6046) landed. These items are still open:
+
+1. Alert text. handleBillingKeyUnavailable in `internal/alerts/engine.go` formats "Billing API key unavailable (task %s): task admission paused until it resolves: %s" for every emitter. Since F2 the alert is also raised by billingContext in `internal/executor/billing_mode.go` (near line 284) from chat turns, CLI commands and the Navigator bootstrap, where admission is not paused. The text is wrong for those.
+2. CLI runners drop the alert. Only the daemon path installs an alert processor (`cmd/pilot/main.go` near line 3371, SetAlertProcessor). `cmd/pilot/commands.go` near line 880 and `cmd/pilot/navigator.go` near line 67 only call SetLogStore, so emitAlertEvent logs one GH-3734 warning and drops the event. A fail-closed `pilot navigator` bootstrap in api_key mode therefore alerts nobody.
+3. Post-merge reviewer. A resolver failure in Review (`internal/executor/post_merge_reviewer.go`, the branch before WithBillingCredential near line 426) returns an error; `internal/autopilot/post_merge_review.go` near line 302 records the postMergeReviewError metric and a warn log. No billing_key_unavailable alert is raised, so a dead key silently stops every post-merge review.
+4. Bootstrap order. In `internal/executor/navigator_bootstrap.go` billingContext (near line 107) runs before ensureNavigatorScaffold (near line 113). On the fail-closed path the project is left with no scaffold; the scaffold needs no model and should exist regardless.
+5. Discard after a failed delete. In `internal/executor/dispatcher.go` the decomposed-parent guard (near line 1070) calls discardBillingCredential after DeleteExecution even when the delete failed, so the still-queued row loses its key and the worker must resolve again.
+6. Test depth. TestDecompose_SubtasksInheritBillingMode in `internal/executor/billing_fastfollow_test.go` only t.Logf's (near line 923) when fewer subtasks record cost than were created, so the acceptance "every subtask records cost under billing_mode api_key" is not pinned.
+
+probe: present qf-studio/pilot task admission paused until it resolves
+probe: present qf-studio/pilot func[[:space:]]\(r[[:space:]]\*Runner\)[[:space:]]billingContext\(
+probe: present qf-studio/pilot func[[:space:]]ensureNavigatorScaffold\(
+probe: present qf-studio/pilot subtasks recorded cost
+probe: absent qf-studio/pilot func[[:space:]]installCLIAlertProcessor\(
+
+## Scope
+
+- Alert text: AlertEvent gains a boolean AdmissionPaused (set true only by the admission emitter in `internal/executor/billing_admission.go`, false from billingContext). handleBillingKeyUnavailable formats "task admission paused until it resolves" only when it is true; otherwise "this run failed; admission is unaffected", naming the source (chat, cli, bootstrap, reviewer) from a new Source field.
+- CLI runners: add installCLIAlertProcessor(runner, cfg) in `cmd/pilot/alerts_cli.go` (new file, plain text) that builds the same alert processor the daemon builds near line 3363 of `cmd/pilot/main.go` when alerts are enabled in cfg, and call it next to every CLI SetLogStore in `cmd/pilot/commands.go` and `cmd/pilot/navigator.go`. When alerts are disabled the runner keeps the warn-once drop.
+- Post-merge reviewer: PostMergeReviewer gains SetAlertEmitter(func(AlertEvent)); on a resolver failure Review emits AlertEventTypeBillingKeyUnavailable with Project, Source "reviewer" and the PR number in the error text, then returns the error as today. `cmd/pilot/post_merge_reviewer.go` wires the emitter to the daemon's alert processor.
+- Bootstrap: call ensureNavigatorScaffold before billingContext; a scaffold error still returns before any model spawn.
+- Dispatcher: in the decomposed-parent guard, discardBillingCredential runs only when DeleteExecution returned nil; on error the row keeps its key and the guard logs the retained stash.
+- Test: TestDecompose_SubtasksInheritBillingMode asserts len(rec.costCalls) == len(res.Subtasks) and that every cost call carries billing_mode api_key; the t.Logf goes.
+
+Tests to add, named exactly: TestBillingAlert_TextByAdmissionPaused (`internal/alerts/engine_test.go`), TestCLIRunner_InstallsAlertProcessor (`cmd/pilot/`, new file plain text: cmd/pilot/alerts_cli_test.go; a navigator bootstrap in api_key mode with a failing api_key_command delivers one billing_key_unavailable event to a fake processor), TestPostMergeReviewer_ResolverFailureAlerts (`internal/executor/post_merge_reviewer_test.go`), TestNavigatorBootstrap_ScaffoldBeforeBilling (`internal/executor/billing_gh6022_test.go`: failing resolver, scaffold exists afterwards), TestDispatcher_DecomposedParentGuardKeepsKeyOnFailedDelete (`internal/executor/billing_fastfollow_test.go`).
+
+## Acceptance
+
+- [ ] `go test -race ./internal/executor/ -run TestBilling` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/alerts/ -run TestBillingAlert` passes; paste the output into the PR body.
+- [ ] `go test -race ./cmd/pilot/ -run TestCLIRunner_InstallsAlertProcessor` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/executor/ -run TestNavigatorBootstrap_ScaffoldBeforeBilling` passes; paste the output into the PR body.
+- [ ] format the paused text for every emitter -> TestBillingAlert_TextByAdmissionPaused fails
+- [ ] drop the installCLIAlertProcessor call in navigator.go -> TestCLIRunner_InstallsAlertProcessor fails
+- [ ] remove the emit on resolver failure -> TestPostMergeReviewer_ResolverFailureAlerts fails
+- [ ] put billingContext back before ensureNavigatorScaffold -> TestNavigatorBootstrap_ScaffoldBeforeBilling fails
+- [ ] discard regardless of the delete result -> TestDispatcher_DecomposedParentGuardKeepsKeyOnFailedDelete fails
+- [ ] replace the cost assertion with t.Logf -> TestDecompose_SubtasksInheritBillingMode fails
+- [ ] Do not re-run make build, make test or make lint as evidence: the daemon's quality gates already run them on this repo.
+
+## Out of scope
+
+The runtime switch (A2), the usage-limit fallback (B), budget scope (C), any console change, key_source, the unset-mode passthrough (F4) and the process-wide mode fallback (F5), the Transition-failure backoff (pinned by TestProcessQueue_TransitionFailureDoesNotSpin).
 
 ## Refs
 

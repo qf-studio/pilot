@@ -1,6 +1,6 @@
 # TASK-634: A declined run is re-picked, its reason is lost, and a FAIL in pasted evidence files a fix issue that green CI already refutes
 
-**Status**: 🚀 **DISPATCHED 2026-11-03 16:30Z** — A1 [pilot#6033](https://github.com/qf-studio/pilot/issues/6033) · B1 [pilot#6034](https://github.com/qf-studio/pilot/issues/6034) · C1 [pilot#6035](https://github.com/qf-studio/pilot/issues/6035) (`pilot` + `no-decompose`, one PR each). Incident: GH-6031 (closed not-planned 16:22Z).
+**Status**: ✅ **ALL THREE LEGS MERGED 2026-11-03** — A1 → PR#6039 (`f3a2c0a6d` 17:30Z, post-merge APPROVE-WITH-NOTES; its minors → #6042 → PR#6047 `f81111fc7`) · B1 → PR#6043 (`8ab175c6b` 17:55Z) · C1 → PR#6044 (`9bef167f9` 18:21Z). All unreleased (next tag after v2.311.0). A false ci_post_merge issue #6041 (go-proxy stream error on the docs-sync commit, main green twice after) closed by hand. Held: D (one re-run on FAIL), E (parallel -race runs). Was: DISPATCHED 16:30Z — A1 [pilot#6033](https://github.com/qf-studio/pilot/issues/6033) · B1 [pilot#6034](https://github.com/qf-studio/pilot/issues/6034) · C1 [pilot#6035](https://github.com/qf-studio/pilot/issues/6035) (`pilot` + `no-decompose`, one PR each). Incident: GH-6031 (closed not-planned 16:22Z).
 **Created**: 2026-11-03
 **Assignee**: Pilot
 
