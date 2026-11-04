@@ -916,3 +916,38 @@ func TestRunner_RunAll_DefaultsToSequential(t *testing.T) {
 func boolPtr(b bool) *bool {
 	return &b
 }
+
+// A gate whose last attempt hits an execution error (here a timeout) must end as
+// failed, and a required one must make RunAll report AllPassed=false.
+func TestRunner_RunAll_TimedOutRequiredGateFails(t *testing.T) {
+	for _, retries := range []int{0, 1} {
+		config := &Config{
+			Enabled: true,
+			Gates: []*Gate{
+				{
+					Name:       "slow",
+					Type:       GateCustom,
+					Command:    "sleep 10",
+					Required:   true,
+					Timeout:    100 * time.Millisecond,
+					MaxRetries: retries,
+				},
+			},
+		}
+
+		runner := NewRunner(config, "/tmp")
+		results, err := runner.RunAll(context.Background(), "test-task")
+		if err != nil {
+			t.Fatalf("retries=%d: unexpected error: %v", retries, err)
+		}
+		if got := results.Results[0].Status; got != StatusFailed {
+			t.Errorf("retries=%d: gate status = %q, want %q", retries, got, StatusFailed)
+		}
+		if results.Results[0].Error == "" {
+			t.Errorf("retries=%d: expected the timeout error to be recorded", retries)
+		}
+		if results.AllPassed {
+			t.Errorf("retries=%d: AllPassed = true for a required gate that timed out", retries)
+		}
+	}
+}

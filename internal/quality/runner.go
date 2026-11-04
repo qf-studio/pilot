@@ -164,7 +164,7 @@ func (r *Runner) RunAll(ctx context.Context, taskID string) (*CheckResults, erro
 	allPassed := true
 	for i, result := range results.Results {
 		gate := r.config.Gates[i]
-		if result.Status == StatusFailed && gate.Required {
+		if result.Status != StatusPassed && result.Status != StatusSkipped && gate.Required {
 			allPassed = false
 			r.log.Warn("Required quality gate failed",
 				slog.String("gate", gate.Name),
@@ -312,6 +312,13 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 			result.Status = StatusFailed
 			r.reportProgress(gate.Name, StatusFailed, fmt.Sprintf("%s gate failed: %s", gate.Name, result.Error))
 		}
+	}
+
+	// An execution error (such as ErrGateTimeout) on the last attempt leaves the
+	// status at running or retrying. A gate that did not pass has failed.
+	if result.Status == StatusRunning || result.Status == StatusRetrying {
+		result.Status = StatusFailed
+		r.reportProgress(gate.Name, StatusFailed, fmt.Sprintf("%s gate failed: %s", gate.Name, result.Error))
 	}
 
 	result.CompletedAt = time.Now()
