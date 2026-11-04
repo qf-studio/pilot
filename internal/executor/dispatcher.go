@@ -253,6 +253,11 @@ type Dispatcher struct {
 	usageLimitResumeAt time.Time  // zero when the usage-limit owner is not set
 	usageLimitGen      uint64     // bumped per (re)arm so a stale timer is a no-op
 	usageLimitTimer    pauseTimer // pending resume
+	// usageLimitFallbackMu makes "the subscription is in force" and the
+	// fallback override install (or the pause the failed fallback arms) one
+	// step, per daemon (GH-6073). Lock order: usageLimitFallbackMu, then
+	// usageLimitMu.
+	usageLimitFallbackMu sync.Mutex
 	// clock is the usage-limit pause's time seam; nil means the real clock.
 	clock pauseClock
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"sort"
-	"sync"
 	"time"
 )
 
@@ -82,12 +81,6 @@ func (d *Dispatcher) usageLimitPauseConfig() *UsageLimitPauseConfig {
 	return nil
 }
 
-// usageLimitFallbackMu makes "the subscription is in force" and the fallback
-// override install one step, so two workers finishing rate_limited together
-// cannot both install and the second replace the first's until. Lock order:
-// usageLimitFallbackMu, then usageLimitMu.
-var usageLimitFallbackMu sync.Mutex
-
 // armUsageLimitPause holds admission after taskID finalized rate_limited with
 // errMsg (GH-5862). The resume is the parsed reset plus the scheduler's
 // RetryBuffer (fallback_pause when no reset parses), capped at max_pause from
@@ -102,32 +95,30 @@ var usageLimitFallbackMu sync.Mutex
 // the pause applies as without the fallback, and one
 // billing_fallback_unavailable alert accompanies the usage_limit_pause alert.
 //
-// Decision: the fallback runs api_key_command, which can block for the
-// resolver timeout, and this is the worker's onRateLimited callback, so that
-// episode is handled on its own goroutine and the worker returns at once.
+// Decision: the episode is synchronous (GH-6073). The worker's onRateLimited
+// callback must return with admission gated, because the worker loops to its
+// admission check and the next queued pick right after it: either the api_key
+// override is in force or the usage-limit pause is armed. That costs the
+// worker up to DefaultBillingKeyCommandTimeout on api_key_command before the
+// terminal persist, accepted because a usage-limit episode is rare and the
+// next pick must wait for the decision. Nothing outlives Stop.
+//
+// A limit that arrives while the fallback override already serves (a peer
+// installed it first, or the task froze its subscription credential before the
+// switch) is not a new episode: no pause, no alert. A limit with the mode in
+// force api_key from the cli, gateway or config is API-side and pauses.
 func (d *Dispatcher) armUsageLimitPause(taskID, projectPath, errMsg string) {
-	cfg := d.usageLimitPauseConfig()
-	if !cfg.IsEnabled() {
-		return
-	}
-	if d.usageLimitFallbackApplies(cfg) {
-		go d.applyUsageLimit(taskID, projectPath, errMsg)
-		return
-	}
 	d.applyUsageLimit(taskID, projectPath, errMsg)
 }
 
-// usageLimitFallbackApplies reports whether a usage limit may switch to the
-// API key. Decision: a limit while the mode in force is already api_key (the
-// fallback override, or a config/operator choice) is an API-side limit, so only
-// the subscription mode falls back and the override is never extended.
-func (d *Dispatcher) usageLimitFallbackApplies(cfg *UsageLimitPauseConfig) bool {
-	return cfg.EffectiveFallback() == UsageLimitFallbackAPIKey && d.billingApplies() &&
-		d.billingResolverOrConfig().Mode() == BillingModeSubscription
+// usageLimitFallbackConfigured reports whether a usage limit may try the API
+// key: usage_limit_pause.fallback api_key on a claude-code backend.
+func (d *Dispatcher) usageLimitFallbackConfigured(cfg *UsageLimitPauseConfig) bool {
+	return cfg.EffectiveFallback() == UsageLimitFallbackAPIKey && d.billingApplies()
 }
 
 // applyUsageLimit is the body of armUsageLimitPause; it may block on the key
-// command when the fallback applies.
+// command when the fallback is configured.
 func (d *Dispatcher) applyUsageLimit(taskID, projectPath, errMsg string) {
 	cfg := d.usageLimitPauseConfig()
 	if !cfg.IsEnabled() {
@@ -155,15 +146,41 @@ func (d *Dispatcher) applyUsageLimit(taskID, projectPath, errMsg string) {
 	}
 
 	var fallbackErr error
-	if d.usageLimitFallbackApplies(cfg) {
-		var switched bool
-		if switched, fallbackErr = d.switchToAPIKeyFallback(resumeAt); switched {
-			attrs := []any{slog.String("task_id", taskID), slog.Time("until", resumeAt)}
-			if !resetAt.IsZero() {
-				attrs = append(attrs, slog.Time("reset_at", resetAt))
+	if d.usageLimitFallbackConfigured(cfg) {
+		// Decision: the key resolves outside the mutex (it can block for the
+		// resolver timeout and concurrent episodes may overlap), but the mode
+		// is re-read under it, and so is the pause a failed fallback arms:
+		// holding the mutex through the pause below keeps a peer's install
+		// from landing between the check and the arm.
+		resolver := d.billingResolverOrConfig()
+		var keyErr error
+		tried := resolver.Mode() == BillingModeSubscription
+		if tried {
+			keyErr = d.resolveFallbackKey(resolver)
+		}
+
+		d.usageLimitFallbackMu.Lock()
+		defer d.usageLimitFallbackMu.Unlock()
+		if mode := d.BillingOverride(); mode.Mode == string(BillingModeAPIKey) && mode.Source == BillingModeSourceFallback {
+			d.log.Debug("usage limit hit, fallback already serving", slog.String("task_id", taskID))
+			if keyErr != nil {
+				d.emitBillingFallbackUnavailableAlert(taskID, projectPath, resetAt, resumeAt, keyErr)
 			}
-			d.log.Info("usage limit hit, billing switched to api_key until the reset", attrs...)
 			return
+		}
+		if tried && resolver.Mode() == BillingModeSubscription {
+			if keyErr == nil {
+				keyErr = d.installAPIKeyFallback(resumeAt)
+			}
+			if keyErr == nil {
+				attrs := []any{slog.String("task_id", taskID), slog.Time("until", resumeAt)}
+				if !resetAt.IsZero() {
+					attrs = append(attrs, slog.Time("reset_at", resetAt))
+				}
+				d.log.Info("usage limit hit, billing switched to api_key until the reset", attrs...)
+				return
+			}
+			fallbackErr = keyErr
 		}
 	}
 
@@ -258,37 +275,34 @@ func (d *Dispatcher) emitUsageLimitPauseAlert(taskID, projectPath string, resetA
 	})
 }
 
-// switchToAPIKeyFallback checks that the billing API key resolves without
-// changing the mode, then installs the api_key override until until with
-// source fallback (GH-6069). The resolved key is zeroed at once: admission
-// resolves its own while the override is in force. The error is the resolver's
-// or the override's and never carries the key. switched is false without an
-// error when another worker's fallback (or an operator) got the mode off
-// subscription first; an older usage-limit pause still armed is released, as
-// the override now carries the episode.
-func (d *Dispatcher) switchToAPIKeyFallback(until time.Time) (switched bool, err error) {
-	resolver := d.billingResolverOrConfig()
+// resolveFallbackKey checks that the billing API key resolves without changing
+// the mode (GH-6069). The resolved key is zeroed at once: admission resolves
+// its own while the override is in force. The error is the resolver's and
+// never carries the key.
+func (d *Dispatcher) resolveFallbackKey(resolver *BillingResolver) error {
 	if resolver.cfg == nil {
-		return false, &BillingKeyError{Reason: "no billing key source configured", ExitCode: -1}
+		return &BillingKeyError{Reason: "no billing key source configured", ExitCode: -1}
 	}
 	key, err := resolver.resolveKey(context.Background())
 	if err != nil {
-		return false, err
+		return err
 	}
 	for i := range key {
 		key[i] = 0
 	}
+	return nil
+}
 
-	usageLimitFallbackMu.Lock()
-	defer usageLimitFallbackMu.Unlock()
-	if resolver.Mode() != BillingModeSubscription {
-		return false, nil
-	}
+// installAPIKeyFallback installs the api_key override until until with source
+// fallback and releases an older usage-limit pause still armed, as the override
+// now carries the episode. The caller holds usageLimitFallbackMu with the
+// subscription in force.
+func (d *Dispatcher) installAPIKeyFallback(until time.Time) error {
 	if err := d.SetBillingOverride(string(BillingModeAPIKey), until, BillingModeSourceFallback); err != nil {
-		return false, err
+		return err
 	}
 	d.releaseUsageLimitPauseForFallback()
-	return true, nil
+	return nil
 }
 
 // releaseUsageLimitPauseForFallback drops a usage-limit pause an earlier
