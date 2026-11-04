@@ -442,7 +442,7 @@ func TestBillingMode_FailClosedPausesAdmission(t *testing.T) {
 	if !st.Paused || len(st.Owners) != 1 || st.Owners[0] != AdmissionPauseOwnerBillingKey {
 		t.Fatalf("admission = %+v, want paused by exactly [%s]", st, AdmissionPauseOwnerBillingKey)
 	}
-	if got := sink.billing(); len(got) != 1 || got[0].TaskID != "GH-6016" || !strings.HasPrefix(got[0].Error, "billing_key_unavailable") {
+	if got := sink.billing(); len(got) != 1 || got[0].TaskID != "GH-6016" || !strings.HasPrefix(got[0].Error, "billing_key_unavailable") || !got[0].AdmissionPaused {
 		t.Fatalf("alerts = %+v, want exactly one billing_key_unavailable for GH-6016", got)
 	}
 

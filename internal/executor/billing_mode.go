@@ -290,7 +290,7 @@ func (r *BillingResolver) resolveKey(ctx context.Context) ([]byte, error) {
 // fails closed rather than running on the subscription. The returned release
 // wipes a credential this call resolved.
 func (r *Runner) prepareBilling(ctx context.Context, task *Task) (context.Context, func(), error) {
-	ctx, cred, release, err := r.billingContext(ctx, task.ID, task.ProjectPath)
+	ctx, cred, release, err := r.billingContext(ctx, task.ID, task.ProjectPath, "cli")
 	if err != nil {
 		return ctx, release, err
 	}
@@ -306,8 +306,8 @@ func (r *Runner) prepareBilling(ctx context.Context, task *Task) (context.Contex
 // unknown. A fail-closed api_key resolution raises one billing key alert
 // (GH-6022): callers outside the dispatcher have no admission pause to surface
 // the outage, so the alert rule's cooldown is what bounds repetition. taskID
-// and project are attribution for that alert, empty when not known.
-func (r *Runner) billingContext(ctx context.Context, taskID, project string) (context.Context, *BillingCredential, func(), error) {
+// project and source (chat, cli, bootstrap) are attribution for that alert, empty when not known. The alert says admission is unaffected (AdmissionPaused false).
+func (r *Runner) billingContext(ctx context.Context, taskID, project, source string) (context.Context, *BillingCredential, func(), error) {
 	noop := func() {}
 	if r.config != nil && r.config.Type != "" && r.config.Type != BackendTypeClaudeCode {
 		return ctx, nil, noop, nil
@@ -326,6 +326,7 @@ func (r *Runner) billingContext(ctx context.Context, taskID, project string) (co
 				Type:      AlertEventTypeBillingKeyUnavailable,
 				TaskID:    taskID,
 				Project:   project,
+				Source:    source,
 				Error:     err.Error(),
 				Timestamp: time.Now(),
 			})

@@ -134,6 +134,9 @@ type Event struct {
 	Source    string // e.g. "adapter:github"; keys active-alert state when TaskID is empty
 	Metadata  map[string]string
 	Timestamp time.Time
+	// AdmissionPaused (GH-6050) is true when the emitter paused task admission;
+	// the billing key alert text depends on it.
+	AdmissionPaused bool
 	// test-only: set by flushForTest to drain the event queue
 	testFlushResp chan struct{}
 }
@@ -622,6 +625,31 @@ func (e *Engine) flushForTest() {
 	e.eventCh <- Event{testFlushResp: resp}
 	<-resp
 	e.WaitForDispatch()
+}
+
+// Flush waits, up to timeout, until the events queued before the call have
+// been handled and their deliveries completed (GH-6050). A one-shot CLI calls
+// it before exit so an alert raised just before the command fails is sent.
+func (e *Engine) Flush(timeout time.Duration) {
+	resp := make(chan struct{})
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case e.eventCh <- Event{testFlushResp: resp}:
+	case <-timer.C:
+		return
+	}
+	select {
+	case <-resp:
+	case <-timer.C:
+		return
+	}
+	done := make(chan struct{})
+	go func() { e.WaitForDispatch(); close(done) }()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }
 
 // Stop stops the alerting engine
@@ -1242,6 +1270,22 @@ func (e *Engine) handleUsageLimitPause(ctx context.Context, event Event) {
 	}
 }
 
+// billingKeyAlertMessage words the billing key alert by emitter (GH-6050):
+// only the dispatcher's admission emitter pauses admission; chat, CLI,
+// bootstrap and reviewer runs just fail.
+func billingKeyAlertMessage(event Event) string {
+	if event.AdmissionPaused {
+		return fmt.Sprintf("Billing API key unavailable (task %s): task admission paused until it resolves: %s",
+			event.TaskID, event.Error)
+	}
+	src := event.Source
+	if src == "" {
+		src = "unknown"
+	}
+	return fmt.Sprintf("Billing API key unavailable (%s, task %s): this run failed; admission is unaffected: %s",
+		src, event.TaskID, event.Error)
+}
+
 // handleBillingKeyUnavailable fires AlertTypeBillingKeyUnavailable rules when
 // the dispatcher fails an execution closed because billing.mode is api_key and
 // the key did not resolve (GH-6016). The emitter already gated on once-per-outage.
@@ -1253,8 +1297,7 @@ func (e *Engine) handleBillingKeyUnavailable(ctx context.Context, event Event) {
 		}
 		matched = true
 		if rule.Enabled && e.shouldFire(rule) {
-			message := fmt.Sprintf("Billing API key unavailable (task %s): task admission paused until it resolves: %s",
-				event.TaskID, event.Error)
+			message := billingKeyAlertMessage(event)
 			alert := e.createAlert(rule, event, message)
 			e.fireAlert(ctx, rule, alert)
 		}

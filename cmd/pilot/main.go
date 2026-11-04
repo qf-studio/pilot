@@ -770,6 +770,9 @@ Examples:
 			var gwMonitor *executor.Monitor
 			var gwProgram *tea.Program
 			var gwAutopilotController *autopilot.Controller
+			// GH-6050: the post-merge reviewer gets the alert processor once the
+			// gateway alert engine runs.
+			var gwPostMergeReviewer *executor.PostMergeReviewer
 			var gwAutopilotStateStore *autopilot.StateStore
 			var gwAlertsEngine *alerts.Engine
 			var gwTgApprovalHandler *approval.TelegramHandler
@@ -1036,7 +1039,7 @@ Examples:
 							// GH-5759: opt-in PR lifecycle notices over Telegram.
 							wireLifecycleNotifier(cfg, logging.WithComponent("autopilot"), gwAutopilotController)
 							// GH-5861: opt-in post-merge reviewer.
-							wirePostMergeReviewer(cfg, logging.WithComponent("autopilot"), gwAutopilotController)
+							gwPostMergeReviewer = wirePostMergeReviewer(cfg, logging.WithComponent("autopilot"), gwAutopilotController)
 							// GH-3992: wire the LLM release summary generator — nil (graceful
 							// no-op) when ANTHROPIC_API_KEY is unset, matching
 							// NewReleaseSummaryGenerator's documented degradation.
@@ -1167,6 +1170,8 @@ Examples:
 					if alertErr := gwAlertsEngine.Start(ctx); alertErr != nil {
 						logging.WithComponent("start").Error("alert engine failed to start — downstream alerters will be silently disabled; check alerts config", slog.Any("error", alertErr))
 						gwAlertsEngine = nil
+					} else {
+						wirePostMergeReviewerAlerts(gwPostMergeReviewer, alerts.NewEngineAdapter(gwAlertsEngine))
 					}
 				}
 
@@ -2407,6 +2412,8 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 	// GH-929: Create autopilot controllers map (one per repo) if enabled
 	autopilotControllers := make(map[string]*autopilot.Controller)
+	// GH-6050: wired to the alert processor once the polling alert engine runs.
+	var pollingPostMergeReviewer *executor.PostMergeReviewer
 	var autopilotController *autopilot.Controller // Default controller for backwards compat
 	// GH-4792: hoisted so the part-2 wiring below (admission-pause +
 	// periodic probe/close monitor, constructed after dispatcher/alerts
@@ -2665,7 +2672,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		// controller and every per-project controller.
 		wireLifecycleNotifier(cfg, logging.WithComponent("autopilot"), allControllers...)
 		// GH-5861: opt-in post-merge reviewer on every controller.
-		wirePostMergeReviewer(cfg, logging.WithComponent("autopilot"), allControllers...)
+		pollingPostMergeReviewer = wirePostMergeReviewer(cfg, logging.WithComponent("autopilot"), allControllers...)
 		approvalMgr.WithStateWriter(autopilot.NewMultiControllerStateWriter(allControllers...))
 	}
 
@@ -3275,57 +3282,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		alertsMetrics := alerts.NewAlertMetrics()
 		alertsDispatcher := alerts.NewDispatcher(alertsCfg, alerts.WithDispatcherMetrics(alertsMetrics))
 
-		// Register Slack channel if configured
-		if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.BotToken != "" {
-			slackClient := slack.NewClient(cfg.Adapters.Slack.BotToken)
-			for _, ch := range alertsCfg.Channels {
-				if ch.Type == "slack" && ch.Slack != nil {
-					slackChannel := alerts.NewSlackChannel(ch.Name, slackClient, ch.Slack.Channel)
-					alertsDispatcher.RegisterChannel(slackChannel)
-				}
-			}
-		}
-
-		// Register Telegram channel if configured
-		if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" {
-			telegramClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
-			for _, ch := range alertsCfg.Channels {
-				if ch.Type == "telegram" && ch.Telegram != nil {
-					telegramChannel := alerts.NewTelegramChannel(ch.Name, telegramClient, ch.Telegram.ChatID, ch.Telegram.MessageThreadID)
-					alertsDispatcher.RegisterChannel(telegramChannel)
-				}
-			}
-		}
-
-		// Register webhook channels
-		for _, ch := range alertsCfg.Channels {
-			if ch.Type == "webhook" && ch.Enabled && ch.Webhook != nil {
-				webhookChannel := alerts.NewWebhookChannel(ch.Name, &alerts.WebhookChannelConfig{
-					URL:     ch.Webhook.URL,
-					Method:  ch.Webhook.Method,
-					Headers: ch.Webhook.Headers,
-					Secret:  ch.Webhook.Secret,
-				})
-				alertsDispatcher.RegisterChannel(webhookChannel)
-			}
-		}
-
-		// Register email channels
-		for _, ch := range alertsCfg.Channels {
-			if ch.Type == "email" && ch.Enabled && ch.Email != nil && ch.Email.SMTPHost != "" {
-				sender := alerts.NewSMTPSender(ch.Email.SMTPHost, ch.Email.SMTPPort, ch.Email.From, ch.Email.Username, ch.Email.Password)
-				emailChannel := alerts.NewEmailChannel(ch.Name, sender, ch.Email)
-				alertsDispatcher.RegisterChannel(emailChannel)
-			}
-		}
-
-		// Register PagerDuty channels
-		for _, ch := range alertsCfg.Channels {
-			if ch.Type == "pagerduty" && ch.Enabled && ch.PagerDuty != nil {
-				pdChannel := alerts.NewPagerDutyChannel(ch.Name, ch.PagerDuty)
-				alertsDispatcher.RegisterChannel(pdChannel)
-			}
-		}
+		registerAlertChannels(cfg, alertsCfg, alertsDispatcher)
 
 		engineOpts := []alerts.EngineOption{alerts.WithDispatcher(alertsDispatcher), alerts.WithAlertMetrics(alertsMetrics)}
 		if store != nil {
@@ -3369,6 +3326,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			// (pilot.New) the same way; this is polling mode's counterpart.
 			alertProcessor := alerts.NewEngineAdapter(alertsEngine)
 			runner.SetAlertProcessor(alertProcessor)
+			wirePostMergeReviewerAlerts(pollingPostMergeReviewer, alertProcessor)
 			alertsEngine.WireLifecycleAlertProcessor(alertProcessor)
 
 			// TASK-441 L5 (GH-4716): register the four finish-tripwire

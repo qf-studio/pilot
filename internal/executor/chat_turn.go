@@ -90,7 +90,7 @@ type ChatTurnResult struct {
 func (r *Runner) ExecuteChatTurn(ctx context.Context, turn ChatTurn, onProgress func(message string)) (ChatTurnResult, error) {
 	// GH-6016: one credential resolution per chat turn, before the spawn. An
 	// api_key mode key that does not resolve fails the turn closed.
-	ctx, cred, release, err := r.billingContext(ctx, turn.ConversationID, turn.ProjectPath)
+	ctx, cred, release, err := r.billingContext(ctx, turn.ConversationID, turn.ProjectPath, "chat")
 	if err != nil {
 		return ChatTurnResult{BillingMode: string(BillingModeAPIKey)}, err
 	}

@@ -71,11 +71,13 @@ func newPostMergeReviewer(cfg *config.Config) (*executor.PostMergeReviewer, erro
 }
 
 // wirePostMergeReviewer installs the post-merge reviewer on every controller
-// along with a single shared daily budget, and logs one startup line. With the knob off it is silent.
-func wirePostMergeReviewer(cfg *config.Config, log *slog.Logger, controllers ...*autopilot.Controller) {
+// along with a single shared daily budget, and logs one startup line. With the
+// knob off it is silent and returns nil. The daemon hands the returned reviewer
+// to wirePostMergeReviewerAlerts once its alert engine runs.
+func wirePostMergeReviewer(cfg *config.Config, log *slog.Logger, controllers ...*autopilot.Controller) *executor.PostMergeReviewer {
 	r := buildPostMergeReviewer(cfg, log)
 	if r == nil {
-		return
+		return nil
 	}
 	sweepStalePostMergeCheckouts(cfg, r)
 	pmr := cfg.Orchestrator.Autopilot.PostMergeReview
@@ -100,6 +102,17 @@ func wirePostMergeReviewer(cfg *config.Config, log *slog.Logger, controllers ...
 		slog.Int("passes", r.Passes()),
 		slog.Bool("file_minors", pmr.FileMinors),
 	)
+	return r
+}
+
+// wirePostMergeReviewerAlerts routes the reviewer's billing key alert (GH-6050)
+// to the daemon's alert processor. Both arguments may be nil: no reviewer or
+// no processor leaves the alert dropped.
+func wirePostMergeReviewerAlerts(r *executor.PostMergeReviewer, processor executor.AlertEventProcessor) {
+	if r == nil || processor == nil {
+		return
+	}
+	r.SetAlertEmitter(processor.ProcessEvent)
 }
 
 // sweepStalePostMergeCheckouts removes the review worktrees a crashed daemon

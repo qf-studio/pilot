@@ -186,7 +186,7 @@ func TestBillingContext_UnavailableEmitsAlert(t *testing.T) {
 	r.config = &BackendConfig{Type: BackendTypeClaudeCode, ClaudeCode: &ClaudeCodeConfig{Billing: apiKeyConfig("exit 1")}}
 	r.SetAlertProcessor(sink)
 
-	_, cred, release, err := r.billingContext(context.Background(), "TASK-1", "/p")
+	_, cred, release, err := r.billingContext(context.Background(), "TASK-1", "/p", "cli")
 	defer release()
 	if !IsBillingKeyUnavailable(err) {
 		t.Fatalf("err = %v, want a billing key unavailable error", err)
@@ -201,13 +201,17 @@ func TestBillingContext_UnavailableEmitsAlert(t *testing.T) {
 	if got.TaskID != "TASK-1" || got.Project != "/p" || got.Error == "" {
 		t.Errorf("alert = %+v, want task TASK-1, project /p and the error text", got)
 	}
+	// GH-6050: no admission pause outside the dispatcher; the alert names its source.
+	if got.AdmissionPaused || got.Source != "cli" {
+		t.Errorf("alert = %+v, want AdmissionPaused false and source cli", got)
+	}
 
 	// A subscription runner resolves without an alert.
 	sink2 := &recordingAlertProcessor{}
 	ok := NewRunnerWithBackend(&countingBackend{})
 	ok.config = &BackendConfig{Type: BackendTypeClaudeCode, ClaudeCode: &ClaudeCodeConfig{}}
 	ok.SetAlertProcessor(sink2)
-	if _, _, rel, err := ok.billingContext(context.Background(), "TASK-2", "/p"); err != nil {
+	if _, _, rel, err := ok.billingContext(context.Background(), "TASK-2", "/p", "cli"); err != nil {
 		t.Fatalf("subscription billingContext: %v", err)
 	} else {
 		rel()
@@ -278,5 +282,42 @@ func TestNavigatorBootstrap_BillingKeyUnavailableFailsClosed(t *testing.T) {
 	}
 	if n := sink.countByType(AlertEventTypeBillingKeyUnavailable); n != 1 {
 		t.Errorf("billing key alerts = %d, want 1", n)
+	}
+}
+
+// GH-6050: the scaffold needs no model, so a bootstrap whose key fails closed
+// still leaves the project with its Navigator scaffold.
+func TestNavigatorBootstrap_ScaffoldBeforeBilling(t *testing.T) {
+	skipWithoutShell(t)
+	dir := t.TempDir()
+	inner := &bootstrapFakeBackend{script: func(*bootstrapSession) {}}
+	r := newBootstrapRunner(inner, "")
+	r.config.ClaudeCode = &ClaudeCodeConfig{Billing: apiKeyConfig("exit 1")}
+	sink := &recordingAlertProcessor{}
+	r.SetAlertProcessor(sink)
+
+	initializer, err := NewNavigatorInitializer(r.log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initializer.IsInitialized(dir) {
+		t.Fatal("fixture project already has a scaffold")
+	}
+
+	_, err = r.ExecuteNavigatorBootstrap(context.Background(), dir)
+	if !IsBillingKeyUnavailable(err) {
+		t.Fatalf("err = %v, want a billing key unavailable error", err)
+	}
+	if !initializer.IsInitialized(dir) {
+		t.Error("no Navigator scaffold after the fail-closed bootstrap")
+	}
+	if inner.callCount() != 0 {
+		t.Errorf("bootstrap spawned %d times despite the unresolved key", inner.callCount())
+	}
+	if n := sink.countByType(AlertEventTypeBillingKeyUnavailable); n != 1 {
+		t.Errorf("billing key alerts = %d, want 1", n)
+	}
+	if len(sink.events) == 1 && (sink.events[0].Source != "bootstrap" || sink.events[0].AdmissionPaused) {
+		t.Errorf("alert = %+v, want source bootstrap and AdmissionPaused false", sink.events[0])
 	}
 }

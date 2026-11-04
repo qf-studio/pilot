@@ -60,6 +60,8 @@ executor.navigator.bootstrap is "auto".`,
 			if err != nil {
 				return fmt.Errorf("failed to create executor runner: %w", err)
 			}
+			// GH-6050: a fail-closed bootstrap in api_key mode must alert.
+			defer installCLIAlertProcessor(runner, cfg)()
 			if store, err := memory.NewStore(cfg.Memory.Path); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: execution will not be recorded: %v\n", err)
 			} else {

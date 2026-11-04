@@ -27,8 +27,11 @@ func (a *EngineAdapter) ProcessEvent(event executor.AlertEvent) {
 		Phase:     event.Phase,
 		Progress:  event.Progress,
 		Error:     event.Error,
+		Source:    event.Source,
 		Metadata:  event.Metadata,
 		Timestamp: event.Timestamp,
+
+		AdmissionPaused: event.AdmissionPaused,
 	}
 	a.engine.ProcessEvent(alertEvent)
 }

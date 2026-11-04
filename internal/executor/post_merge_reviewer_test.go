@@ -804,3 +804,51 @@ func TestPostMergeReviewer_PromptCarriesGreenCIRule(t *testing.T) {
 		}
 	}
 }
+
+// GH-6050: a resolver failure in Review raises the billing key alert, naming
+// the reviewer source and the PR, and still returns the error.
+func TestPostMergeReviewer_ResolverFailureAlerts(t *testing.T) {
+	skipWithoutShell(t)
+	script, _ := fakeEnvCLI(t)
+
+	r := NewPostMergeReviewer(script, "", 0)
+	r.SetBillingResolver(NewBillingResolver(apiKeyConfig("exit 1")))
+	spawn := &reviewSpawn{}
+	spawn.install(r, script)
+	var got []AlertEvent
+	r.SetAlertEmitter(func(ev AlertEvent) { got = append(got, ev) })
+
+	in := reviewInput()
+	in.PRNumber = 6050
+	in.ProjectPath = "/p"
+	review, err := r.Review(context.Background(), in)
+	if !IsBillingKeyUnavailable(err) || review != nil {
+		t.Fatalf("Review = %v, %v, want nil and a billing key unavailable error", review, err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("alerts = %d, want 1", len(got))
+	}
+	ev := got[0]
+	if ev.Type != AlertEventTypeBillingKeyUnavailable || ev.Source != "reviewer" || ev.Project != "/p" || ev.AdmissionPaused {
+		t.Errorf("alert = %+v, want billing_key_unavailable from the reviewer on /p, admission unaffected", ev)
+	}
+	if !strings.Contains(ev.Error, "PR #6050") {
+		t.Errorf("alert error %q does not name the PR", ev.Error)
+	}
+	if spawn.calls != 0 {
+		t.Errorf("reviewer spawned %d times despite the unresolved key", spawn.calls)
+	}
+
+	// A review that resolves its key raises nothing.
+	got = nil
+	ok := NewPostMergeReviewer(script, "", 0)
+	ok.SetBillingResolver(NewBillingResolver(&BillingConfig{Mode: BillingModeSubscription}))
+	spawn.install(ok, script)
+	ok.SetAlertEmitter(func(ev AlertEvent) { got = append(got, ev) })
+	if _, err := ok.Review(context.Background(), in); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("subscription review raised %d alerts", len(got))
+	}
+}
