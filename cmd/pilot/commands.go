@@ -230,10 +230,10 @@ func newStatusCmd() *cobra.Command {
 
 			fmt.Println("Pilot Status")
 			fmt.Println("───────────────────────────────────────")
-			fmt.Printf("Gateway: http://%s:%d\n", cfg.Gateway.Host, cfg.Gateway.Port)
-			// GH-5862: best-effort — a stopped daemon just prints nothing.
-			if line := fetchAdmissionPauseLine(fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)); line != "" {
-				fmt.Println(line)
+			fmt.Printf("Gateway: %s\n", gatewayBaseURL(cfg))
+			// GH-5862, GH-6053: best-effort — a stopped daemon just prints nothing.
+			if st, ok := fetchStatusBody(gatewayBaseURL(cfg)); ok {
+				printStatusDaemonLines(os.Stdout, st)
 			}
 			fmt.Println()
 
@@ -289,6 +289,23 @@ type admissionStatusBody struct {
 	AdmissionPaused      bool       `json:"admission_paused"`
 	AdmissionPauseOwners []string   `json:"admission_pause_owners"`
 	AdmissionResumesAt   *time.Time `json:"admission_resumes_at"`
+
+	// GH-6053: absent on a daemon older than the runtime billing-mode override.
+	BillingMode       string `json:"billing_mode"`
+	BillingModeSource string `json:"billing_mode_source"`
+	BillingModeUntil  string `json:"billing_mode_until"`
+	BillingConfigMode string `json:"billing_config_mode"`
+}
+
+// printStatusDaemonLines prints the lines pilot status gets from the daemon:
+// the usage-limit admission pause, then the billing mode in force.
+func printStatusDaemonLines(w io.Writer, st admissionStatusBody) {
+	if line := admissionPauseLine(st); line != "" {
+		_, _ = fmt.Fprintln(w, line)
+	}
+	if line := billingStatusLine(st); line != "" {
+		_, _ = fmt.Fprintln(w, line)
+	}
 }
 
 // admissionPauseLine renders the one status line for a usage-limit pause, or
@@ -305,19 +322,28 @@ func admissionPauseLine(st admissionStatusBody) string {
 	return ""
 }
 
-// fetchAdmissionPauseLine asks the running daemon for its admission state.
-func fetchAdmissionPauseLine(baseURL string) string {
+// fetchStatusBody asks the running daemon for GET /api/v1/status; ok is false
+// when it does not answer.
+func fetchStatusBody(baseURL string) (st admissionStatusBody, ok bool) {
 	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Get(baseURL + "/api/v1/status")
 	if err != nil {
-		return ""
+		return st, false
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return ""
+		return st, false
 	}
-	var st admissionStatusBody
 	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		return admissionStatusBody{}, false
+	}
+	return st, true
+}
+
+// fetchAdmissionPauseLine asks the running daemon for its admission state.
+func fetchAdmissionPauseLine(baseURL string) string {
+	st, ok := fetchStatusBody(baseURL)
+	if !ok {
 		return ""
 	}
 	return admissionPauseLine(st)
