@@ -250,6 +250,13 @@ func (s *StateStore) migrate() error {
 		// GH-5861: attempt-once guard for the post-merge reviewer. Must also be
 		// added to migratePRStateRepoScoping's rebuild lists.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN post_merge_review_posted INTEGER NOT NULL DEFAULT 0`,
+		// GH-6056: CI-poll API outage hold (hold flag, first-error time, next
+		// permitted poll) so a daemon restart mid-outage keeps the backoff and
+		// the budget clock. Must also be added to migratePRStateRepoScoping's
+		// rebuild lists.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN api_outage_hold_active INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE autopilot_pr_state ADD COLUMN api_outage_since DATETIME`,
+		`ALTER TABLE autopilot_pr_state ADD COLUMN api_outage_next_poll DATETIME`,
 		// GH-5647: backfill rows held by the pre-GH-5643 size guard into the
 		// generic hold fields (redriveHeldPR reads only those). Idempotent:
 		// the hold_active = 0 guard makes a second run a no-op and keeps the
@@ -547,6 +554,9 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			hold_redrive_count INTEGER NOT NULL DEFAULT 0,
 			linear_done_notified INTEGER NOT NULL DEFAULT 0,
 			post_merge_review_posted INTEGER NOT NULL DEFAULT 0,
+			api_outage_hold_active INTEGER NOT NULL DEFAULT 0,
+			api_outage_since DATETIME,
+			api_outage_next_poll DATETIME,
 			PRIMARY KEY (repo, pr_number)
 		)
 	`); err != nil {
@@ -567,7 +577,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
-			linear_done_notified, post_merge_review_posted
+			linear_done_notified, post_merge_review_posted,
+			api_outage_hold_active, api_outage_since, api_outage_next_poll
 		)
 		SELECT
 			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
@@ -583,7 +594,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
-			linear_done_notified, post_merge_review_posted
+			linear_done_notified, post_merge_review_posted,
+			api_outage_hold_active, api_outage_since, api_outage_next_poll
 		FROM autopilot_pr_state
 	`); err != nil {
 		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
@@ -734,8 +746,9 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
-			linear_done_notified, post_merge_review_posted
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			linear_done_notified, post_merge_review_posted,
+			api_outage_hold_active, api_outage_since, api_outage_next_poll
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -780,7 +793,10 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			hold_labels = excluded.hold_labels,
 			hold_redrive_count = excluded.hold_redrive_count,
 			linear_done_notified = excluded.linear_done_notified,
-			post_merge_review_posted = excluded.post_merge_review_posted
+			post_merge_review_posted = excluded.post_merge_review_posted,
+			api_outage_hold_active = excluded.api_outage_hold_active,
+			api_outage_since = excluded.api_outage_since,
+			api_outage_next_poll = excluded.api_outage_next_poll
 	`,
 		pr.PRNumber, repo, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
@@ -797,6 +813,7 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 		pr.SizeGuardHoldActive, pr.SizeGuardHoldHeadSHA,
 		pr.HoldActive, pr.HoldHeadSHA, pr.HoldLabels, pr.HoldRedriveCount,
 		pr.LinearDoneNotified, pr.PostMergeReviewPosted,
+		pr.APIOutageHoldActive, nullTime(pr.APIOutageSince), nullTime(pr.APIOutageNextPoll),
 	)
 	return err
 }
@@ -818,7 +835,8 @@ func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
-			linear_done_notified, post_merge_review_posted
+			linear_done_notified, post_merge_review_posted,
+			api_outage_hold_active, api_outage_since, api_outage_next_poll
 		FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?
 	`, repo, prNumber)
 
@@ -849,7 +867,8 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
-			linear_done_notified, post_merge_review_posted
+			linear_done_notified, post_merge_review_posted,
+			api_outage_hold_active, api_outage_since, api_outage_next_poll
 		FROM autopilot_pr_state WHERE repo = ?
 	`, repo)
 	if err != nil {
@@ -861,6 +880,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 	for rows.Next() {
 		var pr PRState
 		var lastChecked, ciWaitStartedAt, createdAt, approvalRequestedAt, postMergeCIStartedAt sql.NullTime
+		var apiOutageSince, apiOutageNextPoll sql.NullTime
 		var stage, ciStatus, relBumpType string
 
 		if err := rows.Scan(
@@ -878,6 +898,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			&pr.SizeGuardHoldActive, &pr.SizeGuardHoldHeadSHA,
 			&pr.HoldActive, &pr.HoldHeadSHA, &pr.HoldLabels, &pr.HoldRedriveCount,
 			&pr.LinearDoneNotified, &pr.PostMergeReviewPosted,
+			&pr.APIOutageHoldActive, &apiOutageSince, &apiOutageNextPoll,
 		); err != nil {
 			return nil, err
 		}
@@ -899,6 +920,12 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 		}
 		if postMergeCIStartedAt.Valid {
 			pr.PostMergeCIStartedAt = postMergeCIStartedAt.Time
+		}
+		if apiOutageSince.Valid {
+			pr.APIOutageSince = apiOutageSince.Time
+		}
+		if apiOutageNextPoll.Valid {
+			pr.APIOutageNextPoll = apiOutageNextPoll.Time
 		}
 		states = append(states, &pr)
 	}
@@ -1123,6 +1150,7 @@ func (s *StateStore) PersistedReleasingAge(repo string, prNumber int) (age time.
 func scanPRState(row *sql.Row) (*PRState, error) {
 	var pr PRState
 	var lastChecked, ciWaitStartedAt, createdAt, approvalRequestedAt, postMergeCIStartedAt sql.NullTime
+	var apiOutageSince, apiOutageNextPoll sql.NullTime
 	var stage, ciStatus, relBumpType string
 
 	err := row.Scan(
@@ -1140,6 +1168,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.SizeGuardHoldActive, &pr.SizeGuardHoldHeadSHA,
 		&pr.HoldActive, &pr.HoldHeadSHA, &pr.HoldLabels, &pr.HoldRedriveCount,
 		&pr.LinearDoneNotified, &pr.PostMergeReviewPosted,
+		&pr.APIOutageHoldActive, &apiOutageSince, &apiOutageNextPoll,
 	)
 	if err != nil {
 		return nil, err
@@ -1162,6 +1191,12 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 	}
 	if postMergeCIStartedAt.Valid {
 		pr.PostMergeCIStartedAt = postMergeCIStartedAt.Time
+	}
+	if apiOutageSince.Valid {
+		pr.APIOutageSince = apiOutageSince.Time
+	}
+	if apiOutageNextPoll.Valid {
+		pr.APIOutageNextPoll = apiOutageNextPoll.Time
 	}
 	return &pr, nil
 }

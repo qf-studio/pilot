@@ -229,8 +229,14 @@ func (d *Dispatcher) releaseBillingKeyHold() {
 }
 
 // stashBillingCredential keeps cred for the worker that will run execID.
+//
+// Decision: a credential with no key (subscription, unset) is stashed too
+// (GH-6058). The worker re-resolves when the stash has no entry, and since the
+// runtime override (GH-6052) that re-resolution can differ from what admission
+// chose: a task admitted under subscription would run on the API key after a
+// switch to api_key. The stash is what freezes the mode at admission.
 func (d *Dispatcher) stashBillingCredential(execID string, cred *BillingCredential) {
-	if cred == nil || len(cred.Env()) == 0 {
+	if cred == nil {
 		return
 	}
 	d.billingMu.Lock()

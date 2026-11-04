@@ -268,3 +268,81 @@ func TestStatus_CarriesBillingFields(t *testing.T) {
 		}
 	}
 }
+
+func TestGateway_BillingEndpoint_SetBy(t *testing.T) {
+	src := newMockBillingOverrideSource()
+	url := startBillingModeServer(t, src) + "/api/v1/billing-mode"
+
+	t.Run("set_by cli reaches the source", func(t *testing.T) {
+		code, body := billingModeDo(t, http.MethodPost, url, `{"mode":"api_key","set_by":"cli"}`, true)
+		if code != http.StatusOK {
+			t.Fatalf("POST = %d %s", code, body)
+		}
+		if got := decodeBillingMode(t, body); got.Mode != "api_key" || got.Source != "cli" {
+			t.Errorf("POST = %+v, want api_key from cli", got)
+		}
+		if last := src.setCalls[len(src.setCalls)-1]; last != "api_key/cli" {
+			t.Errorf("source saw %q, want api_key/cli", last)
+		}
+	})
+
+	t.Run("omitted set_by means gateway", func(t *testing.T) {
+		code, body := billingModeDo(t, http.MethodPost, url, `{"mode":"subscription"}`, true)
+		if code != http.StatusOK {
+			t.Fatalf("POST = %d %s", code, body)
+		}
+		if got := decodeBillingMode(t, body); got.Source != "gateway" {
+			t.Errorf("POST = %+v, want source gateway", got)
+		}
+		if last := src.setCalls[len(src.setCalls)-1]; last != "subscription/gateway" {
+			t.Errorf("source saw %q, want subscription/gateway", last)
+		}
+	})
+
+	t.Run("set_by gateway is accepted", func(t *testing.T) {
+		code, body := billingModeDo(t, http.MethodPost, url, `{"mode":"api_key","set_by":"gateway"}`, true)
+		if code != http.StatusOK {
+			t.Fatalf("POST = %d %s", code, body)
+		}
+		if got := decodeBillingMode(t, body); got.Source != "gateway" {
+			t.Errorf("POST = %+v, want source gateway", got)
+		}
+	})
+
+	t.Run("clear with set_by cli reports cli", func(t *testing.T) {
+		code, body := billingModeDo(t, http.MethodPost, url, `{"mode":"config","set_by":"cli"}`, true)
+		if code != http.StatusOK {
+			t.Fatalf("POST = %d %s", code, body)
+		}
+		if last := src.clears[len(src.clears)-1]; last != "cli" {
+			t.Errorf("clear saw set_by %q, want cli", last)
+		}
+	})
+
+	t.Run("clear without set_by is gateway", func(t *testing.T) {
+		if code, body := billingModeDo(t, http.MethodPost, url, `{"mode":"config"}`, true); code != http.StatusOK {
+			t.Fatalf("POST = %d %s", code, body)
+		}
+		if last := src.clears[len(src.clears)-1]; last != "gateway" {
+			t.Errorf("clear saw set_by %q, want gateway", last)
+		}
+	})
+
+	for _, setBy := range []string{"fallback", "config", "operator", "CLI"} {
+		t.Run("set_by "+setBy+" is rejected", func(t *testing.T) {
+			sets, clears := len(src.setCalls), len(src.clears)
+			for _, mode := range []string{"api_key", "config"} {
+				code, body := billingModeDo(t, http.MethodPost, url, fmt.Sprintf(`{"mode":%q,"set_by":%q}`, mode, setBy), true)
+				if code != http.StatusBadRequest {
+					t.Errorf("mode %s: POST = %d %s, want 400", mode, code, body)
+				}
+				if !bytes.Contains([]byte(body), []byte("cli, gateway")) {
+					t.Errorf("mode %s: 400 body %q does not list the accepted values", mode, body)
+				}
+			}
+			if len(src.setCalls) != sets || len(src.clears) != clears {
+				t.Errorf("a rejected set_by reached the source: sets %v clears %v", src.setCalls, src.clears)
+			}
+		})
+	}
+}

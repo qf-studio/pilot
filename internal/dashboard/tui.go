@@ -502,6 +502,10 @@ type Model struct {
 	// ledger looks healthy — nothing to show.
 	stalenessBanner string
 
+	// billing is the billing mode in force (GH-6053), set by BillingModeMsg.
+	// nil until the daemon first reports it; the header shows no chip then.
+	billing *BillingModeMsg
+
 	// Banner metadata (GH-2455 / GH-2459 rework): env name, model stack, adapter
 	// status list.
 	startTime      time.Time
@@ -597,6 +601,15 @@ type addCompletedTaskMsg CompletedTask
 
 // updateAvailableMsg signals that an update is available
 type updateAvailableMsg UpdateInfo
+
+// BillingModeMsg reports the billing mode in force (GH-6053). The daemon sends
+// it at boot and on every switch. Source is "config" when no override is in
+// force, else cli, gateway or fallback; Until is zero when there is no expiry.
+type BillingModeMsg struct {
+	Mode   string
+	Source string
+	Until  time.Time
+}
 
 // upgradeProgressMsg updates the upgrade progress
 type upgradeProgressMsg struct {
@@ -1351,6 +1364,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case historyZoomMsg:
 		m.zoomHistory = msg.tasks
 
+	case BillingModeMsg:
+		b := msg
+		m.billing = &b
+
 	case updateAvailableMsg:
 		m.updateInfo = &UpdateInfo{
 			CurrentVersion: msg.CurrentVersion,
@@ -1668,6 +1685,12 @@ func (m Model) renderChromeHeader() string {
 	// Update notification (if available) — always visible regardless of banner
 	if m.updateInfo != nil {
 		b.WriteString(m.renderUpdateNotification())
+		b.WriteString("\n")
+	}
+
+	// Billing chip (GH-6053) — one line, only once the daemon has reported.
+	if chip := m.renderBillingChip(); chip != "" {
+		b.WriteString(lipgloss.PlaceHorizontal(m.effectivePanelTotalWidth(), lipgloss.Right, chip))
 		b.WriteString("\n")
 	}
 
@@ -2870,6 +2893,30 @@ func (m Model) renderStalenessBanner() string {
 	var content strings.Builder
 	content.WriteString(formatPanelRow(m.stalenessBanner, "", iw))
 	return renderPanelStyled("ledger stale", "", content.String(), tw, warnChrome)
+}
+
+// billingChipText is the chip text: "billing <mode>" for the config's mode,
+// "billing <mode>·<source>" when an override is in force. "" before the first
+// BillingModeMsg.
+func billingChipText(b *BillingModeMsg) string {
+	if b == nil || b.Mode == "" {
+		return ""
+	}
+	if b.Source == "" || b.Source == "config" {
+		return "billing " + b.Mode
+	}
+	return "billing " + b.Mode + "·" + b.Source
+}
+
+func (m Model) renderBillingChip() string {
+	text := billingChipText(m.billing)
+	if text == "" {
+		return ""
+	}
+	if m.billing.Source != "" && m.billing.Source != "config" {
+		return warningStyle.Render(text)
+	}
+	return dimStyle.Render(text)
 }
 
 // renderUpdateNotification renders the update notification panel (amber

@@ -81,6 +81,25 @@ func (d *Dispatcher) BillingOverride() BillingOverrideStatus {
 	return BillingOverrideStatus{Mode: string(mode), Source: source, Until: until, ConfigMode: string(configMode)}
 }
 
+// SetBillingObserver registers fn to be told the billing mode in force after
+// every switch: SetBillingOverride, ClearBillingOverride that cleared one, and
+// an expiry. It is not called for the boot load; the caller reads
+// BillingOverride() for the initial state. fn runs outside the override lock.
+func (d *Dispatcher) SetBillingObserver(fn func(BillingOverrideStatus)) {
+	d.billingOverrideMu.Lock()
+	d.billingObserver = fn
+	d.billingOverrideMu.Unlock()
+}
+
+func (d *Dispatcher) notifyBillingObserver() {
+	d.billingOverrideMu.Lock()
+	fn := d.billingObserver
+	d.billingOverrideMu.Unlock()
+	if fn != nil {
+		fn(d.BillingOverride())
+	}
+}
+
 // SetBillingOverride makes mode (subscription or api_key) the billing mode of
 // every execution admitted from now on, until the zero or future until, and
 // persists it so it survives a restart. A running execution keeps the
@@ -126,6 +145,7 @@ func (d *Dispatcher) SetBillingOverride(mode string, until time.Time, setBy stri
 	if m != BillingModeAPIKey {
 		d.releaseBillingKeyHold()
 	}
+	d.notifyBillingObserver()
 	return nil
 }
 
@@ -262,6 +282,7 @@ func (d *Dispatcher) finishBillingOverrideRevert(from, to BillingMode, setBy str
 	if to != BillingModeAPIKey {
 		d.releaseBillingKeyHold()
 	}
+	d.notifyBillingObserver()
 }
 
 func (d *Dispatcher) logBillingModeChange(from, to BillingMode, until time.Time, source, setBy string) {

@@ -568,6 +568,15 @@ orchestrator:
       #                              # any check you intended to ignore — not just
       #                              # not wait for — into `exclude`.
       discovery_grace_period: 60s   # Wait for CI to start
+      api_outage_budget: 30m        # GH-6056: five consecutive CI-status API errors
+                                     # (e.g. GitHub HTTP 500s) no longer fail the
+                                     # PR. It is HELD at waiting_ci (no label, one
+                                     # ci_poll_api_outage alert), polled on a
+                                     # backoff doubling from 30s to 5m, and released
+                                     # on the first good poll; the outage never
+                                     # counts toward the CI timeout. Only an outage
+                                     # longer than this budget fails the PR
+                                     # (pilot-failed, second alert). Default 30m.
 
     # CI failure classification (TASK-507). Regex classifies each failed check as
     # code | infra | infra_billing; only an all-infra result is retried instead of
