@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,7 +38,7 @@ const fallbackLimitMsg = "You've hit your limit · resets 2pm (UTC)"
 func TestUsageLimitFallback_SwitchesToAPIKeyWithoutPause(t *testing.T) {
 	d, sink, _, store := newFallbackDispatcher(t, overrideTestConfig(t), &UsageLimitPauseConfig{Fallback: UsageLimitFallbackAPIKey})
 
-	d.armUsageLimitPause("GH-6069", "/p", fallbackLimitMsg)
+	d.applyUsageLimit("GH-6069", "/p", fallbackLimitMsg)
 
 	if d.IsAdmissionPaused() {
 		t.Fatalf("admission paused: %+v", d.AdmissionStatus())
@@ -73,7 +75,7 @@ func TestUsageLimitFallback_SwitchesToAPIKeyWithoutPause(t *testing.T) {
 func TestUsageLimitFallback_RevertsAtUntil(t *testing.T) {
 	d, sink, clock, store := newFallbackDispatcher(t, overrideTestConfig(t), &UsageLimitPauseConfig{Fallback: UsageLimitFallbackAPIKey})
 
-	d.armUsageLimitPause("GH-6069", "/p", fallbackLimitMsg)
+	d.applyUsageLimit("GH-6069", "/p", fallbackLimitMsg)
 
 	clock.Advance(4*time.Hour + 4*time.Minute + 59*time.Second)
 	if got := d.BillingOverride(); got.Mode != "api_key" {
@@ -129,7 +131,7 @@ func TestUsageLimitFallback_CapAndAlreadyReset(t *testing.T) {
 			pause := tt.pause
 			d, _, _, _ := newFallbackDispatcher(t, overrideTestConfig(t), &pause)
 
-			d.armUsageLimitPause("GH-6069", "/p", tt.msg)
+			d.applyUsageLimit("GH-6069", "/p", tt.msg)
 
 			got := d.BillingOverride()
 			if got.Mode != "api_key" || got.Source != BillingModeSourceFallback || !got.Until.Equal(tt.want) {
@@ -145,10 +147,10 @@ func TestUsageLimitFallback_CapAndAlreadyReset(t *testing.T) {
 func TestUsageLimitFallback_SecondLimitWhileOnFallbackPausesAsToday(t *testing.T) {
 	d, sink, _, _ := newFallbackDispatcher(t, overrideTestConfig(t), &UsageLimitPauseConfig{Fallback: UsageLimitFallbackAPIKey})
 
-	d.armUsageLimitPause("GH-1", "/p", fallbackLimitMsg)
+	d.applyUsageLimit("GH-1", "/p", fallbackLimitMsg)
 	before := d.BillingOverride()
 
-	d.armUsageLimitPause("GH-2", "/p", "You've hit your limit · resets 3pm (UTC)")
+	d.applyUsageLimit("GH-2", "/p", "You've hit your limit · resets 3pm (UTC)")
 
 	st := d.AdmissionStatus()
 	if !st.Paused || len(st.Owners) != 1 || st.Owners[0] != AdmissionPauseOwnerUsageLimit {
@@ -170,8 +172,8 @@ func TestUsageLimitFallback_KeyUnavailablePausesAndAlerts(t *testing.T) {
 	billing := &BillingConfig{Mode: BillingModeSubscription, APIKeyCommand: "exit 1"}
 	d, sink, _, store := newFallbackDispatcher(t, billing, &UsageLimitPauseConfig{Fallback: UsageLimitFallbackAPIKey})
 
-	d.armUsageLimitPause("GH-1", "/p", fallbackLimitMsg)
-	d.armUsageLimitPause("GH-2", "/p", "You've hit your limit · resets 3pm (UTC)")
+	d.applyUsageLimit("GH-1", "/p", fallbackLimitMsg)
+	d.applyUsageLimit("GH-2", "/p", "You've hit your limit · resets 3pm (UTC)")
 
 	st := d.AdmissionStatus()
 	wantUntil := time.Date(2026, 10, 26, 14, 5, 0, 0, time.UTC)
@@ -205,7 +207,7 @@ func TestUsageLimitFallback_OffByDefault(t *testing.T) {
 	for _, pause := range []*UsageLimitPauseConfig{nil, {}, {Fallback: UsageLimitFallbackPause}} {
 		d, sink, _, _ := newFallbackDispatcher(t, overrideTestConfig(t), pause)
 
-		d.armUsageLimitPause("GH-6069", "/p", fallbackLimitMsg)
+		d.applyUsageLimit("GH-6069", "/p", fallbackLimitMsg)
 
 		if !d.IsAdmissionPaused() {
 			t.Errorf("pause %+v: admission not paused", pause)
@@ -216,5 +218,98 @@ func TestUsageLimitFallback_OffByDefault(t *testing.T) {
 		if n := len(sink.modeChanges()) + len(sink.eventsOf(AlertEventTypeBillingFallbackUnavailable)); n != 0 {
 			t.Errorf("pause %+v: %d billing alerts, want 0", pause, n)
 		}
+	}
+}
+
+// Mutation pin for item 1 (GH-6071): revert the usageLimitFallbackMu section
+// of switchToAPIKeyFallback -> two alerts and a replaced until.
+func TestUsageLimitFallback_ConcurrentLimitsInstallOneOverride(t *testing.T) {
+	skipWithoutShell(t)
+	// Both commands wait for the other, so both workers have passed the
+	// subscription check before either installs.
+	dir := t.TempDir()
+	cmd := `touch "` + dir + `/$$"; while [ "$(ls "` + dir + `" | wc -l)" -lt 2 ]; do sleep 0.05; done; echo ` + testBillingKey
+	billing := &BillingConfig{Mode: BillingModeSubscription, APIKeyCommand: cmd}
+	d, sink, _, _ := newFallbackDispatcher(t, billing, &UsageLimitPauseConfig{Fallback: UsageLimitFallbackAPIKey})
+
+	var wg sync.WaitGroup
+	for i, msg := range []string{fallbackLimitMsg, "You've hit your limit · resets 3pm (UTC)"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.applyUsageLimit(fmt.Sprintf("GH-%d", i), "/p", msg)
+		}()
+	}
+	wg.Wait()
+
+	changes := sink.modeChanges()
+	if len(changes) != 1 {
+		t.Fatalf("%d billing_mode_changed alerts, want 1", len(changes))
+	}
+	got := d.BillingOverride()
+	if got.Mode != "api_key" || got.Until.Format(time.RFC3339) != changes[0].Metadata["until"] {
+		t.Errorf("override = %+v, want the first install's until %s", got, changes[0].Metadata["until"])
+	}
+	if st := d.AdmissionStatus(); !st.Paused || len(st.Owners) != 1 || st.Owners[0] != AdmissionPauseOwnerUsageLimit {
+		t.Errorf("status = %+v, want the second limit to pause as on a fallback already in force", st)
+	}
+}
+
+// Mutation pin for item 2 (GH-6071): revert releaseUsageLimitPauseForFallback
+// -> admission stays held by the older pause.
+func TestUsageLimitFallback_ReleasesOlderPauseWhenFallbackSucceeds(t *testing.T) {
+	d, _, _, _ := newFallbackDispatcher(t, overrideTestConfig(t), &UsageLimitPauseConfig{Fallback: UsageLimitFallbackPause})
+	d.applyUsageLimit("GH-1", "/p", fallbackLimitMsg)
+	if !d.IsAdmissionPaused() {
+		t.Fatal("setup: the first episode did not pause admission")
+	}
+
+	d.runner.config.UsageLimitPause = &UsageLimitPauseConfig{Fallback: UsageLimitFallbackAPIKey}
+	d.applyUsageLimit("GH-2", "/p", fallbackLimitMsg)
+
+	if got := d.BillingOverride(); got.Mode != "api_key" || got.Source != BillingModeSourceFallback {
+		t.Fatalf("override = %+v, want the api_key fallback", got)
+	}
+	if d.IsAdmissionPaused() {
+		t.Errorf("admission still held by the older pause: %+v", d.AdmissionStatus())
+	}
+}
+
+// Mutation pin for item 3 (GH-6071): call applyUsageLimit inline from
+// armUsageLimitPause -> it returns only after the key command.
+func TestUsageLimitFallback_ArmDoesNotBlockOnKeyCommand(t *testing.T) {
+	skipWithoutShell(t)
+	billing := &BillingConfig{Mode: BillingModeSubscription, APIKeyCommand: "sleep 2; echo " + testBillingKey}
+	d, _, _, _ := newFallbackDispatcher(t, billing, &UsageLimitPauseConfig{Fallback: UsageLimitFallbackAPIKey})
+
+	start := time.Now()
+	d.armUsageLimitPause("GH-6069", "/p", fallbackLimitMsg)
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("armUsageLimitPause took %v, want it to return before the key command finishes", took)
+	}
+
+	deadline := time.Now().Add(8 * time.Second)
+	for d.BillingOverride().Mode != "api_key" {
+		if time.Now().After(deadline) {
+			t.Fatal("the fallback never installed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Mutation pin for item 4 (GH-6071): add reset_at only when a reset parsed ->
+// the key is missing from the payload.
+func TestUsageLimitFallback_UnavailablePayloadCarriesEmptyResetAt(t *testing.T) {
+	billing := &BillingConfig{Mode: BillingModeSubscription, APIKeyEnv: "PILOT_TEST_UNSET_BILLING_KEY"}
+	d, sink, _, _ := newFallbackDispatcher(t, billing, &UsageLimitPauseConfig{Fallback: UsageLimitFallbackAPIKey})
+
+	d.applyUsageLimit("GH-6069", "/p", "usage limit reached")
+
+	unavail := sink.eventsOf(AlertEventTypeBillingFallbackUnavailable)
+	if len(unavail) != 1 {
+		t.Fatalf("%d billing_fallback_unavailable alerts, want 1", len(unavail))
+	}
+	if v, ok := unavail[0].Metadata["reset_at"]; !ok || v != "" {
+		t.Errorf("reset_at = %q, present=%v, want present and empty", v, ok)
 	}
 }
