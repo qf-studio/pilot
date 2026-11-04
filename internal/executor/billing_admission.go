@@ -153,12 +153,13 @@ func (d *Dispatcher) armBillingKeyPause(taskID, projectPath string, keyErr error
 	)
 	if d.runner != nil && d.runner.AlertProcessor() != nil {
 		d.runner.AlertProcessor().ProcessEvent(AlertEvent{
-			Type:      AlertEventTypeBillingKeyUnavailable,
-			TaskID:    taskID,
-			Project:   projectPath,
-			Error:     keyErr.Error(),
-			Metadata:  map[string]string{"owner": AdmissionPauseOwnerBillingKey},
-			Timestamp: d.pauseClockOrReal().Now(),
+			Type:            AlertEventTypeBillingKeyUnavailable,
+			TaskID:          taskID,
+			Project:         projectPath,
+			Error:           keyErr.Error(),
+			AdmissionPaused: true,
+			Metadata:        map[string]string{"owner": AdmissionPauseOwnerBillingKey},
+			Timestamp:       d.pauseClockOrReal().Now(),
 		})
 	}
 	return true

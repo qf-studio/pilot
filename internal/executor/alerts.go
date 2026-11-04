@@ -20,8 +20,14 @@ type AlertEvent struct {
 	Phase     string
 	Progress  int
 	Error     string
-	Metadata  map[string]string
-	Timestamp time.Time
+	// Source names the emitter for events raised outside a task (chat, cli,
+	// bootstrap, reviewer). Empty for task-scoped events.
+	Source string
+	// AdmissionPaused is true only when the emitter paused task admission
+	// (GH-6050): the billing key alert text depends on it.
+	AdmissionPaused bool
+	Metadata        map[string]string
+	Timestamp       time.Time
 }
 
 // AlertEventType categorizes incoming events

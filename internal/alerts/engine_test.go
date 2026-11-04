@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 // mockChannel is a test mock for the Channel interface
@@ -4664,6 +4666,99 @@ func TestBillingKeyUnavailable(t *testing.T) {
 		if !strings.Contains(got[0].Message, want) {
 			t.Errorf("message %q missing %q", got[0].Message, want)
 		}
+	}
+}
+
+// TestBillingAlert_TextByAdmissionPaused covers GH-6050: only the dispatcher's
+// admission emitter pauses admission, so only its alert says so; chat, CLI,
+// bootstrap and reviewer alerts say the run failed and admission is unaffected,
+// naming the source. The events go through the executor adapter, so the
+// forwarding of both fields is covered too.
+func TestBillingAlert_TextByAdmissionPaused(t *testing.T) {
+	const paused = "task admission paused until it resolves"
+	const unaffected = "this run failed; admission is unaffected"
+	tests := []struct {
+		name         string
+		event        executor.AlertEvent
+		wantContains []string
+		wantAbsent   string
+	}{
+		{
+			name: "admission emitter",
+			event: executor.AlertEvent{
+				Type: executor.AlertEventTypeBillingKeyUnavailable, TaskID: "GH-6050", AdmissionPaused: true,
+				Error: "api_key_command failed",
+			},
+			wantContains: []string{paused, "GH-6050", "api_key_command failed"},
+			wantAbsent:   unaffected,
+		},
+		{
+			name: "chat turn",
+			event: executor.AlertEvent{
+				Type: executor.AlertEventTypeBillingKeyUnavailable, TaskID: "conv-1", Source: "chat",
+				Error: "api_key_command failed",
+			},
+			wantContains: []string{unaffected, "chat", "conv-1", "api_key_command failed"},
+			wantAbsent:   paused,
+		},
+		{
+			name: "bootstrap",
+			event: executor.AlertEvent{
+				Type: executor.AlertEventTypeBillingKeyUnavailable, TaskID: "bootstrap-2026-11-04", Source: "bootstrap",
+				Error: "api_key_command failed",
+			},
+			wantContains: []string{unaffected, "bootstrap"},
+			wantAbsent:   paused,
+		},
+		{
+			name: "reviewer",
+			event: executor.AlertEvent{
+				Type: executor.AlertEventTypeBillingKeyUnavailable, TaskID: "post-merge-review-pr-7", Source: "reviewer",
+				Error: "post-merge review of PR #7: api_key_command failed",
+			},
+			wantContains: []string{unaffected, "reviewer", "PR #7"},
+			wantAbsent:   paused,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var rule AlertRule
+			for _, r := range DefaultConfig().Rules {
+				if r.Type == AlertTypeBillingKeyUnavailable {
+					rule = r
+				}
+			}
+			rule.Channels = []string{"test-channel"}
+			config := &AlertConfig{
+				Enabled:  true,
+				Defaults: DefaultConfig().Defaults,
+				Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+				Rules:    []AlertRule{rule},
+			}
+			mockCh := newMockChannel("test-channel", "webhook")
+			dispatcher := NewDispatcher(config)
+			dispatcher.RegisterChannel(mockCh)
+			engine := NewEngine(config, WithDispatcher(dispatcher))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			_ = engine.Start(ctx)
+
+			tt.event.Timestamp = time.Now()
+			NewEngineAdapter(engine).ProcessEvent(tt.event)
+			waitForAlerts(t, mockCh, 1, 2*time.Second)
+			got := mockCh.getAlerts()
+			if len(got) != 1 {
+				t.Fatalf("alerts = %d, want 1", len(got))
+			}
+			for _, want := range tt.wantContains {
+				if !strings.Contains(got[0].Message, want) {
+					t.Errorf("message %q missing %q", got[0].Message, want)
+				}
+			}
+			if strings.Contains(got[0].Message, tt.wantAbsent) {
+				t.Errorf("message %q must not contain %q", got[0].Message, tt.wantAbsent)
+			}
+		})
 	}
 }
 

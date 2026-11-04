@@ -2,7 +2,9 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -859,6 +861,26 @@ func TestBillingRetryCtx_SubprocessEnvCarriesKey(t *testing.T) {
 
 // Subtasks created by decomposition run in the parent's billing mode, so
 // their cost is recorded under it and not as unknown.
+// commitingFixedBackend is mockFixedBackend that also leaves a commit in
+// the project it runs in, as a real subtask session delivers its work.
+type commitingFixedBackend struct {
+	mockFixedBackend
+}
+
+func (b *commitingFixedBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	if err := os.WriteFile(filepath.Join(opts.ProjectPath, opts.TaskID+".txt"), []byte("work\n"), 0o644); err != nil {
+		return nil, err
+	}
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-m", "subtask " + opts.TaskID}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = opts.ProjectPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("git %s: %w: %s", args[0], err, out)
+		}
+	}
+	return b.mockFixedBackend.Execute(ctx, opts)
+}
+
 func TestDecompose_SubtasksInheritBillingMode(t *testing.T) {
 	branch := "pilot/GH-6021-J"
 	dir := setupPRGuardRepo(t, branch, true)
@@ -897,9 +919,11 @@ Add new middleware for session validation.`,
 	}
 
 	rec := &fakeMetricsRecorder{}
-	runner := NewRunnerWithBackend(&mockFixedBackend{result: &BackendResult{
+	// Each subtask commits, so the no-op escalation (a second run of the final
+	// subtask) never fires and one subtask is exactly one cost row.
+	runner := NewRunnerWithBackend(&commitingFixedBackend{mockFixedBackend: mockFixedBackend{result: &BackendResult{
 		Success: true, Output: "done", TokensInput: 100, TokensOutput: 50, Model: "claude-sonnet-test",
-	}})
+	}}})
 	runner.SetRecordingEnabled(false)
 	runner.skipPreflightChecks = true
 	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
@@ -911,16 +935,13 @@ Add new middleware for session validation.`,
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if len(rec.costCalls) == 0 {
-		t.Fatal("no subtask recorded a cost")
+	if len(rec.costCalls) != len(res.Subtasks) {
+		t.Fatalf("%d of %d subtasks recorded cost, want every one", len(rec.costCalls), len(res.Subtasks))
 	}
 	for i, c := range rec.costCalls {
 		if c.billingMode != "api_key" {
 			t.Errorf("subtask cost %d recorded under billing_mode %q, want api_key", i+1, c.billingMode)
 		}
-	}
-	if len(rec.costCalls) != len(res.Subtasks) {
-		t.Logf("%d of %d subtasks recorded cost", len(rec.costCalls), len(res.Subtasks))
 	}
 }
 
@@ -947,5 +968,66 @@ func TestBillingMode_ClassifierResolvesViaCommand(t *testing.T) {
 	}
 	if v, ok := os.LookupEnv("ANTHROPIC_API_KEY"); ok {
 		t.Errorf("daemon process environment gained ANTHROPIC_API_KEY=%q", v)
+	}
+}
+
+// GH-6050: the decomposed-parent guard of the stale-queued sweep deletes the
+// orphan row and then discards its stashed key; a failed delete leaves the row
+// queued, so it must keep the key.
+func TestDispatcher_DecomposedParentGuardKeepsKeyOnFailedDelete(t *testing.T) {
+	skipWithoutShell(t)
+	for _, tc := range []struct {
+		name        string
+		failDelete  bool
+		wantStashed bool
+		wantRow     bool
+	}{
+		{name: "delete succeeds discards the key", failDelete: false, wantStashed: false, wantRow: false},
+		{name: "delete fails keeps the key", failDelete: true, wantStashed: true, wantRow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newBillingWorkerRig(t, apiKeyConfig("printf "+testBillingKey))
+			rig.d.config.StaleQueuedThreshold = time.Nanosecond
+			store := rig.d.store
+			task := &Task{ID: "GH-6050-P", Title: "decomposed parent", ProjectPath: rig.proj}
+			execID, err := rig.d.beginWithGenerationRetry(task, ExecStatusQueued)
+			if err != nil || execID == "" {
+				t.Fatalf("beginWithGenerationRetry = %q, %v", execID, err)
+			}
+			if cred := rig.stashed(execID); cred == nil {
+				t.Fatal("no stashed credential for the queued parent row")
+			}
+			if err := store.InsertExecutionEvent(execID, memory.StageDecomposed, "decomposed into 2 children: #6051, #6052"); err != nil {
+				t.Fatalf("InsertExecutionEvent: %v", err)
+			}
+			for _, child := range []string{"GH-6051", "GH-6052"} {
+				if err := store.SaveExecution(&memory.Execution{
+					ID: "exec-" + child, TaskID: child, ProjectPath: rig.proj,
+					Status: "completed", PRUrl: "https://github.com/qf-studio/pilot/pull/" + strings.TrimPrefix(child, "GH-"),
+				}); err != nil {
+					t.Fatalf("SaveExecution(%s): %v", child, err)
+				}
+			}
+			if tc.failDelete {
+				if _, err := store.DB().Exec(`CREATE TRIGGER block_exec_delete BEFORE DELETE ON executions
+					BEGIN SELECT RAISE(ABORT, 'delete blocked'); END`); err != nil {
+					t.Fatalf("create trigger: %v", err)
+				}
+			}
+
+			time.Sleep(5 * time.Millisecond)
+			rig.d.recoverStaleQueuedTasks()
+
+			if got := rig.stashed(execID) != nil; got != tc.wantStashed {
+				t.Errorf("key stashed after the guard = %v, want %v", got, tc.wantStashed)
+			}
+			var n int
+			if err := store.DB().QueryRow(`SELECT COUNT(*) FROM executions WHERE id = ?`, execID).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			if (n == 1) != tc.wantRow {
+				t.Errorf("parent row present = %v, want %v", n == 1, tc.wantRow)
+			}
+		})
 	}
 }

@@ -867,6 +867,10 @@ Examples:
 			var execStore *memory.Store
 			var execID string
 
+			// GH-6050: without an alert processor the runner drops its alert
+			// events (billing key unavailable included) after one warning.
+			defer installCLIAlertProcessor(runner, cfg)()
+
 			// GH-2146: Initialize learning system for task command
 			// Mirrors main.go polling/gateway mode learning init
 			if cfg.Memory != nil && cfg.Memory.Path != "" {

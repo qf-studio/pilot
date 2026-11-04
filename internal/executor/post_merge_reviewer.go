@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -262,7 +263,10 @@ type PostMergeReviewer struct {
 	// billing resolves the per-review credential (GH-6022); nil leaves the
 	// review on whatever credential its ctx already carries.
 	billing *BillingResolver
-	log     *slog.Logger
+	// alertEmitter receives the billing key alert when the resolver fails
+	// (GH-6050); nil drops it.
+	alertEmitter atomic.Pointer[func(AlertEvent)]
+	log          *slog.Logger
 	// cmdRunner runs the CLI with args in dir ("" = the daemon's directory).
 	// A non-empty home is the review's own HOME (GH-5920): the runner builds
 	// the CLI environment from it with postMergeReviewEnviron.
@@ -314,6 +318,16 @@ func (r *PostMergeReviewer) SetPasses(n int) {
 // fails the review closed instead of billing the subscription (GH-6022).
 // Nil keeps the review on the credential its ctx carries, if any.
 func (r *PostMergeReviewer) SetBillingResolver(b *BillingResolver) { r.billing = b }
+
+// SetAlertEmitter installs the sink for the billing key alert a resolver
+// failure raises (GH-6050): a dead key otherwise silently stops every review.
+func (r *PostMergeReviewer) SetAlertEmitter(emit func(AlertEvent)) {
+	if emit == nil {
+		r.alertEmitter.Store(nil)
+		return
+	}
+	r.alertEmitter.Store(&emit)
+}
 
 // Passes returns the configured number of review passes.
 func (r *PostMergeReviewer) Passes() int { return r.passes }
@@ -442,6 +456,16 @@ func (r *PostMergeReviewer) Review(ctx context.Context, in PostMergeReviewInput)
 	if r.billing != nil && BillingCredentialFromContext(ctx) == nil {
 		cred, err := r.billing.Resolve(ctx)
 		if err != nil {
+			if emit := r.alertEmitter.Load(); emit != nil && IsBillingKeyUnavailable(err) {
+				(*emit)(AlertEvent{
+					Type:      AlertEventTypeBillingKeyUnavailable,
+					TaskID:    fmt.Sprintf("post-merge-review-pr-%d", in.PRNumber),
+					Project:   in.ProjectPath,
+					Source:    "reviewer",
+					Error:     fmt.Sprintf("post-merge review of PR #%d: %s", in.PRNumber, err.Error()),
+					Timestamp: time.Now(),
+				})
+			}
 			return nil, err
 		}
 		defer cred.Zero()

@@ -1071,10 +1071,14 @@ func (d *Dispatcher) recoverStaleQueuedTasks() int {
 				slog.Any("children", childIDs),
 				slog.Any("evidence", evidence),
 			)
+			// GH-6050: a failed delete leaves the row queued, so it keeps its
+			// stashed key and the worker need not resolve again.
 			if err := d.store.DeleteExecution(exec.ID); err != nil {
-				d.log.Error("Failed to delete decomposed-parent-guarded orphan queued row", slog.String("id", exec.ID), slog.Any("error", err))
+				d.log.Error("Failed to delete decomposed-parent-guarded orphan queued row; billing credential stash retained",
+					slog.String("id", exec.ID), slog.Any("error", err))
+			} else {
+				d.discardBillingCredential(exec.ID)
 			}
-			d.discardBillingCredential(exec.ID)
 			continue
 		}
 

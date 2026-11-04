@@ -100,19 +100,21 @@ func (r *Runner) ExecuteNavigatorBootstrap(ctx context.Context, projectPath stri
 		KeySource: KeySourceFromEnv(),
 	}
 
+	// GH-6050: the scaffold needs no model, so it exists even when the key
+	// below fails closed. A scaffold error still returns before any spawn.
+	if err := ensureNavigatorScaffold(r, projectPath); err != nil {
+		return nil, err
+	}
+
 	// GH-6022: the session is a model spawn like any execution. Inside a task
 	// ctx already carries the credential; the standalone CLI resolves here and
 	// in api_key mode fails closed (with the billing key alert) before any
-	// scaffold or spawn rather than billing the subscription.
-	ctx, cred, release, billErr := r.billingContext(ctx, out.TaskID, projectPath)
+	// spawn rather than billing the subscription.
+	ctx, cred, release, billErr := r.billingContext(ctx, out.TaskID, projectPath, "bootstrap")
 	if billErr != nil {
 		return nil, billErr
 	}
 	defer release()
-
-	if err := ensureNavigatorScaffold(r, projectPath); err != nil {
-		return nil, err
-	}
 
 	lifecycle := NewExecutionLifecycle(r.logStore)
 	lifecycle.SetAlertProcessor(r.AlertProcessor())
