@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-11-03T16:28:26.152856+00:00",
+  "updated": "2026-11-04T15:46:17.130242+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -3653,7 +3653,7 @@
       "TASK-633": {
         "path": ".agent/tasks/TASK-633-billing-mode-post-merge-fast-follow.md",
         "title": "Billing mode fast-follow \u2014 PR#6017 post-merge review notes verified on main, two fix legs",
-        "status": "dispatched",
+        "status": "merged",
         "concepts": [
           "authentication",
           "deployment",
@@ -3703,7 +3703,7 @@
       "TASK-635": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-635-autopilot-ci-poll-api-outage-hold-not-terminal-failed.md",
         "title": "An API outage during the CI poll is a hold with a redrive, not a terminal `failed` stage",
-        "status": "backlog",
+        "status": "merged",
         "concepts": [
           "deployment",
           "context",
@@ -18308,7 +18308,7 @@
       "mem-281"
     ]
   },
-  "last_updated": "2026-11-04T15:01:27.142631+00:00",
+  "last_updated": "2026-11-04T15:46:17.130242+00:00",
   "stats": {
     "total_nodes": 857,
     "total_edges": 998,
