@@ -483,19 +483,21 @@ func TestListRecordingsWithFilters(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create recordings with different properties
-	recorder1, _ := NewRecorder("TASK-A", "/project/a", tmpDir)
+	recorder1 := mustNewRecorder(t, "TASK-A", "/project/a", tmpDir)
 	_ = recorder1.Finish("completed")
 	time.Sleep(20 * time.Millisecond)
 
-	recorder2, _ := NewRecorder("TASK-B", "/project/b", tmpDir)
+	recorder2 := mustNewRecorder(t, "TASK-B", "/project/b", tmpDir)
 	_ = recorder2.Finish("failed")
 	time.Sleep(20 * time.Millisecond)
 
-	// Captured before recorder3 exists so the Since filter is deterministic:
-	// recorder1/2 started before cutoff, recorder3 starts at or after it.
-	cutoff := time.Now()
-	recorder3, _ := NewRecorder("TASK-C", "/project/a", tmpDir)
+	recorder3 := mustNewRecorder(t, "TASK-C", "/project/a", tmpDir)
 	_ = recorder3.Finish("completed")
+
+	// The cutoff is recorder3's own StartTime, so there is no second clock read.
+	// Before is strict: recorder3 (equal StartTime) stays in, recorder1 and
+	// recorder2 (20 ms earlier) drop, with no window for a clock step.
+	cutoff := recorder3.recording.StartTime
 
 	// Test filter by project path
 	filter := &RecordingFilter{ProjectPath: "/project/a"}
@@ -527,6 +529,56 @@ func TestListRecordingsWithFilters(t *testing.T) {
 	if len(recordings) != 1 {
 		t.Errorf("Expected 1 recent recording, got %d", len(recordings))
 	}
+
+	// mutation pin: Since filter uses <= instead of Before (strict) -> this test fails
+	filter = &RecordingFilter{Since: cutoff.Add(time.Nanosecond)}
+	recordings, err = ListRecordings(tmpDir, filter)
+	if err != nil {
+		t.Fatalf("Failed to list recordings: %v", err)
+	}
+	if len(recordings) != 0 {
+		t.Errorf("Expected 0 recordings after cutoff+1ns, got %d", len(recordings))
+	}
+}
+
+// mustNewRecorder creates a recorder for test setup and fails the test on error.
+func mustNewRecorder(tb testing.TB, taskID, projectPath, basePath string) *Recorder {
+	tb.Helper()
+	r, err := NewRecorder(taskID, projectPath, basePath)
+	if err != nil {
+		tb.Fatalf("NewRecorder(%q) failed: %v", taskID, err)
+	}
+	return r
+}
+
+// mutation pin: setup ignores NewRecorder errors (mustNewRecorder drops the err check) -> this test fails
+func TestMustNewRecorderFailsOnError(t *testing.T) {
+	// A regular file as basePath makes NewRecorder fail on MkdirAll.
+	basePath := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(basePath, []byte("x"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	rec := &fatalRecorderTB{TB: t}
+	func() {
+		defer func() { _ = recover() }()
+		mustNewRecorder(rec, "TASK-FAIL", "/project/x", basePath)
+	}()
+	if !rec.fataled {
+		t.Error("mustNewRecorder did not call Fatalf on a NewRecorder error")
+	}
+}
+
+// fatalRecorderTB records Fatalf calls instead of failing the real test.
+// Fatalf panics to emulate the runtime.Goexit stop of testing.T.Fatalf.
+type fatalRecorderTB struct {
+	testing.TB
+	fataled bool
+}
+
+func (f *fatalRecorderTB) Fatalf(string, ...any) {
+	f.fataled = true
+	panic("fatalf")
 }
 
 func TestListRecordingsNonExistentDir(t *testing.T) {
