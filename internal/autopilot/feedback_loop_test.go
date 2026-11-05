@@ -1893,3 +1893,86 @@ func TestBuildPostMergeMinorsIssue_PinInTestFile(t *testing.T) {
 		t.Errorf("a body-located defect is an item:\n%s", body)
 	}
 }
+
+// TestFindExistingFixIssue_MatchesByRunPermalink pins GH-6125: two post-merge
+// fix issues for different PRs share a title-distinct pair but one failing
+// workflow run; the second lookup must find the first issue by the run path,
+// and a different run id (including a longer id sharing the prefix) must not.
+func TestFindExistingFixIssue_MatchesByRunPermalink(t *testing.T) {
+	var created, comments int
+	var commentBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode([]github.Issue{{
+				Number: 6107,
+				Title:  "fix(ci): resolve post-merge CI failure from PR #6104",
+				Labels: []github.Label{{Name: "pilot"}, {Name: "autopilot-fix"}},
+				Body:   "Full log: https://github.com/owner/repo/actions/runs/42062140402/job/7",
+			}})
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			created++
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, github.Issue{Number: 6108}))
+		case r.URL.Path == "/repos/owner/repo/issues/6107/comments" && r.Method == http.MethodPost:
+			comments++
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			commentBody = body["body"]
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte("{}"))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.IssueLabels = []string{"pilot", "autopilot-fix"}
+	fl := NewFeedbackLoop(ghClient, "owner", "repo", cfg)
+	ctx := context.Background()
+
+	secondTitle := "fix(ci): resolve post-merge CI failure from PR #6105"
+
+	if num, found, err := fl.findExistingFixIssue(ctx, secondTitle, "42062140402"); err != nil || !found || num != 6107 {
+		t.Errorf("same run id: got (%d, %v, %v), want (6107, true, nil)", num, found, err)
+	}
+	if _, found, err := fl.findExistingFixIssue(ctx, secondTitle, "99999999999"); err != nil || found {
+		t.Errorf("different run id: found=%v err=%v, want not found", found, err)
+	}
+	if _, found, err := fl.findExistingFixIssue(ctx, secondTitle, "4206214040"); err != nil || found {
+		t.Errorf("run id that is a prefix of the issue's id: found=%v err=%v, want not found", found, err)
+	}
+	if _, found, err := fl.findExistingFixIssue(ctx, secondTitle); err != nil || found {
+		t.Errorf("title only: found=%v err=%v, want not found", found, err)
+	}
+
+	// End to end: the second PR's post-merge fix issue is suppressed and the
+	// existing issue gets one attribution comment.
+	logs := ciExcerptSentinel + "=== test ===\nboom\nFull log: https://github.com/owner/repo/actions/runs/42062140402/job/9"
+	prState := &PRState{PRNumber: 6105}
+	num, err := fl.CreateFailureIssue(ctx, prState, FailureCIPostMerge, []string{"test"}, logs, 1)
+	if err != nil {
+		t.Fatalf("CreateFailureIssue: %v", err)
+	}
+	if num != 6107 {
+		t.Errorf("issue = %d, want existing 6107", num)
+	}
+	if created != 0 {
+		t.Errorf("created %d new issues, want 0", created)
+	}
+	if comments != 1 || commentBody != "also attributed to PR #6105, run 42062140402" {
+		t.Errorf("comments=%d body=%q, want one attribution comment", comments, commentBody)
+	}
+
+	// Pre-merge failures keep the exact-title match only.
+	num, err = fl.CreateFailureIssue(ctx, &PRState{PRNumber: 6106}, FailureCIPreMerge, []string{"test"}, logs, 1)
+	if err != nil {
+		t.Fatalf("pre-merge CreateFailureIssue: %v", err)
+	}
+	if created != 1 || num != 6108 {
+		t.Errorf("pre-merge: created=%d num=%d, want a new issue 6108", created, num)
+	}
+}

@@ -4706,6 +4706,10 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 // not an unbounded loop.
 const maxInfraRerunBudget = 2
 
+// maxPostMergeCodeRerunBudget is the one-shot re-run a code-class post-merge
+// failure gets per PostMergeSHA before a fix issue is filed (GH-6125).
+const maxPostMergeCodeRerunBudget = 1
+
 // maybeRetryInfraFailure auto-retries prState's failed jobs when every
 // scoped failed check classifies as a CI infrastructure outage and the
 // per-SHA retry budget is not yet exhausted (GH-4533). Returns retried=true
@@ -4865,6 +4869,42 @@ func (c *Controller) maybeRetryPostMergeInfraFailure(ctx context.Context, prStat
 	c.log.Warn("post-merge CI failure classified as infra outage, auto-retried failed jobs",
 		"pr", prState.PRNumber, "sha", ShortSHA(mainSHA),
 		"attempt", prState.PostMergeInfraRerunCount, "budget", maxInfraRerunBudget, "runs_rerun", rerunCount)
+	return true
+}
+
+// maybeRetryPostMergeCodeFailure re-runs the failed jobs of a code-class
+// post-merge failure once per PostMergeSHA before a fix issue is filed
+// (GH-6125). Returns true when a re-run was issued and the caller should wait
+// for the next tick; false when the budget for this SHA is spent or nothing
+// could be re-run, in which case the caller files the fix issue as before.
+// The budget is PostMergeCodeRerunCount/PostMergeCodeRerunSHA, separate from
+// the infra pair; a new SHA resets the effective count to 0.
+func (c *Controller) maybeRetryPostMergeCodeFailure(ctx context.Context, prState *PRState, checks []FailedCheckLog, mainSHA string) bool {
+	if c.stepLogClient == nil {
+		return false
+	}
+
+	effectiveCount := prState.PostMergeCodeRerunCount
+	if mainSHA != prState.PostMergeCodeRerunSHA {
+		effectiveCount = 0
+	}
+	if effectiveCount >= maxPostMergeCodeRerunBudget {
+		return false
+	}
+
+	rerunCount := c.rerunInfraFailures(ctx, prState, checks)
+	if rerunCount == 0 {
+		c.log.Warn("post-merge CI code-class failure but no jobs could be rerun, filing fix issue",
+			"pr", prState.PRNumber, "sha", ShortSHA(mainSHA))
+		return false
+	}
+
+	prState.PostMergeCodeRerunCount = effectiveCount + 1
+	prState.PostMergeCodeRerunSHA = mainSHA
+	c.metrics.RecordCIRun("code_retry")
+	c.log.Warn("post-merge CI code-class failure, re-ran failed jobs once before filing a fix issue",
+		"pr", prState.PRNumber, "sha", ShortSHA(mainSHA),
+		"attempt", prState.PostMergeCodeRerunCount, "budget", maxPostMergeCodeRerunBudget, "runs_rerun", rerunCount)
 	return true
 }
 
@@ -6499,8 +6539,31 @@ func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 		"pr", prState.PRNumber,
 		"env", c.config.EnvironmentName(),
 	)
+	// GH-6125: pin the post-merge SHA to this PR's own merge commit now, so
+	// the first handlePostMergeCI tick never has to resolve it (and never
+	// falls back to the head of main after a later merge).
+	if prState.PostMergeSHA == "" {
+		if sha := c.prMergeCommitSHA(ctx, prState.PRNumber); sha != "" {
+			prState.PostMergeSHA = sha
+			c.log.Info("post-merge CI tracking PR merge commit",
+				"pr", prState.PRNumber, "sha", ShortSHA(sha), "post_merge_sha_source", "merge_commit")
+		}
+	}
 	prState.Stage = StagePostMergeCI
 	return nil
+}
+
+// prMergeCommitSHA returns the merge commit SHA of a merged PR, or "" when the
+// PR cannot be fetched or carries no merge commit (GH-6125).
+func (c *Controller) prMergeCommitSHA(ctx context.Context, prNumber int) string {
+	pr, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prNumber)
+	if err != nil || pr == nil {
+		if err != nil {
+			c.log.Warn("failed to fetch PR merge commit", "pr", prNumber, "error", err)
+		}
+		return ""
+	}
+	return pr.MergeCommitSHA
 }
 
 // maybeCloseParentIssue checks whether the merged PR's issue is a sub-issue
@@ -6782,13 +6845,27 @@ const postMergeCINoWorkflowGrace = 90 * time.Second
 func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) error {
 	// Capture main branch SHA on first entry; persisted so daemon restarts resume
 	// monitoring the same commit rather than picking up a newer one.
+	//
+	// GH-6125: the SHA to watch is the PR's own merge commit, not the current
+	// head of main — a PR whose first tick runs after a later merge would
+	// otherwise watch (and file fix issues for) the later merge's CI. The
+	// main-head read stays only as the fallback when the merge commit is
+	// unavailable.
 	if prState.PostMergeSHA == "" {
-		sha, err := c.getMainBranchSHA(ctx)
-		if err != nil {
-			c.log.Warn("failed to get main branch SHA, using head SHA", "error", err)
-			sha = prState.HeadSHA
+		if sha := c.prMergeCommitSHA(ctx, prState.PRNumber); sha != "" {
+			prState.PostMergeSHA = sha
+			c.log.Info("post-merge CI tracking PR merge commit",
+				"pr", prState.PRNumber, "sha", ShortSHA(sha), "post_merge_sha_source", "merge_commit")
+		} else {
+			sha, err := c.getMainBranchSHA(ctx)
+			if err != nil {
+				c.log.Warn("failed to get main branch SHA, using head SHA", "error", err)
+				sha = prState.HeadSHA
+			}
+			prState.PostMergeSHA = sha
+			c.log.Warn("post-merge CI merge commit unavailable, falling back to main branch head",
+				"pr", prState.PRNumber, "sha", ShortSHA(sha), "post_merge_sha_source", "main_head")
 		}
-		prState.PostMergeSHA = sha
 	}
 
 	// Start the CI timer on first tick.
@@ -7016,6 +7093,14 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 				ciFailedChecksSummary(failedChecks))
 			c.escalateAndHold(ctx, prState, "post-merge CI failure with zero gathered evidence", []string{labelNeedsHuman}, comment, false)
 			skipSpawn = true
+		}
+
+		// GH-6125: a code-class red on a freshly merged commit is re-run once
+		// before a fix issue is filed — a GitHub-side rejection (e.g. a
+		// commit_refs failure) classifies as code but clears on a re-run. The
+		// issue is filed only when the run is red again on the same SHA.
+		if !skipSpawn && c.maybeRetryPostMergeCodeFailure(ctx, prState, postMergePerCheckLogs, mainSHA) {
+			return nil
 		}
 
 		if !skipSpawn {
