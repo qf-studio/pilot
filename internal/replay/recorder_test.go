@@ -491,6 +491,9 @@ func TestListRecordingsWithFilters(t *testing.T) {
 	_ = recorder2.Finish("failed")
 	time.Sleep(20 * time.Millisecond)
 
+	// Captured before recorder3 exists so the Since filter is deterministic:
+	// recorder1/2 started before cutoff, recorder3 starts at or after it.
+	cutoff := time.Now()
 	recorder3, _ := NewRecorder("TASK-C", "/project/a", tmpDir)
 	_ = recorder3.Finish("completed")
 
@@ -515,7 +518,7 @@ func TestListRecordingsWithFilters(t *testing.T) {
 	}
 
 	// Test filter by since time
-	filter = &RecordingFilter{Since: time.Now().Add(-10 * time.Millisecond)}
+	filter = &RecordingFilter{Since: cutoff}
 	recordings, err = ListRecordings(tmpDir, filter)
 	if err != nil {
 		t.Fatalf("Failed to list recordings: %v", err)
