@@ -1,6 +1,6 @@
 # TASK-641: Pre-PR review enforce — a reverted fix round still opens the PR; the re-gate cap cannot pass; the close handler lies on a closed issue
 
-**Status**: 📋 PLANNED 2026-11-05 — full picture read (nav-research + box data, § Full picture); legs A1 (re-gate budget) · B1 (close handler) · A2 (`on_unfixed: hold` on the existing `holdPushedBranch` / `needs_human` path) · C1 (needs_human metrics + Run Story + SOP). D1 taken 11-05: an opened PR with unfixed blocking defects is the primary defect → `hold` default (per daemon: `pre_pr_review` has no per-project override). Dispatch order A1 → B1 (independent) → A2 (after A1) → C1 (after A2). A1/B1 pass pre-flight; A2 and C1 probes need A1/A2 on main.
+**Status**: 🚀 **A1 + B1 DISPATCHED 11-05 → [pilot#6130](https://github.com/qf-studio/pilot/issues/6130) (re-gate budget `regate_timeout` default 20m + `regate_timeout` status) · [pilot#6131](https://github.com/qf-studio/pilot/issues/6131) (close handler: closed-issue comment, label removal, RC-held reason, approval cancel)** (`pilot` + `no-decompose`). A2 (`on_unfixed: hold` on `holdPushedBranch` / `needs_human`) dispatches after A1 merges; C1 (needs_human metrics + Run Story + SOP) after A2. Was: 📋 PLANNED 2026-11-05 — full picture read (nav-research + box data, § Full picture); legs A1 (re-gate budget) · B1 (close handler) · A2 (`on_unfixed: hold` on the existing `holdPushedBranch` / `needs_human` path) · C1 (needs_human metrics + Run Story + SOP). D1 taken 11-05: an opened PR with unfixed blocking defects is the primary defect → `hold` default (per daemon: `pre_pr_review` has no per-project override). Dispatch order A1 → B1 (independent) → A2 (after A1) → C1 (after A2). A1/B1 pass pre-flight; A2 and C1 probes need A1/A2 on main.
 **Created**: 2026-11-05
 **Assignee**: Pilot
 **Origin**: GH-6109 / PR#6117 (execution `2c437730`, 11-05 17:17–20:50Z), the first REQUEST-CHANGES under `pre_pr_review.mode: enforce` on the founder box.
@@ -236,5 +236,7 @@ The hold itself (leg A2); the console UI card for needs_human (a pilot-console-u
 
 - A1 → (pending)
 - B1 → (pending)
+- A1 → https://github.com/qf-studio/pilot/issues/6130
+- B1 → https://github.com/qf-studio/pilot/issues/6131
 - A2 → (pending)
 - C1 → (pending)
