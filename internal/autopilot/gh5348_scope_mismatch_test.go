@@ -29,8 +29,10 @@ import (
 type scopeMismatchGHServer struct {
 	mu sync.Mutex
 
-	issues  map[int]*github.Issue    // GET /issues/{n}
-	prFiles map[int][]*github.PRFile // GET /pulls/{n}/files
+	issues   map[int]*github.Issue    // GET /issues/{n}
+	prFiles  map[int][]*github.PRFile // GET /pulls/{n}/files
+	prMerged map[int]bool             // GET /pulls/{n}: merged flag only; absent numbers get "{}"
+	prStatus map[int]int              // GET /pulls/{n}: forced HTTP status (e.g. 500); absent numbers are unaffected
 
 	addLabelCalls    []string // "issue:label"
 	removeLabelCalls []string // "issue:label"
@@ -39,8 +41,10 @@ type scopeMismatchGHServer struct {
 
 func newScopeMismatchGHServer() *scopeMismatchGHServer {
 	return &scopeMismatchGHServer{
-		issues:  map[int]*github.Issue{},
-		prFiles: map[int][]*github.PRFile{},
+		issues:   map[int]*github.Issue{},
+		prFiles:  map[int][]*github.PRFile{},
+		prMerged: map[int]bool{},
+		prStatus: map[int]int{},
 	}
 }
 
@@ -55,6 +59,21 @@ func (s *scopeMismatchGHServer) handler() http.HandlerFunc {
 			_, _ = fmt.Sscanf(r.URL.Path, "/repos/owner/repo/pulls/%d/files", &num)
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(s.prFiles[num])
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls/") && !strings.Contains(strings.TrimPrefix(r.URL.Path, "/repos/owner/repo/pulls/"), "/"):
+			var num int
+			_, _ = fmt.Sscanf(r.URL.Path, "/repos/owner/repo/pulls/%d", &num)
+			if code, ok := s.prStatus[num]; ok {
+				w.WriteHeader(code)
+				_, _ = w.Write([]byte("{}"))
+				return
+			}
+			if merged, ok := s.prMerged[num]; ok {
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]any{"number": num, "merged": merged})
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/issues/") && !strings.HasSuffix(r.URL.Path, "/labels"):
 			var num int
 			if _, err := fmt.Sscanf(r.URL.Path, "/repos/owner/repo/issues/%d", &num); err == nil {
