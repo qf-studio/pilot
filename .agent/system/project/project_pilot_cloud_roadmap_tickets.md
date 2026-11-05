@@ -43,7 +43,7 @@ Status: 📋 not filed · 🎫 filed (issue #) · 🚧 in flight · ✅ merged. 
 | U13 | 4 | feat(run-story): live log tail on Running — stage timeline + tool-call lines, no transcript | 8.5 | M | 📋 after C9 |
 | U14 | 3 | feat(onboarding): new-project interview (≤5 questions with defaults) on the Research page → `Create tickets` | 7 | M | 📋 after P4 |
 | U15 | 3 | feat(onboarding): legacy path — scan progress + "add up to 3 external docs" (URL / upload) | 7 | M | 📋 after P5, P6 |
-| U16 | 5 | feat(members): Viewer role invite with project scope; "Approved by …" on lane items | 9.1 | M | 📋 after C11 |
+| U16 | 5 | feat(members): Viewer role invite with project scope; "Approved by …" on lane items | 9.1 | M | ⏸ **PARKED 11-05 (founder: important — return after the first paying tenant; agency client login)**; after C11 |
 | U17 | 5 | feat(mobile): mobile layer on the new design (mobile v1 landed 08-15 as PR#84 — the re-land wording was stale); Playwright 390×844 check | 9.6 | L | 🚀 [TASK-637](../../tasks/TASK-637-mobile-on-the-new-design.md): M1 ui#345 → PR#350 · M2 ui#346 → PR#349 · M3 ui#347 → PR#352 · M4 ui#348 → PR#351 all merged 11-05, deployed 13:03Z; M5 ui#357 (review defects) re-armed |
 | U18 | 5 | feat(docs): edit + create `.agent/` docs from the Docs page, PR per change | 9.5 | M | 📋 |
 | U19 | 1 | feat(board): daily cap banner from the cards response `notice`; `daily_cap_reached` toast names the resume time | TASK-589 | S | ✅ ui#280 → PR#284 (10-26, run 3; runs 1–2 → pilot#5864) |
@@ -65,7 +65,7 @@ Alignment legs U20–U29 (11-04/05, TASK-583 § 2026-11-04 audit + founder desig
 | C8 | 1 | feat(billing): $300 ceiling config; Paddle products for packs 25/$99 and 100/$349 (90-day expiry); daily cap 15 notice | 4 (v3) | M | ✅ console#424 → PR#425, D1 → TASK-589 (10-22) |
 | C9 | 4 | feat(ws): `/ws/dashboard` proxy to the tenant gateway for the live log | 8.5 D3 | M | 📋 after P7, P8 |
 | C10 | 2 | chore(research): verify the daily research-turn cap (50) against the shipped chat-turn metering; adjust | 8.3 D4 | S | ✅ console#460 → PR#461 (11-02) |
-| C11 | 5 | feat(viewer): `viewer` role with `project_ids` scope enforced on every read | 9.1 | M | 📋 |
+| C11 | 5 | feat(viewer): `viewer` role with `project_ids` scope enforced on every read | 9.1 | M | ⏸ **PARKED 11-05 with U16 (founder: important, not a launch gate)** |
 | C12 | 4 | feat(db): Postgres RLS — `FORCE ROW LEVEL SECURITY` + `app.current_tenant_id` | 8.8 D3 | M | 📋 |
 | C13 | 3 | feat(onboarding): bootstrap trigger per project, cost cap from TASK-581, status + result surface | 7 | M | 📋 after P5 |
 | C14 | 1 | feat(fleet): daily ticket cap owned by the daemon — render cap + timezone into tenant config, standing → board notice, delete both console gates, pack draw at ledger ingest | TASK-589 (PR#425 D1) | M | ✅ console#449 → PR#451 merged 10-26, reviewed APPROVE-w-notes |
@@ -109,10 +109,12 @@ Alignment legs U20–U29 (11-04/05, TASK-583 § 2026-11-04 audit + founder desig
 | D1 | 1 | Dashboard `7-2`: apply §6 — no-cost rows, pool meter, "Review needed" card + button, `Last shipped`, Context growth | 6 | 📋 |
 | D2 | 1 | Research page `13-994`: `Create tickets` exit, duration-only rows, Context-per-run panel | 6 | 📋 |
 | D3 | 1 | Review needed page: list, 3 item types, 3 actions | 8.2 | 📋 |
-| D4 | 1 | Ticket page with the Run Story (4 states, `Retry`, share toggle) | 8.1 | 📋 |
+| D4 | 1 | Ticket page with the Run Story (4 states, `Retry`, share toggle) | 8.1 | 📋 **NEXT UI-UPDATE GAP (11-05)**: after B2 every drawn frame is live; the ticket page (`IssueView`, 52 v4 classes / 0 ds) and the Board drawer (`BoardCardDrawer`, 29 / 0) are the first old-design pages a new-design row lands on. Founder call: draw D4, or port by vocabulary extension. |
 | D5 | 1 | Briefs page + bell unread state | 8.7 | 📋 |
 | D6 | 3 | Onboarding: new-project interview + legacy scan + external docs step | 7 | 📋 |
 | D7 | 1 | Settings: brief channels, time/timezone, members with Viewer scope | 8.7, 9.1 | 📋 |
+
+**UI-update inventory (11-05, after TASK-639 B2):** the design file `BfAqtVPBp0i4iWHg2jzAnB` holds three frames — Home `7-2` ✅ live · Chat session `13-994` ✅ live · Kanban `7-482` → B2. Views still on the v4 vocabulary (old-class count / ds-token count on `main`): `ConnectionDetailView` 56/0 · `IssueView` 52/0 · `DocsView` 50/2 · `SettingsBillingView` 47/0 · `OnboardingView` 46/0 · `InstanceDetailView` 43/0 · `InstancesView` 40/2 · `ProfileView` 33/0 · `ConnectionsView` 31/2 · `BoardCardDrawer` 29/0 · `SettingsMembersView` 25/0 · `SettingsUsageView` 21/0 · `AcceptInviteView` 20/0 · auth pages 5–13/0. Order of visibility: ticket page + drawer (D4) → settings (D7) → instances/connections → docs → onboarding (D6) → auth.
 
 ## founder / ops — 4
 
