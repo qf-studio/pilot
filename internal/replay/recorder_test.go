@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -479,22 +480,90 @@ func TestDetectFileOp(t *testing.T) {
 	}
 }
 
+// failRecorder is a testing.TB stand-in that records Fatalf instead of
+// failing the real test, so mustNewRecorder's failure path can be asserted.
+type failRecorder struct {
+	testing.TB
+	msg string
+}
+
+type failRecorderStop struct{}
+
+func (f *failRecorder) Helper() {}
+
+func (f *failRecorder) Fatalf(format string, args ...any) {
+	f.msg = fmt.Sprintf(format, args...)
+	panic(failRecorderStop{})
+}
+
+// mustNewRecorder fails the test with a clear message when NewRecorder errors,
+// instead of letting the caller hit a nil Recorder.
+func mustNewRecorder(tb testing.TB, taskID, projectPath, basePath string) *Recorder {
+	tb.Helper()
+	r, err := NewRecorder(taskID, projectPath, basePath)
+	if err != nil {
+		tb.Fatalf("NewRecorder(%q) failed: %v", taskID, err)
+	}
+	return r
+}
+
+// wallClockNow returns the current time without a monotonic clock reading.
+// ListRecordings compares against StartTime decoded from JSON, which has none,
+// so a Since cutoff must be wall-clock only to compare like with like.
+func wallClockNow() time.Time {
+	return time.Now().Round(0)
+}
+
+// mutation pin: cutoff keeps its monotonic clock reading (wallClockNow without Round(0)) -> this test fails
+func TestWallClockNowStripsMonotonic(t *testing.T) {
+	now := wallClockNow()
+	if strings.Contains(now.String(), "m=") {
+		t.Errorf("cutoff must carry no monotonic reading, got %q", now.String())
+	}
+}
+
+// mutation pin: setup ignores NewRecorder errors (mustNewRecorder drops the err check) -> this test fails
+func TestMustNewRecorderFailsOnError(t *testing.T) {
+	// A regular file as basePath makes NewRecorder's MkdirAll fail.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
+	f := &failRecorder{}
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if _, ok := r.(failRecorderStop); !ok {
+					panic(r)
+				}
+			}
+		}()
+		mustNewRecorder(f, "TASK-X", "/project/x", blocker)
+	}()
+
+	if !strings.Contains(f.msg, "NewRecorder") {
+		t.Errorf("expected Fatalf to report the NewRecorder error, got %q", f.msg)
+	}
+}
+
 func TestListRecordingsWithFilters(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create recordings with different properties
-	recorder1, _ := NewRecorder("TASK-A", "/project/a", tmpDir)
+	recorder1 := mustNewRecorder(t, "TASK-A", "/project/a", tmpDir)
 	_ = recorder1.Finish("completed")
 	time.Sleep(20 * time.Millisecond)
 
-	recorder2, _ := NewRecorder("TASK-B", "/project/b", tmpDir)
+	recorder2 := mustNewRecorder(t, "TASK-B", "/project/b", tmpDir)
 	_ = recorder2.Finish("failed")
 	time.Sleep(20 * time.Millisecond)
 
 	// Captured before recorder3 exists so the Since filter is deterministic:
 	// recorder1/2 started before cutoff, recorder3 starts at or after it.
-	cutoff := time.Now()
-	recorder3, _ := NewRecorder("TASK-C", "/project/a", tmpDir)
+	// wallClockNow drops the monotonic reading the JSON-decoded StartTime lacks.
+	cutoff := wallClockNow()
+	recorder3 := mustNewRecorder(t, "TASK-C", "/project/a", tmpDir)
 	_ = recorder3.Finish("completed")
 
 	// Test filter by project path
