@@ -34,6 +34,9 @@ done < <(env)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# shellcheck source=scripts/pre-push-gate-summary.sh
+source "$SCRIPT_DIR/pre-push-gate-summary.sh"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -77,7 +80,10 @@ run_check() {
     else
         echo -e "${RED}✗${NC} (${duration}s)"
         echo ""
-        echo -e "${RED}$output${NC}" | head -20
+        echo -e "${RED}$(gate_failure_summary "$output")${NC}"
+        echo ""
+        echo "Full log:"
+        gate_write_failure_log "$name" "$output" || true
         echo ""
         return 1
     fi
