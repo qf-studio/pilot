@@ -3,6 +3,7 @@ package executor
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/text"
 )
@@ -54,6 +55,10 @@ func RenderPrePRReviewSection(out *PrePRReviewOutcome) string {
 	fix := PrePRFixNone
 	if out.Fix != nil && out.Fix.Status != "" {
 		fix = string(out.Fix.Status)
+	}
+	if out.Fix != nil && out.Fix.Status == ReviewFixRegateTimeout {
+		fix = fmt.Sprintf("re-gate timed out after %s (budget %s); fix reverted, not verified",
+			out.Fix.RegateElapsed.Round(time.Second), out.Fix.RegateBudget.Round(time.Second))
 	}
 	fmt.Fprintf(&sb, "Fix: %s\n", fix)
 

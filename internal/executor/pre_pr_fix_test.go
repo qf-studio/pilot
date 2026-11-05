@@ -1,9 +1,12 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/quality"
 )
 
 // reviewFixBackend is a fake backend for the fix round: it records every call's
@@ -508,20 +512,136 @@ func TestReviewFix_RegateFailureResetsToPreFixSHA(t *testing.T) {
 	}
 }
 
-func TestReviewFix_RegateRunsOnFreshFiveMinuteContext(t *testing.T) {
+// blockingRegateChecker blocks until its context is done, then reports the
+// gate the way the quality runner does when the parent context expires first.
+type blockingRegateChecker struct {
+	deadline time.Time
+	started  time.Time
+	hadDL    bool
+}
+
+func (c *blockingRegateChecker) Check(ctx context.Context) (*QualityOutcome, error) {
+	c.started = time.Now()
+	c.deadline, c.hadDL = ctx.Deadline()
+	<-ctx.Done()
+	return &QualityOutcome{
+		Passed:      false,
+		GateDetails: []QualityGateDetail{{Name: "test", Passed: false, Error: "context cancelled"}},
+	}, nil
+}
+
+func TestReviewFix_RegateTimeoutRevertsWithOwnStatus(t *testing.T) {
 	e := newReviewFixEnv(t)
 	e.backend.commit = true
+	e.runner.config.PrePRReview.RegateTimeout = 300 * time.Millisecond
+	checker := &blockingRegateChecker{}
+	e.runner.qualityCheckerFactory = func(string, string, string) QualityChecker { return checker }
+	var buf bytes.Buffer
+	e.runner.log = slog.New(slog.NewTextHandler(&buf, nil))
 
-	before := time.Now()
-	// 13m left: the task context would not outlive a 5m gate run started late.
-	e.run(ctxWithin(t, 13*time.Minute), false)
+	fix := e.run(ctxWithin(t, 30*time.Minute), false)
 
-	if !e.checker.hadDL {
-		t.Fatal("re-gate ran without a deadline")
+	if fix == nil || fix.Status != ReviewFixRegateTimeout {
+		t.Fatalf("outcome = %+v, want %s", fix, ReviewFixRegateTimeout)
 	}
-	got := e.checker.deadline.Sub(before)
-	if got > reviewFixRegateTimeout+30*time.Second || got < reviewFixRegateTimeout-30*time.Second {
-		t.Errorf("re-gate deadline in %s, want ~%s", got, reviewFixRegateTimeout)
+	if got := e.headSHA(t); got != e.head {
+		t.Errorf("HEAD = %s, want the pre-fix SHA %s", got, e.head)
+	}
+	if fix.Fixed != nil {
+		t.Errorf("Fixed = %q, want nil after a revert", fix.Fixed)
+	}
+	if fix.PostFixSHA == "" || fix.PostFixSHA == e.head {
+		t.Errorf("PostFixSHA = %q, want the reverted fix commit", fix.PostFixSHA)
+	}
+	if fix.RegateBudget != 300*time.Millisecond || fix.RegateElapsed < 250*time.Millisecond {
+		t.Errorf("regate budget/elapsed = %s/%s, want 300ms and ~300ms", fix.RegateBudget, fix.RegateElapsed)
+	}
+	if e.outcome.Verdict != PostMergeRequestChanges {
+		t.Errorf("verdict = %q, want REQUEST-CHANGES to stay", e.outcome.Verdict)
+	}
+	logs := buf.String()
+	for _, want := range []string{"Pre-PR review fix re-gate timed out, reverting", "regate_budget=300ms", "regate_elapsed=", "status=regate_timeout"} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("log lacks %q:\n%s", want, logs)
+		}
+	}
+}
+
+func TestReviewFix_RegateBudgetFromConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		cfg    time.Duration
+		want   time.Duration
+		within time.Duration
+	}{
+		{name: "configured 1s", cfg: time.Second, want: time.Second, within: 200 * time.Millisecond},
+		{name: "unset is 20m", cfg: 0, want: 20 * time.Minute, within: time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newReviewFixEnv(t)
+			e.backend.commit = true
+			e.runner.config.PrePRReview.RegateTimeout = tt.cfg
+			checker := &fakeRegateChecker{passed: true}
+			var started time.Time
+			e.runner.qualityCheckerFactory = func(string, string, string) QualityChecker {
+				started = time.Now()
+				return checker
+			}
+
+			// 13m left: the task context must not bound the re-gate.
+			e.run(ctxWithin(t, 13*time.Minute), false)
+
+			if !checker.hadDL {
+				t.Fatal("re-gate ran without a deadline")
+			}
+			got := checker.deadline.Sub(started)
+			if got > tt.want+tt.within || got < tt.want-tt.within {
+				t.Errorf("re-gate deadline in %s, want %s ± %s", got, tt.want, tt.within)
+			}
+		})
+	}
+}
+
+func TestReviewFix_RedTestStillReverted(t *testing.T) {
+	e := newReviewFixEnv(t)
+	e.backend.commit = true
+	e.checker = &fakeRegateChecker{passed: false}
+	e.runner.qualityCheckerFactory = func(string, string, string) QualityChecker { return e.checker }
+
+	fix := e.run(ctxWithin(t, 30*time.Minute), false)
+
+	if fix == nil || fix.Status != ReviewFixReverted {
+		t.Fatalf("outcome = %+v, want %s", fix, ReviewFixReverted)
+	}
+	if got := e.headSHA(t); got != e.head {
+		t.Errorf("HEAD = %s, want the pre-fix SHA %s", got, e.head)
+	}
+	if fix.RegateBudget != 20*time.Minute {
+		t.Errorf("RegateBudget = %s, want the 20m default", fix.RegateBudget)
+	}
+}
+
+func TestRegateTimedOut(t *testing.T) {
+	tests := []struct {
+		name string
+		gate *QualityOutcome
+		err  error
+		want bool
+	}{
+		{name: "red test", gate: &QualityOutcome{GateDetails: []QualityGateDetail{{Name: "test", Error: "exit status 1"}}}},
+		{name: "nil outcome"},
+		{name: "check wraps gate timeout", err: fmt.Errorf("run: %w", quality.ErrGateTimeout), want: true},
+		{name: "check errored otherwise", err: errors.New("runner crashed")},
+		{name: "gate wraps gate timeout", gate: &QualityOutcome{GateDetails: []QualityGateDetail{{Name: "test", Error: quality.ErrGateTimeout.Error() + ": after 10m0s"}}}, want: true},
+		{name: "gate cancelled", gate: &QualityOutcome{GateDetails: []QualityGateDetail{{Name: "lint", Passed: true}, {Name: "test", Error: "context cancelled"}}}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := regateTimedOut(tt.gate, tt.err); got != tt.want {
+				t.Errorf("regateTimedOut = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

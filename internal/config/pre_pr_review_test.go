@@ -86,3 +86,33 @@ func TestPrePRReviewConfig_DefaultsOff(t *testing.T) {
 		t.Errorf("default block must validate: %v", err)
 	}
 }
+
+func TestPrePRReviewConfig_RegateTimeoutValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		timeout   time.Duration
+		errSubstr string
+	}{
+		{name: "unset ok"},
+		{name: "20m ok", timeout: 20 * time.Minute},
+		{name: "1m ok", timeout: time.Minute},
+		{name: "30s rejected with the default in the message", timeout: 30 * time.Second, errSubstr: "default of 20m"},
+		{name: "negative rejected", timeout: -time.Minute, errSubstr: "pre_pr_review.regate_timeout"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Executor = &executor.BackendConfig{PrePRReview: &executor.PrePRReviewConfig{RegateTimeout: tt.timeout}}
+			err := cfg.Validate()
+			if tt.errSubstr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.errSubstr) {
+				t.Fatalf("err = %v, want substring %q", err, tt.errSubstr)
+			}
+		})
+	}
+}
