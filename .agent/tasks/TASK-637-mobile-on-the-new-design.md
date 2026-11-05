@@ -1,6 +1,6 @@
 # TASK-637: Mobile on the new design — port the mobile v1 layer (PR#84, 2026-08-15) to the 2026-10 Figma design, with a 390×844 Playwright check
 
-**Status**: 🚀 **11-05 13:30Z — M1–M4 ALL MERGED (PR#350 Playwright + CI job e2e-mobile with the mobile-390x844 artifact · PR#349 shell · PR#352 Home + fix PR#356 open · PR#351 Board + fix PR#355), deployed 13:03Z. Review against the 390×844 artifact: APPROVE-with-defects → M5 [ui#357](https://github.com/qf-studio/pilot-console-ui/issues/357) filed (two-line ListRow below md; Research composer not pinned on mobile; org name twice on Home; Board rows "GH GH-101" + lane chip on every row).** Was: 📋 PLANNED 2026-11-05 — founder "Go" on the four legs and "Approved" on the Playwright dev dependency (package.json change). Third tab renamed Chat → Research (Navigator call, matches the desktop page name). Dispatch: M1 and M2 first, M3 and M4 after M2.
+**Status**: 🟡 **holding (PR#361 review) — 11-05 15:30Z: M5 [ui#357](https://github.com/qf-studio/pilot-console-ui/issues/357) retry-1 opened [PR#361](https://github.com/qf-studio/pilot-console-ui/pull/361) 15:20Z after PR#359 lost its rebase. Pre-PR review (shadow) REQUEST-CHANGES, label `pilot-review-rc`; Navigator review agrees — see § M5 review. The PR's own evidence shows `make e2e` failing (home spec: the id-cell helper reads `[data-row-id]` with no wait → 0 rows), and the Research composer still sits behind the 56 px tab bar (chat-route `<main>` has no tab-bar padding below md; the e2e lower bound of 0 hides it). Was: 🚀 11-05 13:30Z — M1–M4 ALL MERGED (PR#350 Playwright + CI job e2e-mobile with the mobile-390x844 artifact · PR#349 shell · PR#352 Home + fix PR#356 open · PR#351 Board + fix PR#355), deployed 13:03Z. Review against the 390×844 artifact: APPROVE-with-defects → M5 [ui#357](https://github.com/qf-studio/pilot-console-ui/issues/357) filed (two-line ListRow below md; Research composer not pinned on mobile; org name twice on Home; Board rows "GH GH-101" + lane chip on every row).** Was: 📋 PLANNED 2026-11-05 — founder "Go" on the four legs and "Approved" on the Playwright dev dependency (package.json change). Third tab renamed Chat → Research (Navigator call, matches the desktop page name). Dispatch: M1 and M2 first, M3 and M4 after M2.
 **Created**: 2026-11-05
 **Assignee**: Navigator (plan) → Pilot (legs) · founder (visual check on a phone)
 **Parent**: [TASK-584](TASK-584-pilot-cloud-execution-roadmap.md) wave 5 row U17 · [TASK-583](TASK-583-wave1-design-update-proof-surface.md) (desktop legs U20–U29)
@@ -175,6 +175,34 @@ Desktop rows. The Approve sheet and the bell sheet (M4, PR#355). The Context col
 ## Refs
 - Navigator TASK-637 M5 (review of PR#349/#350/#351/#352 against the 390×844 artifact) · ui#345–#348 · ui#298 (U20)
 
+### LEG M6 — repo: qf-studio/pilot-console-ui — title: fix(mobile): the Research composer clears the fixed tab bar below md, and the mobile e2e proves the clearance on Home and Research
+
+## Context
+Review of PR#361 (M5, ui#357) against `origin/main`: below md the chat route hands `<main>` over with no bottom clearance — `src/layouts/AppShell.vue` returns `flex min-h-0 flex-1 flex-col overflow-hidden md:px-[26px] md:py-[22px]` for `isChatRoute`, while every other route gets `max-md:pb-[calc(var(--ds-tab-bar-height)+env(safe-area-inset-bottom))]`. `src/design-system/components/MobileTabBar.vue` is `fixed inset-x-0 bottom-0` and `--ds-tab-bar-height` is 56px (`src/design-system/theme.css`). So on Research the pinned composer (`[data-home-composer-slot]` in `src/design-system/components/HomeGridLayout.vue`) ends about 16 px above the viewport bottom, under the tab bar. Home only clears the bar because its route keeps the padded `<main>`. PR#361's e2e helper accepts any gap from 0 up, so the overlap passes.
+
+probe: present qf-studio/pilot-console-ui isChatRoute
+probe: present qf-studio/pilot-console-ui ds-tab-bar-height
+probe: present qf-studio/pilot-console-ui data-home-composer-slot
+
+## Scope
+- `src/layouts/AppShell.vue`: the chat route's `<main>` class gains the same `max-md:pb-[calc(var(--ds-tab-bar-height)+env(safe-area-inset-bottom))]` clearance the default routes have. Desktop classes unchanged. Update the GH-71 docblock sentence that says the chat route is unpadded.
+- `e2e/mobile/helpers.ts`: an `expectComposerAboveTabBar(page)` helper (add it if PR#361 has not merged, tighten it if it has) measures the `nav` that contains the Menu link and `[data-home-composer-slot]`; it asserts `viewportHeight - composerBottom >= tabBarHeight` and `<= tabBarHeight + 16`. The helper waits for `[data-home-composer-slot]` before it measures.
+- `e2e/mobile/research.spec.ts` and `e2e/mobile/home.spec.ts` each call the helper after `checkMobileTab`.
+- `src/layouts/__tests__/AppShell.spec.ts` (or the existing AppShell test file): at innerWidth 390 on the chat route, `<main>` carries the tab-bar clearance class.
+
+## Acceptance
+- [ ] `npm test` passes; paste the output into the PR body.
+- [ ] `make e2e` passes; paste the output into the PR body.
+- [ ] Remove the clearance class from the chat route again -> the research e2e assertion fails (gap below the tab bar height)
+- [ ] `npm run build` passes; paste the output into the PR body.
+- [ ] `npm run lint` passes; paste the output into the PR body.
+
+## Out of scope
+The ListRow two-line layout, the Home org name, the Board row id and chips (PR#361). The e2e id-cell wait (PR#361's CI fix round). The Docs route.
+
+## Refs
+- Navigator TASK-637 M6 (review of PR#361) · ui#357 · ui#71 (chat route unpadded) · ui#311
+
 ## Verify
 
 - Playwright artifact mobile-390x844 on the M3 and M4 PRs: Home shows four stat cards, the chart, the queue and the composer above the tab bar with no "$"; Board shows pills and chip rows; Research shows the composer and no Context column; Menu lists Review and Docs.
@@ -187,3 +215,17 @@ Desktop rows. The Approve sheet and the bell sheet (M4, PR#355). The Context col
 - M3 → https://github.com/qf-studio/pilot-console-ui/issues/347
 - M4 → https://github.com/qf-studio/pilot-console-ui/issues/348
 - M5 → https://github.com/qf-studio/pilot-console-ui/issues/357
+- M6 → https://github.com/qf-studio/pilot-console-ui/issues/362
+
+## M5 review (PR#361, 11-05 15:30Z) — REQUEST-CHANGES
+
+Verified against `origin/pilot/GH-357` @ 66d1740 and `origin/main` (`src/layouts/AppShell.vue`, `MobileTabBar.vue`, `theme.css`).
+
+- [blocking] Acceptance "`make e2e` passes" is not met: the pasted run fails `home.spec.ts` — `expectIdCellsOneLine` (`e2e/mobile/helpers.ts:27`) calls `evaluateAll` with no wait, the queue rows load async, so it sees 0 rows. The CI job `e2e-mobile` will fail the same way. Fix: `await page.locator('[data-row-id]').first().waitFor()` before measuring.
+- [blocking] Defect 2 half-fixed: the layout now fills the height, but on the chat route `<main>` has no `max-md:pb-[calc(var(--ds-tab-bar-height)+env(safe-area-inset-bottom))]` (`AppShell.vue:48`, by design for the old full-bleed chat), and `ChatView.vue:180` adds only `max-md:p-4`, so the composer bottom is 16 px above the viewport bottom, under the fixed 56 px `MobileTabBar`. Home only works because its route keeps the padded `<main>`. Fix: give the chat route the same bottom clearance below md (AppShell), or pad the Research layout bottom by the tab-bar height.
+- [blocking] `expectComposerAboveTabBar` lower bound is `>= 0`; it must be `>= tabBarHeight` (upper `<= tabBarHeight + 16`). With the right bound research.spec fails today, which is the signal the issue asked for.
+- [minor] `BoardView.vue:97` stale docblock ("Mobile row chip per lane status (GH-348)…") above `mobileCardId`.
+- [minor] `DashboardView.vue` adds a second JS breakpoint (`isDesktop` + resize listener) next to `AppShell`'s; a `max-md:hidden` on `[data-header-org]` would do, unless the test-file hiding guard is the reason.
+- [minor] `ListRow.vue` mobile line 2 renders the meta span with `ml-3` even when the slot is empty (issue: "when present").
+
+Pipeline: shadow mode means no fix round ran (`Fix: none`); autopilot holds on `pilot-review-rc` (TASK-620 L5). Review posted 15:26Z as a COMMENT review (GitHub refuses request-changes on an own-account PR — same as PR#5990). CI `e2e-mobile` will go red on item 1 → autopilot fix path; items 2–3 need an explicit fix issue if the CI fix does not cover them. Items 2–3 → **M6 [ui#362](https://github.com/qf-studio/pilot-console-ui/issues/362)** (filed 15:3xZ, `pilot` + `no-decompose`, pre-check total 0; independent of PR#361, runs from main). Then a fresh `mobile-390x844` artifact → re-review.
