@@ -1,0 +1,21 @@
+package executor
+
+import (
+	"os/exec"
+	"syscall"
+
+	"github.com/qf-studio/pilot/internal/procgroup"
+)
+
+// configureProcessGroup puts cmd in its own process group with the default
+// WaitDelay (GH-4503). Implementation lives in internal/procgroup, shared
+// with the quality gate runner (GH-6081).
+func configureProcessGroup(cmd *exec.Cmd) {
+	procgroup.Configure(cmd)
+}
+
+// killProcessGroup signals cmd's whole process group, falling back to the
+// tracked PID (GH-4503). See procgroup.Kill.
+func killProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
+	return procgroup.Kill(cmd, sig)
+}

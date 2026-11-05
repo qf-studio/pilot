@@ -14,10 +14,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/procgroup"
 )
+
+// gateWaitDelay bounds how long executeCommand waits on the stdout/stderr
+// pipes after the gate's process group has been killed. A descendant that
+// left the group (setsid) can still hold a pipe open; once this elapses the
+// gate counts as timed out instead of holding the worker (GH-6081). A var so
+// tests can shorten it.
+var gateWaitDelay = 10 * time.Second
 
 // ProgressCallback reports gate execution progress
 type ProgressCallback func(gateName string, status GateStatus, message string)
@@ -537,6 +546,13 @@ func (r *Runner) executeCommand(ctx context.Context, gate *Gate, command string,
 	cmd.Dir = r.projectDir
 	// Later entries win over inherited duplicates (os/exec dedups keeping the last).
 	cmd.Env = append(os.Environ(), scope.env()...)
+	// Kill the gate's whole process group on timeout, not just sh: npm test →
+	// node workers (or `sleep 600 &`) otherwise keep the pipes open and
+	// cmd.Run blocks until they exit (GH-6081).
+	procgroup.Configure(cmd, gateWaitDelay)
+	cmd.Cancel = func() error {
+		return procgroup.Kill(cmd, syscall.SIGKILL)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -550,8 +566,9 @@ func (r *Runner) executeCommand(ctx context.Context, gate *Gate, command string,
 		output += "\n" + stderr.String()
 	}
 
-	// Check for timeout
-	if cmdCtx.Err() == context.DeadlineExceeded {
+	// Check for timeout. ErrWaitDelay means a descendant outside the group
+	// still held the pipes after the kill; output captured so far is returned.
+	if cmdCtx.Err() == context.DeadlineExceeded || errors.Is(err, exec.ErrWaitDelay) {
 		return -1, output, ErrGateTimeout
 	}
 
