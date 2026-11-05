@@ -1543,6 +1543,13 @@ type PRState struct {
 	// current PostMergeSHA, the effective retry budget is treated as 0.
 	// Persisted.
 	PostMergeInfraRerunSHA string
+	// PostMergeCodeRerunCount (GH-6125) is how many times handlePostMergeCI
+	// has re-run the failed jobs of a code-class post-merge failure before
+	// filing a fix issue; the budget is one re-run per PostMergeSHA. Persisted.
+	PostMergeCodeRerunCount int
+	// PostMergeCodeRerunSHA is the PostMergeSHA PostMergeCodeRerunCount applies
+	// to; a different PostMergeSHA resets the effective count to 0. Persisted.
+	PostMergeCodeRerunSHA string
 	// ReleaseBackfillAbandoned is true once reconcileReleaseBackfill
 	// (GH-4919) has classified this row's API failures as permanent — it
 	// crossed both the consecutive-failure and minimum-wall-clock-window
@@ -1658,6 +1665,8 @@ func (ps *PRState) snapshot() *PRState {
 		GreenRedriveSHA:              ps.GreenRedriveSHA,
 		PostMergeInfraRerunCount:     ps.PostMergeInfraRerunCount,
 		PostMergeInfraRerunSHA:       ps.PostMergeInfraRerunSHA,
+		PostMergeCodeRerunCount:      ps.PostMergeCodeRerunCount,
+		PostMergeCodeRerunSHA:        ps.PostMergeCodeRerunSHA,
 		ReleaseBackfillAbandoned:     ps.ReleaseBackfillAbandoned,
 		SelfClosedFixIssue:           ps.SelfClosedFixIssue,
 		RegisteredViaFixIssue:        ps.RegisteredViaFixIssue,

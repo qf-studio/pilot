@@ -1220,3 +1220,38 @@ func TestStateStore_MigrateLegacyProcessedTables(t *testing.T) {
 		}
 	}
 }
+
+// TestStateStore_PostMergeCodeRerun_SurviveRestart pins GH-6125: the one-shot
+// code-class re-run budget is persisted so a restart between the re-run and
+// the next CI verdict cannot grant a second re-run on the same SHA.
+func TestStateStore_PostMergeCodeRerun_SurviveRestart(t *testing.T) {
+	store := newTestStateStore(t)
+
+	pr := &PRState{
+		PRNumber:                57,
+		Stage:                   StagePostMergeCI,
+		PostMergeSHA:            "sha57",
+		PostMergeCodeRerunCount: 1,
+		PostMergeCodeRerunSHA:   "sha57",
+		CreatedAt:               time.Now().Truncate(time.Second),
+	}
+	if err := store.SavePRState("owner/repo", pr); err != nil {
+		t.Fatalf("SavePRState failed: %v", err)
+	}
+
+	loaded, err := store.GetPRState("owner/repo", 57)
+	if err != nil || loaded == nil {
+		t.Fatalf("GetPRState = %v, %v", loaded, err)
+	}
+	if loaded.PostMergeCodeRerunCount != 1 || loaded.PostMergeCodeRerunSHA != "sha57" {
+		t.Errorf("GetPRState: got %d/%q, want 1/sha57", loaded.PostMergeCodeRerunCount, loaded.PostMergeCodeRerunSHA)
+	}
+
+	all, err := store.LoadAllPRStates("owner/repo")
+	if err != nil || len(all) != 1 {
+		t.Fatalf("LoadAllPRStates = %d states, %v", len(all), err)
+	}
+	if all[0].PostMergeCodeRerunCount != 1 || all[0].PostMergeCodeRerunSHA != "sha57" {
+		t.Errorf("LoadAllPRStates: got %d/%q, want 1/sha57", all[0].PostMergeCodeRerunCount, all[0].PostMergeCodeRerunSHA)
+	}
+}

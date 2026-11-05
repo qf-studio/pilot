@@ -12511,3 +12511,176 @@ internal/fleet/wire.go:42:6: wire contract drift: field TenantID missing from fl
 		t.Errorf("CIRuns[unknown_evidence] = %d, want 0", got)
 	}
 }
+
+// TestHandlePostMergeCI_UsesMergeCommitNotMainHead pins GH-6125: the first
+// post-merge tick of a PR whose merge was followed by a later merge must watch
+// the PR's own merge commit, not the current head of main. The main-head read
+// remains only as a WARN-logged fallback when the merge commit is unavailable.
+func TestHandlePostMergeCI_UsesMergeCommitNotMainHead(t *testing.T) {
+	tests := []struct {
+		name       string
+		prNumber   int
+		pullStatus int
+		pullSHA    string
+		wantSHA    string
+		wantLog    string
+		wantNotLog string
+	}{
+		{
+			name: "merge commit wins over main head", prNumber: 70,
+			pullStatus: http.StatusOK, pullSHA: "mergecommit70", wantSHA: "mergecommit70",
+			wantLog: "post_merge_sha_source=merge_commit", wantNotLog: "post_merge_sha_source=main_head",
+		},
+		{
+			name: "pull fetch fails falls back to main head", prNumber: 71,
+			pullStatus: http.StatusInternalServerError, wantSHA: "laterhead",
+			wantLog: "post_merge_sha_source=main_head",
+		},
+		{
+			name: "empty merge commit falls back to main head", prNumber: 72,
+			pullStatus: http.StatusOK, pullSHA: "", wantSHA: "laterhead",
+			wantLog: "post_merge_sha_source=main_head",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/repos/owner/repo/branches/main":
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write(mustJSON(t, map[string]interface{}{"commit": map[string]string{"sha": "laterhead"}}))
+				case r.URL.Path == fmt.Sprintf("/repos/owner/repo/pulls/%d", tt.prNumber):
+					w.WriteHeader(tt.pullStatus)
+					if tt.pullStatus == http.StatusOK {
+						_, _ = w.Write(mustJSON(t, github.PullRequest{Number: tt.prNumber, Merged: true, MergeCommitSHA: tt.pullSHA}))
+					}
+				default:
+					// Check-runs and everything else: pending, so the tick only resolves the SHA.
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"total_count":0,"check_runs":[]}`))
+				}
+			}))
+			defer server.Close()
+
+			var logBuf bytes.Buffer
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			cfg.Environment = EnvDev
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+			c.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+			prState := &PRState{PRNumber: tt.prNumber, HeadSHA: "prhead", Stage: StagePostMergeCI}
+			if err := c.handlePostMergeCI(context.Background(), prState); err != nil {
+				t.Fatalf("handlePostMergeCI returned unexpected error: %v", err)
+			}
+			if prState.PostMergeSHA != tt.wantSHA {
+				t.Errorf("PostMergeSHA = %q, want %q", prState.PostMergeSHA, tt.wantSHA)
+			}
+			if !strings.Contains(logBuf.String(), tt.wantLog) {
+				t.Errorf("log missing %q:\n%s", tt.wantLog, logBuf.String())
+			}
+			if tt.wantNotLog != "" && strings.Contains(logBuf.String(), tt.wantNotLog) {
+				t.Errorf("log unexpectedly contains %q:\n%s", tt.wantNotLog, logBuf.String())
+			}
+			if strings.Contains(tt.wantLog, "main_head") && !strings.Contains(logBuf.String(), "level=WARN") {
+				t.Errorf("main_head fallback must log at WARN:\n%s", logBuf.String())
+			}
+		})
+	}
+}
+
+// TestHandlePostMergeCI_CodeClassRerunsOnceBeforeFixIssue pins GH-6125: a
+// code-class post-merge red re-runs the failed jobs once per PostMergeSHA and
+// files the fix issue only when the run is red again on the same SHA.
+func TestHandlePostMergeCI_CodeClassRerunsOnceBeforeFixIssue(t *testing.T) {
+	const codeLog = "--- FAIL: TestSomething (0.00s)\n    foo_test.go:12: got 1, want 2\nFAIL\nFAIL\texample.com/pkg\t0.01s\n"
+
+	var reruns, issues int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/check-runs"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns:  []github.CheckRun{{ID: 100, Name: "test", Status: "completed", Conclusion: "failure"}},
+			}))
+		case r.URL.Path == "/repos/owner/repo/actions/jobs/100/logs":
+			_, _ = w.Write([]byte(codeLog))
+		case r.URL.Path == "/repos/owner/repo/actions/jobs/100":
+			_ = json.NewEncoder(w).Encode(ghadapter.WorkflowJob{
+				ID: 100, RunID: 500, Name: "test", Status: "completed",
+				Steps: []ghadapter.JobStep{
+					{Name: "Set up job", Status: "completed", Conclusion: "success", Number: 1},
+					{Name: "Run tests", Status: "completed", Conclusion: "failure", Number: 2},
+				},
+			})
+		case r.URL.Path == "/repos/owner/repo/actions/runs/500/rerun-failed-jobs" && r.Method == http.MethodPost:
+			reruns++
+			w.WriteHeader(http.StatusCreated)
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+			issues++
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write(mustJSON(t, github.Issue{Number: 900 + issues}))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+
+	prState := &PRState{
+		PRNumber: 80, Stage: StagePostMergeCI,
+		PostMergeSHA: "sha-a", PostMergeCIStartedAt: time.Now(),
+	}
+	c.mu.Lock()
+	c.activePRs[80] = prState
+	c.mu.Unlock()
+	ctx := context.Background()
+
+	// First red: one re-run, no issue, stage unchanged.
+	if err := c.handlePostMergeCI(ctx, prState); err != nil {
+		t.Fatalf("tick 1: %v", err)
+	}
+	if reruns != 1 || issues != 0 {
+		t.Fatalf("tick 1: reruns=%d issues=%d, want 1/0", reruns, issues)
+	}
+	if prState.Stage != StagePostMergeCI {
+		t.Errorf("tick 1: stage = %s, want %s", prState.Stage, StagePostMergeCI)
+	}
+	if prState.PostMergeCodeRerunCount != 1 || prState.PostMergeCodeRerunSHA != "sha-a" {
+		t.Errorf("tick 1: rerun state = %d/%q, want 1/sha-a", prState.PostMergeCodeRerunCount, prState.PostMergeCodeRerunSHA)
+	}
+	if got := c.metrics.Snapshot().CIRuns["code_retry"]; got != 1 {
+		t.Errorf("CIRuns[code_retry] = %d, want 1", got)
+	}
+
+	// Red again on the same SHA: the fix issue is filed, no second re-run.
+	if err := c.handlePostMergeCI(ctx, prState); err != nil {
+		t.Fatalf("tick 2: %v", err)
+	}
+	if reruns != 1 || issues != 1 {
+		t.Fatalf("tick 2: reruns=%d issues=%d, want 1/1", reruns, issues)
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("tick 2: stage = %s, want %s", prState.Stage, StageFailed)
+	}
+
+	// A new SHA resets the count: it gets its own one re-run.
+	prState.Stage = StagePostMergeCI
+	prState.PostMergeSHA = "sha-b"
+	if err := c.handlePostMergeCI(ctx, prState); err != nil {
+		t.Fatalf("tick 3: %v", err)
+	}
+	if reruns != 2 || issues != 1 {
+		t.Fatalf("tick 3: reruns=%d issues=%d, want 2/1", reruns, issues)
+	}
+	if prState.PostMergeCodeRerunCount != 1 || prState.PostMergeCodeRerunSHA != "sha-b" {
+		t.Errorf("tick 3: rerun state = %d/%q, want 1/sha-b", prState.PostMergeCodeRerunCount, prState.PostMergeCodeRerunSHA)
+	}
+}

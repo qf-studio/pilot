@@ -207,6 +207,10 @@ func (s *StateStore) migrate() error {
 		// grant a fresh 2-retry budget on the same SHA.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN post_merge_infra_rerun_count INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE autopilot_pr_state ADD COLUMN post_merge_infra_rerun_sha TEXT NOT NULL DEFAULT ''`,
+		// GH-6125: persist the one-shot post-merge code-class re-run, scoped to
+		// the post-merge SHA like the infra pair above.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN post_merge_code_rerun_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE autopilot_pr_state ADD COLUMN post_merge_code_rerun_sha TEXT NOT NULL DEFAULT ''`,
 		// GH-4919: permanent-failure classification for reconcileReleaseBackfill.
 		// A row whose API lookups keep erroring (deleted repo, unresolved
 		// platform incident) is marked abandoned once it crosses both a
@@ -543,6 +547,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			breaker_readopt_count INTEGER NOT NULL DEFAULT 0,
 			post_merge_infra_rerun_count INTEGER NOT NULL DEFAULT 0,
 			post_merge_infra_rerun_sha TEXT NOT NULL DEFAULT '',
+			post_merge_code_rerun_count INTEGER NOT NULL DEFAULT 0,
+			post_merge_code_rerun_sha TEXT NOT NULL DEFAULT '',
 			release_backfill_abandoned INTEGER NOT NULL DEFAULT 0,
 			jira_done_notified INTEGER NOT NULL DEFAULT 0,
 			self_closed_fix_issue INTEGER NOT NULL DEFAULT 0,
@@ -574,6 +580,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
+			post_merge_code_rerun_count, post_merge_code_rerun_sha,
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
@@ -591,6 +598,7 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
+			post_merge_code_rerun_count, post_merge_code_rerun_sha,
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
@@ -743,12 +751,13 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
+			post_merge_code_rerun_count, post_merge_code_rerun_sha,
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
 			linear_done_notified, post_merge_review_posted,
 			api_outage_hold_active, api_outage_since, api_outage_next_poll
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -783,6 +792,8 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			breaker_readopt_count = excluded.breaker_readopt_count,
 			post_merge_infra_rerun_count = excluded.post_merge_infra_rerun_count,
 			post_merge_infra_rerun_sha = excluded.post_merge_infra_rerun_sha,
+			post_merge_code_rerun_count = excluded.post_merge_code_rerun_count,
+			post_merge_code_rerun_sha = excluded.post_merge_code_rerun_sha,
 			release_backfill_abandoned = excluded.release_backfill_abandoned,
 			jira_done_notified = excluded.jira_done_notified,
 			self_closed_fix_issue = excluded.self_closed_fix_issue,
@@ -809,6 +820,7 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 		pr.Parked, pr.EscalationReason, pr.RebaseHoldActive, pr.ReadoptCount,
 		pr.BreakerHoldActive, pr.BreakerReadoptCount,
 		pr.PostMergeInfraRerunCount, pr.PostMergeInfraRerunSHA,
+		pr.PostMergeCodeRerunCount, pr.PostMergeCodeRerunSHA,
 		pr.ReleaseBackfillAbandoned, pr.JiraDoneNotified, pr.SelfClosedFixIssue,
 		pr.SizeGuardHoldActive, pr.SizeGuardHoldHeadSHA,
 		pr.HoldActive, pr.HoldHeadSHA, pr.HoldLabels, pr.HoldRedriveCount,
@@ -832,6 +844,7 @@ func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
+			post_merge_code_rerun_count, post_merge_code_rerun_sha,
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
@@ -864,6 +877,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			parked, escalation_reason, rebase_hold_active, readopt_count,
 			breaker_hold_active, breaker_readopt_count,
 			post_merge_infra_rerun_count, post_merge_infra_rerun_sha,
+			post_merge_code_rerun_count, post_merge_code_rerun_sha,
 			release_backfill_abandoned, jira_done_notified, self_closed_fix_issue,
 			size_guard_hold_active, size_guard_hold_head_sha,
 			hold_active, hold_head_sha, hold_labels, hold_redrive_count,
@@ -894,6 +908,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			&pr.Parked, &pr.EscalationReason, &pr.RebaseHoldActive, &pr.ReadoptCount,
 			&pr.BreakerHoldActive, &pr.BreakerReadoptCount,
 			&pr.PostMergeInfraRerunCount, &pr.PostMergeInfraRerunSHA,
+			&pr.PostMergeCodeRerunCount, &pr.PostMergeCodeRerunSHA,
 			&pr.ReleaseBackfillAbandoned, &pr.JiraDoneNotified, &pr.SelfClosedFixIssue,
 			&pr.SizeGuardHoldActive, &pr.SizeGuardHoldHeadSHA,
 			&pr.HoldActive, &pr.HoldHeadSHA, &pr.HoldLabels, &pr.HoldRedriveCount,
@@ -1164,6 +1179,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.Parked, &pr.EscalationReason, &pr.RebaseHoldActive, &pr.ReadoptCount,
 		&pr.BreakerHoldActive, &pr.BreakerReadoptCount,
 		&pr.PostMergeInfraRerunCount, &pr.PostMergeInfraRerunSHA,
+		&pr.PostMergeCodeRerunCount, &pr.PostMergeCodeRerunSHA,
 		&pr.ReleaseBackfillAbandoned, &pr.JiraDoneNotified, &pr.SelfClosedFixIssue,
 		&pr.SizeGuardHoldActive, &pr.SizeGuardHoldHeadSHA,
 		&pr.HoldActive, &pr.HoldHeadSHA, &pr.HoldLabels, &pr.HoldRedriveCount,

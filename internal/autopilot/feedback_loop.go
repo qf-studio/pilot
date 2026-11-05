@@ -396,12 +396,27 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 	// with this exact title and the pilot label(s); if one already exists,
 	// suppress creation and backfill the store claim so future ticks don't
 	// repeat this search.
-	if existingNum, found, searchErr := f.findExistingFixIssue(ctx, title); searchErr != nil {
+	//
+	// GH-6125: a post-merge failure additionally matches by the failing
+	// workflow run — two PRs merged seconds apart share one red run, and their
+	// titles (which carry the PR number) never collide.
+	var runIDs []string
+	if failureType == FailureCIPostMerge {
+		runIDs = extractWorkflowRunIDs(logs)
+	}
+	if existingNum, byRun, found, searchErr := f.findExistingFixIssueMatch(ctx, title, runIDs); searchErr != nil {
 		f.log.Warn("existing fix-issue search failed, proceeding with creation",
 			"pr", prState.PRNumber, "failure", failureType, "error", searchErr)
 	} else if found {
 		f.log.Info("existing fix issue found via GitHub search, suppressing duplicate creation",
 			"issue", existingNum, "pr", prState.PRNumber, "failure", failureType)
+		if byRun != "" {
+			comment := fmt.Sprintf("also attributed to PR #%d, run %s", prState.PRNumber, byRun)
+			if _, cErr := f.ghClient.AddComment(ctx, f.owner, f.repo, existingNum, comment); cErr != nil {
+				f.log.Warn("failed to comment run attribution on existing fix issue",
+					"issue", existingNum, "pr", prState.PRNumber, "run", byRun, "error", cErr)
+			}
+		}
 		if dedupKey != "" {
 			if recErr := f.stateStore.RecordSpawnedFixIssue(dedupRepo, dedupKey, existingNum); recErr != nil {
 				f.log.Warn("failed to backfill spawned fix issue number from GitHub search",
@@ -668,25 +683,75 @@ func (f *FeedbackLoop) CreatePostMergeMinorsIssue(ctx context.Context, prNumber 
 	return issue.Number, nil
 }
 
+// workflowRunIDRe captures the run id of an "actions/runs/<id>" path in a
+// check-run permalink (GH-6125).
+var workflowRunIDRe = regexp.MustCompile(`actions/runs/(\d+)`)
+
+// extractWorkflowRunIDs returns the distinct workflow run ids named by the
+// "Full log: <url>" permalinks in logs, in first-seen order.
+func extractWorkflowRunIDs(logs string) []string {
+	var ids []string
+	for _, m := range workflowRunIDRe.FindAllStringSubmatch(logs, -1) {
+		if !slices.Contains(ids, m[1]) {
+			ids = append(ids, m[1])
+		}
+	}
+	return ids
+}
+
 // findExistingFixIssue searches open issues carrying every configured pilot
-// label for an exact title match. It's the GitHub-side complement to the
-// SQLite dedup claim in CreateFailureIssue: a store row can be lost (fresh
-// clone, restored backup, wiped DB) while the issue it was tracking is still
-// open on GitHub.
-func (f *FeedbackLoop) findExistingFixIssue(ctx context.Context, title string) (int, bool, error) {
+// label for an exact title match, or (GH-6125) for a body naming the same
+// "actions/runs/<id>" path as any of runIDs. It's the GitHub-side complement
+// to the SQLite dedup claim in CreateFailureIssue: a store row can be lost
+// (fresh clone, restored backup, wiped DB) while the issue it was tracking is
+// still open on GitHub.
+func (f *FeedbackLoop) findExistingFixIssue(ctx context.Context, title string, runIDs ...string) (int, bool, error) {
+	num, _, found, err := f.findExistingFixIssueMatch(ctx, title, runIDs)
+	return num, found, err
+}
+
+// findExistingFixIssueMatch is findExistingFixIssue that also reports the run
+// id that matched when the hit came from the run-permalink match rather than
+// the title (byRun == "" on a title match). A title match wins over a run
+// match anywhere in the list.
+func (f *FeedbackLoop) findExistingFixIssueMatch(ctx context.Context, title string, runIDs []string) (num int, byRun string, found bool, err error) {
 	issues, err := f.ghClient.ListIssues(ctx, f.owner, f.repo, &github.ListIssuesOptions{
 		Labels: f.issueLabels,
 		State:  github.StateOpen,
 	})
 	if err != nil {
-		return 0, false, err
+		return 0, "", false, err
 	}
 	for _, issue := range issues {
 		if issue.Title == title {
-			return issue.Number, true, nil
+			return issue.Number, "", true, nil
 		}
 	}
-	return 0, false, nil
+	for _, issue := range issues {
+		for _, id := range runIDs {
+			if bodyNamesWorkflowRun(issue.Body, id) {
+				return issue.Number, id, true, nil
+			}
+		}
+	}
+	return 0, "", false, nil
+}
+
+// bodyNamesWorkflowRun reports whether body contains the path
+// "actions/runs/<id>" with a non-digit (or end of text) after the id, so run
+// 123 never matches run 1234.
+func bodyNamesWorkflowRun(body, id string) bool {
+	needle := "actions/runs/" + id
+	for rest := body; ; {
+		i := strings.Index(rest, needle)
+		if i < 0 {
+			return false
+		}
+		rest = rest[i+len(needle):]
+		if rest == "" || rest[0] < '0' || rest[0] > '9' {
+			return true
+		}
+	}
 }
 
 // generateTitle creates an issue title based on the failure type.
