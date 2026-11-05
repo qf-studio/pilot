@@ -200,6 +200,28 @@ else
 fi
 echo ""
 
+# 7. Check the pre-push gate's failure output (GH-6093)
+echo "Checking pre-push gate failure output..."
+
+GATE_OUTPUT_TEST="$SCRIPT_DIR/test-prepush-gate-output.sh"
+if [ -x "$GATE_OUTPUT_TEST" ]; then
+    GATE_OUTPUT_LOG="$(mktemp)"
+    if "$GATE_OUTPUT_TEST" > "$GATE_OUTPUT_LOG" 2>&1; then
+        echo -e "  ${GREEN}✓${NC} pre-push-gate.sh failure output cases pass"
+    else
+        echo -e "  ${RED}✗${NC} pre-push-gate.sh failure output test failed:"
+        tail -20 "$GATE_OUTPUT_LOG" | while read -r line; do
+            echo "      $line"
+        done
+        ERRORS=$((ERRORS + 1))
+    fi
+    rm -f "$GATE_OUTPUT_LOG"
+else
+    echo -e "  ${YELLOW}⚠${NC} $GATE_OUTPUT_TEST not found or not executable, skipping"
+    WARNINGS=$((WARNINGS + 1))
+fi
+echo ""
+
 # Summary
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
