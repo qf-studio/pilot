@@ -104,7 +104,14 @@ func TestPostMergeMinorsIssue_Template(t *testing.T) {
 	if pathLine.MatchString(in.Body) {
 		t.Errorf("a backticked span carries path:line: %q", pathLine.FindString(in.Body))
 	}
-	spans := regexp.MustCompile("`([^`]*)`").FindAllStringSubmatch(in.Body, -1)
+	var spans [][]string
+	for _, s := range regexp.MustCompile("`([^`]*)`").FindAllStringSubmatch(in.Body, -1) {
+		// The pin instruction names the test-file comment form; it is not a command.
+		if strings.Contains(s[1], "mutation pin:") {
+			continue
+		}
+		spans = append(spans, s)
+	}
 	if len(spans) > 4 {
 		t.Errorf("command bullets = %d, want at most 4", len(spans))
 	}
@@ -150,7 +157,7 @@ func TestPostMergeMinorsIssue_Template_NoDroppedAndSmall(t *testing.T) {
 	for _, want := range []string{
 		"1. internal/quality/runner.go line 356 — stale headline. Evidence: caller hop.",
 		"- `go test -race ./internal/quality/` passes; paste the output into the PR body.",
-		"mutation pin (revert the item -> the test fails).",
+		"`// mutation pin: <item summary> -> this test fails` directly above each test.",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body lacks %q:\n%s", want, body)

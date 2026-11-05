@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/testutil"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
@@ -1861,5 +1862,34 @@ func TestFeedbackLoop_IssueBody_PostMergeFooterEmittedWithoutBranch(t *testing.T
 
 	if !strings.Contains(body, "<!-- autopilot-meta iteration:1 -->") {
 		t.Errorf("post-merge body without BranchName should still carry an iteration footer, got:\n%s", body)
+	}
+}
+
+func TestBuildPostMergeMinorsIssue_PinInTestFile(t *testing.T) {
+	mock, f := newMinorsFeedbackLoop(t)
+	review := &executor.PostMergeReview{Defects: []executor.PostMergeDefect{
+		minorDefect("internal/a/b.go:1", "stale headline", "caller"),
+		minorDefect("PR — body", "the body names no pin", "ev"),
+	}}
+	kept, dropped := filedMinorDefects(review)
+
+	if _, err := f.CreatePostMergeMinorsIssue(context.Background(), 6072, "https://github.com/owner/repo/pull/6072", 6069, kept, dropped); err != nil {
+		t.Fatalf("CreatePostMergeMinorsIssue: %v", err)
+	}
+	if len(mock.issues) != 1 {
+		t.Fatalf("issues created = %d, want 1", len(mock.issues))
+	}
+	body := mock.issues[0].Body
+	if strings.Contains(body, "in the PR body") {
+		t.Errorf("body asks for the pin in the PR body, which the runner writes:\n%s", body)
+	}
+	if !strings.Contains(body, "mutation pin:") {
+		t.Errorf("body lacks the mutation pin: comment instruction:\n%s", body)
+	}
+	if len(kept) != 1 || kept[0].Location != "internal/a/b.go:1" {
+		t.Errorf("kept = %+v, want only the file defect", kept)
+	}
+	if strings.Contains(body, "2. ") || strings.Contains(body, "1. PR") {
+		t.Errorf("a body-located defect is an item:\n%s", body)
 	}
 }

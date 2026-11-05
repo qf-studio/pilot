@@ -852,3 +852,69 @@ func TestPostMergeReviewer_ResolverFailureAlerts(t *testing.T) {
 		t.Errorf("subscription review raised %d alerts", len(got))
 	}
 }
+
+func TestIsPRBodyLocation(t *testing.T) {
+	tests := []struct {
+		location string
+		want     bool
+	}{
+		{"PR — body", true},
+		{"PR - body", true},
+		{"PR body", true},
+		{"PR — body Evidence", true},
+		{"PR — body Not verified", true},
+		{"internal/x.go:12", false},
+		{"PR_handler.go:3", false},
+		{"src/views/PR.vue:1", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.location, func(t *testing.T) {
+			if got := isPRBodyLocation(tt.location); got != tt.want {
+				t.Errorf("isPRBodyLocation(%q) = %v, want %v", tt.location, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParsePostMergeReview_PRBodyDefectNeverBlocks(t *testing.T) {
+	t.Run("body-only blocking defect downgrades the verdict", func(t *testing.T) {
+		got := parsePostMergeReview("VERDICT: REQUEST-CHANGES\nDEFECTS:\n[blocking] PR — body (## PR Body section) — the body does not name the mutation pin\nNOTES:\n")
+		if got.Verdict != PostMergeApproveWithNotes || !got.Downgraded || !got.PRBodyOnly {
+			t.Fatalf("verdict=%q downgraded=%v prBodyOnly=%v, want APPROVE-WITH-NOTES, true, true", got.Verdict, got.Downgraded, got.PRBodyOnly)
+		}
+		if len(got.Defects) != 1 || got.Defects[0].Severity != PostMergeSeverityMinor {
+			t.Fatalf("defects = %+v, want the one defect kept as minor", got.Defects)
+		}
+		if len(got.BlockingDefects()) != 0 {
+			t.Errorf("BlockingDefects = %+v, want none", got.BlockingDefects())
+		}
+	})
+	t.Run("file defect stays blocking beside a body defect", func(t *testing.T) {
+		got := parsePostMergeReview("VERDICT: REQUEST-CHANGES\nDEFECTS:\n[blocking] internal/a/b.go:7 - field never sent - handler.go emits another\n[blocking] PR - body Evidence - no output pasted\nNOTES:\n")
+		if got.Verdict != PostMergeRequestChanges || got.Downgraded {
+			t.Fatalf("verdict=%q downgraded=%v, want REQUEST-CHANGES, false", got.Verdict, got.Downgraded)
+		}
+		if b := got.BlockingDefects(); len(b) != 1 || b[0].Location != "internal/a/b.go:7" {
+			t.Errorf("BlockingDefects = %+v, want exactly the file defect", b)
+		}
+		if len(got.Defects) != 2 {
+			t.Errorf("defects = %d, want both kept", len(got.Defects))
+		}
+	})
+}
+
+func TestPostMergeReviewer_PRBodyOnlyDowngradeIsLogged(t *testing.T) {
+	r := newPostMergeReviewerWithRunner(mockJudgeRunner("VERDICT: REQUEST-CHANGES\nDEFECTS:\n[blocking] PR body - no pin named\nNOTES:\n"))
+	var logs strings.Builder
+	r.log = slog.New(slog.NewTextHandler(&logs, nil))
+	got, err := r.Review(context.Background(), PostMergeReviewInput{PRNumber: 78, Diff: "diff --git a/x b/x\n+x"})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if got.Verdict != PostMergeApproveWithNotes {
+		t.Fatalf("verdict = %q, want %q", got.Verdict, PostMergeApproveWithNotes)
+	}
+	if !strings.Contains(logs.String(), "reason=pr-body-only") {
+		t.Errorf("log lacks reason=pr-body-only:\n%s", logs.String())
+	}
+}

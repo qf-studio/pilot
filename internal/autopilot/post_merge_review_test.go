@@ -1180,3 +1180,34 @@ func TestCutPostMergeDefects_MarkerOnce(t *testing.T) {
 		t.Errorf("a section within max changed: %q", got)
 	}
 }
+
+func TestPostPostMergeReview_PRBodyOnlyFilesNoIssue(t *testing.T) {
+	mock, gh := newPMRGitHub(t)
+	review := &executor.PostMergeReview{
+		Verdict: executor.PostMergeRequestChanges,
+		Defects: []executor.PostMergeDefect{{
+			Severity: executor.PostMergeSeverityBlocking,
+			Location: "PR — body",
+			Claim:    "the body does not name the mutation pin",
+		}},
+	}
+	c := newPMRController(t, gh, &pmrFakeReviewer{review: review}, true)
+
+	if err := c.handleMerged(context.Background(), mergedPRState(42, 10)); err != nil {
+		t.Fatalf("handleMerged: %v", err)
+	}
+	c.waitPostMergeReviews()
+
+	if got := mock.commentCount(42); got != 1 {
+		t.Fatalf("PR comments = %d, want 1", got)
+	}
+	if got := mock.issueCount(); got != 0 {
+		t.Errorf("issues filed = %d, want 0 for a body-only review", got)
+	}
+	comment := mock.comments[42][0]
+	for _, want := range []string{"VERDICT: APPROVE-WITH-NOTES", "[minor] at PR — body", "(PR body, not code)"} {
+		if !strings.Contains(comment, want) {
+			t.Errorf("comment lacks %q:\n%s", want, comment)
+		}
+	}
+}
