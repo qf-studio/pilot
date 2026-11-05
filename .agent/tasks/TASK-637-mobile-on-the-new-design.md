@@ -1,6 +1,6 @@
 # TASK-637: Mobile on the new design — port the mobile v1 layer (PR#84, 2026-08-15) to the 2026-10 Figma design, with a 390×844 Playwright check
 
-**Status**: 🟡 **holding (ui#367 M7 run) — 11-05 17:05Z: M5 chain superseded. PR#366 (ui#363, branch `pilot/GH-357`) conflicted with PR#364 on `e2e/mobile/helpers.ts`, `home.spec.ts`, `HomeGridLayout.vue` → PR#366 closed, ui#363 + ui#357 closed not-planned, **M7 [ui#367](https://github.com/qf-studio/pilot-console-ui/issues/367)** filed from main (`pilot` + `no-decompose`, pre-check 0): two-line rows, one org name, Board id + REVIEW chip, e2e id-cell wait. M6 ui#362 → PR#364 merged 16:02Z, artifact verified (Research composer above the bar); its minors → ui#365 (running). Lesson: a CI-fix issue that continues a branch cannot rebase over a sibling leg that touched the same files — file the residue from main instead.** Was: 🚀 11-05 13:30Z — M1–M4 ALL MERGED (PR#350 Playwright + CI job e2e-mobile with the mobile-390x844 artifact · PR#349 shell · PR#352 Home + fix PR#356 open · PR#351 Board + fix PR#355), deployed 13:03Z. Review against the 390×844 artifact: APPROVE-with-defects → M5 [ui#357](https://github.com/qf-studio/pilot-console-ui/issues/357) filed (two-line ListRow below md; Research composer not pinned on mobile; org name twice on Home; Board rows "GH GH-101" + lane chip on every row).** Was: 📋 PLANNED 2026-11-05 — founder "Go" on the four legs and "Approved" on the Playwright dev dependency (package.json change). Third tab renamed Chat → Research (Navigator call, matches the desktop page name). Dispatch: M1 and M2 first, M3 and M4 after M2.
+**Status**: 🟡 **holding (M8 after B1) — 11-05 17:35Z: M7 [ui#367](https://github.com/qf-studio/pilot-console-ui/issues/367) → PR#369 merged 17:16Z (pre-PR review in **enforce** mode, APPROVE-WITH-NOTES, 7 minors). Artifact run 42071825082: Home shows the org name once, rows are id + chip / title, Board fixture empty. Navigator post-merge review → § M7 review: one likely live bug (`hasMeta` computed has no reactive dependency → the mobile Home meta stays hidden after executions load), meta on a third line against the spec, `whitespace-nowrap` leaks to desktop, the one-org-name test proves nothing, the prefix regex misses digit team keys → **LEG M8** drafted; files after B1 ([ui#370](https://github.com/qf-studio/pilot-console-ui/issues/370), running) merges, because both touch `ListRow.vue`; TASK-639 B2 after M8. Earlier: M5 chain superseded (PR#366/ui#363/ui#357 closed); M6 ui#362 → PR#364 merged 16:02Z, verified.** Was: 🚀 11-05 13:30Z — M1–M4 ALL MERGED (PR#350 Playwright + CI job e2e-mobile with the mobile-390x844 artifact · PR#349 shell · PR#352 Home + fix PR#356 open · PR#351 Board + fix PR#355), deployed 13:03Z. Review against the 390×844 artifact: APPROVE-with-defects → M5 [ui#357](https://github.com/qf-studio/pilot-console-ui/issues/357) filed (two-line ListRow below md; Research composer not pinned on mobile; org name twice on Home; Board rows "GH GH-101" + lane chip on every row).** Was: 📋 PLANNED 2026-11-05 — founder "Go" on the four legs and "Approved" on the Playwright dev dependency (package.json change). Third tab renamed Chat → Research (Navigator call, matches the desktop page name). Dispatch: M1 and M2 first, M3 and M4 after M2.
 **Created**: 2026-11-05
 **Assignee**: Navigator (plan) → Pilot (legs) · founder (visual check on a phone)
 **Parent**: [TASK-584](TASK-584-pilot-cloud-execution-roadmap.md) wave 5 row U17 · [TASK-583](TASK-583-wave1-design-update-proof-surface.md) (desktop legs U20–U29)
@@ -237,6 +237,51 @@ Desktop rows (TASK-639). The composer clearance (M6, done). The Approve sheet an
 ## Refs
 - Navigator TASK-637 M7 (supersedes M5 ui#357 after PR#361 review + PR#366 conflict) · ui#362 (M6) · ui#298 (U20)
 
+## M7 review (PR#369, 11-05 17:30Z) — APPROVE-WITH-DEFECTS → M8
+
+Read against the diff and `origin/main` after the merge; the pre-PR reviewer's seven minors confirmed, one upgraded:
+
+- [likely bug] `ListRow.vue`: `const hasMeta = computed(() => !!slots.meta && hasContent(slots.meta()))`. The slot function reads `row.meta` from a plain object built by the parent's `queue` computed — no reactive read happens inside the computed, so it never re-evaluates. On Home the first render has no executions (meta `''`), so `max-md:hidden` sticks and the duration never appears below md once `getCardExecution` resolves. The e2e fixture serves no executions, so the artifact cannot show it. Desktop is unaffected (`max-md:` only).
+- [spec] The meta sits on a third grid row (`max-md:row-start-3`); M5/M7 asked for line 2 = title, then the meta after it.
+- [spec] `whitespace-nowrap` has no `max-md:` prefix → a long id on desktop runs into the title instead of wrapping in the 64 px cell.
+- [test] `DashboardView.spec.ts` "one org name" asserts zero visible `[data-header-org]` without the header band mounted; `not.toContain('text-right')` cannot fail.
+- [minor] `BoardView.vue` `mobileRowId` prefix test `/^[A-Za-z]+-/` misses digit team keys (`AB1-5`).
+- [minor] `DashboardView.vue` docblock lacks the GH-367 entry.
+
+### LEG M8 — repo: qf-studio/pilot-console-ui — title: fix(mobile): ListRow meta shows after the execution loads, sits on the title line below md, and the id wraps on desktop again; the one-org-name test mounts the header band
+
+## Context
+PR#369 (ui#367) made `src/design-system/components/ListRow.vue` two lines below md. Its pre-PR review (APPROVE-WITH-NOTES) and the Navigator post-merge review found:
+1. `hasMeta` is a `computed` over `slots.meta()`; the slot content (`{{ row.meta }}` in `src/components/dashboard/DashboardQueue.vue`) is a plain string on a plain object, so the computed has no reactive dependency and never re-runs. On Home the executions load after the first render, so the meta cell keeps `max-md:hidden` and the duration never shows below md.
+2. The meta sits on a third grid row (`max-md:row-start-3`); the spec puts it on the title line, after the title, in the muted colour.
+3. `whitespace-nowrap` on the id cell has no `max-md:` prefix, so on desktop a long id overflows the 64 px cell into the title instead of wrapping as before.
+4. `src/views/__tests__/DashboardView.spec.ts` "names the org once at 390 px" asserts zero visible `[data-header-org]` but never mounts `AppHeader`, so it does not prove one org name remains; its `not.toContain('text-right')` cannot fail.
+5. `src/views/BoardView.vue` `mobileRowId` tests the served id with `/^[A-Za-z]+-/`, which misses digit team keys such as `AB1-5`.
+
+probe: present qf-studio/pilot-console-ui hasMeta
+probe: present qf-studio/pilot-console-ui mobileRowId
+probe: present qf-studio/pilot-console-ui max-md:row-start-3
+
+## Scope
+- `src/design-system/components/ListRow.vue`: decide the meta visibility at render time (a plain function called in the template, or `v-if` on the rendered slot content), not in a `computed`; below md the meta renders on the title line — title `min-w-0 flex-1 truncate`, then the meta `shrink-0 text-ds-text/60` with a 12 px gap, in one `flex` wrapper spanning both grid columns on row 2 — no third row; `whitespace-nowrap` becomes `max-md:whitespace-nowrap`. Desktop markup and geometry unchanged. Docblock updated.
+- `src/views/BoardView.vue`: the prefix test becomes `/^[A-Za-z0-9]+-/`.
+- `src/views/DashboardView.vue`: docblock entry for GH-367 (org name hidden below md, meta left-aligned).
+- Tests: `src/design-system/components/__tests__/ListRow.spec.ts` — a reactive meta that starts `''` and becomes `12 min` after `nextTick` makes the meta cell visible (no `max-md:hidden`); the title and meta share row 2 and the row has no `row-start-3` class; the id has `max-md:whitespace-nowrap` and no bare `whitespace-nowrap`. `src/views/__tests__/DashboardView.spec.ts` — mount `AppHeader` and `DashboardView` together at 390 px and assert the org name appears exactly once in `document.body.textContent`. `src/views/__tests__/BoardView.spec.ts` — a card whose `sequenceId` is `AB1-5` renders `AB1-5` once with no marker.
+
+## Acceptance
+- [ ] `npm test` passes; paste the output into the PR body.
+- [ ] `make e2e` passes; paste the output into the PR body.
+- [ ] Restore `hasMeta` as a `computed` -> the reactive-meta ListRow assertion fails
+- [ ] Restore `max-md:row-start-3` on the meta -> the shared-row assertion fails
+- [ ] `npm run build` passes; paste the output into the PR body.
+- [ ] `npm run lint` passes; paste the output into the PR body.
+
+## Out of scope
+The `layout="board"` prop and chip colours (TASK-639 B1, ui#370 — this leg runs after it merges). The desktop Board page (B2).
+
+## Refs
+- Navigator TASK-637 M8 (PR#369 review) · ui#367 · ui#370 (B1)
+
 ## Verify
 
 - Playwright artifact mobile-390x844 on the M3 and M4 PRs: Home shows four stat cards, the chart, the queue and the composer above the tab bar with no "$"; Board shows pills and chip rows; Research shows the composer and no Context column; Menu lists Review and Docs.
@@ -251,6 +296,7 @@ Desktop rows (TASK-639). The composer clearance (M6, done). The Approve sheet an
 - M5 → https://github.com/qf-studio/pilot-console-ui/issues/357
 - M6 → https://github.com/qf-studio/pilot-console-ui/issues/362
 - M7 → - M7 → https://github.com/qf-studio/pilot-console-ui/issues/367
+- M8 → (filled by the dispatch script)
 
 ## M5 review (PR#361, 11-05 15:30Z) — REQUEST-CHANGES
 
