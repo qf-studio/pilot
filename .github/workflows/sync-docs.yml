@@ -41,6 +41,21 @@ jobs:
         env:
           PILOT_DOCS_PAT: ${{ secrets.PILOT_DOCS_PAT }}
         run: |
+          # GitHub occasionally rejects a push with a transient server-side
+          # error ("remote: fatal error in commit_refs", [remote rejected]
+          # ... (failure)); retry with backoff before failing the job.
+          push_retry() {
+            local attempt
+            for attempt in 1 2 3 4; do
+              if git push origin "$@"; then
+                return 0
+              fi
+              echo "::warning::git push $* failed (attempt ${attempt}/4), retrying"
+              sleep $((attempt * 5))
+            done
+            return 1
+          }
+
           WORK=$(mktemp -d)
           git clone "https://x-access-token:${PILOT_DOCS_PAT}@github.com/qf-studio/pilot-docs.git" "$WORK"
 
@@ -80,7 +95,7 @@ jobs:
             echo "No changes to sync"
           else
             git commit -m "sync: docs from pilot@${GITHUB_SHA::7}"
-            git push origin main
+            push_retry main
           fi
 
           # Always trigger the GitHub image build via a unique prod tag
@@ -90,7 +105,7 @@ jobs:
             BUILD_NUM=$(date +%Y%m%d%H%M%S)
             DEPLOY_TAG="prod-${VERSION}-${BUILD_NUM}"
             git tag "$DEPLOY_TAG"
-            git push origin "$DEPLOY_TAG"
+            push_retry "$DEPLOY_TAG"
             echo "Tagged ${DEPLOY_TAG} to trigger GitHub image build"
 
             # Prune old prod-* tags on GitHub, keeping the newest 10 — never
