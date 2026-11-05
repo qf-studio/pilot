@@ -281,7 +281,30 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 
 	// 4. Budget check — block task if daily/monthly limits exceeded
 	if deps.Enforcer != nil {
-		checkResult, budgetErr := deps.Enforcer.CheckBudget(ctx, "", "")
+		// The mode in force picks the scoped budget's verdict (empty without a
+		// dispatcher: treated as API-billed, fail closed).
+		var billingOverride executor.BillingOverrideStatus
+		if deps.Dispatcher != nil {
+			billingOverride = deps.Dispatcher.BillingOverride()
+		}
+		checkResult, budgetErr := deps.Enforcer.CheckBudgetForMode(ctx, "", "", billingOverride.Mode)
+		// A scoped budget exhausted by an api_key override ends the override
+		// and lets the task proceed on the subscription.
+		if budgetErr == nil && !checkResult.Allowed && deps.Dispatcher != nil &&
+			budgetScopeEndsOverride(deps.Enforcer.Scope(), billingOverride, billingOverride.ConfigMode) {
+			if clearErr := deps.Dispatcher.ClearBillingOverride("budget"); clearErr != nil {
+				logging.WithComponent("budget").Warn("could not end the api_key override",
+					slog.String("task_id", taskID),
+					slog.Any("error", clearErr),
+				)
+			} else {
+				logging.WithComponent("budget").Warn("api_key override ended by the budget",
+					slog.String("task_id", taskID),
+					slog.String("reason", checkResult.Reason),
+				)
+				checkResult, budgetErr = deps.Enforcer.CheckBudgetForMode(ctx, "", "", deps.Dispatcher.BillingOverride().Mode)
+			}
+		}
 		if budgetErr != nil {
 			logging.WithComponent("budget").Warn("budget check failed, allowing task (fail-open)",
 				slog.String("task_id", taskID),
@@ -694,4 +717,21 @@ func classifyResultAlert(taskID, title, projectPath string, execErr error, resul
 	default:
 		return nil
 	}
+}
+
+// budgetScopeEndsOverride reports whether a blocking scoped budget should end
+// the billing override in force: scope api_key, an api_key override set from
+// the cli or the gateway (not the usage-limit fallback, which keeps its own
+// lifecycle), and a subscription config mode to fall back to.
+func budgetScopeEndsOverride(scope string, override executor.BillingOverrideStatus, configMode string) bool {
+	if scope != budget.ScopeAPIKey {
+		return false
+	}
+	if override.Mode != string(executor.BillingModeAPIKey) {
+		return false
+	}
+	if override.Source != executor.BillingModeSourceCLI && override.Source != executor.BillingModeSourceGateway {
+		return false
+	}
+	return configMode == string(executor.BillingModeSubscription)
 }

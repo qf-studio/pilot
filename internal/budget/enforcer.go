@@ -48,9 +48,27 @@ func (e *Enforcer) OnAlert(callback AlertCallback) {
 	e.onAlert = callback
 }
 
-// CheckBudget checks if a new task can be started
+// Scope returns the effective budget scope (ScopeAll or ScopeAPIKey).
+func (e *Enforcer) Scope() string {
+	return e.config.EffectiveScope()
+}
+
+// CheckBudget checks if a new task can be started. The billing mode of the
+// task is unknown, so under scope api_key it is treated as API-billed.
 func (e *Enforcer) CheckBudget(ctx context.Context, teamID, userID string) (*CheckResult, error) {
+	return e.CheckBudgetForMode(ctx, teamID, userID, "")
+}
+
+// CheckBudgetForMode checks if a new task billed as billingMode can be started.
+// Under scope api_key a subscription task is allowed at once: it spends no API
+// money, so it neither reads usage nor counts as blocked. Any other mode,
+// including empty and unknown, is checked (fail closed).
+func (e *Enforcer) CheckBudgetForMode(ctx context.Context, teamID, userID, billingMode string) (*CheckResult, error) {
 	if !e.config.Enabled {
+		return &CheckResult{Allowed: true}, nil
+	}
+
+	if e.config.EffectiveScope() == ScopeAPIKey && billingMode == memory.BillingModeSubscription {
 		return &CheckResult{Allowed: true}, nil
 	}
 
@@ -122,11 +140,20 @@ func (e *Enforcer) GetStatus(ctx context.Context, teamID, userID string) (*Statu
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
 
+	// Decision: a scoped budget filters on the raw billing_mode column, so
+	// rows recorded before v2.310.0 (NULL or empty) never count under api_key.
+	scope := e.config.EffectiveScope()
+	billingMode := ""
+	if scope == ScopeAPIKey {
+		billingMode = memory.BillingModeAPIKey
+	}
+
 	// Get daily usage
 	dailyQuery := memory.UsageQuery{
-		UserID: userID,
-		Start:  dayStart,
-		End:    now,
+		UserID:      userID,
+		Start:       dayStart,
+		End:         now,
+		BillingMode: billingMode,
 	}
 	dailySummary, err := e.provider.GetUsageSummary(dailyQuery)
 	if err != nil {
@@ -135,9 +162,10 @@ func (e *Enforcer) GetStatus(ctx context.Context, teamID, userID string) (*Statu
 
 	// Get monthly usage
 	monthlyQuery := memory.UsageQuery{
-		UserID: userID,
-		Start:  monthStart,
-		End:    now,
+		UserID:      userID,
+		Start:       monthStart,
+		End:         now,
+		BillingMode: billingMode,
 	}
 	monthlySummary, err := e.provider.GetUsageSummary(monthlyQuery)
 	if err != nil {
@@ -151,6 +179,7 @@ func (e *Enforcer) GetStatus(ctx context.Context, teamID, userID string) (*Statu
 	e.mu.RUnlock()
 
 	status := &Status{
+		Scope:          scope,
 		DailySpent:     dailySummary.TotalCost,
 		DailyLimit:     e.config.DailyLimit,
 		DailyPercent:   (dailySummary.TotalCost / e.config.DailyLimit) * 100,

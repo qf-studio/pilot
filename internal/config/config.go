@@ -1577,6 +1577,15 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("budget.daily_limit must be > 0 when budget is enabled, got %g", c.Budget.DailyLimit)
 	}
 
+	// Validate budget.scope (empty means all)
+	if c.Budget != nil {
+		switch c.Budget.Scope {
+		case "", budget.ScopeAll, budget.ScopeAPIKey:
+		default:
+			return fmt.Errorf("budget.scope must be %q or %q, got %q", budget.ScopeAll, budget.ScopeAPIKey, c.Budget.Scope)
+		}
+	}
+
 	// GH-4735: Validate dashboard.stats_window_days >= 1
 	if c.Dashboard != nil && c.Dashboard.StatsWindowDays < 1 {
 		return fmt.Errorf("dashboard.stats_window_days must be >= 1, got %d", c.Dashboard.StatsWindowDays)

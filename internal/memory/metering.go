@@ -76,6 +76,11 @@ type UsageQuery struct {
 	Start     time.Time
 	End       time.Time
 	EventType UsageEventType // Empty = all types
+
+	// BillingMode filters usage_events on the raw billing_mode column
+	// (subscription | api_key | unknown). Empty = all rows. Rows recorded
+	// before v2.310.0 have a NULL or empty column and never match a set value.
+	BillingMode string
 }
 
 // Pricing constants (can be made configurable)
@@ -224,6 +229,11 @@ func (s *Store) GetUsageSummary(query UsageQuery) (*UsageSummary, error) {
 		args = append(args, query.ProjectID)
 	}
 
+	if query.BillingMode != "" {
+		whereClause += " AND billing_mode = ?"
+		args = append(args, query.BillingMode)
+	}
+
 	// Get task metrics
 	row := s.db.QueryRow(`
 		SELECT COALESCE(COUNT(*), 0), COALESCE(SUM(total_cost), 0)
@@ -298,6 +308,11 @@ func (s *Store) GetDailyUsage(query UsageQuery) ([]*DailyUsage, error) {
 	if query.ProjectID != "" {
 		whereClause += " AND project_id = ?"
 		args = append(args, query.ProjectID)
+	}
+
+	if query.BillingMode != "" {
+		whereClause += " AND billing_mode = ?"
+		args = append(args, query.BillingMode)
 	}
 
 	rows, err := s.db.Query(`

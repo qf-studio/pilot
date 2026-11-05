@@ -1464,6 +1464,9 @@ omitted flags leave the existing value untouched.
 | `--daily` | Daily budget limit (USD) |
 | `--monthly` | Monthly budget limit (USD) |
 | `--enabled` | Enable budget enforcement |
+| `--scope` | Usage the limits count: `all` (default) or `api_key` |
+
+With `--scope api_key` the daily and monthly limits count only API-billed executions, so a subscription-billed task is never blocked by the budget.
 
 #### Examples
 

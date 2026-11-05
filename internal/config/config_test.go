@@ -13,6 +13,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/budget"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -3017,4 +3018,38 @@ func TestValidateUsageLimitPause_Fallback(t *testing.T) {
 			t.Fatalf("Validate() with a key source = %v", err)
 		}
 	})
+}
+
+func TestValidateBudgetScope(t *testing.T) {
+	tests := []struct {
+		scope   string
+		wantErr bool
+	}{
+		{"", false},
+		{budget.ScopeAll, false},
+		{budget.ScopeAPIKey, false},
+		{"subscription", true},
+	}
+	for _, tt := range tests {
+		t.Run("scope="+tt.scope, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Budget = budget.DefaultConfig()
+			cfg.Budget.Scope = tt.scope
+			err := cfg.Validate()
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("Validate() = nil, want an error")
+			}
+			for _, want := range []string{"budget.scope", `"all"`, `"api_key"`, `"subscription"`} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
+			}
+		})
+	}
 }

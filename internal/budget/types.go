@@ -22,6 +22,25 @@ type Config struct {
 	PerTask      PerTaskConfig   `yaml:"per_task" json:"per_task"`
 	OnExceed     ExceedAction    `yaml:"on_exceed" json:"on_exceed"`
 	Thresholds   ThresholdConfig `yaml:"thresholds" json:"thresholds"`
+
+	// Scope selects which usage_events the daily and monthly limits count:
+	// "all" (default, empty) counts every row, "api_key" counts only
+	// API-billed rows so subscription-billed tasks are never blocked.
+	Scope string `yaml:"scope,omitempty" json:"scope,omitempty"`
+}
+
+// Budget scope values.
+const (
+	ScopeAll    = "all"
+	ScopeAPIKey = "api_key"
+)
+
+// EffectiveScope returns the configured scope, ScopeAll when empty.
+func (c *Config) EffectiveScope() string {
+	if c.Scope == "" {
+		return ScopeAll
+	}
+	return c.Scope
 }
 
 // PerTaskConfig defines per-task limits
@@ -74,6 +93,7 @@ func DefaultConfig() *Config {
 
 // Status represents current budget status
 type Status struct {
+	Scope          string    `json:"scope"`
 	DailySpent     float64   `json:"daily_spent"`
 	DailyLimit     float64   `json:"daily_limit"`
 	DailyPercent   float64   `json:"daily_percent"`

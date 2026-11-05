@@ -1669,3 +1669,32 @@ func TestHandleIssueGeneric_SupersededExecution_EndToEnd(t *testing.T) {
 			"the vendored poller's 'failed without PR, unmarking for retry' branch on a closed issue")
 	}
 }
+
+func TestBudgetScopeEndsOverride(t *testing.T) {
+	tests := []struct {
+		name       string
+		scope      string
+		mode       string
+		source     string
+		configMode string
+		want       bool
+	}{
+		{"api_key cli override over subscription config", budget.ScopeAPIKey, "api_key", executor.BillingModeSourceCLI, "subscription", true},
+		{"api_key gateway override over subscription config", budget.ScopeAPIKey, "api_key", executor.BillingModeSourceGateway, "subscription", true},
+		{"fallback source blocks as today", budget.ScopeAPIKey, "api_key", executor.BillingModeSourceFallback, "subscription", false},
+		{"config source blocks as today", budget.ScopeAPIKey, "api_key", executor.BillingModeSourceConfig, "subscription", false},
+		{"api_key config mode blocks as today", budget.ScopeAPIKey, "api_key", executor.BillingModeSourceCLI, "api_key", false},
+		{"unset config mode blocks", budget.ScopeAPIKey, "api_key", executor.BillingModeSourceCLI, "unset", false},
+		{"subscription mode in force has nothing to end", budget.ScopeAPIKey, "subscription", executor.BillingModeSourceCLI, "subscription", false},
+		{"scope all", budget.ScopeAll, "api_key", executor.BillingModeSourceCLI, "subscription", false},
+		{"scope empty", "", "api_key", executor.BillingModeSourceGateway, "subscription", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			override := executor.BillingOverrideStatus{Mode: tt.mode, Source: tt.source, ConfigMode: tt.configMode}
+			if got := budgetScopeEndsOverride(tt.scope, override, tt.configMode); got != tt.want {
+				t.Errorf("budgetScopeEndsOverride() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

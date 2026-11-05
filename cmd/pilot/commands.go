@@ -705,7 +705,13 @@ Examples:
 
 				// Create budget enforcer and check
 				enforcer := budget.NewEnforcer(budgetConfig, store)
-				result, err := enforcer.CheckBudget(ctx, "", "")
+				// The config mode is the mode the task runs in (empty when the
+				// executor block is absent: treated as API-billed, fail closed).
+				var configMode string
+				if budgetCfg.Executor != nil && budgetCfg.Executor.ClaudeCode != nil {
+					configMode = string(budgetCfg.Executor.ClaudeCode.Billing.EffectiveMode())
+				}
+				result, err := enforcer.CheckBudgetForMode(ctx, "", "", configMode)
 				if err != nil {
 					return fmt.Errorf("budget check failed: %w", err)
 				}
