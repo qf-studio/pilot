@@ -859,6 +859,8 @@ executor:
   #   model: ""                # Empty = the executor's default model
   #   timeout: 6m              # Bound on one review (must be >= 0)
   #   fix_timeout: 10m         # Bound on one fix round (used by a later leg)
+  #   regate_timeout: 20m      # Bound on the quality-gate re-run after a fix (default 20m, must be >= 1m). Must exceed
+  #                            # the project's slowest gate run; the per-gate timeouts still apply inside it.
   #   max_fix_rounds: 1        # Fix rounds a REQUEST-CHANGES may start (used by a later leg)
   #   max_diff_chars: 0        # Diff budget in characters; 0 = 200000
   #   passes: 1                # 1 (default) or 2: a hunk pass then an adjacent pass on one checkout,

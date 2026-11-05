@@ -1328,6 +1328,9 @@ func validatePrePRReview(p *executor.PrePRReviewConfig) error {
 	if p.FixTimeout < 0 {
 		return fmt.Errorf("invalid executor.pre_pr_review.fix_timeout: %s (must be >= 0; 0 = default)", p.FixTimeout)
 	}
+	if p.RegateTimeout != 0 && p.RegateTimeout < time.Minute {
+		return fmt.Errorf("invalid executor.pre_pr_review.regate_timeout: %s (must be >= 1m; 0 = default of 20m)", p.RegateTimeout)
+	}
 	if p.MaxFixRounds < 0 {
 		return fmt.Errorf("invalid executor.pre_pr_review.max_fix_rounds: %d (must be >= 0; 0 = default)", p.MaxFixRounds)
 	}

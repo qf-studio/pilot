@@ -857,6 +857,10 @@ const (
 	defaultPrePRReviewTimeout    = 6 * time.Minute
 	defaultPrePRReviewFixTimeout = 10 * time.Minute
 	defaultPrePRReviewFixRounds  = 1
+	// defaultPrePRReviewRegateTimeout bounds the re-gate after a fix: above the
+	// slowest observed full gate run (a 17m test gate), with the per-gate
+	// timeouts still applying inside it.
+	defaultPrePRReviewRegateTimeout = 20 * time.Minute
 )
 
 // PrePRReviewConfig configures the pre-PR review: the post-merge reviewer's
@@ -883,6 +887,11 @@ type PrePRReviewConfig struct {
 
 	// FixTimeout bounds one fix round (enforce mode). Default: 10m.
 	FixTimeout time.Duration `yaml:"fix_timeout,omitempty"`
+
+	// RegateTimeout bounds the quality-gate re-run after a fix (enforce mode). It
+	// must exceed the project's slowest gate run; the per-gate timeouts still
+	// apply inside it. Default: 20m.
+	RegateTimeout time.Duration `yaml:"regate_timeout,omitempty"`
 
 	// MaxFixRounds is the number of fix rounds a REQUEST-CHANGES may start
 	// (used by a later leg). Default: 1.
@@ -944,6 +953,14 @@ func (c *PrePRReviewConfig) EffectiveFixTimeout() time.Duration {
 		return defaultPrePRReviewFixTimeout
 	}
 	return c.FixTimeout
+}
+
+// EffectiveRegateTimeout returns the re-gate budget, 20m when unset.
+func (c *PrePRReviewConfig) EffectiveRegateTimeout() time.Duration {
+	if c == nil || c.RegateTimeout <= 0 {
+		return defaultPrePRReviewRegateTimeout
+	}
+	return c.RegateTimeout
 }
 
 // EffectiveMaxFixRounds returns the fix-round bound, 1 when unset.

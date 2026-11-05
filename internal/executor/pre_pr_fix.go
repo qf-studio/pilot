@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/quality"
 )
 
 // TASK-620 L3: the pre-PR review fix round. In enforce mode a REQUEST-CHANGES
@@ -21,10 +22,6 @@ const (
 	// reviewFixMinRemaining is the least task time that must be left for a fix
 	// round to start: a fix call plus its re-gate cannot finish in less.
 	reviewFixMinRemaining = 12 * time.Minute
-	// reviewFixRegateTimeout bounds the re-gate. It runs on a fresh context, like
-	// the GH-4876 quality-gate retry pass, so a task deadline that blew during
-	// the fix cannot doom the check.
-	reviewFixRegateTimeout = 5 * time.Minute
 	// reviewFixMaxListed caps the REVIEW_FIXED items kept on the outcome.
 	reviewFixMaxListed = 10
 )
@@ -52,6 +49,10 @@ const (
 	ReviewFixReverted ReviewFixStatus = "reverted"
 	// ReviewFixRegateError: the re-gate could not run; HEAD was reset to PreFixSHA.
 	ReviewFixRegateError ReviewFixStatus = "regate_error"
+	// ReviewFixRegateTimeout: the re-gate ran out of time (its budget or a gate's
+	// own timeout), so the fix is neither verified nor refuted; HEAD was reset to
+	// PreFixSHA.
+	ReviewFixRegateTimeout ReviewFixStatus = "regate_timeout"
 )
 
 // ReviewFixOutcome is what one pre-PR fix round left behind.
@@ -66,6 +67,11 @@ type ReviewFixOutcome struct {
 	Fixed []string
 	// Elapsed is the wall-clock time of the round, fix call and re-gate included.
 	Elapsed time.Duration
+	// RegateBudget is the context budget the re-gate was given; zero when no
+	// re-gate was started.
+	RegateBudget time.Duration
+	// RegateElapsed is how long the re-gate ran; zero when none was started.
+	RegateElapsed time.Duration
 	// Terminated is how long the session ran when it was killed by its context,
 	// else zero. The PR body mentions it.
 	Terminated time.Duration
@@ -132,6 +138,8 @@ func (r *Runner) runReviewFix(taskCtx context.Context, taskCtxWasDone bool, task
 			slog.String("post_fix_sha", fix.PostFixSHA),
 			slog.Int("fixed", len(fix.Fixed)),
 			slog.Duration("elapsed", fix.Elapsed),
+			slog.Duration("regate_budget", fix.RegateBudget),
+			slog.Duration("regate_elapsed", fix.RegateElapsed),
 		)
 		return fix
 	}
@@ -203,10 +211,23 @@ func (r *Runner) runReviewFix(taskCtx context.Context, taskCtxWasDone bool, task
 		return finish(ReviewFixFixed)
 	}
 	checker := r.qualityCheckerFactory(task.ID, qualityLookupPath(task, executionPath), executionPath)
-	regateCtx, regateCancel := context.WithTimeout(context.Background(), reviewFixRegateTimeout)
+	// The re-gate runs on a fresh context, like the GH-4876 quality-gate retry
+	// pass, so a task deadline that blew during the fix cannot doom the check.
+	fix.RegateBudget = cfg.EffectiveRegateTimeout()
+	regateCtx, regateCancel := context.WithTimeout(context.Background(), fix.RegateBudget)
+	regateStart := time.Now()
 	gate, gateErr := checker.Check(regateCtx)
+	fix.RegateElapsed = time.Since(regateStart).Round(time.Millisecond)
+	budgetSpent := errors.Is(regateCtx.Err(), context.DeadlineExceeded)
 	regateCancel()
 	switch {
+	case budgetSpent || regateTimedOut(gate, gateErr):
+		log.Warn("Pre-PR review fix re-gate timed out, reverting",
+			slog.Duration("regate_budget", fix.RegateBudget),
+			slog.Duration("regate_elapsed", fix.RegateElapsed))
+		r.resetReviewFix(log, git, fix, true)
+		fix.Fixed = nil
+		return finish(ReviewFixRegateTimeout)
 	case gateErr != nil:
 		log.Warn("Pre-PR review fix re-gate errored, reverting", slog.Any("error", gateErr))
 		r.resetReviewFix(log, git, fix, true)
@@ -219,6 +240,28 @@ func (r *Runner) runReviewFix(taskCtx context.Context, taskCtxWasDone bool, task
 		return finish(ReviewFixReverted)
 	}
 	return finish(ReviewFixFixed)
+}
+
+// regateTimedOut reports whether the re-gate ended because time ran out rather
+// than because the code failed a gate: the check error or a gate's error wraps
+// quality.ErrGateTimeout, or a gate was cut by the parent context (the quality
+// runner records that as "context cancelled").
+func regateTimedOut(gate *QualityOutcome, gateErr error) bool {
+	if errors.Is(gateErr, quality.ErrGateTimeout) {
+		return true
+	}
+	if gate == nil {
+		return false
+	}
+	for _, g := range gate.GateDetails {
+		if g.Passed {
+			continue
+		}
+		if g.Error == "context cancelled" || strings.Contains(g.Error, quality.ErrGateTimeout.Error()) {
+			return true
+		}
+	}
+	return false
 }
 
 // readReviewFixHead reads HEAD on a fresh context per call: the task context is

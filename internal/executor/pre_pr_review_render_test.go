@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -144,6 +145,23 @@ func TestParsePrePRReviewSection_NotOK(t *testing.T) {
 
 // TestRenderPrePRReviewSection_NotHeldAsLiveSmoke pins that the section's
 // Not-verified list is invisible to autopilot's "## Not verified" hold.
+func TestRenderPrePRReviewSection_RegateTimeout(t *testing.T) {
+	out := prePROutcome(PostMergeRequestChanges)
+	out.Mode = PrePRReviewModeEnforce
+	out.Fix = &ReviewFixOutcome{Status: ReviewFixRegateTimeout, RegateElapsed: 20*time.Minute + 40*time.Millisecond, RegateBudget: 20 * time.Minute}
+
+	body := RenderPrePRReviewSection(out)
+
+	want := "Fix: re-gate timed out after 20m0s (budget 20m0s); fix reverted, not verified\n"
+	if !strings.Contains(body+"\n", want) {
+		t.Errorf("body lacks %q:\n%s", want, body)
+	}
+	_, _, fix, ok := ParsePrePRReviewSection(body)
+	if !ok || !strings.HasPrefix(fix, "re-gate timed out") {
+		t.Errorf("parsed fix = %q ok=%v, want the timeout line to round-trip", fix, ok)
+	}
+}
+
 func TestRenderPrePRReviewSection_NotHeldAsLiveSmoke(t *testing.T) {
 	body := "## Summary\n\nx" + RenderPrePRReviewSection(prePROutcome(PostMergeRequestChanges))
 	if got := LiveSmokeNotVerifiedBullets(body); len(got) != 0 {
