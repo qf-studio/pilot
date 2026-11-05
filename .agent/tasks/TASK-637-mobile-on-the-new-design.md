@@ -1,6 +1,6 @@
 # TASK-637: Mobile on the new design — port the mobile v1 layer (PR#84, 2026-08-15) to the 2026-10 Figma design, with a 390×844 Playwright check
 
-**Status**: 🟡 **holding (PR#361 review) — 11-05 15:30Z: M5 [ui#357](https://github.com/qf-studio/pilot-console-ui/issues/357) retry-1 opened [PR#361](https://github.com/qf-studio/pilot-console-ui/pull/361) 15:20Z after PR#359 lost its rebase. Pre-PR review (shadow) REQUEST-CHANGES, label `pilot-review-rc`; Navigator review agrees — see § M5 review. The PR's own evidence shows `make e2e` failing (home spec: the id-cell helper reads `[data-row-id]` with no wait → 0 rows), and the Research composer still sits behind the 56 px tab bar (chat-route `<main>` has no tab-bar padding below md; the e2e lower bound of 0 hides it). Was: 🚀 11-05 13:30Z — M1–M4 ALL MERGED (PR#350 Playwright + CI job e2e-mobile with the mobile-390x844 artifact · PR#349 shell · PR#352 Home + fix PR#356 open · PR#351 Board + fix PR#355), deployed 13:03Z. Review against the 390×844 artifact: APPROVE-with-defects → M5 [ui#357](https://github.com/qf-studio/pilot-console-ui/issues/357) filed (two-line ListRow below md; Research composer not pinned on mobile; org name twice on Home; Board rows "GH GH-101" + lane chip on every row).** Was: 📋 PLANNED 2026-11-05 — founder "Go" on the four legs and "Approved" on the Playwright dev dependency (package.json change). Third tab renamed Chat → Research (Navigator call, matches the desktop page name). Dispatch: M1 and M2 first, M3 and M4 after M2.
+**Status**: 🟡 **holding (ui#363 fix run) — 11-05 16:15Z: M6 [ui#362](https://github.com/qf-studio/pilot-console-ui/issues/362) → PR#364 merged 16:02Z (7 min; chat-route tab-bar clearance + e2e lower bound = tab bar height + `flex-1` on `data-home-main`); artifact from its run verified: Research composer above the bar, Home composer touches the bar's 1 px border → post-merge minors ui#365 (queued). M5 PR#361 CLOSED 15:35Z by autopilot on the `e2e-mobile` failure → **ui#363** `autopilot-fix` continues the `pilot/GH-357` branch (running since 15:59Z); ui#357 shows `superseded` on the board. Watch: ui#363's PR must rebase over PR#364's `expectComposerAboveTabBar` (both branches define it in `e2e/mobile/helpers.ts`).** Was: 🚀 11-05 13:30Z — M1–M4 ALL MERGED (PR#350 Playwright + CI job e2e-mobile with the mobile-390x844 artifact · PR#349 shell · PR#352 Home + fix PR#356 open · PR#351 Board + fix PR#355), deployed 13:03Z. Review against the 390×844 artifact: APPROVE-with-defects → M5 [ui#357](https://github.com/qf-studio/pilot-console-ui/issues/357) filed (two-line ListRow below md; Research composer not pinned on mobile; org name twice on Home; Board rows "GH GH-101" + lane chip on every row).** Was: 📋 PLANNED 2026-11-05 — founder "Go" on the four legs and "Approved" on the Playwright dev dependency (package.json change). Third tab renamed Chat → Research (Navigator call, matches the desktop page name). Dispatch: M1 and M2 first, M3 and M4 after M2.
 **Created**: 2026-11-05
 **Assignee**: Navigator (plan) → Pilot (legs) · founder (visual check on a phone)
 **Parent**: [TASK-584](TASK-584-pilot-cloud-execution-roadmap.md) wave 5 row U17 · [TASK-583](TASK-583-wave1-design-update-proof-surface.md) (desktop legs U20–U29)
@@ -203,6 +203,40 @@ The ListRow two-line layout, the Home org name, the Board row id and chips (PR#3
 ## Refs
 - Navigator TASK-637 M6 (review of PR#361) · ui#357 · ui#71 (chat route unpadded) · ui#311
 
+### LEG M7 — repo: qf-studio/pilot-console-ui — title: fix(mobile): two-line list rows below md, one org name on Home, Board lane rows with the served id and no lane chip; the mobile e2e waits for rows before it measures
+
+## Context
+Supersedes ui#357 / ui#363 / PR#366 (the `pilot/GH-357` branch conflicts with PR#364 on `e2e/mobile/helpers.ts`, `e2e/mobile/home.spec.ts` and `src/design-system/components/HomeGridLayout.vue`; autopilot holds it for a manual rebase — closed instead, re-filed from main). The composer clearance landed in M6 (PR#364): `expectComposerAboveTabBar` exists in `e2e/mobile/helpers.ts` with the tab-bar lower bound, and `HomeGridLayout.vue` already fills the height below md (`flex-1` on `data-home-main`). Three M5 defects remain on main (artifact `mobile-390x844`, run 42059855450):
+1. `src/design-system/components/ListRow.vue` keeps its desktop geometry below md: a 64 px id cell, a 156 px right-aligned meta cell and the chip, so at 390 px the title gets about 110 px and a long id wraps inside the 64 px cell. The Home queue (`src/components/dashboard/DashboardQueue.vue`) and the Board lane rows (`src/views/BoardView.vue`) both use it.
+2. Home shows the org name twice below md: the M2 header band and the page row with `data-header-org` in `src/views/DashboardView.vue`.
+3. Board lane rows render the id as the provider marker plus the sequenceId ("GH GH-101"; the sequenceId already carries the prefix, the U20 class), and every row carries a chip with the lane's own name.
+The PR#361 attempt (review on that PR) also showed the e2e id-cell check must wait for the async rows: `evaluateAll` on `[data-row-id]` straight after navigation sees 0 rows.
+
+probe: present qf-studio/pilot-console-ui expectComposerAboveTabBar
+probe: present qf-studio/pilot-console-ui data-row-meta
+probe: present qf-studio/pilot-console-ui PROVIDER_MARKERS\[card.link.provider\]
+
+## Scope
+- `src/design-system/components/ListRow.vue`: below md the row becomes two lines — line 1 the id (no fixed width, `whitespace-nowrap`) left and the chip right; line 2 the title full width, truncated, then the meta in the muted colour only when the slot has content. Desktop geometry unchanged (`md:` prefixes). The same markup serves both callers.
+- `src/views/DashboardView.vue`: below md the page row drops the org name (`max-md:hidden` on `[data-header-org]`, or the AppShell `isDesktop` pattern if the test-file hiding guard rejects the class) and keeps the "Last shipped · Pool" line left-aligned. The header band keeps the org name.
+- `src/views/BoardView.vue` mobile rows: the id uses the sequenceId as served (prepend the marker only when the sequenceId lacks it; a board-only card keeps the dot); no status chip inside a lane; a held card carries one `REVIEW` chip (`Chip` variant `review`, ds-green — add the variant if main lacks it).
+- `e2e/mobile/helpers.ts`: `expectIdCellsOneLine(page)` waits for `[data-row-id]` (`locator.first().waitFor()`) before it measures, then asserts every id cell is at most 26 px high; `home.spec.ts` and `board.spec.ts` call it after `checkMobileTab`. `expectComposerAboveTabBar` unchanged.
+- Tests: New file, plain text: src/design-system/components/__tests__/ListRow.spec.ts at innerWidth 390 asserts the two-line structure and that the id cell has no fixed-width class; `src/views/__tests__/DashboardView.spec.ts` at 390 asserts one org name in the document; `src/views/__tests__/BoardView.spec.ts` mobile block asserts "GH-101" renders once with no marker and lane rows carry no status chip except `REVIEW` on a held card.
+
+## Acceptance
+- [ ] `npm test` passes; paste the output into the PR body.
+- [ ] `make e2e` passes; paste the output into the PR body.
+- [ ] Restore the 64 px id width below md -> the new ListRow.spec.ts 390 assertion fails
+- [ ] Render the lane chip on every row -> the BoardView.spec.ts no-chip assertion fails
+- [ ] `npm run build` passes; paste the output into the PR body.
+- [ ] `npm run lint` passes; paste the output into the PR body.
+
+## Out of scope
+Desktop rows (TASK-639). The composer clearance (M6, done). The Approve sheet and the bell sheet (M4). The Context column on mobile.
+
+## Refs
+- Navigator TASK-637 M7 (supersedes M5 ui#357 after PR#361 review + PR#366 conflict) · ui#362 (M6) · ui#298 (U20)
+
 ## Verify
 
 - Playwright artifact mobile-390x844 on the M3 and M4 PRs: Home shows four stat cards, the chart, the queue and the composer above the tab bar with no "$"; Board shows pills and chip rows; Research shows the composer and no Context column; Menu lists Review and Docs.
@@ -216,6 +250,7 @@ The ListRow two-line layout, the Home org name, the Board row id and chips (PR#3
 - M4 → https://github.com/qf-studio/pilot-console-ui/issues/348
 - M5 → https://github.com/qf-studio/pilot-console-ui/issues/357
 - M6 → https://github.com/qf-studio/pilot-console-ui/issues/362
+- M7 → (filled by the dispatch script)
 
 ## M5 review (PR#361, 11-05 15:30Z) — REQUEST-CHANGES
 
