@@ -14,12 +14,14 @@ type mockUsageProvider struct {
 	dailyCost   float64
 	monthlyCost float64
 	callCount   int
+	queries     []memory.UsageQuery
 	mu          sync.Mutex
 }
 
 func (m *mockUsageProvider) GetUsageSummary(query memory.UsageQuery) (*memory.UsageSummary, error) {
 	m.mu.Lock()
 	m.callCount++
+	m.queries = append(m.queries, query)
 	isOddCall := m.callCount%2 == 1
 	m.mu.Unlock()
 
@@ -776,5 +778,124 @@ func TestEnforcer_GetStatus_ProviderError(t *testing.T) {
 	_, err := enforcer.GetStatus(context.Background(), "", "user1")
 	if err == nil {
 		t.Error("expected error from GetStatus when provider fails")
+	}
+}
+
+func scopedConfig(scope string) *Config {
+	return &Config{
+		Enabled:      true,
+		DailyLimit:   50.0,
+		MonthlyLimit: 500.0,
+		OnExceed:     ExceedAction{Daily: ActionPause, Monthly: ActionPause},
+		Thresholds:   ThresholdConfig{WarnPercent: 80},
+		Scope:        scope,
+	}
+}
+
+func TestEnforcer_ScopeAPIKey_QueriesOnlyAPIKeyRows(t *testing.T) {
+	tests := []struct {
+		scope    string
+		wantMode string
+	}{
+		{ScopeAPIKey, memory.BillingModeAPIKey},
+		{ScopeAll, ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		t.Run("scope="+tt.scope, func(t *testing.T) {
+			provider := &mockUsageProvider{}
+			enforcer := NewEnforcer(scopedConfig(tt.scope), provider)
+
+			status, err := enforcer.GetStatus(context.Background(), "", "")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(provider.queries) != 2 {
+				t.Fatalf("queries = %d, want 2 (daily, monthly)", len(provider.queries))
+			}
+			for i, q := range provider.queries {
+				if q.BillingMode != tt.wantMode {
+					t.Errorf("query %d BillingMode = %q, want %q", i, q.BillingMode, tt.wantMode)
+				}
+			}
+			wantScope := tt.scope
+			if wantScope == "" {
+				wantScope = ScopeAll
+			}
+			if status.Scope != wantScope {
+				t.Errorf("status.Scope = %q, want %q", status.Scope, wantScope)
+			}
+		})
+	}
+}
+
+func TestEnforcer_ScopeAPIKey_SubscriptionTaskNeverBlocked(t *testing.T) {
+	provider := &mockUsageProvider{dailyCost: 80.0, monthlyCost: 100.0}
+	enforcer := NewEnforcer(scopedConfig(ScopeAPIKey), provider)
+	alerts := 0
+	enforcer.OnAlert(func(string, string, string) { alerts++ })
+
+	result, err := enforcer.CheckBudgetForMode(context.Background(), "", "", memory.BillingModeSubscription)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Allowed {
+		t.Error("subscription task must be allowed under scope api_key")
+	}
+	if len(provider.queries) != 0 {
+		t.Errorf("usage fetched %d times, want 0", len(provider.queries))
+	}
+	if alerts != 0 {
+		t.Errorf("alerts = %d, want 0", alerts)
+	}
+	status, err := enforcer.GetStatus(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status.BlockedTasks != 0 {
+		t.Errorf("BlockedTasks = %d, want 0", status.BlockedTasks)
+	}
+
+	// An api_key task over the same usage is blocked and counted.
+	result, err = enforcer.CheckBudgetForMode(context.Background(), "", "", memory.BillingModeAPIKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Allowed {
+		t.Error("api_key task must be blocked over the daily limit")
+	}
+}
+
+func TestEnforcer_ScopeAPIKey_UnknownModeBlocks(t *testing.T) {
+	for _, mode := range []string{"", memory.BillingModeUnknown, memory.BillingModeAPIKey} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			provider := &mockUsageProvider{dailyCost: 80.0, monthlyCost: 100.0}
+			enforcer := NewEnforcer(scopedConfig(ScopeAPIKey), provider)
+
+			result, err := enforcer.CheckBudgetForMode(context.Background(), "", "", mode)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Allowed {
+				t.Errorf("mode %q must be blocked over the daily limit", mode)
+			}
+		})
+	}
+}
+
+func TestEnforcer_ScopeAll_Unchanged(t *testing.T) {
+	for _, scope := range []string{"", ScopeAll} {
+		t.Run("scope="+scope, func(t *testing.T) {
+			provider := &mockUsageProvider{dailyCost: 80.0, monthlyCost: 100.0}
+			enforcer := NewEnforcer(scopedConfig(scope), provider)
+
+			result, err := enforcer.CheckBudgetForMode(context.Background(), "", "", memory.BillingModeSubscription)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Allowed {
+				t.Error("subscription task must be blocked over the limit under scope all")
+			}
+		})
 	}
 }

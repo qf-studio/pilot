@@ -663,3 +663,73 @@ func TestGetUsageEvents_InvalidMetadataJSON(t *testing.T) {
 		t.Errorf("expected event ID in log, got: %s", logOutput)
 	}
 }
+
+func TestGetUsageSummary_BillingModeFilter(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now()
+	// Raw inserts: RecordUsageEvent normalizes an empty mode to unknown, but
+	// rows recorded before v2.310.0 carry an empty or NULL column.
+	rows := []struct {
+		id   string
+		mode interface{}
+		cost float64
+	}{
+		{"ev_api", BillingModeAPIKey, 3.0},
+		{"ev_sub", BillingModeSubscription, 5.0},
+		{"ev_empty", "", 7.0},
+		{"ev_null", nil, 11.0},
+	}
+	for _, r := range rows {
+		if _, err := store.db.Exec(`
+			INSERT INTO usage_events (id, timestamp, user_id, project_id, event_type, quantity, unit_cost, total_cost, metadata, billing_mode)
+			VALUES (?, ?, 'u', 'p', 'task', 1, ?, ?, '{}', ?)`,
+			r.id, now, r.cost, r.cost, r.mode); err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+
+	base := UsageQuery{Start: now.Add(-time.Hour), End: now.Add(time.Hour)}
+
+	tests := []struct {
+		mode string
+		want float64
+	}{
+		{BillingModeAPIKey, 3.0},
+		{BillingModeSubscription, 5.0},
+		{"", 26.0},
+	}
+	for _, tt := range tests {
+		t.Run("summary mode="+tt.mode, func(t *testing.T) {
+			q := base
+			q.BillingMode = tt.mode
+			summary, err := store.GetUsageSummary(q)
+			if err != nil {
+				t.Fatalf("GetUsageSummary: %v", err)
+			}
+			if summary.TotalCost != tt.want {
+				t.Errorf("TotalCost = %v, want %v", summary.TotalCost, tt.want)
+			}
+		})
+		t.Run("daily mode="+tt.mode, func(t *testing.T) {
+			q := base
+			q.BillingMode = tt.mode
+			days, err := store.GetDailyUsage(q)
+			if err != nil {
+				t.Fatalf("GetDailyUsage: %v", err)
+			}
+			var total float64
+			for _, d := range days {
+				total += d.TotalCost
+			}
+			if total != tt.want {
+				t.Errorf("daily total = %v, want %v", total, tt.want)
+			}
+		})
+	}
+}

@@ -139,6 +139,10 @@ func renderBudgetStatus(cfg *budget.Config, status *budget.Status) string {
 		b.WriteString("\n\n")
 	}
 
+	if cfg.EffectiveScope() == budget.ScopeAPIKey {
+		b.WriteString("  scope: api_key (API-billed usage only)\n\n")
+	}
+
 	// Paused/blocked warnings
 	if status.IsPaused {
 		b.WriteString("  ")
@@ -322,6 +326,7 @@ func newBudgetConfigCmd() *cobra.Command {
 			fmt.Printf("  Enabled:       %v\n", budgetCfg.Enabled)
 			fmt.Printf("  Daily Limit:   $%.2f\n", budgetCfg.DailyLimit)
 			fmt.Printf("  Monthly Limit: $%.2f\n", budgetCfg.MonthlyLimit)
+			fmt.Printf("  Scope:         %s\n", budgetCfg.EffectiveScope())
 			fmt.Println()
 			fmt.Println("  Per-Task Limits:")
 			fmt.Printf("    Max Tokens:   %d\n", budgetCfg.PerTask.MaxTokens)
@@ -420,6 +425,7 @@ func newBudgetSetCmd() *cobra.Command {
 		daily   float64
 		monthly float64
 		enabled bool
+		scope   string
 	)
 
 	cmd := &cobra.Command{
@@ -431,6 +437,7 @@ Examples:
   pilot budget set --daily 50       # Set daily limit to $50
   pilot budget set --monthly 500    # Set monthly limit to $500
   pilot budget set --enabled        # Enable budget enforcement
+  pilot budget set --scope api_key  # Count only API-billed usage
   pilot budget set --daily 100 --monthly 1000 --enabled`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load config
@@ -442,6 +449,10 @@ Examples:
 			// Initialize budget config if nil
 			if cfg.Budget == nil {
 				cfg.Budget = budget.DefaultConfig()
+			}
+
+			if cmd.Flags().Changed("scope") && scope != budget.ScopeAll && scope != budget.ScopeAPIKey {
+				return fmt.Errorf("invalid --scope %q: accepted values are %s, %s", scope, budget.ScopeAll, budget.ScopeAPIKey)
 			}
 
 			// Track what changed
@@ -461,11 +472,17 @@ Examples:
 				changes = append(changes, fmt.Sprintf("enabled: %v", enabled))
 			}
 
+			if cmd.Flags().Changed("scope") {
+				cfg.Budget.Scope = scope
+				changes = append(changes, fmt.Sprintf("scope: %s", scope))
+			}
+
 			if len(changes) == 0 {
 				fmt.Println("No changes specified. Use flags to set values:")
 				fmt.Println("  --daily <amount>     Set daily limit (USD)")
 				fmt.Println("  --monthly <amount>   Set monthly limit (USD)")
 				fmt.Println("  --enabled            Enable budget enforcement")
+				fmt.Println("  --scope <all|api_key> Count all usage or only API-billed usage")
 				return nil
 			}
 
@@ -496,6 +513,7 @@ Examples:
 	cmd.Flags().Float64Var(&daily, "daily", 0, "Daily budget limit (USD)")
 	cmd.Flags().Float64Var(&monthly, "monthly", 0, "Monthly budget limit (USD)")
 	cmd.Flags().BoolVar(&enabled, "enabled", false, "Enable budget enforcement")
+	cmd.Flags().StringVar(&scope, "scope", "", "Usage the limits count: all or api_key (API-billed only)")
 
 	return cmd
 }

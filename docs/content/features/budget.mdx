@@ -117,6 +117,10 @@ Configure budget in `~/.pilot/config.yaml`:
 
 ```yaml
 budget:
+  # all = count every execution; api_key = count only API-billed executions,
+  # subscription tasks are never blocked by this budget
+  scope: all
+
   # Daily spending limit in USD (0 = unlimited)
   daily_limit: 50.00
 
