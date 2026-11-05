@@ -47,7 +47,7 @@ Status: 📋 not filed · 🎫 filed (issue #) · 🚧 in flight · ✅ merged. 
 | U17 | 5 | feat(mobile): mobile layer on the new design (mobile v1 landed 08-15 as PR#84 — the re-land wording was stale); Playwright 390×844 check | 9.6 | L | 🚀 [TASK-637](../../tasks/TASK-637-mobile-on-the-new-design.md): M1 ui#345 → PR#350 · M2 ui#346 → PR#349 · M3 ui#347 → PR#352 · M4 ui#348 → PR#351 all merged 11-05, deployed 13:03Z; M5 ui#357 (review defects) re-armed |
 | U18 | 5 | feat(docs): edit + create `.agent/` docs from the Docs page, PR per change | 9.5 | M | 📋 |
 | U19 | 1 | feat(board): daily cap banner from the cards response `notice`; `daily_cap_reached` toast names the resume time | TASK-589 | S | ✅ ui#280 → PR#284 (10-26, run 3; runs 1–2 → pilot#5864) |
-| U30 | 1 | feat(board): desktop Board per Figma `7-482` — project-grouped list replaces the lanes, status chips incl. FAILED / BLOCKED, moves in the drawer, right column `Performance · N PRs` | 6.1 | L | 📋 [TASK-639](../../tasks/TASK-639-desktop-board-page-grouped-list.md) B1 → B2, holding on two founder calls |
+| U30 | 1 | feat(board): desktop Board per Figma `7-482` — project-grouped list replaces the lanes, status chips incl. FAILED / BLOCKED, moves in the drawer, right column `Performance · N PRs` | 6.1 | L | 📋 [TASK-639](../../tasks/TASK-639-desktop-board-page-grouped-list.md) B1 → B2 armed (both founder calls decided 11-05); B1 files after ui#367 (M7) merges |
 
 Alignment legs U20–U29 (11-04/05, TASK-583 § 2026-11-04 audit + founder design walk-through): all landed — U20 ui#298 · U21 ui#302 · U22 → U28 ui#334 · U23 ui#307 · U24 ui#308 · U25 ui#309 · U26 ui#310 · U27 ui#311 · U29 ui#335. Live: Home and Research match Figma 7-2 / 13-994.
 

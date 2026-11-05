@@ -1,6 +1,6 @@
 # TASK-639: Desktop Board page per Figma 7-482 — the project-grouped list replaces the lanes; moves go to the drawer; the right column becomes Performance
 
-**Status**: 📋 **holding (founder calls)** — 2026-11-05 16:50Z: frame read (`get_design_context` 7:482), code audited, two legs drafted, dispatch dry run clean for B1 and B2. Two founder calls open (§ Open questions) before dispatch.
+**Status**: 🟡 **armed (B1 files after ui#367 merges)** — 2026-11-05 17:15Z: founder decided both calls (§ Decisions 8–9): no Direction card; chip colours follow the frame everywhere. B1 touches `ListRow.vue`, which M7 ([ui#367](https://github.com/qf-studio/pilot-console-ui/issues/367), running) rewrites below md — B1 is filed after M7 merges to avoid a rebase conflict; B2 after B1. Was: 📋 16:50Z frame read, code audited, two legs drafted, dry run clean.
 **Created**: 2026-11-05
 **Assignee**: Navigator (plan) → Pilot (legs) · founder (design calls, live check at ≥ 1280 px)
 **Parent**: [TASK-584](TASK-584-pilot-cloud-execution-roadmap.md) wave 1 — roadmap row U30 (new) · [TASK-583](TASK-583-wave1-design-update-proof-surface.md) (Home U24/U28/U29 set the page geometry this reuses) · [TASK-637](TASK-637-mobile-on-the-new-design.md) (mobile Board stays as M4/M5 built it)
@@ -37,17 +37,19 @@ What the code has today (`origin/main` 11-05):
 6. **Tokens**: add `--color-ds-red` (light `#a23b3d`, dark `#dc9c9d`) and `--color-ds-yellow` (light `#8a6d00`, dark `#eec946`) — dark from the frame, light derived the way green was (`#8cd68c → #187a4e`: same hue, dark enough for 4.5:1 on white).
 7. **Meta** is duration only (`12 min · +184 −32` as the queue builds it; no tokens, no cost — D2 "duration-only rows"); the frame's leading `0` is not rendered.
 
+8. **No Direction / JEV card** (founder, 11-05 17:10Z): skipped until a wire field carries judge counts; a card of dashes is noise.
+9. **Chip colours follow the frame everywhere** (founder, 11-05 17:10Z): `DONE` green (`Chip` `done` → `border-ds-green text-ds-green`) on Home, mobile and desktop Board; a held card is `BLOCKED` yellow on every surface — the mobile `REVIEW` green chip from M5/M7 becomes `BLOCKED` in B1. One vocabulary on three pages.
+
 ## Open questions (founder)
 
-1. **Direction / JEV card**: skip until a source exists (recommended), or render it with `—` values now?
-2. **Chip colours**: the frame paints `DONE` green and held cards `BLOCKED` yellow; Home paints `DONE` white (`Chip` `done`) and mobile M5 paints held `REVIEW` green. Recommended: follow the frame on the Board (DONE green, BLOCKED yellow) and re-colour Home's `done` to green in the same leg so the vocabulary is one. Alternative: keep DONE white everywhere and use `REVIEW` green for held, no yellow token.
+None — both answered 11-05 (decisions 8–9).
 
 ## Legs (dispatch order B1 → B2)
 
 ### LEG B1 — repo: qf-studio/pilot-console-ui — title: feat(design): Board row primitives — ds-red and ds-yellow tokens, Chip failed and blocked variants, ListRow board layout, buildQueue uncapped with the full status chip vocabulary
 
 ## Context
-Figma 7-482 (desktop Board) is a project-grouped list in the Home queue vocabulary: rows `id (161 px) · chip (64 px slot) · title · meta`, with chips `CI`, `DONE`, `QUEUED`, `FAILED` (`#dc9c9d`), `BLOCKED` (`#eec946`). Today `src/design-system/components/ListRow.vue` fixes the chip last and the id at 64 px; `src/design-system/components/Chip.vue` has `neutral | pilot | done | review`; `src/design-system/theme.css` has `--color-ds-green` and `--color-ds-blue` only; `src/components/dashboard/queue.ts` caps groups at `MAX_GROUPS` × `MAX_ROWS` and `chipFor` knows `CI | PILOT | DONE`. The Board page leg (B2) composes these; this leg adds the primitives without changing any rendered page.
+Figma 7-482 (desktop Board) is a project-grouped list in the Home queue vocabulary: rows `id (161 px) · chip (64 px slot) · title · meta`, with chips `CI`, `DONE`, `QUEUED`, `FAILED` (`#dc9c9d`), `BLOCKED` (`#eec946`). Today `src/design-system/components/ListRow.vue` fixes the chip last and the id at 64 px; `src/design-system/components/Chip.vue` has `neutral | pilot | done | review`; `src/design-system/theme.css` has `--color-ds-green` and `--color-ds-blue` only; `src/components/dashboard/queue.ts` caps groups at `MAX_GROUPS` × `MAX_ROWS` and `chipFor` knows `CI | PILOT | DONE`. The Board page leg (B2) composes these. This leg adds the primitives; its only visible changes are the founder's colour decision: `DONE` chips turn green on Home and the mobile Board, and a held mobile card shows `BLOCKED` (yellow) instead of `REVIEW` (green).
 
 probe: present qf-studio/pilot-console-ui export[[:space:]]function[[:space:]]buildQueue
 probe: present qf-studio/pilot-console-ui color-ds-green:
@@ -55,7 +57,8 @@ probe: present qf-studio/pilot-console-ui data-row-chip
 
 ## Scope
 - `src/design-system/theme.css`: `--color-ds-red` light `#a23b3d` / dark `#dc9c9d`; `--color-ds-yellow` light `#8a6d00` / dark `#eec946`, next to the green and blue tokens in both theme blocks.
-- `src/design-system/components/Chip.vue`: variants `failed` (`border-ds-red text-ds-red`) and `blocked` (`border-ds-yellow text-ds-yellow`); `data-variant` carries them.
+- `src/design-system/components/Chip.vue`: variants `failed` (`border-ds-red text-ds-red`) and `blocked` (`border-ds-yellow text-ds-yellow`); `done` becomes `border-ds-green text-ds-green` (Figma 7-482 `#8cd68c`); the `review` variant is removed once no caller is left; `data-variant` carries them. Update the component docblock.
+- `src/views/BoardView.vue` mobile rows (after M7, ui#367): the held card's chip is `<Chip variant="blocked">BLOCKED</Chip>`; the BoardView mobile spec's held-chip assertions follow (`BLOCKED`, `data-variant="blocked"`). Nothing else on the mobile block changes.
 - `src/design-system/components/ListRow.vue`: prop `layout?: 'queue' | 'board'` (default `queue`, markup unchanged). `board` on md and up: the id cell `w-[161px]`, the chip slot rendered after the id in a `w-16` slot (empty slot keeps the width), the title flex, the meta `shrink-0` auto width right. Below md the M5 two-line form is the same for both layouts.
 - `src/components/dashboard/queue.ts`: `QueueChip` gains `'QUEUED' | 'BACKLOG' | 'TO DO' | 'CANCELED' | 'FAILED' | 'BLOCKED'`; `chipFor(card, exec)` maps by status (`queued → QUEUED`, `in_progress → PILOT`, `in_review → CI`, `done → DONE`, `backlog → BACKLOG`, `todo → TO DO`, `canceled → CANCELED`) with overlays first: `card.hasParkedOps → FAILED`, else `card.needsYou → BLOCKED`. `buildQueue(cards, executions, options?: { cap?: boolean })` — `cap: false` returns every group and every row, `more = 0`; the default stays capped so the Home queue is unchanged. `group.shipped` and `running` semantics unchanged.
 - `src/lib/api/types.ts`: `BoardCard.hasParkedOps: boolean`. The console serves it and the vendored list `src/lib/api/__contracts__/console-wire-fields.txt` carries it, but `src/lib/api/httpAdapter.ts` drops it on purpose (comment near `toCardLink`: the drawer computes the parked state from `listCardOps`). Pass `wire.hasParkedOps` through for the list chip; the drawer keeps its own computation; update that comment. No wire-list change.
@@ -70,7 +73,7 @@ probe: present qf-studio/pilot-console-ui data-row-chip
 - [ ] `npm run lint` passes; paste the output into the PR body.
 
 ## Out of scope
-`src/views/BoardView.vue`, the drawer, `ContextPanel`, any page. Home's `done` chip colour (B2 or a founder call). Light-theme colour tuning beyond the two values above.
+The desktop block of `src/views/BoardView.vue`, the drawer, `ContextPanel`, any page layout. Light-theme colour tuning beyond the two values above.
 
 ## Refs
 - Navigator TASK-639 B1 · Figma `BfAqtVPBp0i4iWHg2jzAnB` 7-482 · ui#239 (U1 tokens) · ui#257 (U4 queue) · ui#357 (M5 ListRow two-line form)
