@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/qf-studio/pilot/internal/memory"
@@ -148,6 +149,9 @@ type PostMergeReview struct {
 	// Downgraded is true when the model said REQUEST-CHANGES without a
 	// [blocking] defect and the verdict was lowered to APPROVE-WITH-NOTES.
 	Downgraded bool
+	// PRBodyOnly is true when every [blocking] defect the model reported sat at
+	// the PR body, so the daemon made them [minor] and lowered the verdict.
+	PRBodyOnly bool
 	// NoFilesRead is true when the reviewer had a checkout, opened no file in
 	// it, and the verdict was therefore posted as APPROVE-WITH-NOTES (GH-5947).
 	NoFilesRead bool
@@ -426,7 +430,7 @@ IMPORTANT — truncation handling: A "## Changed Files" manifest lists every fil
 
 ` + postMergePRBodyParagraph + `
 
-Severity. Tag every defect [blocking] or [minor]. Blocking means exactly one of: a requirement of the issue is not met; a wire field has no producer; a test proves nothing about the contract it guards; a migration loses data; an out-of-scope change alters behaviour. Everything else is [minor]. An acceptance bullet about pasted build, test or lint output is [minor] unless the pasted output shows a failing test or build for code the diff changed; a pre-existing failure in an unrelated package is [minor], naming the package. ` + postMergeGreenCIRule + `
+Severity. A defect about the PR body, the Evidence block or the Not verified section is never [blocking]; the body is assembled by the runner, not by the author. Tag every defect [blocking] or [minor]. Blocking means exactly one of: a requirement of the issue is not met; a wire field has no producer; a test proves nothing about the contract it guards; a migration loses data; an out-of-scope change alters behaviour. Everything else is [minor]. An acceptance bullet about pasted build, test or lint output is [minor] unless the pasted output shows a failing test or build for code the diff changed; a pre-existing failure in an unrelated package is [minor], naming the package. ` + postMergeGreenCIRule + `
 
 Output exactly this format and nothing before it:
 VERDICT: <APPROVE|APPROVE-WITH-NOTES|REQUEST-CHANGES>
@@ -631,7 +635,9 @@ func (r *PostMergeReviewer) reviewPass(ctx context.Context, in PostMergeReviewIn
 	// GH-5996: logged after the citation rule so a citation downgrade is seen too.
 	if review.Downgraded {
 		reason := "no [blocking] defect"
-		if !parseDowngraded {
+		if review.PRBodyOnly {
+			reason = "pr-body-only"
+		} else if !parseDowngraded {
 			reason = "citation rule moved a requirement marked met to NOT-VERIFIED"
 		}
 		r.log.Info("post-merge review: REQUEST-CHANGES downgraded to APPROVE-WITH-NOTES",
@@ -721,13 +727,63 @@ func parsePostMergeReview(text string) *PostMergeReview {
 
 	review.Defects = defects
 	review.NotVerified = notVerified
+	// The PR body is assembled by the runner, not by the author, so a defect
+	// located there is never blocking: no code change can fix it.
+	bodyDowngraded := false
 	if verdict == PostMergeRequestChanges && len(review.BlockingDefects()) == 0 {
 		verdict = PostMergeApproveWithNotes
 		review.Downgraded = true
+		review.PRBodyOnly = bodyDowngraded
 	}
 	review.Verdict = verdict
 	review.Notes = strings.Join(notes, "\n")
 	return review
+}
+
+// isPRBodyLocation reports whether a defect Location names the PR body rather
+// than a file: "PR", "PR — body", "PR body", "PR — body Evidence". It starts with
+// "PR" as a whole word and carries no path separator, file extension or :line.
+func isPRBodyLocation(location string) bool {
+	loc := strings.TrimSpace(location)
+	rest, ok := strings.CutPrefix(loc, "PR")
+	if !ok {
+		return false
+	}
+	if r, _ := utf8.DecodeRuneInString(rest); r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+		return false
+	}
+	return !postMergeFileLocationRe.MatchString(loc)
+}
+
+// IsPRBodyLocation is isPRBodyLocation for callers outside the package.
+func IsPRBodyLocation(location string) bool { return isPRBodyLocation(location) }
+
+// DowngradePRBodyDefects makes every [blocking] PR-body defect of review [minor]
+// and re-derives the verdict, so a review whose only blocking defects sit at the
+// PR body files no follow-up issue. It is idempotent: parsePostMergeReview has
+// applied it already, and the autopilot applies it again to any reviewer.
+func (r *PostMergeReview) DowngradePRBodyDefects() {
+	if !downgradePRBodyDefects(r.Defects) {
+		return
+	}
+	if r.Verdict == PostMergeRequestChanges && len(r.BlockingDefects()) == 0 {
+		r.Verdict = PostMergeApproveWithNotes
+		r.Downgraded = true
+		r.PRBodyOnly = true
+	}
+}
+
+// downgradePRBodyDefects makes every [blocking] defect located at the PR body
+// [minor], keeping its text, and reports whether it changed any.
+func downgradePRBodyDefects(defects []PostMergeDefect) bool {
+	changed := false
+	for i := range defects {
+		if defects[i].Severity == PostMergeSeverityBlocking && isPRBodyLocation(defects[i].Location) {
+			defects[i].Severity = PostMergeSeverityMinor
+			changed = true
+		}
+	}
+	return changed
 }
 
 // postMergeNoFilesReadNote is the first note of a checkout review that opened

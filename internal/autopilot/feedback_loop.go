@@ -623,7 +623,7 @@ func (f *FeedbackLoop) CreatePostMergeMinorsIssue(ctx context.Context, prNumber 
 	}
 
 	var tail strings.Builder
-	tail.WriteString("\nAdd one test per item that fails without the change, and name each test in the PR body as the item's mutation pin (revert the item -> the test fails).\n")
+	tail.WriteString("\nAdd one test per item that fails without the change; put a comment `// mutation pin: <item summary> -> this test fails` directly above each test.\n")
 	tail.WriteString("\n## Acceptance\n\n")
 	var dirs []string
 	for _, d := range kept {
@@ -634,7 +634,7 @@ func (f *FeedbackLoop) CreatePostMergeMinorsIssue(ctx context.Context, prNumber 
 	for _, dir := range dirs {
 		fmt.Fprintf(&tail, "- `go test -race %s` passes; paste the output into the PR body.\n", dir)
 	}
-	tail.WriteString("- Each listed item has a test, and the PR body names the mutation pin for each item.\n")
+	tail.WriteString("- Each listed item has a test with a `mutation pin:` comment above it in the test file.\n")
 	tail.WriteString("\n## Out of scope\n\n")
 	for i, d := range dropped {
 		if i == maxPostMergeDefects {

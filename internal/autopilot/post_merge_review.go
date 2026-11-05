@@ -348,6 +348,9 @@ func truncatePostMergeRaw(s string) string {
 // for REQUEST-CHANGES, files the follow-up issue. An APPROVE-WITH-NOTES review
 // may file one batched minors issue (GH-6007).
 func (c *Controller) postPostMergeReview(ctx context.Context, in postMergeReviewInputs, review *executor.PostMergeReview) {
+	// A defect at the PR body is never blocking: the runner writes the body, so
+	// no fix issue can change it.
+	review.DowngradePRBodyDefects()
 	var commentID int64
 	// A PR is an issue for comment purposes: AddComment takes the PR number.
 	if cm, err := c.ghClient.AddComment(ctx, c.owner, c.repo, in.prNumber, buildPostMergeReviewComment(review)); err != nil {
@@ -416,6 +419,8 @@ var minorLocationShape = regexp.MustCompile(`^[A-Za-z0-9._/-]*/[A-Za-z0-9._-]*\.
 // minorDropReason returns why a minor defect does not pass the filing filter,
 // or "" when it does.
 func minorDropReason(d executor.PostMergeDefect) string {
+	// A PR-body location ("PR", "PR — body") has no slash, so the shape check
+	// below drops it: the runner writes the body, no code change fixes it.
 	if !minorLocationShape.MatchString(strings.TrimSpace(d.Location)) {
 		return "no file location"
 	}
@@ -529,6 +534,9 @@ func formatPostMergeDefects(defects []executor.PostMergeDefect, withSeverity boo
 		}
 		if ev := plainPostMergeField(d.Evidence, maxPostMergeFieldChars); ev != "" {
 			fmt.Fprintf(&sb, "\n  Evidence: %s", ev)
+		}
+		if executor.IsPRBodyLocation(d.Location) {
+			sb.WriteString(" (PR body, not code)")
 		}
 		sb.WriteString("\n")
 	}
