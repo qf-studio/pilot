@@ -729,7 +729,7 @@ func parsePostMergeReview(text string) *PostMergeReview {
 	review.NotVerified = notVerified
 	// The PR body is assembled by the runner, not by the author, so a defect
 	// located there is never blocking: no code change can fix it.
-	bodyDowngraded := false
+	bodyDowngraded := downgradePRBodyDefects(review.Defects)
 	if verdict == PostMergeRequestChanges && len(review.BlockingDefects()) == 0 {
 		verdict = PostMergeApproveWithNotes
 		review.Downgraded = true
@@ -774,11 +774,15 @@ func (r *PostMergeReview) DowngradePRBodyDefects() {
 }
 
 // downgradePRBodyDefects makes every [blocking] defect located at the PR body
-// [minor], keeping its text, and reports whether it changed any.
+// [minor], keeping its text, and reports whether it changed any. A body defect
+// that reports a FAIL in the pasted output is left to
+// downgradeEvidenceFailWithGreenCI: it stays blocking unless CI at merge was green.
 func downgradePRBodyDefects(defects []PostMergeDefect) bool {
 	changed := false
 	for i := range defects {
-		if defects[i].Severity == PostMergeSeverityBlocking && isPRBodyLocation(defects[i].Location) {
+		d := defects[i]
+		if d.Severity == PostMergeSeverityBlocking && isPRBodyLocation(d.Location) &&
+			!postMergeEvidenceFailRe.MatchString(strings.Join(nonEmpty(d.Location, d.Claim, d.Evidence), " ")) {
 			defects[i].Severity = PostMergeSeverityMinor
 			changed = true
 		}
