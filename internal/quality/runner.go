@@ -50,9 +50,6 @@ type Runner struct {
 
 	// lookPath resolves a binary on PATH; exec.LookPath unless a test overrides it.
 	lookPath func(string) (string, error)
-	// runGateFn replaces runGate inside RunAll when a test needs a gate to come
-	// back in a state runGate itself no longer produces.
-	runGateFn func(ctx context.Context, gate *Gate) *Result
 	// fallbackWarned dedups the toolchain-fallback WARN to once per gate per Runner.
 	fallbackMu     sync.Mutex
 	fallbackWarned map[string]bool
@@ -162,32 +159,18 @@ func (r *Runner) RunAll(ctx context.Context, taskID string) (*CheckResults, erro
 			wg.Add(1)
 			logging.SafeGo("quality-runner", func() {
 				defer wg.Done()
-				results.Results[i] = r.runGateOnce(ctx, gate)
+				results.Results[i] = r.runGate(ctx, gate)
 			})
 		}
 		wg.Wait()
 	} else {
 		// Execute gates sequentially
 		for i, gate := range r.config.Gates {
-			results.Results[i] = r.runGateOnce(ctx, gate)
+			results.Results[i] = r.runGate(ctx, gate)
 		}
 	}
 
-	// Evaluate results
-	allPassed := true
-	for i, result := range results.Results {
-		gate := r.config.Gates[i]
-		// Fail closed: a required gate that did not reach StatusPassed (still
-		// running, retrying, skipped) must not let the run pass.
-		if result.Status != StatusPassed && gate.Required {
-			allPassed = false
-			r.log.Warn("Required quality gate failed",
-				slog.String("gate", gate.Name),
-				slog.String("status", string(result.Status)),
-				slog.String("error", result.Error),
-			)
-		}
-	}
+	allPassed := r.requiredGatesPassed(r.config.Gates, results.Results)
 
 	results.AllPassed = allPassed
 	results.CompletedAt = time.Now()
@@ -202,12 +185,24 @@ func (r *Runner) RunAll(ctx context.Context, taskID string) (*CheckResults, erro
 	return results, nil
 }
 
-// runGateOnce runs one gate for RunAll, honouring the runGateFn test seam.
-func (r *Runner) runGateOnce(ctx context.Context, gate *Gate) *Result {
-	if r.runGateFn != nil {
-		return r.runGateFn(ctx, gate)
+// requiredGatesPassed reports whether every required gate reached StatusPassed.
+// It fails closed: a required gate that did not (still running, retrying,
+// skipped) must not let the run pass. Kept apart from RunAll so tests can feed
+// it a result runGate itself no longer produces.
+func (r *Runner) requiredGatesPassed(gates []*Gate, results []*Result) bool {
+	allPassed := true
+	for i, result := range results {
+		gate := gates[i]
+		if result.Status != StatusPassed && gate.Required {
+			allPassed = false
+			r.log.Warn("Required quality gate failed",
+				slog.String("gate", gate.Name),
+				slog.String("status", string(result.Status)),
+				slog.String("error", result.Error),
+			)
+		}
 	}
-	return r.runGate(ctx, gate)
+	return allPassed
 }
 
 // RunGate executes a single quality gate
@@ -275,6 +270,9 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 
 		result.ExitCode = exitCode
 		result.Output = output
+		// Err describes this attempt only: a timeout on attempt 1 must not
+		// outlive a later attempt that exits non-zero or passes.
+		result.Err = nil
 
 		if err != nil {
 			if ctx.Err() != nil {
@@ -651,11 +649,20 @@ func FormatErrorFeedback(results *CheckResults) string {
 	sb.WriteString("The following quality gates failed. Please fix the issues and try again.\n\n")
 
 	for _, result := range results.Results {
-		if result.Status != StatusFailed {
+		if result.Status == StatusPassed {
 			continue
 		}
 
-		fmt.Fprintf(&sb, "### %s Gate (FAILED)\n\n", result.GateName)
+		label := "FAILED"
+		if result.Status != StatusFailed {
+			label = "NOT PASSED: " + string(result.Status)
+		}
+		fmt.Fprintf(&sb, "### %s Gate (%s)\n\n", result.GateName, label)
+		// A timeout leaves no exit code worth reading; say so, so the model can
+		// tell a hung gate from a red test.
+		if errors.Is(result.Err, ErrGateTimeout) {
+			fmt.Fprintf(&sb, "**Timed out:** %s\n\n", result.Error)
+		}
 		sb.WriteString("**Error Output:**\n```\n")
 		sb.WriteString(extractFailureOutput(result.Output, 2000))
 		sb.WriteString("\n```\n\n")
@@ -742,7 +749,7 @@ func ShouldRetry(config *Config, results *CheckResults, attempt int) bool {
 func RunnerMissingOnly(config *Config, results *CheckResults) bool {
 	runnerMissing, fixable := false, false
 	for i, res := range results.Results {
-		if res == nil || res.Status != StatusFailed {
+		if res == nil || res.Status == StatusPassed {
 			continue
 		}
 		if i < len(config.Gates) && !config.Gates[i].Required {

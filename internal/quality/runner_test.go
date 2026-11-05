@@ -998,25 +998,16 @@ func TestRunAll_RequiredGateNotPassedFailsRun(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config := &Config{
-				Enabled: true,
-				Gates: []*Gate{
-					{Name: "stuck", Type: GateCustom, Command: "true", Required: tt.required},
-				},
+			gates := []*Gate{
+				{Name: "stuck", Type: GateCustom, Command: "true", Required: tt.required},
 			}
-			runner := NewRunner(config, t.TempDir())
+			runner := NewRunner(&Config{Enabled: true, Gates: gates}, t.TempDir())
 			var buf bytes.Buffer
 			runner.log = slog.New(slog.NewTextHandler(&buf, nil))
-			runner.runGateFn = func(_ context.Context, gate *Gate) *Result {
-				return &Result{GateName: gate.Name, Status: StatusRunning}
-			}
 
-			results, err := runner.RunAll(context.Background(), "task")
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if results.AllPassed != tt.wantPassed {
-				t.Errorf("AllPassed = %v, want %v", results.AllPassed, tt.wantPassed)
+			got := runner.requiredGatesPassed(gates, []*Result{{GateName: "stuck", Status: StatusRunning}})
+			if got != tt.wantPassed {
+				t.Errorf("requiredGatesPassed = %v, want %v", got, tt.wantPassed)
 			}
 			warned := strings.Contains(buf.String(), "Required quality gate failed")
 			if warned != tt.wantWarn {
