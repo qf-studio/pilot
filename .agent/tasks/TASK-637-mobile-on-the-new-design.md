@@ -1,6 +1,6 @@
 # TASK-637: Mobile on the new design — port the mobile v1 layer (PR#84, 2026-08-15) to the 2026-10 Figma design, with a 390×844 Playwright check
 
-**Status**: 📋 PLANNED 2026-11-05 — founder "Go" on the four legs and "Approved" on the Playwright dev dependency (package.json change). Third tab renamed Chat → Research (Navigator call, matches the desktop page name). Dispatch: M1 and M2 first, M3 and M4 after M2.
+**Status**: 🚀 **11-05 13:30Z — M1–M4 ALL MERGED (PR#350 Playwright + CI job e2e-mobile with the mobile-390x844 artifact · PR#349 shell · PR#352 Home + fix PR#356 open · PR#351 Board + fix PR#355), deployed 13:03Z. Review against the 390×844 artifact: APPROVE-with-defects → M5 [ui#357](https://github.com/qf-studio/pilot-console-ui/issues/357) filed (two-line ListRow below md; Research composer not pinned on mobile; org name twice on Home; Board rows "GH GH-101" + lane chip on every row).** Was: 📋 PLANNED 2026-11-05 — founder "Go" on the four legs and "Approved" on the Playwright dev dependency (package.json change). Third tab renamed Chat → Research (Navigator call, matches the desktop page name). Dispatch: M1 and M2 first, M3 and M4 after M2.
 **Created**: 2026-11-05
 **Assignee**: Navigator (plan) → Pilot (legs) · founder (visual check on a phone)
 **Parent**: [TASK-584](TASK-584-pilot-cloud-execution-roadmap.md) wave 5 row U17 · [TASK-583](TASK-583-wave1-design-update-proof-surface.md) (desktop legs U20–U29)
@@ -140,6 +140,41 @@ The desktop Board page (Figma 7-482 has no ticket yet). Decision logic in useCar
 ## Refs
 - Navigator TASK-637 M4 · Figma 7-482 · ui#242 (U4) · ui#302 (U21) · design/mobile-v1.html frames 2, 3, 5
 
+### LEG M5 — repo: qf-studio/pilot-console-ui — title: fix(mobile): two-line list rows below md, the Research composer pinned above the tab bar, no duplicate org name on Home, Board lane rows without the lane chip and without a doubled id
+
+## Context
+The M1 artifact mobile-390x844 from CI run 42031853721 (main b3c2f84, 2026-11-05 12:59Z) shows four defects after M2, M3 and M4 merged (PR#349, PR#352, PR#351 + PR#355):
+1. `src/design-system/components/ListRow.vue` keeps its desktop geometry below md: a 64 px id cell, a 156 px right-aligned meta cell and the chip, so at 390 px the title gets about 110 px and renders as "Spike: …" or "Fi…"; a long id such as LIN-ENG-52 wraps onto two lines inside the 64 px cell. Both the Home queue (`src/components/dashboard/DashboardQueue.vue`) and the Board lane rows (`src/views/BoardView.vue`) use it.
+2. On Research the composer renders directly under the title, not above the tab bar: `src/views/ChatView.vue` wraps `src/design-system/components/HomeGridLayout.vue` with pin-composer, but below md the layout is a plain flex column with no height, so the scroll container collapses and the composer follows the content. On Home the content fills the height, so the composer lands above the tab bar by accident.
+3. Home shows the org name twice below md: once in the M2 header band and once in the page row with data-header-org (DashboardView near line 165).
+4. Board lane rows render the id as the provider marker plus the sequenceId ("GH GH-101", BoardView near line 381; the sequenceId already carries the GH- prefix, the U20 class), and every row carries a chip with the lane's own name (BACKLOG × 5 in the Backlog lane), which says nothing inside a lane.
+
+probe: present qf-studio/pilot-console-ui data-row-meta
+probe: present qf-studio/pilot-console-ui PROVIDER_MARKERS\[card.link.provider\]
+probe: present qf-studio/pilot-console-ui data-research-layout
+
+## Scope
+- `src/design-system/components/ListRow.vue`: below md the row becomes two lines — line 1 the id (no fixed width, no wrap) left and the chip right; line 2 the title full width, truncated, with the meta after it in the muted colour when present. Desktop geometry unchanged. The same markup serves both callers.
+- `src/design-system/components/HomeGridLayout.vue`: below md with pin-composer the layout fills the main height (the same min-h-0 flex chain as on desktop), the scroll container scrolls, and the composer slot sits last, above the tab bar padding. Both Home and Research get it from the shared component.
+- `src/views/DashboardView.vue`: below md hide the org name in the page row and keep the "Last shipped · Pool" line, left-aligned. The header band keeps the org name.
+- `src/views/BoardView.vue` mobile rows: the id uses the sequenceId as served (drop the marker when the sequenceId already starts with it; a board-only card keeps the dot); no status chip in a lane; a held card keeps a single REVIEW chip (ds-green) to mark the sheet target.
+- Tests: New file, plain text: src/design-system/components/__tests__/ListRow.spec.ts at innerWidth 390 asserts the two-line structure and that the id cell has no fixed width class; `src/views/__tests__/ChatView.spec.ts` at 390 asserts the composer slot is the last child of the layout; `src/views/__tests__/DashboardView.spec.ts` at 390 asserts one org name in the document; `src/views/__tests__/BoardView.spec.ts` mobile block asserts "GH-101" renders once with no marker and lane rows carry no status chip.
+- e2e: the home and board specs add one assertion each — the id cell bounding box is one line high (at most 26 px) and the composer bottom sits within the tab bar height plus 16 px of the viewport bottom on home and research. Regenerate the screenshots; the PR body links the artifact.
+
+## Acceptance
+- [ ] `npm test` passes; paste the output into the PR body.
+- [ ] `make e2e` passes; paste the output into the PR body.
+- [ ] Restore the 64 px id width below md -> the new ListRow.spec.ts 390 assertion fails
+- [ ] Render the lane chip on every row -> the BoardView.spec.ts no-chip assertion fails
+- [ ] `npm run build` passes; paste the output into the PR body.
+- [ ] `npm run lint` passes; paste the output into the PR body.
+
+## Out of scope
+Desktop rows. The Approve sheet and the bell sheet (M4, PR#355). The Context column on mobile.
+
+## Refs
+- Navigator TASK-637 M5 (review of PR#349/#350/#351/#352 against the 390×844 artifact) · ui#345–#348 · ui#298 (U20)
+
 ## Verify
 
 - Playwright artifact mobile-390x844 on the M3 and M4 PRs: Home shows four stat cards, the chart, the queue and the composer above the tab bar with no "$"; Board shows pills and chip rows; Research shows the composer and no Context column; Menu lists Review and Docs.
@@ -151,3 +186,4 @@ The desktop Board page (Figma 7-482 has no ticket yet). Decision logic in useCar
 - M2 → https://github.com/qf-studio/pilot-console-ui/issues/346
 - M3 → https://github.com/qf-studio/pilot-console-ui/issues/347
 - M4 → https://github.com/qf-studio/pilot-console-ui/issues/348
+- M5 → https://github.com/qf-studio/pilot-console-ui/issues/357
