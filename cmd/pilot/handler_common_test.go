@@ -1698,3 +1698,58 @@ func TestBudgetScopeEndsOverride(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleIssueGeneric_PausedEnforcerKeepsAPIKeyOverride drives the real
+// dispatcher and enforcer: a manual pause under scope api_key blocks the task
+// and must neither clear the operator's cli api_key override nor let the task
+// through on the subscription it would fall back to.
+func TestHandleIssueGeneric_PausedEnforcerKeepsAPIKeyOverride(t *testing.T) {
+	const keyEnv = "PILOT_TEST_GH6110_API_KEY"
+	t.Setenv(keyEnv, "test-api-key")
+
+	backendCfg := executor.DefaultBackendConfig()
+	backendCfg.ClaudeCode = &executor.ClaudeCodeConfig{
+		Billing: &executor.BillingConfig{Mode: executor.BillingModeSubscription, APIKeyEnv: keyEnv},
+	}
+	runner, err := executor.NewRunnerWithConfig(backendCfg)
+	if err != nil {
+		t.Fatalf("NewRunnerWithConfig failed: %v", err)
+	}
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	dispatcher := executor.NewDispatcher(store, runner, nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	t.Cleanup(dispatcher.Stop)
+	t.Cleanup(func() { _ = dispatcher.ClearBillingOverride("test") })
+
+	if err := dispatcher.SetBillingOverride("api_key", time.Time{}, executor.BillingModeSourceCLI); err != nil {
+		t.Fatalf("SetBillingOverride failed: %v", err)
+	}
+
+	enforcer := budget.NewEnforcer(&budget.Config{Enabled: true, Scope: budget.ScopeAPIKey}, nil)
+	enforcer.Pause("manual pause")
+
+	deps := HandlerDeps{
+		Cfg:         &config.Config{},
+		Dispatcher:  dispatcher,
+		Monitor:     executor.NewMonitor(),
+		Enforcer:    enforcer,
+		ProjectPath: "/tmp/pilot-gh-6110-does-not-exist",
+	}
+	info := IssueInfo{TaskID: "GH-6110", Title: "paused budget", Adapter: "github", LogMark: "▸"}
+	task := &executor.Task{ID: "GH-6110", Title: "paused budget", Branch: "pilot/GH-6110", ProjectPath: deps.ProjectPath}
+
+	if _, err := handleIssueGeneric(context.Background(), deps, info, task); err == nil {
+		t.Fatal("expected a budget error: a paused enforcer must block the task")
+	}
+
+	got := dispatcher.BillingOverride()
+	if got.Mode != "api_key" || got.Source != executor.BillingModeSourceCLI {
+		t.Errorf("BillingOverride() = %+v, want the cli api_key override left in force", got)
+	}
+}

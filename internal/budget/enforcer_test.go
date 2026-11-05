@@ -899,3 +899,33 @@ func TestEnforcer_ScopeAll_Unchanged(t *testing.T) {
 		})
 	}
 }
+
+func TestEnforcer_ScopeAPIKey_PausedBlocksEveryMode(t *testing.T) {
+	for _, mode := range []string{memory.BillingModeSubscription, memory.BillingModeAPIKey, "", memory.BillingModeUnknown} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			provider := &mockUsageProvider{}
+			enforcer := NewEnforcer(scopedConfig(ScopeAPIKey), provider)
+			enforcer.Pause("manual pause")
+
+			result, err := enforcer.CheckBudgetForMode(context.Background(), "", "", mode)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.Allowed {
+				t.Fatalf("paused enforcer must block mode %q under scope api_key", mode)
+			}
+			if result.Action != ActionPause || result.Reason != "manual pause" {
+				t.Errorf("result = %+v, want pause with the pause reason", result)
+			}
+
+			enforcer.Resume()
+			result, err = enforcer.CheckBudgetForMode(context.Background(), "", "", mode)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !result.Allowed {
+				t.Errorf("resumed enforcer must allow mode %q with no spend", mode)
+			}
+		})
+	}
+}

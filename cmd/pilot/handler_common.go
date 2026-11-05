@@ -289,8 +289,9 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 		}
 		checkResult, budgetErr := deps.Enforcer.CheckBudgetForMode(ctx, "", "", billingOverride.Mode)
 		// A scoped budget exhausted by an api_key override ends the override
-		// and lets the task proceed on the subscription.
-		if budgetErr == nil && !checkResult.Allowed && deps.Dispatcher != nil &&
+		// and lets the task proceed on the subscription. A manual pause is not
+		// spend: it keeps blocking and leaves the override alone.
+		if budgetErr == nil && !checkResult.Allowed && deps.Dispatcher != nil && !deps.Enforcer.IsPaused() &&
 			budgetScopeEndsOverride(deps.Enforcer.Scope(), billingOverride, billingOverride.ConfigMode) {
 			if clearErr := deps.Dispatcher.ClearBillingOverride("budget"); clearErr != nil {
 				logging.WithComponent("budget").Warn("could not end the api_key override",
