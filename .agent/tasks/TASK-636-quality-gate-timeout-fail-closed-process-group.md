@@ -1,6 +1,6 @@
 # TASK-636: Quality gate timeouts — fail closed on the last attempt, kill the whole process group
 
-**Status**: 📋 TRIAGED 2026-11-05 — two reports from scrappydog ([pilot#6075](https://github.com/qf-studio/pilot/issues/6075) false pass on a last-attempt timeout · [pilot#6076](https://github.com/qf-studio/pilot/issues/6076) timeout does not bound wall time), both verified on main, both with tested fixes and repro tests in the report. Box exposure: `test` gate `make test-changed` timeout 10m, max_retries 1 — a timeout on the retry would pass the gate; daemon.log has 0 `quality gate timed out` lines so far. Legs G1 (fail closed) and G2 (process group, shared helper) below; G2 depends on G1 (same file).
+**Status**: 🚀 **G1 → [pilot#6080](https://github.com/qf-studio/pilot/issues/6080) + G2 → [pilot#6081](https://github.com/qf-studio/pilot/issues/6081) DISPATCHED 2026-11-05 (`pilot` + `no-decompose`; G2 depends on G1). Replies with the leg links posted on #6075 and #6076.** Triage: two reports from scrappydog ([pilot#6075](https://github.com/qf-studio/pilot/issues/6075) false pass on a last-attempt timeout · [pilot#6076](https://github.com/qf-studio/pilot/issues/6076) timeout does not bound wall time), both verified on main, both with tested fixes and repro tests in the report. Box exposure: `test` gate `make test-changed` timeout 10m, max_retries 1 — a timeout on the retry would pass the gate; daemon.log has 0 `quality gate timed out` lines so far. Legs G1 (fail closed) and G2 (process group, shared helper) below; G2 depends on G1 (same file).
 **Created**: 2026-11-05
 **Assignee**: Pilot
 
@@ -25,7 +25,7 @@ Depends on: none
 probe: present qf-studio/pilot func[[:space:]]\(r[[:space:]]\*Runner\)[[:space:]]runGate\(
 probe: present qf-studio/pilot result\.Status[[:space:]]==[[:space:]]StatusFailed[[:space:]]&&[[:space:]]gate\.Required
 probe: present qf-studio/pilot ErrGateTimeout
-probe: absent qf-studio/pilot TestRunGate_TimeoutOnLastAttemptFails
+probe: absent qf-studio/pilot func[[:space:]]TestRunGate_TimeoutOnLastAttemptFails\(
 
 ## Scope
 
@@ -94,3 +94,8 @@ The last-attempt status (leg G1); the executor's agent subprocess lifecycle beyo
 
 - G1 → (pending)
 - G2 → (pending)
+
+## Refs
+
+- G1 → https://github.com/qf-studio/pilot/issues/6080
+- G2 → https://github.com/qf-studio/pilot/issues/6081
