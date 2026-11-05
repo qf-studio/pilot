@@ -1,8 +1,12 @@
 package quality
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -915,4 +919,112 @@ func TestRunner_RunAll_DefaultsToSequential(t *testing.T) {
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func TestRunGate_TimeoutOnLastAttemptFails(t *testing.T) {
+	config := &Config{
+		Enabled: true,
+		Gates: []*Gate{
+			{
+				Name:     "slow",
+				Type:     GateCustom,
+				Command:  "sleep 30",
+				Required: true,
+				Timeout:  500 * time.Millisecond,
+			},
+		},
+	}
+
+	runner := NewRunner(config, t.TempDir())
+	result, err := runner.RunGate(context.Background(), "slow")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Status != StatusFailed {
+		t.Errorf("runGate status = %q, want %q", result.Status, StatusFailed)
+	}
+	if !errors.Is(result.Err, ErrGateTimeout) {
+		t.Errorf("Err = %v, want it to wrap ErrGateTimeout", result.Err)
+	}
+	if !strings.Contains(result.Error, "timed out") || !strings.Contains(result.Error, "500ms") {
+		t.Errorf("Error = %q, want it to name the timeout", result.Error)
+	}
+}
+
+func TestRunGate_ExecErrorOnLastAttemptFails(t *testing.T) {
+	config := &Config{
+		Enabled: true,
+		Gates: []*Gate{
+			{
+				Name:       "broken",
+				Type:       GateCustom,
+				Command:    "true",
+				Required:   true,
+				Timeout:    10 * time.Second,
+				MaxRetries: 1,
+			},
+		},
+	}
+
+	// A project dir that does not exist makes cmd.Run fail with a non-ExitError.
+	runner := NewRunner(config, filepath.Join(t.TempDir(), "missing"))
+	result, err := runner.RunGate(context.Background(), "broken")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Status != StatusFailed {
+		t.Errorf("runGate status = %q, want %q", result.Status, StatusFailed)
+	}
+	if result.Error == "" {
+		t.Error("expected Error to carry the execution error")
+	}
+	if result.RetryCount != 1 {
+		t.Errorf("RetryCount = %d, want 1", result.RetryCount)
+	}
+}
+
+func TestRunAll_RequiredGateNotPassedFailsRun(t *testing.T) {
+	tests := []struct {
+		name       string
+		required   bool
+		wantPassed bool
+		wantWarn   bool
+	}{
+		{"required gate left running fails the run", true, false, true},
+		{"optional gate left running does not", false, true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{
+				Enabled: true,
+				Gates: []*Gate{
+					{Name: "stuck", Type: GateCustom, Command: "true", Required: tt.required},
+				},
+			}
+			runner := NewRunner(config, t.TempDir())
+			var buf bytes.Buffer
+			runner.log = slog.New(slog.NewTextHandler(&buf, nil))
+			runner.runGateFn = func(_ context.Context, gate *Gate) *Result {
+				return &Result{GateName: gate.Name, Status: StatusRunning}
+			}
+
+			results, err := runner.RunAll(context.Background(), "task")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if results.AllPassed != tt.wantPassed {
+				t.Errorf("AllPassed = %v, want %v", results.AllPassed, tt.wantPassed)
+			}
+			warned := strings.Contains(buf.String(), "Required quality gate failed")
+			if warned != tt.wantWarn {
+				t.Errorf("warning logged = %v, want %v\n%s", warned, tt.wantWarn, buf.String())
+			}
+			if tt.wantWarn && !strings.Contains(buf.String(), "status=running") {
+				t.Errorf("warning does not carry the status:\n%s", buf.String())
+			}
+		})
+	}
 }
