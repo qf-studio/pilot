@@ -635,6 +635,75 @@ func TestPostMergeReviewerPrompt_PreMergeWithEvidence(t *testing.T) {
 	}
 }
 
+// builtReviewPrompts returns the prompt the reviewer sends for a post-merge and
+// a pre-PR review of the same input.
+func builtReviewPrompts(t *testing.T) (post, pre string) {
+	t.Helper()
+	build := func(preMerge bool) string {
+		var got string
+		r := newPostMergeReviewerWithRunner(func(_ context.Context, args ...string) ([]byte, error) {
+			got = args[2]
+			return []byte("VERDICT: APPROVE\nDEFECTS:\nnone\nNOT-VERIFIED:\nnone\nNOTES:\n"), nil
+		})
+		in := PostMergeReviewInput{
+			PreMerge: preMerge, IssueTitle: "ISSUE-TITLE", IssueBody: "ISSUE-BODY",
+			Diff:     "diff --git a/x b/x\n+DIFF-LINE",
+			CIResult: "build: passed (3s)",
+			PRBody:   "## Evidence\n\n$ go test ./x\nok",
+		}
+		if _, err := r.Review(context.Background(), in); err != nil {
+			t.Fatalf("Review(preMerge=%v): %v", preMerge, err)
+		}
+		return got
+	}
+	return build(false), build(true)
+}
+
+// GH-6126: breaking a written-down invariant or contract sentence is [blocking]
+// in both the post-merge and the pre-PR prompt.
+func TestReviewPrompt_SeverityNamesInvariantBreach(t *testing.T) {
+	const item = "a change breaks an invariant or contract sentence that is written down in a code comment, a doc string, a config field description, the task doc or the issue, naming that sentence and the line that breaks it"
+	if !strings.Contains(postMergeSeverityParagraph, item) {
+		t.Errorf("severity paragraph lacks the invariant-breach item %q", item)
+	}
+	post, pre := builtReviewPrompts(t)
+	for name, p := range map[string]string{"post-merge": post, "pre-PR": pre} {
+		if !strings.Contains(p, postMergeSeverityParagraph) {
+			t.Errorf("%s prompt does not carry postMergeSeverityParagraph", name)
+		}
+		if !strings.Contains(p, item) {
+			t.Errorf("%s prompt does not carry the invariant-breach item", name)
+		}
+	}
+}
+
+// GH-6126: the invariant item is an addition; the rest of the severity
+// paragraph is unchanged.
+func TestReviewPrompt_SeverityListUnchangedOtherwise(t *testing.T) {
+	for _, want := range []string{
+		"a requirement of the issue is not met",
+		"a wire field has no producer",
+		"a test proves nothing about the contract it guards",
+		"a migration loses data",
+		"an out-of-scope change alters behaviour",
+		"Everything else is [minor].",
+		"is never [blocking]",
+	} {
+		if !strings.Contains(postMergeSeverityParagraph, want) {
+			t.Errorf("severity paragraph lost %q", want)
+		}
+	}
+	if !strings.HasPrefix(postMergeSeverityParagraph, "Severity. A defect about the PR body, the Evidence block or the Not verified section is never [blocking]") {
+		t.Errorf("severity paragraph no longer starts with the PR body rule")
+	}
+	post, pre := builtReviewPrompts(t)
+	for name, p := range map[string]string{"post-merge": post, "pre-PR": pre} {
+		if !strings.Contains(p, "Everything else is [minor].") {
+			t.Errorf("%s prompt lost the closing [minor] sentence", name)
+		}
+	}
+}
+
 func TestCutAtBoundary(t *testing.T) {
 	tests := []struct {
 		name string
