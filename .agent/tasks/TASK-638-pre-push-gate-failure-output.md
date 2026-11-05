@@ -1,6 +1,6 @@
 # TASK-638: Pre-push gate prints the failing lines, not the first 20 lines of output
 
-**Status**: 🚀 A1 DISPATCHED 11-05 → [pilot#6093](https://github.com/qf-studio/pilot/issues/6093) (`pilot` + `no-decompose`). Origin: v2.313.0 hand tag push failed the gate at `[3/8] Test (short)` after 674 s and printed only `ok` package lines; a clean rerun passed. The failing test was never visible.
+**Status**: ✅ **SHIPPED IN v2.313.1 (auto-cut 11-05 15:44Z)** — [pilot#6093](https://github.com/qf-studio/pilot/issues/6093) → PR#6095 merged (gate failure output shows the failing lines, full log kept under `/tmp/pilot-gate`); post-merge minors #6096 → PR#6097 merged 14:30Z. Post-merge CI on PR#6097 failed on two flakes (ShellCheck action download, `TestListRecordingsWithFilters` 10 ms window) → autopilot fix issue #6098 declined by pre-flight and closed as not planned; the test flake is [pilot#6101](https://github.com/qf-studio/pilot/issues/6101). Archive after PR#6095 is reviewed. Was: 🚀 A1 DISPATCHED 11-05 → pilot#6093 (`pilot` + `no-decompose`). Origin: v2.313.0 hand tag push failed the gate at `[3/8] Test (short)` after 674 s and printed only `ok` package lines; a clean rerun passed. The failing test was never visible.
 **Created**: 2026-11-05
 **Assignee**: Pilot
 
