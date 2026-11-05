@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-11-05T12:35:07.910444+00:00",
+  "updated": "2026-11-05T16:18:53.872063+00:00",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -3732,6 +3732,15 @@
           "quality-gates",
           "executor",
           "false-success"
+        ]
+      },
+      "TASK-638": {
+        "title": "TASK-638: Pre-push gate prints the failing lines, not the first 20 lines of output",
+        "status": "merged",
+        "concepts": [
+          "quality-gates",
+          "ci",
+          "tooling"
         ]
       }
     },
@@ -10158,6 +10167,35 @@
         ],
         "confidence": 0.95,
         "created": "2026-11-03"
+      },
+      "mem-282": {
+        "type": "pitfall",
+        "summary": "Autopilot fix issue #6098 (post-merge CI on main e9f892a90, 2026-11-05) quoted `--- FAIL: TestX` as the test failure. That string is a fixture inside a dispatcher test's WARN log message (a fake quality-gate output), not a Go test result; the real failure was `--- FAIL: TestListRecordingsWithFilters` (recorder_test.go:525, a 10 ms wall-clock Since window). The trimmer (TASK-634 C1 keeps \"failure lines\") matched the first `--- FAIL:` substring in the job log, which sat inside a log line. Pre-flight declined the issue as reject_vague, so no harm, but the operator had to read the raw run to learn the real test.",
+        "path": "memories/pitfalls/mem-282.md",
+        "confidence": 0.9,
+        "concepts": [
+          "autopilot",
+          "ci",
+          "flake",
+          "log-trimming",
+          "false-fix-issue"
+        ],
+        "created": "2026-11-05",
+        "last_validated": "2026-11-05"
+      },
+      "mem-283": {
+        "type": "learning",
+        "summary": "2026-11-05 16:09Z: `gh issue create` returned the GraphQL \"Something went wrong while executing your query\" twice and `gh api POST /issues` returned \"unexpected end of JSON input\" once; rate limits were fine (core 3819, graphql 4792), githubstatus said operational, reads worked. The fourth call (REST POST with `--include`) returned 201 and created #6106. None of the failed calls created an issue, but that was only known because a title search ran between attempts.",
+        "path": "memories/learnings/mem-283.md",
+        "confidence": 0.9,
+        "concepts": [
+          "github-api",
+          "retry",
+          "idempotency",
+          "operator"
+        ],
+        "created": "2026-11-05",
+        "last_validated": "2026-11-05"
       }
     }
   },
@@ -15176,6 +15214,21 @@
       "from": "TASK-637",
       "to": "api",
       "type": "implements"
+    },
+    {
+      "from": "mem-282",
+      "to": "TASK-634",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-282",
+      "to": "TASK-638",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-283",
+      "to": "TASK-635",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -15637,7 +15690,8 @@
       "post-merge-reviewer-loops-on-pr-body-only-defects",
       "autopilot-hold-redrive-strips-pilot-needs-human-failed-issue-with-open-pr-re-picked",
       "declined-run-repicked-and-evidence-fail-files-false-fix-issue",
-      "TASK-634"
+      "TASK-634",
+      "mem-282"
     ],
     "aws": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -15699,7 +15753,8 @@
       "executor-box-has-no-postgres-db-test-evidence-invalid",
       "post-merge-fix-blames-merged-pr-for-preexisting-flake",
       "parallel-console-legs-with-migrations-collide-on-the-number",
-      "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal"
+      "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal",
+      "mem-282"
     ],
     "ci-gates": [
       "bake-workflow-tee-masked-failure-promoted-source-ami",
@@ -17247,7 +17302,8 @@
       "poller-labels-in-progress-before-dispatcher-claim-wedge",
       "sequential-gates-on-execution-not-merge-fastfollow-misbase",
       "terminal-status-without-rearm-probe-kills-operator-recovery",
-      "gate-exit-2-no-rule-to-make-target-was-a-claude-fixable-failure"
+      "gate-exit-2-no-rule-to-make-target-was-a-claude-fixable-failure",
+      "mem-283"
     ],
     "saas": [
       "console-ssm-paths-work-locally-proxy-does-not",
@@ -18359,12 +18415,30 @@
     ],
     "hosted": [
       "mem-281"
+    ],
+    "flake": [
+      "mem-282"
+    ],
+    "log-trimming": [
+      "mem-282"
+    ],
+    "false-fix-issue": [
+      "mem-282"
+    ],
+    "github-api": [
+      "mem-283"
+    ],
+    "idempotency": [
+      "mem-283"
+    ],
+    "operator": [
+      "mem-283"
     ]
   },
-  "last_updated": "2026-11-05T12:35:07.910444+00:00",
+  "last_updated": "2026-11-05T16:18:53.872063+00:00",
   "stats": {
-    "total_nodes": 858,
-    "total_edges": 1003,
+    "total_nodes": 862,
+    "total_edges": 1006,
     "memory_count": 469
   },
   "metadata": {
