@@ -1,6 +1,6 @@
 # TASK-508: Post-merge CI fix issues borrow the merged PR branch and short-circuit as delivered
 
-**Status**: 🟡 10-20: #5564 shipped (`pilot-done`); #5551 closed. **Kept active: the three follow-ups below are still unfiled.** Prior: 🚀 DISPATCHED 2026-10-01 → [#5564](https://github.com/qf-studio/pilot/issues/5564) (`pilot`, `no-decompose`, `bug`). One PR, three changes (A emitter, B dispatcher safety net, C host-checker reason). **Post-merge review of PR#5569 DONE 2026-10-02: APPROVE-w-notes** (legs A/B/C verified on main; notes: two other merged-PR short-circuits in dispatcher.go unguarded for a borrowed origin · close/label failures only logged · supersede path GitHub-only · borrow is in-memory, lost on restart).
+**Status**: 🚀 **11-05: A1 DISPATCHED → [#6125](https://github.com/qf-studio/pilot/issues/6125)** (`pilot` + `no-decompose`): post-merge CI keys on the PR's own MergeCommitSHA instead of the main head, one code-class re-run before a fix issue, fix-issue dedup by workflow-run permalink. Trigger: #6107 + #6108 both filed for run 42062140402 (a GitHub `commit_refs` rejection on docs-sync) → PR#6114 merged, PR#6115 closed as a duplicate. The ownership check moved to TASK-640 (#6123). Was: 🟡 10-20: #5564 shipped (`pilot-done`); #5551 closed. **Kept active: the three follow-ups below are still unfiled.** Prior: 🚀 DISPATCHED 2026-10-01 → [#5564](https://github.com/qf-studio/pilot/issues/5564) (`pilot`, `no-decompose`, `bug`). One PR, three changes (A emitter, B dispatcher safety net, C host-checker reason). **Post-merge review of PR#5569 DONE 2026-10-02: APPROVE-w-notes** (legs A/B/C verified on main; notes: two other merged-PR short-circuits in dispatcher.go unguarded for a borrowed origin · close/label failures only logged · supersede path GitHub-only · borrow is in-memory, lost on restart).
 **Created**: 2026-10-01 · **Owner**: Navigator plans, Pilot executes · **Related**: TASK-460 (false-success class), TASK-507 (Jev gate 3 reads post-merge failures)
 
 ## Why
@@ -32,3 +32,51 @@ PR#5558/#5559/#5561/#5562/#5563 all reviewed APPROVE-w-notes with verdict commen
 - `.agent/knowledge/memories/pitfalls/ci-post-merge-fix-issue-borrows-merged-branch-short-circuits.md`
 - `.agent/knowledge/memories/pitfalls/completed-row-without-live-execution-polled-forever-as-stalled.md`
 - Seams: `internal/autopilot/feedback_loop.go`, `cmd/pilot/handlers.go`, `internal/executor/dispatcher.go`, `cmd/pilot/main.go`
+
+## Legs
+
+### LEG A1 — repo: qf-studio/pilot — title: fix(autopilot): post-merge CI monitors the PR's own merge commit, re-runs a code-class failure once before a fix issue, and dedups fix issues by workflow run
+
+## Context
+
+On 2026-11-05 two PRs merged 23 s apart (PR 6105 at 16:12:22Z, PR 6104 at 16:12:45Z). The docs-sync workflow run on the second merge commit failed on a GitHub-side rejection (`remote: fatal error in commit_refs`). Autopilot filed one post-merge fix issue per PR (6107 for 6104, 6108 for 6105) and both quoted the same run, 42062140402. Pilot shipped the same workflow retry twice (PR 6114 merged, PR 6115 closed as a duplicate).
+
+Verified on main: handlePostMergeCI in `internal/autopilot/controller.go` (near line 6782) fills an empty PostMergeSHA from getMainBranchSHA, the current head of main, so a PR whose first post-merge tick runs after a later merge watches the later merge's CI. Two call sites already set PostMergeSHA from the PR's MergeCommitSHA (the scan-recovery path near line 10145 and the external-merge path near line 11004); handleMerged does not. The code-class branch of handlePostMergeCI files a fix issue on the first red (near line 189 of the function); only the infra class gets maybeRetryPostMergeInfraFailure and rerunInfraFailures. findExistingFixIssue in `internal/autopilot/feedback_loop.go` (near line 676) matches open issues by exact title only, and the title carries the PR number, so two PRs never collide. The fix-issue body carries the run permalink as the line "Full log: <url>" built in `internal/autopilot/ci_failure_excerpt.go` (near line 184).
+
+probe: present qf-studio/pilot func[[:space:]]\(c[[:space:]]\*Controller\)[[:space:]]handlePostMergeCI\(
+probe: present qf-studio/pilot func[[:space:]]\(c[[:space:]]\*Controller\)[[:space:]]getMainBranchSHA\(
+probe: present qf-studio/pilot func[[:space:]]\(c[[:space:]]\*Controller\)[[:space:]]rerunInfraFailures\(
+probe: present qf-studio/pilot func[[:space:]]\(f[[:space:]]\*FeedbackLoop\)[[:space:]]findExistingFixIssue\(
+probe: present qf-studio/pilot Full log:
+probe: absent qf-studio/pilot TestHandlePostMergeCI_UsesMergeCommitNotMainHead
+
+## Scope
+
+- `internal/autopilot/controller.go`, handlePostMergeCI: when PostMergeSHA is empty, take the merge commit from the PR (GetPullRequest on the PR number, field MergeCommitSHA). Fall back to getMainBranchSHA only when that fetch fails or returns an empty SHA, and log the fallback at WARN with the attribute post_merge_sha_source=main_head; the normal path logs post_merge_sha_source=merge_commit at INFO once. handleMerged sets PostMergeSHA from the merged PR's MergeCommitSHA when it has the PR in hand, so the first tick never needs the fetch.
+- `internal/autopilot/controller.go`, the code-class branch of handlePostMergeCI: before a fix issue is filed, re-run the failed jobs once per PostMergeSHA with rerunInfraFailures, record the attempt in two new PRState fields PostMergeCodeRerunCount and PostMergeCodeRerunSHA in `internal/autopilot/types.go` (persisted like the infra pair), return nil so CheckCI re-reads next tick, and file the fix issue only when the run is red again on the same SHA. The re-run metric label is code_retry. When no job can be re-run the branch files as today.
+- `internal/autopilot/feedback_loop.go`: the post-merge fix-issue path passes the failing run permalink(s) to findExistingFixIssue; an open issue with the autopilot-fix label whose body contains the same "actions/runs/<id>" path counts as existing, in addition to the exact-title match. On a run match the loop posts one comment on the existing issue ("also attributed to PR #N, run <id>") and suppresses the new issue; RecordSpawnedFixIssue backfills the store as it does for the title match. Pre-merge and other failure types keep the exact-title match only.
+- Tests, named exactly: TestHandlePostMergeCI_UsesMergeCommitNotMainHead in `internal/autopilot/controller_test.go` (fake GitHub client where main head differs from the PR's MergeCommitSHA; PostMergeSHA equals the merge commit; the fallback case logs main_head), TestHandlePostMergeCI_CodeClassRerunsOnceBeforeFixIssue in `internal/autopilot/controller_test.go` (first red: one re-run, no issue, stage unchanged; second red on the same SHA: the issue is filed; a new SHA resets the count), TestFindExistingFixIssue_MatchesByRunPermalink in `internal/autopilot/feedback_loop_test.go` (two titles, one run id, the second lookup finds the first issue; a different run id does not match).
+
+## Acceptance
+
+- [ ] `go test -race ./internal/autopilot/ -run 'TestHandlePostMergeCI_UsesMergeCommitNotMainHead|TestHandlePostMergeCI_CodeClassRerunsOnceBeforeFixIssue|TestFindExistingFixIssue_MatchesByRunPermalink'` passes; paste the output into the PR body.
+- [ ] keep getMainBranchSHA as the first choice for an empty PostMergeSHA -> TestHandlePostMergeCI_UsesMergeCommitNotMainHead fails
+- [ ] file the fix issue on the first code-class red -> TestHandlePostMergeCI_CodeClassRerunsOnceBeforeFixIssue fails
+- [ ] match open fix issues by title only -> TestFindExistingFixIssue_MatchesByRunPermalink fails
+- [ ] Do not re-run make build, make test or make lint as evidence: the daemon's quality gates already run them on this repo.
+
+## Out of scope
+
+The LLM failure classifier and its rubric in `internal/autopilot/ci_failure_classifier.go` (the commit_refs rejection stays code-class until the re-run clears it); the ownership check for a PR merged before its issue existed (TASK-640, issue 6123); the pre-merge CI fix path; any change to the fix-issue title format; the GH-5351 guard.
+
+## Refs
+
+- https://github.com/qf-studio/pilot/issues/6107
+- https://github.com/qf-studio/pilot/issues/6108
+- https://github.com/qf-studio/pilot/pull/6114
+- https://github.com/qf-studio/pilot/actions/runs/42062140402
+- #5564
+
+## Refs
+
+- A1 → https://github.com/qf-studio/pilot/issues/6125
