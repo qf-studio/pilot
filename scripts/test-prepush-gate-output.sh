@@ -127,6 +127,33 @@ else
     pass "no log file written"
 fi
 
+# mutation pin: log write failure still prints the "Full log:" header with no path -> this test fails
+echo "Case 7: unwritable log dir prints no bare 'Full log:' header"
+SAVED_LOG_DIR="$GATE_LOG_DIR"
+BLOCKER="$(mktemp)"
+GATE_LOG_DIR="$BLOCKER/sub"   # mkdir -p under a regular file always fails
+run_case "gate-out-7-$TAG" 'echo "--- FAIL: TestX"; echo "FAIL"; exit 1'
+GATE_LOG_DIR="$SAVED_LOG_DIR"
+rm -f "$BLOCKER"
+[ "$RC" -eq 1 ] && pass "returns 1" || fail_test "returns 1 (got $RC)"
+assert_contains "--- FAIL line still printed" "--- FAIL: TestX"
+assert_absent "no bare Full log: header" "Full log:"
+
+# mutation pin: context cap ctx = 40 raised or removed in gate_failure_summary -> this test fails
+echo "Case 8: context after --- FAIL stops after 40 lines"
+run_case "gate-out-8-$TAG" 'echo "--- FAIL: TestX (0.00s)"; for i in $(seq 1 60); do echo "ok  	pkg/q$i	0.1s"; done; exit 1'
+assert_contains "40th context line printed" "ok  	pkg/q40	0.1s"
+assert_absent "41st context line not printed" "ok  	pkg/q41	0.1s"
+assert_absent "last context line not printed" "ok  	pkg/q60	0.1s"
+
+# mutation pin: check-integration.sh no longer runs test-prepush-gate-output.sh -> this test fails
+echo "Case 9: check-integration.sh runs this harness"
+if [ -x "$SCRIPT_DIR/test-prepush-gate-output.sh" ] && grep -q 'test-prepush-gate-output\.sh' "$SCRIPT_DIR/check-integration.sh"; then
+    pass "check-integration.sh references test-prepush-gate-output.sh"
+else
+    fail_test "check-integration.sh references test-prepush-gate-output.sh"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

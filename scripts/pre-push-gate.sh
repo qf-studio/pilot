@@ -82,8 +82,17 @@ run_check() {
         echo ""
         echo -e "${RED}$(gate_failure_summary "$output")${NC}"
         echo ""
-        echo "Full log:"
-        gate_write_failure_log "$name" "$output" || true
+        # Header only when the write succeeded: a failed write (e.g. another
+        # user owns $GATE_LOG_DIR) must not leave "Full log:" with no path.
+        local log_path
+        # gate_write_failure_log echoes the path even when its write failed, so
+        # also require the file to exist.
+        if log_path="$(gate_write_failure_log "$name" "$output" 2>/dev/null)" && [ -f "$log_path" ]; then
+            echo "Full log:"
+            echo "$log_path"
+        else
+            echo "Full log: not written (cannot write to $GATE_LOG_DIR)"
+        fi
         echo ""
         return 1
     fi
