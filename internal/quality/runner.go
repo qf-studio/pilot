@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -40,6 +41,9 @@ type Runner struct {
 
 	// lookPath resolves a binary on PATH; exec.LookPath unless a test overrides it.
 	lookPath func(string) (string, error)
+	// runGateFn replaces runGate inside RunAll when a test needs a gate to come
+	// back in a state runGate itself no longer produces.
+	runGateFn func(ctx context.Context, gate *Gate) *Result
 	// fallbackWarned dedups the toolchain-fallback WARN to once per gate per Runner.
 	fallbackMu     sync.Mutex
 	fallbackWarned map[string]bool
@@ -149,14 +153,14 @@ func (r *Runner) RunAll(ctx context.Context, taskID string) (*CheckResults, erro
 			wg.Add(1)
 			logging.SafeGo("quality-runner", func() {
 				defer wg.Done()
-				results.Results[i] = r.runGate(ctx, gate)
+				results.Results[i] = r.runGateOnce(ctx, gate)
 			})
 		}
 		wg.Wait()
 	} else {
 		// Execute gates sequentially
 		for i, gate := range r.config.Gates {
-			results.Results[i] = r.runGate(ctx, gate)
+			results.Results[i] = r.runGateOnce(ctx, gate)
 		}
 	}
 
@@ -164,10 +168,13 @@ func (r *Runner) RunAll(ctx context.Context, taskID string) (*CheckResults, erro
 	allPassed := true
 	for i, result := range results.Results {
 		gate := r.config.Gates[i]
-		if result.Status == StatusFailed && gate.Required {
+		// Fail closed: a required gate that did not reach StatusPassed (still
+		// running, retrying, skipped) must not let the run pass.
+		if result.Status != StatusPassed && gate.Required {
 			allPassed = false
 			r.log.Warn("Required quality gate failed",
 				slog.String("gate", gate.Name),
+				slog.String("status", string(result.Status)),
 				slog.String("error", result.Error),
 			)
 		}
@@ -184,6 +191,14 @@ func (r *Runner) RunAll(ctx context.Context, taskID string) (*CheckResults, erro
 	)
 
 	return results, nil
+}
+
+// runGateOnce runs one gate for RunAll, honouring the runGateFn test seam.
+func (r *Runner) runGateOnce(ctx context.Context, gate *Gate) *Result {
+	if r.runGateFn != nil {
+		return r.runGateFn(ctx, gate)
+	}
+	return r.runGate(ctx, gate)
 }
 
 // RunGate executes a single quality gate
@@ -259,7 +274,12 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 				break
 			}
 			// Command execution error (not exit code error)
-			result.Error = err.Error()
+			if errors.Is(err, ErrGateTimeout) {
+				result.Err = fmt.Errorf("%w: after %s", ErrGateTimeout, gate.DefaultTimeout())
+			} else {
+				result.Err = err
+			}
+			result.Error = result.Err.Error()
 			continue
 		}
 
@@ -312,6 +332,16 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 			result.Status = StatusFailed
 			r.reportProgress(gate.Name, StatusFailed, fmt.Sprintf("%s gate failed: %s", gate.Name, result.Error))
 		}
+	}
+
+	// Fail closed: a loop that ended without a pass (timeout or execution error
+	// on the last attempt) is a failed gate, never a still-running one.
+	if result.Status != StatusPassed && result.Status != StatusFailed {
+		result.Status = StatusFailed
+		if result.Error == "" {
+			result.Error = "gate did not pass"
+		}
+		r.reportProgress(gate.Name, StatusFailed, fmt.Sprintf("%s gate failed: %s", gate.Name, result.Error))
 	}
 
 	result.CompletedAt = time.Now()
