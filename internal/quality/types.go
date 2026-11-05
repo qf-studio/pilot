@@ -108,7 +108,9 @@ type Result struct {
 	Coverage    float64       `json:"coverage"`    // Parsed coverage percentage (for coverage gates)
 	StartedAt   time.Time     `json:"started_at"`
 	CompletedAt time.Time     `json:"completed_at"`
-	// Err wraps ErrGateRunnerMissing (exit 127) or ErrGateTargetMissing (absent make target).
+	// Err describes the last attempt: it wraps ErrGateRunnerMissing (exit 127),
+	// ErrGateTargetMissing (absent make target) or ErrGateTimeout, or is the raw
+	// execution error; nil when the command ran to an exit code.
 	Err error `json:"-"`
 }
 
