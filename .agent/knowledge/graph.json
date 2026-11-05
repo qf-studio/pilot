@@ -3711,6 +3711,19 @@
           "testing",
           "knowledge"
         ]
+      },
+      "TASK-637": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/pilot-console-nav-start-521e07/.agent/tasks/TASK-637-mobile-on-the-new-design.md",
+        "title": "Mobile on the new design \u2014 port the mobile v1 layer (PR#84, 2026-08-15) to the 2026-10 Figma design, with a 390\u00d7844 Playwright check",
+        "status": "backlog",
+        "concepts": [
+          "context",
+          "deployment",
+          "theory of mind",
+          "frontend",
+          "testing",
+          "api"
+        ]
       }
     },
     "memories": {
@@ -15129,6 +15142,31 @@
       "from": "TASK-635",
       "to": "knowledge",
       "type": "implements"
+    },
+    {
+      "from": "TASK-637",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-637",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-637",
+      "to": "frontend",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-637",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-637",
+      "to": "api",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -15367,7 +15405,8 @@
       "TASK-631",
       "TASK-633",
       "TASK-632",
-      "TASK-635"
+      "TASK-635",
+      "TASK-637"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -15896,7 +15935,8 @@
       "mem-280",
       "TASK-632",
       "TASK-634",
-      "TASK-635"
+      "TASK-635",
+      "TASK-637"
     ],
     "conversational-bot": [
       "mem-036",
@@ -16310,7 +16350,8 @@
       "TASK-633",
       "TASK-632",
       "TASK-634",
-      "TASK-635"
+      "TASK-635",
+      "TASK-637"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -16606,7 +16647,8 @@
       "TASK-593",
       "TASK-594",
       "TASK-596",
-      "TASK-585"
+      "TASK-585",
+      "TASK-637"
     ],
     "gateway": [
       "TASK-01",
@@ -17568,7 +17610,8 @@
       "TASK-633",
       "TASK-632",
       "TASK-634",
-      "TASK-635"
+      "TASK-635",
+      "TASK-637"
     ],
     "testing-quality": [
       "TASK-384",
@@ -17855,7 +17898,8 @@
       "TASK-631",
       "TASK-633",
       "TASK-632",
-      "TASK-634"
+      "TASK-634",
+      "TASK-637"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -18308,10 +18352,10 @@
       "mem-281"
     ]
   },
-  "last_updated": "2026-11-04T15:46:17.130242+00:00",
+  "last_updated": "2026-11-05T10:49:50.079987+00:00",
   "stats": {
-    "total_nodes": 857,
-    "total_edges": 998,
+    "total_nodes": 858,
+    "total_edges": 1003,
     "memory_count": 469
   },
   "metadata": {
