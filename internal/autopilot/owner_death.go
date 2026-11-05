@@ -158,6 +158,15 @@ func isReviewRevisionFixIssue(body string) bool {
 	return len(m) >= 2 && m[1] == string(FailureReviewRequested)
 }
 
+// isCIPostMergeFixIssue reports whether a spawned fix issue's body identifies
+// it as a post-merge CI fix (FailureCIPostMerge): the original PR already
+// merged, so the fix PR touches CI config or the workflow rather than the
+// original's files. GH-6123: the GH-5351 delivery-mismatch guard skips these.
+func isCIPostMergeFixIssue(body string) bool {
+	m := fixIssueFailureTypeRe.FindStringSubmatch(body)
+	return len(m) >= 2 && m[1] == string(FailureCIPostMerge)
+}
+
 // verifyFixPRDeliversSourceScope gates whether a merged fix/revision PR is
 // allowed to mark its source issue pilot-superseded at all — for BOTH the
 // CI-fix continuation path (GH-5351, spawnFailureIssue) and the
@@ -297,6 +306,27 @@ func (c *Controller) verifyFixPRDeliversSourceScope(ctx context.Context, prState
 		c.fireOwnerDeathAlert(sourceNum, reasonMsg, "escalated")
 		c.log.Warn("verifyFixPRDeliversSourceScope: revision PR shares no files with origin PR — escalated source issue",
 			"source", sourceNum, "fix_issue", prState.IssueNumber, "fix_pr", prState.PRNumber, "origin_pr", originPR)
+		c.cleanupOriginScope(prState.IssueNumber)
+		return
+	}
+
+	// GH-6123: a disjoint fix PR cannot mean dropped changes when the original
+	// already merged (its delivery is proven) or when the fix issue is a
+	// post-merge CI fix (it touches CI config, never the original's files).
+	// The source is not marked superseded: overlap was not proven.
+	skipReason := ""
+	if isCIPostMergeFixIssue(fixIssue.Body) {
+		skipReason = "ci_post_merge"
+	} else if originPRObj, perr := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, originPR); perr != nil {
+		// Fail toward the guard: never block the merge path on a read error.
+		c.log.Warn("verifyFixPRDeliversSourceScope: failed to fetch origin PR, keeping delivery-mismatch guard",
+			"origin_pr", originPR, "error", perr)
+	} else if originPRObj != nil && originPRObj.Merged {
+		skipReason = "origin_merged"
+	}
+	if skipReason != "" {
+		c.log.Info("verifyFixPRDeliversSourceScope: fix PR shares no files with origin PR but delivery-mismatch guard does not apply — skipping",
+			"reason", skipReason, "source", sourceNum, "fix_issue", prState.IssueNumber, "fix_pr", prState.PRNumber, "origin_pr", originPR)
 		c.cleanupOriginScope(prState.IssueNumber)
 		return
 	}
