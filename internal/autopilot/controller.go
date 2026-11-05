@@ -11411,9 +11411,26 @@ func (c *Controller) consumeSelfClosedMarker(prState *PRState) bool {
 func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) {
 	c.log.Info("PR closed externally without merge", "pr", prState.PRNumber, "issue", prState.IssueNumber)
 
+	// GH-6131: a PR parked awaiting_approval for a pre-PR review REQUEST-CHANGES
+	// that a human then closes by hand has no recorded Error — name the hold
+	// instead of "no reason recorded" so the execution row, the PR/issue
+	// comments and the dashboard card say why it was parked when it died.
 	reason := prState.Error
 	if reason == "" {
-		reason = "closed without merging (no reason recorded)"
+		if prState.Stage == StageAwaitApproval && strings.Contains(prState.EscalationReason, preReviewReasonPrefix) {
+			reason = "closed by hand while held: pre-PR review REQUEST-CHANGES"
+		} else {
+			reason = "closed without merging (no reason recorded)"
+		}
+	}
+
+	// GH-6131: the PR is gone, so the approval request that gates its merge is
+	// moot — cancel it, or a later Slack click on the live card records
+	// "approved" for a closed PR (PR#6117, 2026-11-05).
+	if c.approvalMgr != nil && prState.ApprovalRequestID != "" {
+		c.approvalMgr.Cancel(ctx, prState.ApprovalRequestID)
+		c.log.Info("PR closed externally: cancelled pending approval request",
+			"pr", prState.PRNumber, "request_id", prState.ApprovalRequestID)
 	}
 
 	// GH-4701: prState.TerminalLabel already says pilot-superseded when an
@@ -11635,7 +11652,17 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 		exhaustedParked := err == nil && issue != nil && issueLabel == github.LabelRetryReady &&
 			github.HasLabel(issue, github.LabelFailedRetryExhausted)
 		if issueAlreadyClosed {
-			c.log.Info("skipping issue label correction: issue already closed", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+			// GH-6131: a closed issue is never re-queued — no retry-ready label,
+			// no retry text — but the status labels this PR's run left on it
+			// (pilot-in-progress, pilot-review-rc) are still stale and are
+			// removed. Nothing is added to a closed issue.
+			removeLabels := []string{github.LabelInProgress}
+			if github.HasLabel(issue, executor.PrePRReviewRCLabel) {
+				removeLabels = append(removeLabels, executor.PrePRReviewRCLabel)
+			}
+			c.mutateIssueLabels(ctx, prState.IssueNumber, nil, removeLabels)
+			c.log.Info("closed issue: removed status labels only", "issue", prState.IssueNumber, "pr", prState.PRNumber, "removed", removeLabels)
+			nextSteps = "The issue is already closed; no retry will run. Reopen it or refile to run again."
 		} else if exhaustedParked {
 			c.log.Info("skipping issue label correction: pilot-failed-retry ladder already exhausted, issue stays parked under pilot-needs-human",
 				"issue", prState.IssueNumber, "pr", prState.PRNumber)

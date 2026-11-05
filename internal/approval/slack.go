@@ -82,15 +82,22 @@ type SlackActionsBlock struct {
 // both adapters.
 const unauthorizedApproverText = "⛔ Not an approver"
 
+// cancelledRequestText is the ephemeral answer to a click on a request that was
+// cancelled because its PR closed (GH-6131).
+const cancelledRequestText = "🚫 This PR is closed — the approval request was cancelled."
+
 // SlackHandler handles approval requests via Slack
 type SlackHandler struct {
-	client   SlackClient
-	channel  string
-	pending  map[string]*slackPending // requestID -> pending state
-	mu       sync.RWMutex
-	log      *slog.Logger
-	store    PendingApprovalStore // optional; enables restart persistence (GH-4411)
-	recorder DecisionRecorder     // optional; persists decisions directly (restart-safe, GH-4411)
+	client  SlackClient
+	channel string
+	pending map[string]*slackPending // requestID -> pending state
+	// cancelled maps a cancelled requestID to its Slack channel, so a stale
+	// click is answered "this PR is closed" and ignored (GH-6131).
+	cancelled map[string]string
+	mu        sync.RWMutex
+	log       *slog.Logger
+	store     PendingApprovalStore // optional; enables restart persistence (GH-4411)
+	recorder  DecisionRecorder     // optional; persists decisions directly (restart-safe, GH-4411)
 
 	// allowedUsers is a handler-scoped fallback allowlist consulted by
 	// isAuthorizedApprover when a request's own Request.Approvers is empty
@@ -111,10 +118,11 @@ type slackPending struct {
 // NewSlackHandler creates a new Slack approval handler
 func NewSlackHandler(client SlackClient, channel string) *SlackHandler {
 	return &SlackHandler{
-		client:  client,
-		channel: channel,
-		pending: make(map[string]*slackPending),
-		log:     logging.WithComponent("approval.slack"),
+		client:    client,
+		channel:   channel,
+		pending:   make(map[string]*slackPending),
+		cancelled: make(map[string]string),
+		log:       logging.WithComponent("approval.slack"),
 	}
 }
 
@@ -434,6 +442,7 @@ func (h *SlackHandler) CancelRequest(ctx context.Context, requestID string) erro
 	pending, exists := h.pending[requestID]
 	if exists {
 		delete(h.pending, requestID)
+		h.cancelled[requestID] = pending.Channel
 	}
 	h.mu.Unlock()
 
@@ -526,7 +535,27 @@ func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, u
 			delete(h.pending, requestID)
 		}
 	}
+	cancelledChannel, wasCancelled := h.cancelled[requestID]
 	h.mu.Unlock()
+
+	if !exists && wasCancelled {
+		h.log.Info("Approval interaction ignored: request cancelled (PR closed)",
+			slog.String("request_id", requestID),
+			slog.String("decision", string(decision)),
+			slog.String("user", username))
+		if responseURL != "" {
+			if err := h.client.PostEphemeral(ctx, responseURL, cancelledRequestText); err != nil {
+				h.log.Warn("failed to send cancelled-request ephemeral response",
+					slog.String("request_id", requestID), slog.Any("error", err))
+			}
+		} else if cancelledChannel != "" && userID != "" {
+			if err := h.client.PostEphemeralToUser(ctx, cancelledChannel, userID, cancelledRequestText); err != nil {
+				h.log.Warn("failed to send cancelled-request ephemeral response",
+					slog.String("request_id", requestID), slog.Any("error", err))
+			}
+		}
+		return true
+	}
 
 	if !exists {
 		h.log.Info("Approval interaction for unknown or already-processed request",

@@ -20,6 +20,7 @@ type Manager struct {
 	config        *Config
 	handlers      map[string]Handler // Channel name -> handler
 	pending       map[string]*pendingRequest
+	cancelled     map[string]struct{} // request IDs cancelled by Cancel; later decisions are ignored (GH-6131)
 	ruleEvaluator *RuleEvaluator
 	stateWriter   PRStateWriter // optional; persists decisions for async dispatch
 	mu            sync.RWMutex
@@ -57,6 +58,10 @@ func resolvedDestination(handler Handler, req *Request) string {
 	return dd.ResolvedDestination(req)
 }
 
+// ErrRequestCancelled is returned by RecordDecision for a request that was
+// cancelled with Cancel (its PR closed): the decision is ignored, not persisted.
+var ErrRequestCancelled = errors.New("approval request cancelled")
+
 // pendingRequest tracks an active approval request
 type pendingRequest struct {
 	Request    *Request
@@ -72,10 +77,11 @@ func NewManager(config *Config) *Manager {
 		config = DefaultConfig()
 	}
 	m := &Manager{
-		config:   config,
-		handlers: make(map[string]Handler),
-		pending:  make(map[string]*pendingRequest),
-		log:      logging.WithComponent("approval"),
+		config:    config,
+		handlers:  make(map[string]Handler),
+		pending:   make(map[string]*pendingRequest),
+		cancelled: make(map[string]struct{}),
+		log:       logging.WithComponent("approval"),
 	}
 
 	// Wire rule evaluator from config rules
@@ -209,6 +215,53 @@ func (m *Manager) CancelPending(ctx context.Context, taskID string) {
 			slog.String("request_id", pr.Request.ID),
 			slog.String("task_id", taskID))
 	}
+}
+
+// Cancel cancels the approval request requestID because the thing it gates is
+// gone (GH-6131: its PR was closed without merge) and remembers it, so a later
+// RecordDecision for the id (a stale Slack/Telegram click) is ignored instead
+// of being persisted onto the execution row. Safe for an unknown id, and for a
+// request that is no longer in the pending map (e.g. rehydrated after a
+// restart): every registered handler is asked to withdraw it.
+func (m *Manager) Cancel(ctx context.Context, requestID string) {
+	if requestID == "" {
+		return
+	}
+	m.mu.Lock()
+	m.cancelled[requestID] = struct{}{}
+	pr, wasPending := m.pending[requestID]
+	if wasPending {
+		delete(m.pending, requestID)
+	}
+	handlers := make([]Handler, 0, len(m.handlers))
+	for _, h := range m.handlers {
+		handlers = append(handlers, h)
+	}
+	m.mu.Unlock()
+
+	if wasPending {
+		pr.CancelFn()
+		handlers = []Handler{pr.Handler}
+	}
+	for _, h := range handlers {
+		if err := h.CancelRequest(ctx, requestID); err != nil {
+			m.log.Warn("failed to withdraw cancelled approval request",
+				slog.String("request_id", requestID),
+				slog.String("channel", h.Name()),
+				slog.Any("error", err))
+		}
+	}
+	m.log.Info("approval request cancelled",
+		slog.String("request_id", requestID),
+		slog.Bool("was_pending", wasPending))
+}
+
+// IsCancelled reports whether requestID was cancelled with Cancel.
+func (m *Manager) IsCancelled(requestID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.cancelled[requestID]
+	return ok
 }
 
 // GetPendingRequests returns all pending approval requests
@@ -505,9 +558,17 @@ func (m *Manager) NotifyMerged(ctx context.Context, requestID, shortSHA string) 
 //     the error is returned. The row can never accept this decision, so the
 //     channel button must not stay armed nor the waiter live until the stage
 //     timeout.
+//   - request cancelled with Cancel: ErrRequestCancelled, nothing persisted.
 //   - any other writer error (persistence failure): the entry stays pending so
 //     the decision can be retried, and the error is returned.
 func (m *Manager) RecordDecision(ctx context.Context, requestID string, decision Decision, by string) error {
+	if m.IsCancelled(requestID) {
+		m.log.Info("approval decision ignored: request was cancelled (PR closed)",
+			slog.String("request_id", requestID),
+			slog.String("decision", string(decision)),
+			slog.String("by", by))
+		return ErrRequestCancelled
+	}
 	var writerErr error
 	if m.stateWriter != nil {
 		if err := m.stateWriter.SetApprovalDecision(ctx, requestID, string(decision), by); err != nil {

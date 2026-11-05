@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -8432,12 +8433,15 @@ func TestNotifyExternalClose_SkipsRetryReadyWhenDone(t *testing.T) {
 // Phase 3 Task 5e/7g): when the reused pilot-done GetIssue fetch shows the
 // issue is already closed (but not pilot-done — the pilot-done guard above
 // this code path already covers that case), notifyExternalClose must skip
-// the label correction (AddLabels/RemoveLabel) entirely — there's no retry
+// the label correction (no AddLabels, no retry state) — there's no retry
 // state to protect on an issue the poller will never revisit — but it must
 // still post the informational issue comment, unlike every other GH-4817
 // open-state-gated site in this codebase (which skip the comment too).
+// GH-6131: the one write that remains is clearing the stale pilot-in-progress
+// status label; see TestNotifyExternalClose_ClosedIssue_NoRetryTextAndLabelsRemoved.
 func TestNotifyExternalClose_SkipsLabelWriteWhenIssueClosed(t *testing.T) {
-	var labelsPosted, labelsDeleted, issueCommentPosted bool
+	var labelsPosted, issueCommentPosted bool
+	var labelsDeleted []string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -8450,7 +8454,7 @@ func TestNotifyExternalClose_SkipsLabelWriteWhenIssueClosed(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("[]"))
 		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/10/labels/") && r.Method == http.MethodDelete:
-			labelsDeleted = true
+			labelsDeleted = append(labelsDeleted, strings.TrimPrefix(r.URL.Path, "/repos/owner/repo/issues/10/labels/"))
 			w.WriteHeader(http.StatusOK)
 		case r.URL.Path == "/repos/owner/repo/issues/10/comments" && r.Method == http.MethodPost:
 			issueCommentPosted = true
@@ -8472,8 +8476,8 @@ func TestNotifyExternalClose_SkipsLabelWriteWhenIssueClosed(t *testing.T) {
 	if labelsPosted {
 		t.Error("expected no label POST when the issue is already closed")
 	}
-	if labelsDeleted {
-		t.Error("expected no label DELETE when the issue is already closed")
+	if want := []string{github.LabelInProgress}; !reflect.DeepEqual(labelsDeleted, want) {
+		t.Errorf("label DELETEs = %v, want only the stale status label %v", labelsDeleted, want)
 	}
 	if !issueCommentPosted {
 		t.Error("expected the informational issue comment to still post even though the issue is closed")
