@@ -1,6 +1,6 @@
 # TASK-639: Desktop Board page per Figma 7-482 — the project-grouped list replaces the lanes; moves go to the drawer; the right column becomes Performance
 
-**Status**: 🟡 **armed (B1 files after ui#367 merges)** — 2026-11-05 17:15Z: founder decided both calls (§ Decisions 8–9): no Direction card; chip colours follow the frame everywhere. B1 touches `ListRow.vue`, which M7 ([ui#367](https://github.com/qf-studio/pilot-console-ui/issues/367), running) rewrites below md — B1 is filed after M7 merges to avoid a rebase conflict; B2 after B1. Was: 📋 16:50Z frame read, code audited, two legs drafted, dry run clean.
+**Status**: 🚀 **B1 DISPATCHED — [ui#370](https://github.com/qf-studio/pilot-console-ui/issues/370) running since 17:17Z** (filed after M7 PR#369 merged 17:16Z; pre-check 0). Order: B1 → TASK-637 M8 (ListRow fixes from the PR#369 review, same file) → B2. Earlier 17:15Z: founder decided both calls (§ Decisions 8–9): no Direction card; chip colours follow the frame everywhere. B1 touches `ListRow.vue`, which M7 ([ui#367](https://github.com/qf-studio/pilot-console-ui/issues/367), running) rewrites below md — B1 is filed after M7 merges to avoid a rebase conflict; B2 after B1. Was: 📋 16:50Z frame read, code audited, two legs drafted, dry run clean.
 **Created**: 2026-11-05
 **Assignee**: Navigator (plan) → Pilot (legs) · founder (design calls, live check at ≥ 1280 px)
 **Parent**: [TASK-584](TASK-584-pilot-cloud-execution-roadmap.md) wave 1 — roadmap row U30 (new) · [TASK-583](TASK-583-wave1-design-update-proof-surface.md) (Home U24/U28/U29 set the page geometry this reuses) · [TASK-637](TASK-637-mobile-on-the-new-design.md) (mobile Board stays as M4/M5 built it)
@@ -119,5 +119,5 @@ The mobile Board (M4/M5). The Direction / JEV card. The Review page. Any console
 
 ## Refs
 
-- B1 → (filled by the dispatch script)
+- B1 → - B1 → https://github.com/qf-studio/pilot-console-ui/issues/370
 - B2 → (filled by the dispatch script)
