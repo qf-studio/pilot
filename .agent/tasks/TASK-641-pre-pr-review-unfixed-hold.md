@@ -234,8 +234,6 @@ The hold itself (leg A2); the console UI card for needs_human (a pilot-console-u
 
 ## Refs
 
-- A1 → (pending)
-- B1 → (pending)
 - A1 → https://github.com/qf-studio/pilot/issues/6130
 - B1 → https://github.com/qf-studio/pilot/issues/6131
 - A2 → (pending)
