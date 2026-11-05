@@ -60,15 +60,12 @@ func (e *Enforcer) CheckBudget(ctx context.Context, teamID, userID string) (*Che
 }
 
 // CheckBudgetForMode checks if a new task billed as billingMode can be started.
-// Under scope api_key a subscription task is allowed at once: it spends no API
-// money, so it neither reads usage nor counts as blocked. Any other mode,
-// including empty and unknown, is checked (fail closed).
+// A paused enforcer blocks every mode. Otherwise, under scope api_key a
+// subscription task is allowed at once: it spends no API money, so it neither
+// reads usage nor counts as blocked. Any other mode, including empty and
+// unknown, is checked (fail closed).
 func (e *Enforcer) CheckBudgetForMode(ctx context.Context, teamID, userID, billingMode string) (*CheckResult, error) {
 	if !e.config.Enabled {
-		return &CheckResult{Allowed: true}, nil
-	}
-
-	if e.config.EffectiveScope() == ScopeAPIKey && billingMode == memory.BillingModeSubscription {
 		return &CheckResult{Allowed: true}, nil
 	}
 
@@ -83,6 +80,10 @@ func (e *Enforcer) CheckBudgetForMode(ctx context.Context, teamID, userID, billi
 			Action:  ActionPause,
 			Reason:  pauseReason,
 		}, nil
+	}
+
+	if e.config.EffectiveScope() == ScopeAPIKey && billingMode == memory.BillingModeSubscription {
+		return &CheckResult{Allowed: true}, nil
 	}
 
 	status, err := e.GetStatus(ctx, teamID, userID)
