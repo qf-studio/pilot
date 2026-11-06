@@ -296,8 +296,10 @@ executor:
 | `pre_pr_review.mode` | string | `"off"` | Pre-PR review: `off`, `shadow` or `enforce` (see below) |
 | `pre_pr_review.model` | string | `""` | Reviewer model; empty uses the executor's default |
 | `pre_pr_review.timeout` | duration | `6m` | Bound on one review |
-| `pre_pr_review.fix_timeout` | duration | `10m` | Bound on one fix round (used by a later release) |
-| `pre_pr_review.max_fix_rounds` | int | `1` | Fix rounds a blocking review may start (used by a later release) |
+| `pre_pr_review.fix_timeout` | duration | `10m` | Bound on one fix round (enforce mode) |
+| `pre_pr_review.regate_timeout` | duration | `20m` | Bound on the quality-gate re-run after a fix; must be at least `1m` |
+| `pre_pr_review.max_fix_rounds` | int | `1` | Fix rounds a blocking review may start (enforce mode) |
+| `pre_pr_review.on_unfixed` | string | `"hold"` | Enforce mode, blocking defects left after the fix round: `hold` pushes the branch, opens no PR, posts the defects on the issue under `pilot-needs-human` and ends the run `needs_human`; `open_pr` opens the PR and autopilot parks it awaiting approval. Daemon-wide, no per-project override |
 | `pre_pr_review.max_diff_chars` | int | `0` | Diff budget in characters; `0` = 200000 |
 | `pre_pr_review.passes` | int | `1` | Reviewer passes: `1`, or `2` for a hunk pass plus an adjacent pass whose defects are united by location; the timeout is shared |
 | `pre_pr_review.skip_complexity` | []string | `[trivial]` | Task complexities that skip the review |
@@ -330,7 +332,7 @@ executor:
 | `decompose.max_subtasks` | int | `5` | Maximum subtasks created (2-10) |
 | `decompose.min_description_words` | int | `50` | Minimum description words to decompose |
 
-**Pre-PR review.** `executor.pre_pr_review` runs the post-merge reviewer's checklist over the full diff before the push, in a read-only checkout of the task's worktree HEAD, after the quality gates pass. `mode: off` (default) changes nothing. `mode: shadow` runs the review, records the verdict as a `pre_pr_review` execution event and a log line, and writes nothing to GitHub. `mode: enforce` is shadow plus acting on the verdict, which later releases add. Any mode other than `off` replaces the self-review phase and the in-run intent judge. The review is skipped for tasks whose complexity is in `skip_complexity`, for direct-commit tasks, when the diff is empty, and when less than two minutes remain in the finalize window.
+**Pre-PR review.** `executor.pre_pr_review` runs the post-merge reviewer's checklist over the full diff before the push, in a read-only checkout of the task's worktree HEAD, after the quality gates pass. `mode: off` (default) changes nothing. `mode: shadow` runs the review, records the verdict as a `pre_pr_review` execution event and a log line, and writes nothing to GitHub. `mode: enforce` is shadow plus acting on the verdict: a REQUEST-CHANGES with a blocking defect gets one fix round and a gate re-check, and defects that survive it follow `on_unfixed`. Any mode other than `off` replaces the self-review phase and the in-run intent judge. The review is skipped for tasks whose complexity is in `skip_complexity`, for direct-commit tasks, when the diff is empty, and when less than two minutes remain in the finalize window.
 
 <Tabs items={['Claude Code', 'OpenCode']}>
 

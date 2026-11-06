@@ -862,6 +862,9 @@ executor:
   #   regate_timeout: 20m      # Bound on the quality-gate re-run after a fix (default 20m, must be >= 1m). Must exceed
   #                            # the project's slowest gate run; the per-gate timeouts still apply inside it.
   #   max_fix_rounds: 1        # Fix rounds a REQUEST-CHANGES may start (used by a later leg)
+  #   on_unfixed: hold         # hold = blocking defects that survive the fix round: branch pushed, no PR, defects on the
+  #                            # issue, pilot-needs-human, run ends needs_human. open_pr = PR opened, parked awaiting approval.
+  #                            # Daemon-wide: no per-project override.
   #   max_diff_chars: 0        # Diff budget in characters; 0 = 200000
   #   passes: 1                # 1 (default) or 2: a hunk pass then an adjacent pass on one checkout,
   #                            # defects united by location, verdict from the union; timeout is shared
