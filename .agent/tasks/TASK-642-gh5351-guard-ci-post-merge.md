@@ -1,8 +1,10 @@
-# TASK-640: GH-5351 delivery-mismatch guard skips post-merge CI fixes and already-merged originals
+# TASK-642: GH-5351 delivery-mismatch guard skips post-merge CI fixes and already-merged originals
 
 **Status**: ✅ **A1 MERGED 11-05 21:35Z → [PR#6128](https://github.com/qf-studio/pilot/pull/6128) (12 min; pre-PR APPROVE-WITH-NOTES). Unreleased → 11-06 16:00 Berlin tick.** Was: 🚀 A1 DISPATCHED 2026-11-05 → [pilot#6123](https://github.com/qf-studio/pilot/issues/6123) (`pilot` + `no-decompose`). Nothing held.
 **Created**: 2026-11-05
 **Assignee**: Pilot
+
+**Renumbered** from TASK-640 on 11-06: a second TASK-640 (credential health) merged via PR#6136 the same morning; this doc took 642.
 
 ---
 
@@ -64,7 +66,7 @@ The review-revision GH-5362 branch, the label mutations, the `originScope` recor
 
 ## Refs
 
-- Origin: 11-05 17:24Z false alarm on #6100 (original PR #6104, fix issue #6107, fix PR #6114) · GH-5351 · GH-5362 · Navigator TASK-640 in this repo
+- Origin: 11-05 17:24Z false alarm on #6100 (original PR #6104, fix issue #6107, fix PR #6114) · GH-5351 · GH-5362 · Navigator TASK-642 in this repo
 
 ## Refs
 

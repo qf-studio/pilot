@@ -48,7 +48,7 @@
 
 - **PR#6133 (A1)**: a red gate plus a timed-out gate is classified `regate_timeout` though the red gate refuted the fix (`pre_pr_fix.go:256`) · `budgetSpent` is read after `Check` returns and tested before the gate result, so a re-gate that passes at the budget edge is reverted as `regate_timeout` (`:221`) · `reviewFixMinRemaining` 12m comment no longer matches a 20m re-gate (`:22`; the re-gate runs on `context.Background()`, so the floor only covers the fix session) · `PreReviewReason` drops the literal status string (`scope_guard.go:252`) · stale `PrePRFixNone` contract comment (`pre_pr_review_render.go:19`) · validation test lives in `pre_pr_review_test.go`, not `config_test.go`. Fold the first two into A2's hold comment wording ("not verified" only when no gate went red) or a later fast-follow.
 - **PR#6134 (B1)**: a closed issue that also carries `pilot-done` returns early before the closed-issue branch, so a stale `pilot-in-progress` stays (`controller.go:11545`); same for the human-recovery-PR early return (`:11567`) · an HTTP decision POST on a cancelled request gets `ErrRequestCancelled` with no matching case in `gateway/approvals.go:310` · the `cancelled` maps in `approval.Manager` and `SlackHandler` are never pruned · the cancel test registers a "telegram" handler, so the Slack click path is covered only by `approval/cancel_test`.
-- **PR#6128 (TASK-640)**: test cases 3 and 4 are the same input; case 1's fix-issue body carries `pr:7`, which a real `ci_post_merge` body never has; `origin_merged` accepts a merge into any base branch (`owner_death.go:324`).
+- **PR#6128 (TASK-642)**: test cases 3 and 4 are the same input; case 1's fix-issue body carries `pr:7`, which a real `ci_post_merge` body never has; `origin_merged` accepts a merge into any base branch (`owner_death.go:324`).
 
 ## Founder decisions
 
@@ -142,7 +142,7 @@ Tests to add, named exactly, in a new file, plain text: internal/autopilot/contr
 
 ## Out of scope
 
-The executor's fix round and PR decision (legs A1, A2); the GH-5351 delivery-mismatch guard (TASK-640); the approval UI text beyond the cancel answer; the retry-ready path for open issues.
+The executor's fix round and PR decision (legs A1, A2); the GH-5351 delivery-mismatch guard (TASK-642); the approval UI text beyond the cancel answer; the retry-ready path for open issues.
 
 ## Refs
 
