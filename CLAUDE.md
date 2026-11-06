@@ -55,6 +55,16 @@ uncommitted changes and a graveyard of stashes.
 
 ## ⚠️ WORKFLOW: Navigator + Pilot Pipeline (interactive sessions only)
 
+### Session checklist (every interactive task, in this order — 2026-11-06)
+
+1. **Research first, wide.** Incident or feature: run the `navigator-research` agent over the whole area (code, `.agent/tasks`, memories) BEFORE drafting anything. One wide pass, not a narrow pass and a rewrite.
+2. **`/nav-task` writes the task doc.** Never hand-write `.agent/tasks/TASK-*.md`. The skill recalls prior knowledge (Step 2.5), applies the template, and takes the next ID from `origin/main`, not from local files.
+3. **One decision round per task.** Collect every founder call (defaults, dispatch order, go/no-go) into one question. Dispatch independent legs together; do not ask per leg.
+4. **Dispatch by the script, record by the SOP.** `scripts/nav-dispatch-legs.py` dry run → file → `pilot` label → SOP § 4: status line, README row, graph node `dispatched` with issue links, comment on the user issue. Absent probes must be code-shaped (`func[[:space:]]Name\(`, `Nam[e]`), or they match the task doc itself.
+5. **Close the session with a marker.** `nav-marker` after the last dispatch or merge of the day. The stop hook's "marker_created" is a requirement, not a hint.
+6. **Never bypass a hook with an exit signal** while a checklist item above is open.
+
+
 **If this is an interactive dev session**, use Navigator to plan and Pilot
 to execute:
 
