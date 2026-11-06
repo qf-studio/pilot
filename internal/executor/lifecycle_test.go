@@ -1069,3 +1069,51 @@ func TestExecutionLifecycle_Persist_RejectedFinisherDoesNotStampBranchPushed(t *
 		t.Errorf("branch_pushed = %v, want the first finisher's true", row.BranchPushed)
 	}
 }
+
+// TestExecutionLifecycle_Persist_NeedsHumanStoresCommitSHA (GH-6152): a hold's
+// pushed HEAD reaches the executions row; before, the non-completed status CAS
+// took no sha and commit_sha stayed empty. A rejected duplicate finisher must
+// not overwrite it, and a failed row keeps no sha.
+func TestExecutionLifecycle_Persist_NeedsHumanStoresCommitSHA(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	lifecycle := NewExecutionLifecycle(store)
+	begin := func(id string) string {
+		t.Helper()
+		execID, err := lifecycle.Begin(&Task{ID: id, ProjectPath: "/tmp/project"}, ExecStatusRunning)
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		return execID
+	}
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+
+	held := begin("GH-6152-T1")
+	hold := FinishOutcome{Status: ExecStatusNeedsHuman, Error: "held"}
+	if err := lifecycle.Persist(held, hold, &ExecutionResult{TaskID: "GH-6152-T1", CommitSHA: sha}, time.Second); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+	if err := lifecycle.Persist(held, hold, &ExecutionResult{TaskID: "GH-6152-T1", CommitSHA: "ffffffffffffffffffffffffffffffffffffffff"}, time.Second); err != nil {
+		t.Fatalf("second Persist: %v", err)
+	}
+	row, err := store.GetExecution(held)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if row.CommitSHA != sha {
+		t.Errorf("needs_human commit_sha = %q, want %q (first finisher's)", row.CommitSHA, sha)
+	}
+
+	failed := begin("GH-6152-T2")
+	if err := lifecycle.Persist(failed, FinishOutcome{Status: ExecStatusFailed, Error: "boom"}, &ExecutionResult{TaskID: "GH-6152-T2", CommitSHA: sha}, time.Second); err != nil {
+		t.Fatalf("Persist failed row: %v", err)
+	}
+	row, err = store.GetExecution(failed)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if row.CommitSHA != "" {
+		t.Errorf("failed commit_sha = %q, want empty", row.CommitSHA)
+	}
+}

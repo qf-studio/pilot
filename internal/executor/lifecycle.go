@@ -359,6 +359,15 @@ func (l *ExecutionLifecycle) Persist(execID string, outcome FinishOutcome, resul
 	if result != nil && result.BranchPushed != nil {
 		pushErr = l.store.SetExecutionBranchPushed(execID, *result.BranchPushed)
 	}
+	// A hold's commit_sha is the pushed HEAD the Run Story hold block shows. The
+	// non-completed status CAS below takes no sha, so it is a companion write
+	// with the same ordering and guard as the push result. Only needs_human:
+	// other non-completed rows carry no deliverable by design.
+	if outcome.Status == ExecStatusNeedsHuman && result != nil && result.CommitSHA != "" {
+		if shaErr := l.store.SetExecutionCommitSHA(execID, result.CommitSHA); pushErr == nil {
+			pushErr = shaErr
+		}
+	}
 
 	// GH-4423: both branches route through the CAS-guarded store writes — a
 	// duplicate Finish call (the same execID finished twice, e.g. a retried
