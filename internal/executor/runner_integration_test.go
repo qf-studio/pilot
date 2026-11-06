@@ -216,15 +216,11 @@ func TestRunner_Integration_AlertEmission(t *testing.T) {
 
 // TestRunner_Integration_QualityGates verifies quality gate integration
 func TestRunner_Integration_QualityGates(t *testing.T) {
-	// Backend: initial execution -> self-review (after quality passes)
+	// Backend: initial execution only (self-review phase is retired)
 	backend := newMockIntegrationBackend("test-backend", true)
 	backend.addResult(&BackendResult{
 		Success: true,
 		Output:  "Implementation done",
-	})
-	backend.addResult(&BackendResult{
-		Success: true,
-		Output:  "REVIEW_PASSED",
 	})
 
 	runner := NewRunnerWithBackend(backend)
@@ -268,19 +264,18 @@ func TestRunner_Integration_QualityGates(t *testing.T) {
 		t.Errorf("Expected quality checker to be called 1 time, got %d", qualityCheckerCalls)
 	}
 
-	// Verify backend called twice (initial + self-review)
-	if backend.getExecCount() != 2 {
-		t.Errorf("Expected backend to be called 2 times, got %d", backend.getExecCount())
+	// Verify backend called once (initial only)
+	if backend.getExecCount() != 1 {
+		t.Errorf("Expected backend to be called 1 time, got %d", backend.getExecCount())
 	}
 }
 
 // TestRunner_Integration_QualityGatesRetry verifies quality gate retry flow
 func TestRunner_Integration_QualityGatesRetry(t *testing.T) {
-	// Backend: initial -> retry -> self-review
+	// Backend: initial -> retry
 	backend := newMockIntegrationBackend("test-backend", true)
 	backend.addResult(&BackendResult{Success: true, Output: "First attempt"})
 	backend.addResult(&BackendResult{Success: true, Output: "Fixed after feedback"})
-	backend.addResult(&BackendResult{Success: true, Output: "REVIEW_PASSED"})
 
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
@@ -327,9 +322,9 @@ func TestRunner_Integration_QualityGatesRetry(t *testing.T) {
 		t.Errorf("Expected quality checker called 2 times, got %d", callCount)
 	}
 
-	// Backend called 3 times (initial + retry + self-review)
-	if backend.getExecCount() != 3 {
-		t.Errorf("Expected backend called 3 times, got %d", backend.getExecCount())
+	// Backend called twice (initial + retry)
+	if backend.getExecCount() != 2 {
+		t.Errorf("Expected backend called 2 times, got %d", backend.getExecCount())
 	}
 }
 
