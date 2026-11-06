@@ -3840,6 +3840,20 @@
       }
     },
     "memories": {
+      "disabled-gate-whose-only-clearing-path-is-the-disabled-action-locks-out": {
+        "type": "pitfall",
+        "summary": "A UI gate that disables the one action which can clear it is a lockout. TASK-640 K2 (ui PR#379): chat composer disabled while keyInvalid is set; the only clearing paths were a successful send (impossible, the composer is disabled), reset() on auth loss, or a page reload; saving a new key on Connections never touched the chat store. The pre-PR enforce round had fixed the inverse bug (the poll cleared the flag every tick); the Navigator review approved; the post-merge review caught it → ui#380.",
+        "path": "memories/pitfalls/disabled-gate-whose-only-clearing-path-is-the-disabled-action-locks-out.md",
+        "confidence": 0.9,
+        "concepts": [
+          "frontend",
+          "review",
+          "chat",
+          "testing"
+        ],
+        "created": "2026-11-06",
+        "last_validated": "2026-11-06"
+      },
       "founder-priority-pointer-first-saas-parked": {
         "type": "learning",
         "summary": "Founder directive 2026-07-17: deliver pointer first, then pilot reliability fixes; SaaS/platform work (TASK-405, auth-service) parked — do not push in reports/queue recommendations",
@@ -10379,6 +10393,11 @@
     }
   },
   "edges": [
+    {
+      "from": "disabled-gate-whose-only-clearing-path-is-the-disabled-action-locks-out",
+      "to": "TASK-640",
+      "type": "learned-from"
+    },
     {
       "from": "executor",
       "to": "claude-code-integration",
