@@ -1069,3 +1069,35 @@ func TestExecutionLifecycle_Persist_RejectedFinisherDoesNotStampBranchPushed(t *
 		t.Errorf("branch_pushed = %v, want the first finisher's true", row.BranchPushed)
 	}
 }
+
+// TestExecutionLifecycle_Persist_NeedsHumanPersistsCommitSHA (GH-6152): a hold's
+// HEAD sha reaches the commit_sha column through the real Persist and store,
+// and a rejected duplicate finisher does not overwrite it.
+func TestExecutionLifecycle_Persist_NeedsHumanPersistsCommitSHA(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	task := &Task{ID: "GH-6152-T1", ProjectPath: "/tmp/project"}
+	lifecycle := NewExecutionLifecycle(store)
+	execID, err := lifecycle.Begin(task, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("Begin failed: %v", err)
+	}
+
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	outcome := FinishOutcome{Status: ExecStatusNeedsHuman, Error: "held"}
+	if err := lifecycle.Persist(execID, outcome, &ExecutionResult{TaskID: task.ID, CommitSHA: sha}, time.Second); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+	if err := lifecycle.Persist(execID, outcome, &ExecutionResult{TaskID: task.ID, CommitSHA: "ffffffffffffffffffffffffffffffffffffffff"}, time.Second); err != nil {
+		t.Fatalf("second Persist: %v", err)
+	}
+
+	row, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if row.Status != string(ExecStatusNeedsHuman) || row.CommitSHA != sha {
+		t.Errorf("status=%q commit_sha=%q, want needs_human and %q", row.Status, row.CommitSHA, sha)
+	}
+}
