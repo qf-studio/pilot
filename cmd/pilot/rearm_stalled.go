@@ -361,7 +361,7 @@ func (c terminalCompletionChecker) recordStalledRearmMiss(ctx context.Context, p
 	// missing evidence of an operator gesture is no reason to hand it to one.
 	// Re-queue it through the normal re-arm instead of escalating.
 	if isDaemonRestartStall(stallReason) {
-		c.requeueRestartStall(taskID, projectPath, issueNum, backoffKey, streak)
+		c.requeueRestartStall(ctx, taskID, projectPath, issueNum, backoffKey, streak)
 		return
 	}
 	if c.escalateStalledRearmNoEvidence(ctx, taskID, issueNum, streak) {
@@ -379,12 +379,19 @@ func (c terminalCompletionChecker) recordStalledRearmMiss(ctx context.Context, p
 // retry path grants the next generation, the same way tryRearmStalled does for
 // a stall with evidence (GH-6177). On a store failure the streak is left in
 // place so the next sweep retries.
-func (c terminalCompletionChecker) requeueRestartStall(taskID, projectPath string, issueNum int, backoffKey string, streak int) {
+func (c terminalCompletionChecker) requeueRestartStall(ctx context.Context, taskID, projectPath string, issueNum int, backoffKey string, streak int) {
 	reason := fmt.Sprintf("GH-6177: daemon-restart stall of issue #%d re-queued after %d sweeps without re-arm evidence; not escalated", issueNum, streak)
 	if err := c.store.ReclassifyStalledForRearm(taskID, projectPath, reason); err != nil {
 		logging.WithComponent("dispatch").Warn("GH-6177: failed to re-queue daemon-restart stall — will retry on the next sweep pass",
 			slog.String("task_id", taskID), slog.Int("issue", issueNum), slog.Any("error", err))
 		return
+	}
+	// ReclassifyStalledForRearm only touches the store: a surviving
+	// pilot-blocked label would keep the poller excluding the issue (same
+	// best-effort handling as tryRearmStalled).
+	if err := c.ghClient.RemoveLabel(ctx, c.repoOwner, c.repoName, issueNum, github.LabelBlocked); err != nil {
+		logging.WithComponent("dispatch").Warn("GH-6177: daemon-restart stall re-queued but pilot-blocked label removal failed — issue may stay excluded from poller candidacy until manually cleared",
+			slog.String("task_id", taskID), slog.Int("issue", issueNum), slog.Any("error", err))
 	}
 	repickBackoff.recordSuccess(backoffKey)
 	stalledRearmNoEvidenceStreaks.reset(backoffKey)

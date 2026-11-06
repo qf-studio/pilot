@@ -410,14 +410,14 @@ func TestSweepStalledRearm_RestartStallNeverEscalates(t *testing.T) {
 			base := "/repos/owner/repo/issues/" + strconv.Itoa(issueNum)
 			issue := &github.Issue{
 				Number: issueNum, State: "open",
-				Labels: []github.Label{{Name: "pilot"}, {Name: github.LabelRetryReady}},
+				Labels: []github.Label{{Name: "pilot"}, {Name: github.LabelBlocked}, {Name: github.LabelRetryReady}},
 			}
 			events := []*github.IssueEvent{
 				{Event: "labeled", CreatedAt: stallTime.Add(-90 * time.Minute), Label: &github.Label{Name: github.LabelRetryReady}, Actor: &github.User{Login: tt.labeledBy}},
 			}
 
 			var mu sync.Mutex
-			var comments, addLabels int
+			var comments, addLabels, blockedRemovals int
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				mu.Lock()
@@ -438,6 +438,7 @@ func TestSweepStalledRearm_RestartStallNeverEscalates(t *testing.T) {
 				case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
 					_, _ = w.Write([]byte(`{"data":{"repository":{"issue":{"lastEditedAt":null,"editor":null}}}}`))
 				case r.URL.Path == base+"/labels/"+github.LabelBlocked && r.Method == http.MethodDelete:
+					blockedRemovals++
 					w.WriteHeader(http.StatusNotFound)
 				case r.URL.Path == base+"/comments" && r.Method == http.MethodPost:
 					comments++
@@ -485,6 +486,9 @@ func TestSweepStalledRearm_RestartStallNeverEscalates(t *testing.T) {
 			defer mu.Unlock()
 			if comments != 0 || addLabels != 0 {
 				t.Errorf("expected no escalation comment or pilot-needs-human label, got comments=%d addLabels=%d", comments, addLabels)
+			}
+			if blockedRemovals != 1 {
+				t.Errorf("expected exactly 1 pilot-blocked removal when the row is re-armed, got %d", blockedRemovals)
 			}
 		})
 	}
