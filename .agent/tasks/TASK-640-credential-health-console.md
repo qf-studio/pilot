@@ -1,6 +1,6 @@
 # TASK-640: Credential health — the console re-checks the org's own Anthropic key and tracker tokens, shows a truthful status, and gates chat on a dead key
 
-**Status**: 🟢 **K1 LIVE ON PROD 09:50Z — the first sweep already tells the truth: `GET /api/v1/credentials` → anthropic `health_status: ok` (checked 09:50:05Z, the new key); `GET /api/v1/connections` → github `status: error`, `health_error: "orgs: github rejected token (status 401)"`. Holding on console#490 (post-merge minors, running) → K3 residue (the status split) → redeploy → K2.** Earlier 10:05Z: console#490 filed with nine minors covering every K3 item.
+**Status**: 🚀 **K3 DISPATCHED 10:4xZ — [console#492](https://github.com/qf-studio/pilot-console/issues/492) (`pilot` + `no-decompose`, pre-check 0): the status split + connection compare-and-set + 403 + one pool. Prod runs K1 + PR#491 since 10:27Z. K2 (ui) after K3 merges and deploys (wire resync against that ref).** Earlier: 🟡 K3 ready after PR#491.
 **Created**: 2026-11-06
 **Assignee**: Navigator (plan) → Pilot (legs) · founder (go; the live tenant's dead key and PAT are an operator fix, not this task)
 **Parent**: [TASK-583](TASK-583-wave1-design-update-proof-surface.md) proof surface · incident 2026-11-05 21:21Z (marker `2026-11-06-0740_console-session-board-landed-tenant-credentials-dead.md`)
@@ -75,10 +75,10 @@ Merged 09:33Z (+2010 −35, 20 files; pre-PR review enforce APPROVE-WITH-NOTES, 
 - [minor] `startCredentialHealth` opens a second `fleet.Open` pool and never closes it; reuse the main pool or close on shutdown.
 - [accepted] The sweeper runs unlocked like syncingest.
 
-### LEG K3 — repo: qf-studio/pilot-console — title: fix(credhealth): the sweep owns health, not status — split the stored-secret validity from the daemon's connection view; compare-and-set on checked_at; 403 is a rejection; outage wording; one DB pool
+### LEG K3 — repo: qf-studio/pilot-console — title: fix(credhealth): the sweep owns health, not status — split the stored-secret validity from the daemon's connection view; connection compare-and-set; 403 is a rejection; one DB pool
 
 ## Context
-Leg K1 (console#488 → PR#489) added `internal/credhealth` (sweeper), migration 0042 (`credential_health` table; `connections.health_checked_at`, `connections.health_error`), `Store.SetConnectionHealth` and `Store.UpsertCredentialHealth`, and the `409 anthropic_key_invalid` chat gate. Its pre-PR review found that `SetConnectionHealth` sets `connections.status` as well as the health columns, so the sweep and `recordReadyChecks` in `internal/fleet/readychecks.go` overwrite each other: a saved key that validates in the console while the tenant still runs the old secret (the daemon reads `/run/pilot/env` only at service start) flips the row between `connected` and `error` every tick, and `SetConnectionStatus` never clears `health_error`. A sweep that read the old secret can also write `error` over the `ok` a fresh save just wrote (`recordCredential` / `recordConnection` in `internal/credhealth/sweeper.go`), gating chat for up to one interval. `isGitHubUpstreamStatus` in `internal/orgs/validators.go` treats 403 as transient, so a 403-rejected token is never recorded. The transient 429/5xx wording "rejected api key (status N)" reaches the `PUT` 422 body. `startCredentialHealth` in `main.go` opens a second `fleet.Open` pool that is never closed.
+Leg K1 (console#488 → PR#489) added `internal/credhealth` (sweeper); the post-merge minors leg (console#490 → PR#491, merged 10:07Z) then added the compare-and-set (`UpsertCredentialHealthSince`, `checked_at <= $6`), the "unavailable" wording for transient failures, and a guard in `recordReadyChecks` that keeps a ready-probe `connected` from overwriting a row whose `health_error` is set. Three things remain. Leg K1 (console#488 → PR#489) added `internal/credhealth` (sweeper), migration 0042 (`credential_health` table; `connections.health_checked_at`, `connections.health_error`), `Store.SetConnectionHealth` and `Store.UpsertCredentialHealth`, and the `409 anthropic_key_invalid` chat gate. Its pre-PR review found that `SetConnectionHealth` sets `connections.status` as well as the health columns, so the sweep and `recordReadyChecks` in `internal/fleet/readychecks.go` overwrite each other: a saved key that validates in the console while the tenant still runs the old secret (the daemon reads `/run/pilot/env` only at service start) flips the row between `connected` and `error` every tick, and `SetConnectionStatus` never clears `health_error`. A sweep that read the old secret can also write `error` over the `ok` a fresh save just wrote (`recordCredential` / `recordConnection` in `internal/credhealth/sweeper.go`), gating chat for up to one interval. `isGitHubUpstreamStatus` in `internal/orgs/validators.go` treats 403 as transient, so a 403-rejected token is never recorded. The transient 429/5xx wording "rejected api key (status N)" reaches the `PUT` 422 body. `startCredentialHealth` in `main.go` opens a second `fleet.Open` pool that is never closed.
 
 probe: present qf-studio/pilot-console func[[:space:]]\(s[[:space:]]\*Store\)[[:space:]]SetConnectionHealth
 probe: present qf-studio/pilot-console anthropic_key_invalid
@@ -86,16 +86,15 @@ probe: present qf-studio/pilot-console func[[:space:]]isGitHubUpstreamStatus
 
 ## Scope
 - Two facts, two owners. `connections.status` is the daemon's view and is written only by `recordReadyChecks` and syncingest `flagConnectionError`. The health columns are the stored secret's validity and are written only by the sweep and the save handlers. `SetConnectionHealth` no longer touches `status`; it takes `healthStatus ok|error`, `checkedAt`, `errText`. Migration 0043 adds `connections.health_status text NOT NULL DEFAULT 'unknown' CHECK (health_status IN ('ok','error','unknown'))`; down drops it. `connectionResponse` gains `health_status`; `status` keeps its meaning.
-- Compare-and-set: `UpsertCredentialHealth` and `SetConnectionHealth` take the `readAt` the sweep captured before it read the secret and apply only when the row's `checked_at` is null or older (`WHERE checked_at IS NULL OR checked_at < $readAt`); the save handlers write unconditionally with `now()`.
+- Compare-and-set for connections: `SetConnectionHealth` gets the same `Since` form PR#491 gave `UpsertCredentialHealthSince` (apply only when the row's `health_checked_at` is null or older than the sweep's read time).
 - `isGitHubUpstreamStatus`: 403 is not upstream; the validator returns a rejection for 401 and 403 and `IsTransient` is false for both. The Anthropic validator: 401 and 403 reject, 429/5xx transient.
-- Wording: transient errors read `<provider> unavailable (status N)`; rejections keep `rejected … (status N)`. The 422 body of a save during an outage says unavailable, not rejected.
 - `startCredentialHealth` reuses the process's existing store/pool; if a separate pool is unavoidable, close it on shutdown with the others.
-- Tests: sweeper — a ready-probe `error` row survives a passing sweep (`status` untouched, `health_status` ok) and a sweep never writes over a newer `checked_at`; store — the compare-and-set predicate; validators — 403 is a rejection, 503 is transient with the unavailable wording; raw-body test pins `health_status` on the connections list.
+- Tests: sweeper — a ready-probe `error` row survives a passing sweep (`status` untouched, `health_status` ok) and a connection sweep never writes over a newer `health_checked_at`; validators — 403 is a rejection; raw-body test pins `health_status` on the connections list; the PR#491 guard in `recordReadyChecks` is removed (the two columns no longer share a writer) and its test re-pointed.
 
 ## Acceptance
 - [ ] `make test` passes; paste the output into the PR body.
 - [ ] Make `SetConnectionHealth` set `status` again -> the sweeper status-untouched assertion fails
-- [ ] Drop the `checked_at` predicate -> the newer-row assertion fails
+- [ ] Drop the `health_checked_at` predicate on connections -> the newer-row assertion fails
 - [ ] `make lint` passes; paste the output into the PR body.
 
 ## Out of scope
@@ -139,5 +138,5 @@ Mobile layout changes (the rows reuse the existing responsive markup). The Insta
 ## Refs
 
 - K1 → https://github.com/qf-studio/pilot-console/issues/488
-- K3 → (filled by the dispatch script)
+- K3 → https://github.com/qf-studio/pilot-console/issues/492
 - K2 → (filled by the dispatch script)
