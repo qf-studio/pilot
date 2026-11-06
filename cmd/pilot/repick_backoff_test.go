@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 // TestRepickBackoffTracker_AllowsFirstAttempt verifies a key with no prior
@@ -340,5 +342,69 @@ func TestRepickBackoffTracker_RecordSuccessClearsPersister(t *testing.T) {
 
 	if persist.found {
 		t.Error("expected recordSuccess to clear the persister's state")
+	}
+}
+
+// TestRecordClaimLostDrop_LiveOwnerNotCounted covers GH-6171: a claim lost to a
+// live owner (queued/pending/running/decomposed) is a task waiting its turn,
+// not a terminal drop — it counts nothing, so the three-drop pilot-label strip
+// never fires. Drops against a terminal owner count as before.
+func TestRecordClaimLostDrop_LiveOwnerNotCounted(t *testing.T) {
+	const pilotLabel = "pilot"
+	labels := []string{pilotLabel}
+
+	for _, owner := range []string{"queued", "pending", "running", "decomposed"} {
+		t.Run("live owner "+owner, func(t *testing.T) {
+			tr := newRepickBackoffTracker()
+			for i := 0; i < terminalDropPilotStripThreshold; i++ {
+				drops, counted := tr.recordClaimLostDropForOwner("k", owner)
+				if counted || drops != 0 {
+					t.Fatalf("drop %d against owner %q: drops=%d counted=%v, want 0/false", i+1, owner, drops, counted)
+				}
+			}
+			_, _, claimLost, _ := tr.gateDetail("k")
+			if claimLost != 0 {
+				t.Errorf("claimLostDrops = %d, want 0", claimLost)
+			}
+			if shouldStripPilotAfterTerminalDrops(claimLost, "open", labels, pilotLabel) {
+				t.Error("pilot label must be kept when every drop was against a live owner")
+			}
+			if !tr.allow("k") {
+				t.Error("a live-owner drop must not arm the backoff window")
+			}
+		})
+	}
+
+	for _, owner := range []string{"failed", "stalled", "completed", "needs_human", "superseded", "canceled", ""} {
+		t.Run("terminal or unknown owner "+owner, func(t *testing.T) {
+			tr := newRepickBackoffTracker()
+			var drops int
+			for i := 0; i < terminalDropPilotStripThreshold; i++ {
+				var counted bool
+				drops, counted = tr.recordClaimLostDropForOwner("k", owner)
+				if !counted {
+					t.Fatalf("drop %d against owner %q was not counted", i+1, owner)
+				}
+			}
+			if drops != terminalDropPilotStripThreshold {
+				t.Errorf("drops = %d, want %d", drops, terminalDropPilotStripThreshold)
+			}
+			if !shouldStripPilotAfterTerminalDrops(drops, "open", labels, pilotLabel) {
+				t.Error("pilot label must be stripped after repeated drops against a terminal owner")
+			}
+		})
+	}
+}
+
+// TestShouldUnwindGithubInProgressLabel_LiveOwnerKept covers GH-6171: a dropped
+// pickup whose claim belongs to a live owner leaves the in-progress label alone.
+func TestShouldUnwindGithubInProgressLabel_LiveOwnerKept(t *testing.T) {
+	gated := &HandlerResult{Error: executor.ErrDispatchGated}
+	if !shouldUnwindGithubInProgressLabel(true, gated, false) {
+		t.Fatal("a gated drop with no live owner must still unwind")
+	}
+	liveOwner := &HandlerResult{Error: executor.ErrDispatchGated, ClaimLostLiveOwner: true}
+	if shouldUnwindGithubInProgressLabel(true, liveOwner, false) {
+		t.Error("a gated drop against a live owner must keep the label")
 	}
 }

@@ -138,10 +138,11 @@ func (c *Cleaner) Cleanup(ctx context.Context) error {
 
 	c.logger.Debug("Found issues with in-progress label", slog.Int("count", len(issues)))
 
-	// Get active executions from memory store
-	activeExecutions, err := c.store.GetActiveExecutions()
+	// Get live executions (queued/pending/running/decomposed) from the memory
+	// store; a queued row must keep its label (GH-6171).
+	activeExecutions, err := c.store.GetLiveExecutions()
 	if err != nil {
-		return fmt.Errorf("failed to get active executions: %w", err)
+		return fmt.Errorf("failed to get live executions: %w", err)
 	}
 
 	// Build a map of active task IDs for quick lookup

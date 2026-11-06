@@ -1522,7 +1522,8 @@ func labelLifecycleDeadManTrackerName(repoFullName string) string {
 // result — see the call site — so the happy path never performs the extra
 // label round-trip this function exists to avoid.
 func shouldUnwindGithubInProgressLabel(notifyAttempted bool, hr *HandlerResult, dispatcherActive bool) bool {
-	return notifyAttempted && hr.IsDispatchGated() && !dispatcherActive
+	// GH-6171: a claim lost to a live owner keeps the label the poller applied.
+	return notifyAttempted && hr.IsDispatchGated() && !dispatcherActive && !hr.ClaimLostLiveOwner
 }
 
 // unwindGithubStartedLabel removes exactly the label

@@ -2818,6 +2818,39 @@ func (s *Store) GetActiveExecutions() ([]*Execution, error) {
 	return executions, rows.Err()
 }
 
+// GetLiveExecutions retrieves all executions that still hold a task: status
+// queued, pending, running or decomposed. The stale-label cleaner uses it so a
+// queued row (admitted, waiting behind a serial lane or a paused admission) is
+// never mistaken for an abandoned task (GH-6171). GetActiveExecutions stays
+// running-only for its other callers.
+func (s *Store) GetLiveExecutions() ([]*Execution, error) {
+	rows, err := s.db.Query(`
+		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
+		FROM executions
+		WHERE status IN ('queued', 'pending', 'running', 'decomposed')
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		var exec Execution
+		var completedAt sql.NullTime
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt); err != nil {
+			return nil, err
+		}
+		if completedAt.Valid {
+			exec.CompletedAt = &completedAt.Time
+		}
+		executions = append(executions, &exec)
+	}
+
+	return executions, rows.Err()
+}
+
 // FindOrphanedRunningExecutions returns status='running' rows whose task_id is
 // NOT in excludeTaskIDs — candidates for the autopilot orphan-running sweep
 // (TASK-399/GH-4209). excludeTaskIDs is the caller's in-flight set (e.g. the

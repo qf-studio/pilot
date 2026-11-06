@@ -271,10 +271,12 @@ func (c *Cleaner) Stop() {
 func (c *Cleaner) Cleanup(ctx context.Context) error {
 	c.logger.Debug("Running stale label cleanup")
 
-	// Get active executions from memory store
-	activeExecutions, err := c.store.GetActiveExecutions()
+	// Get live executions (queued/pending/running/decomposed) from the memory
+	// store. GH-6171: a queued row is a task waiting for its turn, not an
+	// abandoned one — counting only 'running' stripped its labels.
+	activeExecutions, err := c.store.GetLiveExecutions()
 	if err != nil {
-		return fmt.Errorf("failed to get active executions: %w", err)
+		return fmt.Errorf("failed to get live executions: %w", err)
 	}
 
 	// Build a map of active task IDs for quick lookup

@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
@@ -255,6 +256,31 @@ func (t *repickBackoffTracker) recordClaimLostDrop(key string) int {
 		}
 	}
 	return e.claimLostDrops
+}
+
+// claimLostOwnerIsLive reports whether the execution row that won the claim is
+// still in flight (queued, pending, running, decomposed — anything not
+// terminal). An empty status means the owner lookup failed or the claim
+// vanished: unknown is NOT live, so it keeps counting as before. GH-6171.
+func claimLostOwnerIsLive(ownerStatus string) bool {
+	return ownerStatus != "" && !executor.IsTerminalStatus(ownerStatus)
+}
+
+// recordClaimLostDropForOwner is recordClaimLostDrop for a pickup the
+// dispatcher refused because another execution owns the claim, given that
+// owner's status. Only a drop against a terminal (or unknown) owner counts:
+// a task that is merely waiting its turn (queued behind a serial lane, or
+// behind a paused admission) is not wedged, and counting those drops walked
+// pilot#6152 into the three-drop pilot-label strip without one execution
+// (GH-6171). A live-owner drop increments nothing and does not touch the
+// backoff window; the returned count is the unchanged current value and
+// counted is false.
+func (t *repickBackoffTracker) recordClaimLostDropForOwner(key, ownerStatus string) (drops int, counted bool) {
+	if claimLostOwnerIsLive(ownerStatus) {
+		_, _, drops, _ = t.gateDetail(key)
+		return drops, false
+	}
+	return t.recordClaimLostDrop(key), true
 }
 
 // recordSuccess clears any backoff state for key once a dispatch actually

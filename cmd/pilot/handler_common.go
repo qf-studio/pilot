@@ -54,6 +54,11 @@ type HandlerResult struct {
 	// status (superseded or canceled, see executor.IsTerminalByDesignStatus) —
 	// deliberately not carried out rather than genuinely failed (GH-4794).
 	TerminalByDesign bool
+	// ClaimLostLiveOwner marks a dispatch-gated drop whose claim is held by a
+	// still-live execution (queued/pending/running/decomposed): the task is
+	// not wedged, so adapters must not unwind its in-progress label or count
+	// the drop toward the pilot-label strip (GH-6171).
+	ClaimLostLiveOwner bool
 }
 
 // IsDispatchGated reports whether this result's Error is (or wraps)
@@ -355,6 +360,9 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	// side effects in steps 7-9, which intentionally treat this path as
 	// "nothing to wait for" rather than a failure.
 	var gatedDrop bool
+	// claimLostLiveOwner marks a gatedDrop whose claim is held by a still-live
+	// execution (GH-6171): the caller must leave the issue's labels alone.
+	var claimLostLiveOwner bool
 	// capHold carries the daily-ticket-cap hold (GH-5808) so the final
 	// HandlerResult wraps it (and, through it, executor.ErrDispatchGated).
 	var capHold error
@@ -365,7 +373,8 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	var terminalByDesign bool
 
 	if deps.Dispatcher != nil {
-		execID, qErr := deps.Dispatcher.QueueTask(ctx, task)
+		outcome, qErr := deps.Dispatcher.QueueTaskOutcome(ctx, task)
+		execID := outcome.ExecutionID
 		if qErr != nil {
 			if errors.Is(qErr, executor.ErrTaskAlreadyActive) {
 				// GH-4008: race between the pre-check above and QueueTask's own
@@ -415,21 +424,34 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			if deps.Dispatcher.IsActive(taskID, projectPath) {
 				dropReason = "already queued or running"
 			}
-			claimLostDrops := repickBackoff.recordClaimLostDrop(backoffKey)
-			logFields := []any{
-				slog.String("task_id", taskID),
-				slog.String("drop_reason", dropReason),
-				slog.Int("claim_lost_drops", claimLostDrops),
-			}
-			if claimLostDrops >= repickBackoffWarnThreshold {
-				logging.WithComponent("dispatch").Warn("repick storm: claim-lost/terminal drop recurring — not counted toward repick hard cap", logFields...)
+			// GH-6171: a drop against a live owner (queued/pending/running/
+			// decomposed) is a task waiting its turn, not a terminal drop —
+			// it is neither counted nor allowed to reach the pilot-label
+			// strip, and the in-progress label stays on the issue.
+			claimLostDrops, counted := repickBackoff.recordClaimLostDropForOwner(backoffKey, outcome.ClaimLostOwnerStatus)
+			if !counted {
+				claimLostLiveOwner = true
+				logging.WithComponent("dispatch").Info("dispatch pickup dropped: task already queued/running",
+					slog.String("task_id", taskID),
+					slog.String("owner_status", outcome.ClaimLostOwnerStatus))
 			} else {
-				logging.WithComponent("dispatch").Debug("dispatch dropped duplicate/terminal pickup, nothing to wait for — not counted toward repick hard cap", logFields...)
+				logFields := []any{
+					slog.String("task_id", taskID),
+					slog.String("drop_reason", dropReason),
+					slog.Int("claim_lost_drops", claimLostDrops),
+				}
+				if claimLostDrops >= repickBackoffWarnThreshold {
+					logging.WithComponent("dispatch").Warn("repick storm: claim-lost/terminal drop recurring — not counted toward repick hard cap", logFields...)
+				} else {
+					logging.WithComponent("dispatch").Debug("dispatch dropped duplicate/terminal pickup, nothing to wait for — not counted toward repick hard cap", logFields...)
+				}
 			}
 			if deps.Metrics != nil {
 				deps.Metrics.RecordPollerSkipped(repickMetricsRepo(task), skipreason.ReasonRepickStormBackoff)
 			}
-			fireLoopBreakerAlert(deps, taskID, title, projectPath, claimLostDrops)
+			if counted {
+				fireLoopBreakerAlert(deps, taskID, title, projectPath, claimLostDrops)
+			}
 			gatedDrop = true
 		} else {
 			// GH-4394 subtask 2: a repick (Dispatcher.beginWithGenerationRetry
@@ -518,6 +540,8 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 		Error:            hrErr,
 		Result:           result,
 		TerminalByDesign: terminalByDesign,
+
+		ClaimLostLiveOwner: claimLostLiveOwner,
 	}
 	if result != nil {
 		if result.PRUrl != "" {

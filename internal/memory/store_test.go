@@ -7304,3 +7304,48 @@ func TestWindowedStats_NeedsHumanBucket(t *testing.T) {
 		t.Errorf("IssuesAttempted = %d, want 2 (a hold is not an attempt)", ws.IssuesAttempted)
 	}
 }
+
+// TestStore_GetLiveExecutions covers GH-6171: queued, pending, running and
+// decomposed rows are live; terminal rows are not.
+func TestStore_GetLiveExecutions(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	statuses := []string{"queued", "pending", "running", "decomposed", "completed", "failed", "stalled"}
+	for i, st := range statuses {
+		if err := store.SaveExecution(&Execution{
+			ID:          fmt.Sprintf("live-%d", i),
+			TaskID:      "T-" + st,
+			ProjectPath: "/p",
+			Status:      st,
+		}); err != nil {
+			t.Fatalf("SaveExecution(%s): %v", st, err)
+		}
+	}
+
+	live, err := store.GetLiveExecutions()
+	if err != nil {
+		t.Fatalf("GetLiveExecutions failed: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, e := range live {
+		got[e.Status] = true
+	}
+	for _, want := range []string{"queued", "pending", "running", "decomposed"} {
+		if !got[want] {
+			t.Errorf("expected a %q row among live executions, got %v", want, got)
+		}
+	}
+	for _, unwanted := range []string{"completed", "failed", "stalled"} {
+		if got[unwanted] {
+			t.Errorf("%q row must not be live", unwanted)
+		}
+	}
+	if len(live) != 4 {
+		t.Errorf("expected 4 live executions, got %d", len(live))
+	}
+}

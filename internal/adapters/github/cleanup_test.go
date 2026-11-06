@@ -1960,3 +1960,88 @@ func createTestStore(t *testing.T) *memory.Store {
 
 	return store
 }
+
+// TestCleaner_QueuedRowKeepsInProgress covers GH-6171: a task whose row is
+// still queued (waiting behind a serial lane or a paused admission) is live,
+// not abandoned — the stale-label cleaner must not strip pilot-in-progress
+// from it, the same as for a running row. A failed row on a stale pilot-failed
+// label is removed exactly as before.
+func TestCleaner_QueuedRowKeepsInProgress(t *testing.T) {
+	tests := []struct {
+		name        string
+		rowStatus   string
+		label       string
+		age         time.Duration
+		wantRemoved bool
+	}{
+		{name: "queued row keeps pilot-in-progress", rowStatus: "queued", label: LabelInProgress, age: 2 * time.Hour, wantRemoved: false},
+		{name: "pending row keeps pilot-in-progress", rowStatus: "pending", label: LabelInProgress, age: 2 * time.Hour, wantRemoved: false},
+		{name: "running row keeps pilot-in-progress", rowStatus: "running", label: LabelInProgress, age: 2 * time.Hour, wantRemoved: false},
+		{name: "decomposed row keeps pilot-in-progress", rowStatus: "decomposed", label: LabelInProgress, age: 2 * time.Hour, wantRemoved: false},
+		{name: "failed row on a stale pilot-failed label is removed", rowStatus: "failed", label: LabelFailed, age: 25 * time.Hour, wantRemoved: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := createTestStore(t)
+			defer func() { _ = store.Close() }()
+
+			if err := store.SaveExecution(&memory.Execution{
+				ID:          "exec-6171",
+				TaskID:      "GH-6152",
+				ProjectPath: "/test/project",
+				Status:      tt.rowStatus,
+			}); err != nil {
+				t.Fatalf("Failed to save execution: %v", err)
+			}
+
+			issues := []*Issue{{
+				Number:    6152,
+				Title:     "Queued retry",
+				Labels:    []Label{{Name: tt.label}},
+				UpdatedAt: time.Now().Add(-tt.age),
+			}}
+
+			var mu sync.Mutex
+			removed := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues":
+					_ = json.NewEncoder(w).Encode(issues)
+				case r.Method == http.MethodDelete:
+					removed = true
+					w.WriteHeader(http.StatusOK)
+				case r.Method == http.MethodPost:
+					_ = json.NewEncoder(w).Encode(&Comment{ID: 1, Body: "cleanup"})
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cleaner, err := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+				Enabled:         true,
+				Interval:        30 * time.Minute,
+				Threshold:       1 * time.Hour,
+				FailedThreshold: 24 * time.Hour,
+			})
+			if err != nil {
+				t.Fatalf("NewCleaner() error = %v", err)
+			}
+
+			if err := cleaner.Cleanup(context.Background()); err != nil {
+				t.Fatalf("Cleanup() error = %v", err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if removed != tt.wantRemoved {
+				t.Errorf("RemoveLabel called = %v, want %v (row status %q)", removed, tt.wantRemoved, tt.rowStatus)
+			}
+		})
+	}
+}
