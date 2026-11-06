@@ -1,6 +1,6 @@
 # TASK-460: Delivery-evidence audit — green CI is not proof the requested change shipped (false-success class)
 
-**Status**: 🚀 First leg DISPATCHED 2026-08-20 — doc-vs-wire (see § Dispatched legs). Other directions still 📋 planned. Split out of TASK-459 by scope decision 2026-08-08 (founder call: separate track); not gated on TASK-459 Phases 2–4, but Phase 4's inventory hook feeds this task its site rows
+**Status**: 🔎 **RESEARCH READ 2026-11-06 (navigator-research over code + memories + markers; § Research 2026-11-06 below).** The top recommendation — an ownership gate on the poller's "Issue already has merged PRs, marking as done" path — is already shipped upstream (sdk#156 → sdk PR#157 → v0.38.6, pinned by pilot#6106/PR#6113 in v2.313.x); its post-merge defect fix (sdk PR#159 → v0.38.7) is filed as [pilot#6158](https://github.com/qf-studio/pilot/issues/6158). Uncovered shapes remain: scaffold-only collapse (mem-151), reachability/dead code (PR#4992), partial scope (GH-5032), prose-deliverable ACs, success finalization without an evidence read, fake/mock evidence (mem-195/211/267). **Next-leg candidate (founder call): diff-coverage becomes a hold, not a report, when pre_pr_review.mode is enforce** (acceptance_evidence_run.go line 761 → pre_pr_hold.go). Was: 🚀 First leg DISPATCHED 2026-08-20 — doc-vs-wire (see § Dispatched legs). Other directions still 📋 planned. Split out of TASK-459 by scope decision 2026-08-08 (founder call: separate track); not gated on TASK-459 Phases 2–4, but Phase 4's inventory hook feeds this task its site rows
 **Created**: 2026-08-08
 **Assignee**: Pilot (multi-leg once planned; dispatch one leg at a time)
 
@@ -69,3 +69,18 @@ Phase 4's inventory pass records the success-side sites (`AutoMerger.MergePR`, `
 - Prior art: spec-guard epic (2026-07-30) · decomposition-integrity waves · re-dispatch fix TASK-399/#4203
 
 **Last Updated**: 2026-08-20
+
+## Research 2026-11-06 (verified at main 38a945b10)
+
+| Guard | Runs | Checks | Misses |
+|---|---|---|---|
+| Acceptance evidence (`acceptance_evidence_run.go` 512/539; classifier `acceptance_classifier.go` 82, jev `acceptance_classifier_jev.go` 50) | pre-PR, `runner.go` 6771 | command- and mutation-shaped ACs | non-command ACs; output is PR-body prose, not a block |
+| Diff-coverage (`acceptance_evidence_diff_coverage.go` 139, from `acceptance_evidence_run.go` 761) | pre-PR | files named in Change/Fix/Acceptance appear in the diff | report only (lines 24–30); wrong content in a touched file passes |
+| Contract evidence (`contract_evidence.go` 327; hard block `runner.go` 6943–6990) | pre-PR | producer-code citations for wire fields | only repos with `contract_files` configured |
+| Pre-PR review (`pre_pr_review.go` 118; evidence `pre_pr_evidence.go` 54; hold `pre_pr_hold.go` 32) | after gates + evidence | model review; enforce holds on an unfixed blocking defect | skipped on a borrowed branch (`pre_pr_hold.go` 49); proceeds without evidence when not ready (`pre_pr_evidence.go` 68) |
+| GH-5351 guard (`autopilot/owner_death.go` 206; skips 318/324) | CI-fix PR merge | fix PR shares files with the original | fix/revision issues only; fails open on read errors |
+| Post-merge reviewer (`post_merge_reviewer.go` 18; `post_merge_passes.go` 89) | after merge | model pass over the merged diff | detective only; cannot undo `pilot-done` or the parent close |
+| TASK-508 post-merge CI (`controller.go` 6569–6590, dedup 4899) | post-merge CI | attribution to the merge commit; run dedup | CI attribution only |
+| Poller `hasMergedWork` (studio-sdk `poller.go` 1420; title search `client.go` 1224) | admission | merged PR must reference the issue (sdk PR#157/#159) | — (fixed 11-04; v0.38.7 pin = pilot#6158) |
+
+Directions already covered by other tasks: doc-vs-wire (this task, pilot#5009), diff-surface in report form (GH-5466), the reviewer reading evidence (TASK-620 L9), hold-on-unfixed (TASK-641), GH-5351 fix (TASK-642), CI attribution (TASK-508). Still open: collapse guard, ACs-observable, reachability, scope-completeness, prose-AC check, the evidence consumer at the `pilot-done` write. Memories: mem-151, mem-195, mem-196, mem-202, mem-211, mem-267, `merged-feature-dead-callback-not-bridged-onprcreated`, `consumer-docblock-trusted-over-producer-wire-source`, `poller-branch-lookup-marks-issue-done-from-another-issues-pr`, `ci-post-merge-fix-issue-borrows-merged-branch-short-circuits`. Not verified by the research: whether the ui project has `contract_dependencies` configured; TASK-583 U22 false-delivery details.

@@ -2383,6 +2383,9 @@
           "theory of mind",
           "database",
           "api"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6158"
         ]
       },
       "TASK-461": {
@@ -3630,13 +3633,14 @@
       "TASK-620": {
         "path": ".agent/tasks/TASK-620-pre-pr-reviewer-replaces-self-review-and-judge.md",
         "title": "TASK-620: the reviewer moves before the PR — one in-run review after the gates with a resumed fix round; self-review and the in-run intent judge retire; post-merge becomes a sampled audit",
-        "status": "active",
+        "status": "dispatched",
         "concepts": [
           "quality-gate",
           "review"
         ],
         "issues": [
-          "https://github.com/qf-studio/pilot/issues/6037"
+          "https://github.com/qf-studio/pilot/issues/6037",
+          "https://github.com/qf-studio/pilot/issues/6157"
         ]
       },
       "TASK-585": {
