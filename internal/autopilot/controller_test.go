@@ -12688,3 +12688,173 @@ func TestHandlePostMergeCI_CodeClassRerunsOnceBeforeFixIssue(t *testing.T) {
 		t.Errorf("tick 3: rerun state = %d/%q, want 1/sha-b", prState.PostMergeCodeRerunCount, prState.PostMergeCodeRerunSHA)
 	}
 }
+
+// TestHandlePostMergeCI_RerunRestartsCITimer pins GH-6137: a post-merge re-run
+// (code-class or infra-class) restarts PostMergeCIStartedAt, so a slow re-run
+// that outlasts what was left of the budget is not parked in StageFailed with
+// no fix issue and no verdict.
+func TestHandlePostMergeCI_RerunRestartsCITimer(t *testing.T) {
+	const codeLog = "--- FAIL: TestSomething (0.00s)\n    foo_test.go:12: got 1, want 2\nFAIL\nFAIL\texample.com/pkg\t0.01s\n"
+	const sha = "timersha1"
+
+	tests := []struct {
+		name  string
+		build func(t *testing.T, reruns, issues *int) *httptest.Server
+	}{
+		{
+			name: "code-class re-run",
+			build: func(t *testing.T, reruns, issues *int) *httptest.Server {
+				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					switch {
+					case strings.HasSuffix(r.URL.Path, "/check-runs"):
+						_, _ = w.Write(mustJSON(t, github.CheckRunsResponse{
+							TotalCount: 1,
+							CheckRuns:  []github.CheckRun{{ID: 100, Name: "test", Status: "completed", Conclusion: "failure"}},
+						}))
+					case r.URL.Path == "/repos/owner/repo/actions/jobs/100/logs":
+						_, _ = w.Write([]byte(codeLog))
+					case r.URL.Path == "/repos/owner/repo/actions/jobs/100":
+						_ = json.NewEncoder(w).Encode(ghadapter.WorkflowJob{
+							ID: 100, RunID: 500, Name: "test", Status: "completed",
+							Steps: []ghadapter.JobStep{
+								{Name: "Set up job", Status: "completed", Conclusion: "success", Number: 1},
+								{Name: "Run tests", Status: "completed", Conclusion: "failure", Number: 2},
+							},
+						})
+					case r.URL.Path == "/repos/owner/repo/actions/runs/500/rerun-failed-jobs" && r.Method == http.MethodPost:
+						*reruns++
+						w.WriteHeader(http.StatusCreated)
+					case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+						*issues++
+						w.WriteHeader(http.StatusCreated)
+						_, _ = w.Write(mustJSON(t, github.Issue{Number: 900 + *issues}))
+					default:
+						_, _ = w.Write([]byte("{}"))
+					}
+				}))
+			},
+		},
+		{
+			name: "infra-class re-run",
+			build: func(t *testing.T, reruns, issues *int) *httptest.Server {
+				rerunCalled := false
+				return gh4533InfraTestServer(t, sha, &rerunCalled, func(w http.ResponseWriter, r *http.Request) bool {
+					switch {
+					case r.URL.Path == "/repos/owner/repo/actions/runs/500/rerun-failed-jobs" && r.Method == http.MethodPost:
+						*reruns++
+						w.WriteHeader(http.StatusCreated)
+						return true
+					case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodPost:
+						*issues++
+						w.WriteHeader(http.StatusCreated)
+						_, _ = w.Write(mustJSON(t, github.Issue{Number: 900 + *issues}))
+						return true
+					}
+					return false
+				})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var reruns, issues int
+			server := tt.build(t, &reruns, &issues)
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			cfg.Environment = EnvDev
+			c := NewController(cfg, ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+
+			// Resolve the timeout the way handlePostMergeCI does.
+			ciTimeout := c.config.CIWaitTimeout
+			if env := c.config.ResolvedEnvOrDefault().CITimeout; env > 0 && (ciTimeout == 0 || env < ciTimeout) {
+				ciTimeout = env
+			}
+
+			prState := &PRState{
+				PRNumber: 81, Stage: StagePostMergeCI, PostMergeSHA: sha,
+				PostMergeCIStartedAt: time.Now().Add(-(ciTimeout - time.Minute)),
+			}
+			c.mu.Lock()
+			c.activePRs[81] = prState
+			c.mu.Unlock()
+
+			if err := c.handlePostMergeCI(context.Background(), prState); err != nil {
+				t.Fatalf("handlePostMergeCI: %v", err)
+			}
+			if reruns != 1 {
+				t.Fatalf("reruns = %d, want 1", reruns)
+			}
+			if issues != 0 {
+				t.Errorf("fix issues filed = %d, want 0", issues)
+			}
+			if prState.Stage != StagePostMergeCI {
+				t.Errorf("stage = %s, want %s", prState.Stage, StagePostMergeCI)
+			}
+			if age := time.Since(prState.PostMergeCIStartedAt); age < 0 || age > time.Minute {
+				t.Errorf("PostMergeCIStartedAt age = %v, want the timer restarted within the last minute", age)
+			}
+		})
+	}
+}
+
+// TestMaybeRetryInfraFailure_RestartsCIWaitTimer pins GH-6137 on the pre-merge
+// path: a re-run moves CIWaitStartedAt to the waiting-CI clock's now; a call
+// that re-ran no job leaves it alone.
+func TestMaybeRetryInfraFailure_RestartsCIWaitTimer(t *testing.T) {
+	const sha = "timersha2"
+
+	fakeNow := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	started := fakeNow.Add(-25 * time.Minute)
+	checks := []FailedCheckLog{{CheckName: "lint", JobID: 100}}
+	verdict := NewVerdict(FailureClassInfra, "429 action download", "test", "owner/repo")
+
+	tests := []struct {
+		name      string
+		rerunOK   bool
+		wantMoved bool
+	}{
+		{name: "job re-run restarts the timer", rerunOK: true, wantMoved: true},
+		{name: "no job re-run leaves the timer", rerunOK: false, wantMoved: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/repos/owner/repo/actions/jobs/100":
+					if !tt.rerunOK {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					_ = json.NewEncoder(w).Encode(ghadapter.WorkflowJob{ID: 100, RunID: 500, Name: "lint", Status: "completed"})
+				case r.URL.Path == "/repos/owner/repo/actions/runs/500/rerun-failed-jobs" && r.Method == http.MethodPost:
+					w.WriteHeader(http.StatusCreated)
+				default:
+					_, _ = w.Write([]byte("{}"))
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+			c.ciPollClock = func() time.Time { return fakeNow }
+
+			prState := &PRState{PRNumber: 82, HeadSHA: sha, Stage: StageCIFailed, CIWaitStartedAt: started}
+			_, retried := c.maybeRetryInfraFailure(context.Background(), prState, checks, verdict)
+			if retried != tt.wantMoved {
+				t.Fatalf("retried = %v, want %v", retried, tt.wantMoved)
+			}
+			want := started
+			if tt.wantMoved {
+				want = fakeNow
+			}
+			if !prState.CIWaitStartedAt.Equal(want) {
+				t.Errorf("CIWaitStartedAt = %v, want %v", prState.CIWaitStartedAt, want)
+			}
+		})
+	}
+}

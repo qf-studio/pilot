@@ -4775,7 +4775,11 @@ func (c *Controller) maybeRetryInfraFailure(ctx context.Context, prState *PRStat
 	// (post-#4853, that instant timeout also stamps a terminal label — see
 	// the confirmed-timeout branch in checkPRWaitingCI — permanently
 	// stranding a PR whose rerun never got a fair chance to complete).
-	prState.CIWaitStartedAt = time.Now()
+	// GH-6137: measured on the waiting-CI clock (ciNow) the pre-merge deadline
+	// check reads, so a test clock moves both together.
+	prState.CIWaitStartedAt = c.ciNow()
+	c.log.Info("CI wait timer restarted after infra re-run",
+		"pr", prState.PRNumber, "sha", ShortSHA(prState.HeadSHA), "ci_timer", "restarted")
 	c.metrics.RecordCIRun("infra_retry")
 	c.log.Warn("CI failure classified as infra outage, auto-retried failed jobs",
 		"pr", prState.PRNumber, "sha", ShortSHA(prState.HeadSHA),
@@ -4865,11 +4869,25 @@ func (c *Controller) maybeRetryPostMergeInfraFailure(ctx context.Context, prStat
 
 	prState.PostMergeInfraRerunCount = effectiveCount + 1
 	prState.PostMergeInfraRerunSHA = mainSHA
+	c.restartPostMergeCITimer(prState, mainSHA)
 	c.metrics.RecordCIRun("infra_retry")
 	c.log.Warn("post-merge CI failure classified as infra outage, auto-retried failed jobs",
 		"pr", prState.PRNumber, "sha", ShortSHA(mainSHA),
 		"attempt", prState.PostMergeInfraRerunCount, "budget", maxInfraRerunBudget, "runs_rerun", rerunCount)
 	return true
+}
+
+// restartPostMergeCITimer restarts the post-merge CI wait after a re-run that
+// re-ran at least one job (GH-6137): the re-run starts a fresh CI run, so the
+// timeout must be measured from now. Without it a slow re-run that outlasts
+// what is left of the budget ends in StageFailed with no fix issue and no
+// verdict. The no-workflow grace check reads the same timer, but it has
+// already run by the time a re-run happens and PostMergeCINoWorkflowChecked
+// is set, so it does not fire again.
+func (c *Controller) restartPostMergeCITimer(prState *PRState, mainSHA string) {
+	prState.PostMergeCIStartedAt = time.Now()
+	c.log.Info("post-merge CI wait timer restarted after re-run",
+		"pr", prState.PRNumber, "sha", ShortSHA(mainSHA), "ci_timer", "restarted")
 }
 
 // maybeRetryPostMergeCodeFailure re-runs the failed jobs of a code-class
@@ -4901,6 +4919,7 @@ func (c *Controller) maybeRetryPostMergeCodeFailure(ctx context.Context, prState
 
 	prState.PostMergeCodeRerunCount = effectiveCount + 1
 	prState.PostMergeCodeRerunSHA = mainSHA
+	c.restartPostMergeCITimer(prState, mainSHA)
 	c.metrics.RecordCIRun("code_retry")
 	c.log.Warn("post-merge CI code-class failure, re-ran failed jobs once before filing a fix issue",
 		"pr", prState.PRNumber, "sha", ShortSHA(mainSHA),
