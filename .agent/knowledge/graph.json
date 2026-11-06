@@ -10411,6 +10411,45 @@
         "created": "2026-11-06",
         "last_validated": "2026-11-06",
         "source": "reconcile"
+      },
+      "mem-292": {
+        "type": "pitfall",
+        "summary": "The stale-label cleaner builds its active set from running executions only (internal/adapters/github/cleanup.go ~271-283 via store.GetActiveExecutions = status='running'), so a queued-but-waiting task loses pilot-in-progress once the issue is idle past adapters.github.stale_label_cleanup.threshold (default 1h). The poller then re-offers it while its queued row still owns the claim. Seen 2026-11-06 on pilot#6152 during a self-upgrade admission pause (queued 15:12Z, stripped 16:27Z). Fix: TASK-641 D2 \u2014 count queued/pending rows as active.",
+        "path": "memories/pitfalls/mem-292.md",
+        "confidence": 0.85,
+        "concepts": [
+          "executor",
+          "retry",
+          "workflow"
+        ],
+        "created": "2026-11-06",
+        "last_validated": "2026-11-06"
+      },
+      "mem-293": {
+        "type": "pitfall",
+        "summary": "A dispatch claim lost to a LIVE owner (a queued or running row, dispatcher.go ~3089 'dispatch claim lost \u2026 dropping duplicate pickup') increments the same claimLostDrops counter as a drop against a terminal row (cmd/pilot/repick_backoff.go ~234); at terminalDropPilotStripThreshold=3 (cmd/pilot/handlers.go ~1590-1616) the handler removes the pilot label and comments 'no execution ever ran'. Three poller re-offers of a legitimately queued task therefore un-arm it. Seen 2026-11-06 pilot#6152 16:27-16:38Z. Fix: TASK-641 D2 \u2014 count only drops whose blocking row is terminal.",
+        "path": "memories/pitfalls/mem-293.md",
+        "confidence": 0.85,
+        "concepts": [
+          "executor",
+          "retry",
+          "workflow"
+        ],
+        "created": "2026-11-06",
+        "last_validated": "2026-11-06"
+      },
+      "mem-294": {
+        "type": "pitfall",
+        "summary": "Boot reconcile (dispatcher.go ~516, GH-4392) marks a claimed QUEUED row stalled like a dead running owner, and the stalled re-arm sweep (cmd/pilot/rearm_stalled.go ~341-396, rearm_canceled.go ~112) accepts only re-arm evidence timestamped after the stall, so a retry the daemon itself queued (pilot-retry-ready added before the restart) is escalated to pilot-needs-human after three checks (~4 min). A daemon restart therefore turns a waiting retry into a human task. Seen 2026-11-06 pilot#6152 16:44-16:48Z. Fix: TASK-641 D3 \u2014 re-queue queued rows at boot; count pre-stall daemon re-arms as evidence.",
+        "path": "memories/pitfalls/mem-294.md",
+        "confidence": 0.8,
+        "concepts": [
+          "executor",
+          "retry",
+          "workflow"
+        ],
+        "created": "2026-11-06",
+        "last_validated": "2026-11-06"
       }
     }
   },
@@ -15639,6 +15678,21 @@
       "from": "TASK-643",
       "to": "api",
       "type": "implements"
+    },
+    {
+      "from": "mem-292",
+      "to": "TASK-641",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-293",
+      "to": "TASK-641",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-294",
+      "to": "TASK-641",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -17033,7 +17087,10 @@
       "mem-284",
       "mem-285",
       "mem-286",
-      "mem-287"
+      "mem-287",
+      "mem-292",
+      "mem-293",
+      "mem-294"
     ],
     "external-contributor": [
       "external-fork-pr-sweeps-stale-agent-state"
@@ -17744,7 +17801,10 @@
       "gate-exit-2-no-rule-to-make-target-was-a-claude-fixable-failure",
       "mem-283",
       "mem-284",
-      "mem-286"
+      "mem-286",
+      "mem-292",
+      "mem-293",
+      "mem-294"
     ],
     "saas": [
       "console-ssm-paths-work-locally-proxy-does-not",
@@ -18305,7 +18365,10 @@
       "TASK-640",
       "mem-284",
       "mem-287",
-      "TASK-643"
+      "TASK-643",
+      "mem-292",
+      "mem-293",
+      "mem-294"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -18902,11 +18965,11 @@
       "mem-291"
     ]
   },
-  "last_updated": "2026-11-06T17:02:47.641225+00:00",
+  "last_updated": "2026-11-06T17:06:39.855903+00:00",
   "stats": {
-    "total_nodes": 880,
-    "total_edges": 1045,
-    "memory_count": 478
+    "total_nodes": 883,
+    "total_edges": 1048,
+    "memory_count": 481
   },
   "metadata": {
     "last_updated": null
