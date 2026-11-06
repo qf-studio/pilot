@@ -118,9 +118,22 @@ func (c terminalCompletionChecker) tryRearmStalled(taskID, projectPath, backoffK
 		return false, fmt.Errorf("listing issue #%d events: %w", issueNum, err)
 	}
 
+	// GH-6177: only a daemon-restart stall consults the token's own login, and
+	// only when no ordinary after-the-stall event exists, so every other stall
+	// costs no extra API call.
+	var daemonLogin string
+	rearmLabels := append([]string{c.triggerLabel}, retryReadyRearmLabels...)
+	if isDaemonRestartStall(exec.Error) && latestRearmEvent(events, *exec.CompletedAt, rearmLabels...) == nil && isRetryReadyLabeled(issue) {
+		user, userErr := c.ghClient.GetAuthenticatedUser(ctx)
+		if userErr != nil {
+			return false, fmt.Errorf("resolving daemon login: %w", userErr)
+		}
+		daemonLogin = user.Login
+	}
+
 	var kind string
 	var evidenceAt time.Time
-	if rearmEvent := latestRearmEvent(events, *exec.CompletedAt, append([]string{c.triggerLabel}, retryReadyRearmLabels...)...); rearmEvent != nil {
+	if rearmEvent := latestRearmEventForStall(events, issue, *exec.CompletedAt, exec.Error, daemonLogin, rearmLabels...); rearmEvent != nil {
 		kind, evidenceAt = rearmEvent.Event, rearmEvent.CreatedAt
 	} else {
 		// GH-5398: no label/reopen/renamed evidence found via the classic
@@ -253,7 +266,7 @@ func (c terminalCompletionChecker) sweepStalledRearm(ctx context.Context, projec
 			continue
 		}
 
-		_, found, err := c.store.LatestStalledExecution(taskID, projectPath)
+		stalledExec, found, err := c.store.LatestStalledExecution(taskID, projectPath)
 		if err != nil {
 			logging.WithComponent("dispatch").Warn("GH-5212: stalled re-arm sweep: store lookup failed",
 				slog.String("task_id", taskID), slog.Any("error", err))
@@ -277,13 +290,13 @@ func (c terminalCompletionChecker) sweepStalledRearm(ctx context.Context, projec
 			// without ever reaching the escalation backstop.
 			logging.WithComponent("dispatch").Warn("GH-5212 stalled re-arm probe failed",
 				slog.String("task_id", taskID), slog.Any("error", err))
-			c.recordStalledRearmMiss(ctx, taskID, issue.Number, backoffKey)
+			c.recordStalledRearmMiss(ctx, projectPath, taskID, issue.Number, backoffKey, stalledExec.Error)
 			continue
 		}
 		if rearmed {
 			continue
 		}
-		c.recordStalledRearmMiss(ctx, taskID, issue.Number, backoffKey)
+		c.recordStalledRearmMiss(ctx, projectPath, taskID, issue.Number, backoffKey, stalledExec.Error)
 	}
 }
 
@@ -338,10 +351,17 @@ var stalledRearmNoEvidenceStreaks = newStalledRearmNoEvidenceTracker()
 // window forever (GH-5346: 76 claim-lost drops over 33h with no signal,
 // since claim_lost_drops is deliberately excluded from the dispatcher's
 // hard-cap counter).
-func (c terminalCompletionChecker) recordStalledRearmMiss(ctx context.Context, taskID string, issueNum int, backoffKey string) {
+func (c terminalCompletionChecker) recordStalledRearmMiss(ctx context.Context, projectPath, taskID string, issueNum int, backoffKey, stallReason string) {
 	streak := stalledRearmNoEvidenceStreaks.increment(backoffKey)
 	if streak < terminalDropPilotStripThreshold {
 		repickBackoff.recordClaimLostDrop(backoffKey)
+		return
+	}
+	// GH-6177: a daemon-restart stall is not a hold an operator placed, so
+	// missing evidence of an operator gesture is no reason to hand it to one.
+	// Re-queue it through the normal re-arm instead of escalating.
+	if isDaemonRestartStall(stallReason) {
+		c.requeueRestartStall(taskID, projectPath, issueNum, backoffKey, streak)
 		return
 	}
 	if c.escalateStalledRearmNoEvidence(ctx, taskID, issueNum, streak) {
@@ -353,6 +373,23 @@ func (c terminalCompletionChecker) recordStalledRearmMiss(ctx context.Context, t
 	// silently resume ordinary claim-lost-drop backoff next pass. Leave the
 	// streak at/above threshold so the very next sweep retries the
 	// escalation (comment + label) instead of quietly falling back.
+}
+
+// requeueRestartStall demotes a daemon-restart stall to 'failed' so the ordinary
+// retry path grants the next generation, the same way tryRearmStalled does for
+// a stall with evidence (GH-6177). On a store failure the streak is left in
+// place so the next sweep retries.
+func (c terminalCompletionChecker) requeueRestartStall(taskID, projectPath string, issueNum int, backoffKey string, streak int) {
+	reason := fmt.Sprintf("GH-6177: daemon-restart stall of issue #%d re-queued after %d sweeps without re-arm evidence; not escalated", issueNum, streak)
+	if err := c.store.ReclassifyStalledForRearm(taskID, projectPath, reason); err != nil {
+		logging.WithComponent("dispatch").Warn("GH-6177: failed to re-queue daemon-restart stall — will retry on the next sweep pass",
+			slog.String("task_id", taskID), slog.Int("issue", issueNum), slog.Any("error", err))
+		return
+	}
+	repickBackoff.recordSuccess(backoffKey)
+	stalledRearmNoEvidenceStreaks.reset(backoffKey)
+	logging.WithComponent("dispatch").Info("GH-6177: daemon-restart stall re-queued without escalation",
+		slog.String("task_id", taskID), slog.Int("issue", issueNum), slog.Int("streak", streak))
 }
 
 // escalateStalledRearmNoEvidence posts the explanatory comment and applies

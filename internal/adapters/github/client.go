@@ -305,6 +305,9 @@ type IssueEvent struct {
 	CreatedAt time.Time `json:"created_at"`
 	// Label is only populated by GitHub for "labeled"/"unlabeled" events.
 	Label *Label `json:"label,omitempty"`
+	// Actor is who performed the action (GH-6177): the daemon's own retry path
+	// labels as the authenticated token's login.
+	Actor *User `json:"actor,omitempty"`
 }
 
 // TimelineEvent represents one entry of a GitHub issue's Timeline API (the

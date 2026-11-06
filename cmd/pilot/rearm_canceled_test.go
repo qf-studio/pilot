@@ -256,3 +256,47 @@ func TestTerminalCompletionChecker_CanceledClosedIssue_NotRearmed(t *testing.T) 
 		t.Fatal("expected no re-arm — the issue is currently closed, regardless of a post-cancel labeled event")
 	}
 }
+
+// TestLatestRearmEvent_DaemonRetryLabelCountsForRestartStall is GH-6177's
+// evidence rule: a pilot-retry-ready label the daemon's own retry path added
+// before the stall, and which is still on the issue, is re-arm evidence for a
+// daemon-restart stall — but not for a human-caused one, and not when someone
+// else added it.
+func TestLatestRearmEvent_DaemonRetryLabelCountsForRestartStall(t *testing.T) {
+	stall := time.Now().Add(-time.Hour)
+	const daemon = "pilot-bot"
+	retryLabel := &github.Label{Name: github.LabelRetryReady}
+	events := []*github.IssueEvent{
+		{Event: "labeled", CreatedAt: stall.Add(-90 * time.Minute), Label: retryLabel, Actor: &github.User{Login: "Pilot-Bot"}},
+	}
+	withLabel := &github.Issue{Number: 6152, State: "open", Labels: []github.Label{{Name: "pilot"}, {Name: github.LabelRetryReady}}}
+	withoutLabel := &github.Issue{Number: 6152, State: "open", Labels: []github.Label{{Name: "pilot"}}}
+	labels := append([]string{"pilot"}, retryReadyRearmLabels...)
+
+	const restartReason = "orphaned by daemon restart: non-terminal claimed row at boot before this process claimed any work (GH-4392)"
+	humanReason := "consecutive identical failures (will not retry): boom"
+
+	tests := []struct {
+		name   string
+		events []*github.IssueEvent
+		issue  *github.Issue
+		reason string
+		login  string
+		want   bool
+	}{
+		{"restart stall, daemon label before the stall", events, withLabel, restartReason, daemon, true},
+		{"human-caused stall keeps the after-the-stall rule", events, withLabel, humanReason, daemon, false},
+		{"label no longer on the issue", events, withoutLabel, restartReason, daemon, false},
+		{"label added by someone else", events, withLabel, restartReason, "operator", false},
+		{"unknown daemon login", events, withLabel, restartReason, "", false},
+		{"event without actor", []*github.IssueEvent{{Event: "labeled", CreatedAt: stall.Add(-time.Hour), Label: retryLabel}}, withLabel, restartReason, daemon, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := latestRearmEventForStall(tt.events, tt.issue, stall, tt.reason, tt.login, labels...)
+			if (got != nil) != tt.want {
+				t.Errorf("latestRearmEventForStall() = %+v, want evidence=%v", got, tt.want)
+			}
+		})
+	}
+}

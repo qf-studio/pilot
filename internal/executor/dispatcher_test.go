@@ -3177,6 +3177,122 @@ func TestDispatcher_AdoptQueuedProjectsOnRestart(t *testing.T) {
 	}
 }
 
+// stubBootPRChecks makes the boot-time merged/open PR heals report "no PR" so a
+// running row falls through to the stalled path without calling gh.
+func stubBootPRChecks(t *testing.T) {
+	t.Helper()
+	origMerged := staleRunningMergedPRCheck
+	origOpen := staleRunningOpenPRCheck
+	staleRunningMergedPRCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	staleRunningOpenPRCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	t.Cleanup(func() {
+		staleRunningMergedPRCheck = origMerged
+		staleRunningOpenPRCheck = origOpen
+	})
+}
+
+// TestReconcileOrphanedExecutions_QueuedRowStaysQueued is the GH-6177
+// regression: a claimed queued row at boot has no process that can have died,
+// so it keeps its status and claim and its project worker is signalled; a
+// running row beside it still stalls.
+func TestReconcileOrphanedExecutions_QueuedRowStaysQueued(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	stubBootPRChecks(t)
+
+	const queuedProject = "/project-6177-queued"
+	queuedTask := &Task{ID: "GH-6177-Q", ProjectPath: queuedProject}
+	queuedID, err := NewExecutionLifecycle(store).Begin(queuedTask, ExecStatusQueued)
+	if err != nil {
+		t.Fatalf("setup Begin(queued): %v", err)
+	}
+	runningTask := &Task{ID: "GH-6177-R", ProjectPath: "/project-6177-running"}
+	runningID, err := NewExecutionLifecycle(store).Begin(runningTask, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin(running): %v", err)
+	}
+
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	// Not started: a bare worker lets the test observe the wake-up signal.
+	worker := NewProjectWorker(queuedProject, store, dispatcher.runner, dispatcher.log)
+	dispatcher.workers[queuedProject] = worker
+
+	if reconciled := dispatcher.reconcileOrphanedExecutions(); reconciled != 1 {
+		t.Fatalf("expected 1 stalled execution (the running row), got %d", reconciled)
+	}
+
+	queued, err := store.GetExecution(queuedID)
+	if err != nil {
+		t.Fatalf("GetExecution(queued): %v", err)
+	}
+	if queued.Status != "queued" {
+		t.Errorf("queued row status = %q, want queued", queued.Status)
+	}
+	claimed, err := store.GetClaimedNonTerminalExecutions()
+	if err != nil {
+		t.Fatalf("GetClaimedNonTerminalExecutions: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].ID != queuedID {
+		t.Errorf("expected only the queued row to keep its claim and non-terminal status, got %+v", claimed)
+	}
+
+	running, err := store.GetExecution(runningID)
+	if err != nil {
+		t.Fatalf("GetExecution(running): %v", err)
+	}
+	if running.Status != "stalled" {
+		t.Errorf("running row status = %q, want stalled", running.Status)
+	}
+
+	dispatcher.signalBootRequeued()
+	select {
+	case <-worker.signal:
+	default:
+		t.Error("expected the queued row's project worker to receive a signal")
+	}
+}
+
+// TestReconcileOrphanedExecutions_RunningRowStillStalled pins the unchanged
+// GH-4392 path: a claimed running row with no PR is stalled, with the
+// daemon-restart reason the re-arm sweep keys on, and its project worker is
+// not woken.
+func TestReconcileOrphanedExecutions_RunningRowStillStalled(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	stubBootPRChecks(t)
+
+	const project = "/project-6177-pin"
+	execID, err := NewExecutionLifecycle(store).Begin(&Task{ID: "GH-6177-PIN", ProjectPath: project}, ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("setup Begin: %v", err)
+	}
+
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+	worker := NewProjectWorker(project, store, dispatcher.runner, dispatcher.log)
+	dispatcher.workers[project] = worker
+
+	if reconciled := dispatcher.reconcileOrphanedExecutions(); reconciled != 1 {
+		t.Fatalf("expected 1 reconciled execution, got %d", reconciled)
+	}
+	exec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "stalled" {
+		t.Errorf("status = %q, want stalled", exec.Status)
+	}
+	if !strings.HasPrefix(exec.Error, "orphaned by daemon restart") {
+		t.Errorf("error = %q, want the 'orphaned by daemon restart' reason", exec.Error)
+	}
+
+	dispatcher.signalBootRequeued()
+	select {
+	case <-worker.signal:
+		t.Error("a stalled running row must not wake its worker")
+	default:
+	}
+}
+
 // TestDispatcher_ReconcileOrphanedExecutions is the GH-4392 regression suite
 // for Dispatcher.Start's boot-time orphan reconciliation: a claimed
 // queued/running row found before this process has created any worker can
@@ -3189,15 +3305,19 @@ func TestDispatcher_AdoptQueuedProjectsOnRestart(t *testing.T) {
 // whose real work already shipped heals or is deleted instead of being
 // marked stalled.
 func TestDispatcher_ReconcileOrphanedExecutions(t *testing.T) {
-	t.Run("claimed queued row becomes stalled and journaled", func(t *testing.T) {
+	t.Run("claimed running row becomes stalled and journaled", func(t *testing.T) {
 		store, cleanup := setupTestStore(t)
 		defer cleanup()
 
+		// GH-6177: only a running row has a process that can have died; a
+		// queued row is left queued (TestReconcileOrphanedExecutions_QueuedRowStaysQueued).
 		task := &Task{ID: "GH-4392-Q1", ProjectPath: "/project-orphan-q"}
-		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued)
+		execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
 		if err != nil {
 			t.Fatalf("setup Begin: %v", err)
 		}
+
+		stubBootPRChecks(t)
 
 		dispatcher := NewDispatcher(store, NewRunner(), nil)
 		if reconciled := dispatcher.reconcileOrphanedExecutions(); reconciled != 1 {
@@ -3408,10 +3528,11 @@ func TestDispatcher_ReconcileOrphanedExecutions_Idempotent(t *testing.T) {
 	defer cleanup()
 
 	task := &Task{ID: "GH-4392-IDEMPOTENT", ProjectPath: "/project-idempotent"}
-	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued)
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
 	if err != nil {
 		t.Fatalf("setup Begin: %v", err)
 	}
+	stubBootPRChecks(t)
 
 	first := NewDispatcher(store, NewRunner(), nil).reconcileOrphanedExecutions()
 	if first != 1 {
@@ -3446,10 +3567,11 @@ func TestDispatcher_ReconcileOrphanedExecutions_ClearsRepickBackoff(t *testing.T
 	defer cleanup()
 
 	task := &Task{ID: "GH-4454-BACKOFF", ProjectPath: "/project-boot-backoff"}
-	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued)
+	execID, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning)
 	if err != nil {
 		t.Fatalf("setup Begin: %v", err)
 	}
+	stubBootPRChecks(t)
 
 	dispatcher := NewDispatcher(store, NewRunner(), nil)
 	key := repickBackoffKey(task.ProjectPath, task.ID)
@@ -3495,10 +3617,13 @@ func TestDispatcher_BootOrphanReconciliation_EnablesGenerationRetry(t *testing.T
 	task := &Task{ID: "GH-4392-RETRY", ProjectPath: "/project-retry"}
 
 	// Simulate the dead pre-restart daemon: it claimed generation 0 and left
-	// the row 'queued' (e.g. TASK-409's AWS cutover kill).
-	if _, err := NewExecutionLifecycle(store).Begin(task, ExecStatusQueued); err != nil {
+	// the row 'running' (e.g. TASK-409's AWS cutover kill). GH-6177: a
+	// 'queued' row now stays queued at boot, so only a running row exercises
+	// the stalled-claim retry path.
+	if _, err := NewExecutionLifecycle(store).Begin(task, ExecStatusRunning); err != nil {
 		t.Fatalf("setup Begin: %v", err)
 	}
+	stubBootPRChecks(t)
 
 	// Fresh process, fresh Dispatcher — Start() runs boot reconciliation
 	// before anything else, including before any worker exists.

@@ -578,11 +578,11 @@ func TestRecordStalledRearmMiss_LabelFailure_StreakNotReset(t *testing.T) {
 	ctx := context.Background()
 	// Drive the streak to exactly the escalation threshold.
 	for i := 1; i < terminalDropPilotStripThreshold; i++ {
-		checker.recordStalledRearmMiss(ctx, taskID, 9001, key)
+		checker.recordStalledRearmMiss(ctx, "", taskID, 9001, key, "")
 	}
 	// This miss crosses the threshold and attempts escalation; AddLabels
 	// fails.
-	checker.recordStalledRearmMiss(ctx, taskID, 9001, key)
+	checker.recordStalledRearmMiss(ctx, "", taskID, 9001, key, "")
 	if addLabelCalls != 1 {
 		t.Fatalf("expected 1 AddLabels attempt, got %d", addLabelCalls)
 	}
@@ -593,7 +593,7 @@ func TestRecordStalledRearmMiss_LabelFailure_StreakNotReset(t *testing.T) {
 	// The streak must still be at/above threshold, so the very next miss
 	// retries escalation (comment + label) rather than quietly falling back
 	// to recordClaimLostDrop.
-	checker.recordStalledRearmMiss(ctx, taskID, 9001, key)
+	checker.recordStalledRearmMiss(ctx, "", taskID, 9001, key, "")
 	if addLabelCalls != 2 {
 		t.Errorf("expected the label application to be retried on the next miss (streak not reset), got %d AddLabels calls", addLabelCalls)
 	}
