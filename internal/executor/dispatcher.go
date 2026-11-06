@@ -1477,6 +1477,22 @@ func (d *Dispatcher) ExecutionGeneration(taskID, projectPath string) (int, error
 // If a decomposer is configured and the task is complex, it will be split
 // into subtasks that are queued instead of the parent task.
 func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) {
+	out, err := d.QueueTaskOutcome(ctx, task)
+	return out.ExecutionID, err
+}
+
+// QueueOutcome is QueueTask's full result. ExecutionID is "" when the pickup
+// was dropped as a duplicate (nil error); ClaimLostOwnerStatus then carries
+// the status of the execution row that owns the blocking claim ("" when the
+// lookup failed or the claim vanished), so the caller can tell a live owner
+// (queued/pending/running/decomposed) from a terminal one (GH-6171).
+type QueueOutcome struct {
+	ExecutionID          string
+	ClaimLostOwnerStatus string
+}
+
+// QueueTaskOutcome is QueueTask returning the claim-lost owner status as well.
+func (d *Dispatcher) QueueTaskOutcome(ctx context.Context, task *Task) (QueueOutcome, error) {
 	// GH-4347: serialize the duplicate check below with its own insert so two
 	// concurrent QueueTask calls for the same task_id/project_path can't both
 	// pass IsTaskQueued before either row lands. See dispatchMu's doc comment.
@@ -1488,7 +1504,7 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 	if err != nil {
 		d.log.Warn("Failed to check for duplicate task", slog.Any("error", err))
 	} else if exists {
-		return "", fmt.Errorf("task %s: %w", task.ID, ErrTaskAlreadyActive)
+		return QueueOutcome{}, fmt.Errorf("task %s: %w", task.ID, ErrTaskAlreadyActive)
 	}
 
 	// GH-5808: hold a ticket the daily cap would refuse before spending a
@@ -1498,7 +1514,7 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 	// and the poller re-offers it on its normal tick, which succeeds once the
 	// org-local day rolls over (hold.ResumesAt).
 	if hold := d.runner.DailyCapGate().Check(d.store, task); hold != nil {
-		return "", hold
+		return QueueOutcome{}, hold
 	}
 
 	// Try decomposition if decomposer is configured
@@ -1532,20 +1548,20 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 					slog.String("skip_reason", string(result.SkipReason)),
 					slog.String("complexity", result.Complexity.String()),
 				)
-				execID, err := d.queueSingleTask(ctx, task)
-				if err == nil && execID != "" {
+				out, err := d.queueSingleTaskOutcome(ctx, task)
+				if err == nil && out.ExecutionID != "" {
 					// execID == "" with a nil error means queueSingleTask dropped
 					// an ErrClaimLost pickup silently — no executions row exists
 					// here to attach this stage event to (GH-4359).
-					d.recordExecutionEvent(execID, memory.StageDecompositionSkipped, detail)
+					d.recordExecutionEvent(out.ExecutionID, memory.StageDecompositionSkipped, detail)
 				}
-				return execID, err
+				return out, err
 			}
 		}
 	}
 
 	// Queue single task
-	return d.queueSingleTask(ctx, task)
+	return d.queueSingleTaskOutcome(ctx, task)
 }
 
 // dispatcherRepickBackoffBaseInterval and dispatcherRepickBackoffMaxShift
@@ -2969,6 +2985,13 @@ func stalledIssueComment(reason string, issueNum int) string {
 }
 
 // blockingClaimLogAttrs returns slog attributes describing the claim that
+// caused a "dispatch claim lost" drop — see blockingClaim.
+func (d *Dispatcher) blockingClaimLogAttrs(taskID, projectPath string) []any {
+	attrs, _ := d.blockingClaim(taskID, projectPath)
+	return attrs
+}
+
+// blockingClaim returns slog attributes describing the claim that
 // caused a "dispatch claim lost" drop — the blocking claim's generation and
 // the status of the execution it is bound to — so an incident shaped like
 // GH-493's (stale claims bound to terminal executions winning every claim
@@ -2976,22 +2999,26 @@ func stalledIssueComment(reason string, issueNum int) string {
 // instead of requiring a direct execution_claims/executions query (GH-5272
 // acceptance criterion 3). Best-effort: a lookup failure or a since-vanished
 // claim yields no extra attributes rather than failing the drop log itself.
-func (d *Dispatcher) blockingClaimLogAttrs(taskID, projectPath string) []any {
+//
+// The second return is the blocking execution's status ("" when unknown):
+// GH-6171 hands it to the caller so a drop against a live owner is not
+// counted as a terminal drop.
+func (d *Dispatcher) blockingClaim(taskID, projectPath string) ([]any, string) {
 	gen, execID, found, err := d.store.LatestClaimGeneration(taskID, projectPath)
 	if err != nil || !found {
-		return nil
+		return nil, ""
 	}
 	attrs := []any{slog.Int("blocking_claim_generation", gen)}
 	exec, err := d.store.GetExecution(execID)
 	if err != nil {
-		return attrs
+		return attrs, ""
 	}
-	return append(attrs, slog.String("blocking_execution_status", exec.Status))
+	return append(attrs, slog.String("blocking_execution_status", exec.Status)), exec.Status
 }
 
 // queueDecomposedTask handles queuing a decomposed task and its subtasks.
 // The parent task is marked as "decomposed" and subtasks are queued in order.
-func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, result *DecomposeResult) (string, error) {
+func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, result *DecomposeResult) (QueueOutcome, error) {
 	// GH-4243: single chokepoint for the row create + ExecutionID threading
 	// that used to be hand-rolled here. GH-4372: beginWithGenerationRetry
 	// additionally claims generation+1 when the prior claim belongs to a
@@ -3000,9 +3027,9 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 	parentExecID, err := d.beginWithGenerationRetry(parent, ExecStatusDecomposed)
 	if err != nil {
 		if errors.Is(err, ErrDispatchGated) {
-			return "", err // GH-5808, GH-6016: held, not a failed save
+			return QueueOutcome{}, err // GH-5808, GH-6016: held, not a failed save
 		}
-		return "", fmt.Errorf("failed to save decomposed parent: %w", err)
+		return QueueOutcome{}, fmt.Errorf("failed to save decomposed parent: %w", err)
 	}
 	if parentExecID == "" {
 		// TASK-407/GH-4359, GH-4372: dropped duplicate pickup — either
@@ -3016,13 +3043,14 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 		// execution is already owned elsewhere, so re-queuing here would
 		// either FK-787 (no executions row to reference) or start a
 		// genuine duplicate run.
+		attrs, ownerStatus := d.blockingClaim(parent.ID, parent.ProjectPath)
 		d.log.Warn("dispatch claim lost — decomposed parent already owned by another dispatch channel or already terminal, dropping duplicate pickup",
 			append([]any{
 				slog.String("task_id", parent.ID),
 				slog.String("project", parent.ProjectPath),
-			}, d.blockingClaimLogAttrs(parent.ID, parent.ProjectPath)...)...,
+			}, attrs...)...,
 		)
-		return "", nil
+		return QueueOutcome{ClaimLostOwnerStatus: ownerStatus}, nil
 	}
 
 	d.log.Info("Task decomposed",
@@ -3052,13 +3080,20 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 
 	// Return parent execution ID
 	if lastExecID == "" {
-		return parentExecID, nil
+		return QueueOutcome{ExecutionID: parentExecID}, nil
 	}
-	return parentExecID, nil
+	return QueueOutcome{ExecutionID: parentExecID}, nil
 }
 
 // queueSingleTask queues a single task (no decomposition).
 func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, error) {
+	out, err := d.queueSingleTaskOutcome(ctx, task)
+	return out.ExecutionID, err
+}
+
+// queueSingleTaskOutcome is queueSingleTask returning the claim-lost owner
+// status alongside the execution ID (GH-6171).
+func (d *Dispatcher) queueSingleTaskOutcome(ctx context.Context, task *Task) (QueueOutcome, error) {
 	// GH-4243: single chokepoint for the row create + ExecutionID threading
 	// that used to be hand-rolled here. GH-4372: beginWithGenerationRetry
 	// additionally claims generation+1 when the prior claim belongs to a
@@ -3067,9 +3102,9 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 	execID, err := d.beginWithGenerationRetry(task, ExecStatusQueued)
 	if err != nil {
 		if errors.Is(err, ErrDispatchGated) {
-			return "", err // GH-5808, GH-6016: held, not a failed save
+			return QueueOutcome{}, err // GH-5808, GH-6016: held, not a failed save
 		}
-		return "", fmt.Errorf("failed to save execution: %w", err)
+		return QueueOutcome{}, fmt.Errorf("failed to save execution: %w", err)
 	}
 	if execID == "" {
 		// TASK-407/GH-4359, GH-4372: dropped duplicate pickup — either
@@ -3086,13 +3121,14 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 		// callers (including the decomposed-subtask loop below) treat this
 		// exactly like an already-handled task, not a failure to log or
 		// retry.
+		attrs, ownerStatus := d.blockingClaim(task.ID, task.ProjectPath)
 		d.log.Warn("dispatch claim lost — task already owned by another dispatch channel or already terminal, dropping duplicate pickup",
 			append([]any{
 				slog.String("task_id", task.ID),
 				slog.String("project", task.ProjectPath),
-			}, d.blockingClaimLogAttrs(task.ID, task.ProjectPath)...)...,
+			}, attrs...)...,
 		)
-		return "", nil
+		return QueueOutcome{ClaimLostOwnerStatus: ownerStatus}, nil
 	}
 
 	d.recordInheritedHead(ctx, task, execID)
@@ -3122,7 +3158,7 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 	// Ensure worker exists and signal it
 	d.ensureWorker(task.ProjectPath)
 
-	return execID, nil
+	return QueueOutcome{ExecutionID: execID}, nil
 }
 
 // staleBranchHeadProbe returns the SHA origin's task branch points at when no

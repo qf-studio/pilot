@@ -6627,7 +6627,8 @@ func TestDispatcher_QueueDecomposedTask_ClaimLostDropsSilently(t *testing.T) {
 	subtask := &Task{ID: "GH-CLAIM-PARENT-1", ProjectPath: parent.ProjectPath}
 	result := &DecomposeResult{Decomposed: true, Subtasks: []*Task{subtask}, Reason: "test"}
 
-	execID, err := dispatcher.queueDecomposedTask(context.Background(), parent, result)
+	out, err := dispatcher.queueDecomposedTask(context.Background(), parent, result)
+	execID := out.ExecutionID
 	if err != nil {
 		t.Fatalf("expected queueDecomposedTask to drop ErrClaimLost silently (nil error), got: %v", err)
 	}
@@ -7278,5 +7279,50 @@ func TestReapOrphanedClaims_SkipsLiveExecution(t *testing.T) {
 	d.reapOrphanedClaims()
 	if _, _, found, err := store.LatestClaimGeneration(taskID, projectPath); err != nil || found {
 		t.Errorf("non-live orphan claim should be reaped: found=%v err=%v", found, err)
+	}
+}
+
+// TestQueueSingleTask_ClaimLostReportsOwnerStatus covers GH-6171: a pickup
+// dropped on a lost claim reports the status of the blocking execution row,
+// so the caller can tell a queued/running owner from a terminal one.
+func TestQueueSingleTask_ClaimLostReportsOwnerStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		begin  Status
+		finish string // optional terminal status written after Begin
+		want   string
+	}{
+		{name: "queued owner", begin: ExecStatusQueued, want: "queued"},
+		{name: "running owner", begin: ExecStatusRunning, want: "running"},
+		{name: "no_op owner (terminal, never re-armed)", begin: ExecStatusRunning, finish: "no_op", want: "no_op"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			taskID, projectPath := "GH-6171-OWNER", "/project-gh-6171"
+			ownerID, err := NewExecutionLifecycle(store).Begin(&Task{ID: taskID, ProjectPath: projectPath}, tt.begin, 0)
+			if err != nil {
+				t.Fatalf("setup: owner Begin failed: %v", err)
+			}
+			if tt.finish != "" {
+				if err := store.UpdateExecutionStatus(ownerID, tt.finish, ""); err != nil {
+					t.Fatalf("setup: status update failed: %v", err)
+				}
+			}
+
+			dispatcher := NewDispatcher(store, NewRunner(), nil)
+			out, err := dispatcher.queueSingleTaskOutcome(context.Background(), &Task{ID: taskID, ProjectPath: projectPath})
+			if err != nil {
+				t.Fatalf("expected a silent drop, got error: %v", err)
+			}
+			if out.ExecutionID != "" {
+				t.Errorf("expected empty ExecutionID on a lost claim, got %q", out.ExecutionID)
+			}
+			if out.ClaimLostOwnerStatus != tt.want {
+				t.Errorf("ClaimLostOwnerStatus = %q, want %q", out.ClaimLostOwnerStatus, tt.want)
+			}
+		})
 	}
 }
