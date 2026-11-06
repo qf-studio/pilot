@@ -2984,13 +2984,6 @@ func stalledIssueComment(reason string, issueNum int) string {
 	return comment
 }
 
-// blockingClaimLogAttrs returns slog attributes describing the claim that
-// caused a "dispatch claim lost" drop — see blockingClaim.
-func (d *Dispatcher) blockingClaimLogAttrs(taskID, projectPath string) []any {
-	attrs, _ := d.blockingClaim(taskID, projectPath)
-	return attrs
-}
-
 // blockingClaim returns slog attributes describing the claim that
 // caused a "dispatch claim lost" drop — the blocking claim's generation and
 // the status of the execution it is bound to — so an incident shaped like
