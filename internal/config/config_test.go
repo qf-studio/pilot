@@ -3053,3 +3053,37 @@ func TestValidateBudgetScope(t *testing.T) {
 		})
 	}
 }
+
+func TestPrePRReviewConfig_OnUnfixedValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		errSubstr []string
+	}{
+		{name: "unset ok (hold)"},
+		{name: "hold ok", value: executor.PrePRReviewOnUnfixedHold},
+		{name: "open_pr ok", value: executor.PrePRReviewOnUnfixedOpenPR},
+		{name: "fail rejected with both accepted values", value: "fail", errSubstr: []string{"pre_pr_review.on_unfixed", `"fail"`, "hold", "open_pr"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidConfig()
+			cfg.Executor = &executor.BackendConfig{PrePRReview: &executor.PrePRReviewConfig{OnUnfixed: tt.value}}
+			err := cfg.Validate()
+			if len(tt.errSubstr) == 0 {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			for _, want := range tt.errSubstr {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %v, want substring %q", err, want)
+				}
+			}
+		})
+	}
+}

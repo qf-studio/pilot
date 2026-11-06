@@ -851,6 +851,13 @@ const (
 	// PrePRReviewModeEnforce is shadow plus acting on the verdict: a REQUEST-CHANGES
 	// with a blocking defect gets one fix round before the push (runReviewFix).
 	PrePRReviewModeEnforce = "enforce"
+
+	// PrePRReviewOnUnfixedHold ends a run whose blocking defects survive the fix
+	// round needs_human: the branch is pushed, no PR is opened (default).
+	PrePRReviewOnUnfixedHold = "hold"
+	// PrePRReviewOnUnfixedOpenPR opens the PR anyway; autopilot parks it
+	// awaiting approval.
+	PrePRReviewOnUnfixedOpenPR = "open_pr"
 )
 
 const (
@@ -892,6 +899,13 @@ type PrePRReviewConfig struct {
 	// must exceed the project's slowest gate run; the per-gate timeouts still
 	// apply inside it. Default: 20m.
 	RegateTimeout time.Duration `yaml:"regate_timeout,omitempty"`
+
+	// OnUnfixed is what enforce mode does with a REQUEST-CHANGES whose blocking
+	// defects survive the fix round: hold (default; push the branch, open no PR,
+	// post the defects on the issue under pilot-needs-human, end needs_human) or
+	// open_pr (open the PR and let autopilot park it awaiting approval).
+	// Daemon-wide: there is no per-project override.
+	OnUnfixed string `yaml:"on_unfixed,omitempty"`
 
 	// MaxFixRounds is the number of fix rounds a REQUEST-CHANGES may start
 	// (used by a later leg). Default: 1.
@@ -961,6 +975,14 @@ func (c *PrePRReviewConfig) EffectiveRegateTimeout() time.Duration {
 		return defaultPrePRReviewRegateTimeout
 	}
 	return c.RegateTimeout
+}
+
+// EffectiveOnUnfixed returns on_unfixed, hold when unset.
+func (c *PrePRReviewConfig) EffectiveOnUnfixed() string {
+	if c == nil || c.OnUnfixed == "" {
+		return PrePRReviewOnUnfixedHold
+	}
+	return c.OnUnfixed
 }
 
 // EffectiveMaxFixRounds returns the fix-round bound, 1 when unset.

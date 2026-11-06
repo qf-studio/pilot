@@ -7335,6 +7335,32 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				return result, nil
 			}
 
+			// GH-6138: blocking review defects the fix round did not resolve end the
+			// run needs_human here — after the already-merged, no-commits and
+			// existing-PR guards, before any PR exists. A borrowed branch never
+			// holds: the push already landed on the origin PR's head and that PR
+			// keeps its body, so the run goes on to the open_pr path as before.
+			if holdReason, hold := prePRHoldReason(result.PrePRReview, prePRFixOf(result.PrePRReview), r.prePRHoldConfig()); hold {
+				switch {
+				case r.onBorrowedBranch(task):
+					log.Warn("Pre-PR review hold skipped: borrowed branch",
+						slog.String("task_id", task.ID),
+						slog.String("branch", task.Branch),
+						slog.Int("from_pr", task.FromPR),
+					)
+				case task.SourceAdapter != "" && task.SourceAdapter != "github":
+					// holdPushedBranch only hands off through GitHub labels; any other
+					// adapter would park with nothing to read, so it keeps the PR path.
+					log.Warn("Pre-PR review hold skipped: non-GitHub task",
+						slog.String("task_id", task.ID),
+						slog.String("source_adapter", task.SourceAdapter),
+					)
+				default:
+					r.holdPrePRReview(ctx, task, git, result, recorder, log, holdReason, executionPath, prePREvidence, &preserveWorktreeOnPushFailure)
+					return result, nil
+				}
+			}
+
 			r.reportProgress(task.ID, "Creating PR", 98, "Creating pull request...")
 
 			// GH-2325: ensure the subject passed through to the PR (and the squash

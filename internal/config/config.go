@@ -1311,7 +1311,8 @@ func validateBilling(b *executor.BillingConfig) error {
 }
 
 // validatePrePRReview checks executor.pre_pr_review (TASK-620): the mode must
-// be one of off, shadow, enforce (empty = off) and the durations and counts
+// be one of off, shadow, enforce (empty = off), on_unfixed one of hold, open_pr
+// (empty = hold) and the durations and counts
 // must not be negative (0 = default).
 func validatePrePRReview(p *executor.PrePRReviewConfig) error {
 	if p == nil {
@@ -1321,6 +1322,11 @@ func validatePrePRReview(p *executor.PrePRReviewConfig) error {
 	case "", executor.PrePRReviewModeOff, executor.PrePRReviewModeShadow, executor.PrePRReviewModeEnforce:
 	default:
 		return fmt.Errorf("invalid executor.pre_pr_review.mode: %q (must be off, shadow or enforce)", p.Mode)
+	}
+	switch p.OnUnfixed {
+	case "", executor.PrePRReviewOnUnfixedHold, executor.PrePRReviewOnUnfixedOpenPR:
+	default:
+		return fmt.Errorf("invalid executor.pre_pr_review.on_unfixed: %q (must be %s or %s)", p.OnUnfixed, executor.PrePRReviewOnUnfixedHold, executor.PrePRReviewOnUnfixedOpenPR)
 	}
 	if p.Timeout < 0 {
 		return fmt.Errorf("invalid executor.pre_pr_review.timeout: %s (must be >= 0; 0 = default)", p.Timeout)
