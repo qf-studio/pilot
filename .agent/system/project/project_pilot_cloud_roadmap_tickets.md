@@ -48,6 +48,7 @@ Status: 📋 not filed · 🎫 filed (issue #) · 🚧 in flight · ✅ merged. 
 | U18 | 5 | feat(docs): edit + create `.agent/` docs from the Docs page, PR per change | 9.5 | M | 📋 |
 | U19 | 1 | feat(board): daily cap banner from the cards response `notice`; `daily_cap_reached` toast names the resume time | TASK-589 | S | ✅ ui#280 → PR#284 (10-26, run 3; runs 1–2 → pilot#5864) |
 | U30 | 1 | feat(board): desktop Board per Figma `7-482` — project-grouped list replaces the lanes, status chips incl. FAILED / BLOCKED, moves in the drawer, right column `Performance · N PRs` | 6.1 | L | ✅ [TASK-639](../../tasks/TASK-639-desktop-board-page-grouped-list.md) B1 ui#370 → PR#372 (11-05) · B2 ui#376 → PR#377 (11-06 07:26Z, deployed 07:31Z, live-verified at 1264 px) |
+| U31 | 1 | feat(connections): credential health on the rows (Fix key / Fix connection + reason + check time); composer notice + disable on `anthropic_key_invalid` | incident 11-05 | S | 📋 [TASK-640](../../tasks/TASK-640-credential-health-console.md) K2, after C15 |
 
 Alignment legs U20–U29 (11-04/05, TASK-583 § 2026-11-04 audit + founder design walk-through): all landed — U20 ui#298 · U21 ui#302 · U22 → U28 ui#334 · U23 ui#307 · U24 ui#308 · U25 ui#309 · U26 ui#310 · U27 ui#311 · U29 ui#335. Live: Home and Research match Figma 7-2 / 13-994.
 
@@ -69,6 +70,7 @@ Alignment legs U20–U29 (11-04/05, TASK-583 § 2026-11-04 audit + founder desig
 | C12 | 4 | feat(db): Postgres RLS — `FORCE ROW LEVEL SECURITY` + `app.current_tenant_id` | 8.8 D3 | M | 📋 |
 | C13 | 3 | feat(onboarding): bootstrap trigger per project, cost cap from TASK-581, status + result surface | 7 | M | 📋 after P5 |
 | C14 | 1 | feat(fleet): daily ticket cap owned by the daemon — render cap + timezone into tenant config, standing → board notice, delete both console gates, pack draw at ledger ingest | TASK-589 (PR#425 D1) | M | ✅ console#449 → PR#451 merged 10-26, reviewed APPROVE-w-notes |
+| C15 | 1 | feat(credentials): credential health sweep — re-validate the own Anthropic key + tracker tokens on an interval, truthful `connections.status` (syncingest no longer writes connected), `409 anthropic_key_invalid` chat gate | incident 11-05 | M | 📋 [TASK-640](../../tasks/TASK-640-credential-health-console.md) K1 |
 
 ## pilot (daemon, `qf-studio/pilot`) — 18
 
