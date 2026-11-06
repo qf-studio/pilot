@@ -3803,7 +3803,8 @@
         "issues": [
           "https://github.com/qf-studio/pilot-console/issues/488",
           "https://github.com/qf-studio/pilot-console/issues/492",
-          "https://github.com/qf-studio/pilot-console-ui/issues/378"
+          "https://github.com/qf-studio/pilot-console-ui/issues/378",
+          "https://github.com/qf-studio/pilot-console-ui/issues/384"
         ]
       },
       "TASK-641": {
