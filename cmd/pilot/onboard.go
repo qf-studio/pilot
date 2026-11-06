@@ -445,7 +445,7 @@ func buildNotifyCard(cfg *config.Config) SummaryCard {
 func buildPRsCard(cfg *config.Config) SummaryCard {
 	card := SummaryCard{Title: "PRS"}
 	card.Value = "auto-create"
-	card.Line1 = "self-review: on"
+	card.Line1 = "quality gates before PR"
 	card.Configured = true
 	return card
 }

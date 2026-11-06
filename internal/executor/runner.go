@@ -684,17 +684,16 @@ type ToolResultContent struct {
 
 // progressState tracks execution phase for compact progress reporting
 type progressState struct {
-	selfReview   selfReviewOutcome // GH-5900: how the self-review phase ended
-	phase        string            // Current phase: Exploring, Implementing, Testing, Committing
-	filesRead    int               // Count of files read
-	filesWrite   int               // Count of files written
-	commands     int               // Count of bash commands
-	hasNavigator bool              // Project has Navigator
-	navPhase     string            // Navigator phase: INIT, RESEARCH, IMPL, VERIFY, COMPLETE
-	navIteration int               // Navigator loop iteration
-	navProgress  int               // Navigator-reported progress
-	exitSignal   bool              // Navigator EXIT_SIGNAL detected
-	commitSHAs   []string          // Extracted commit SHAs from git output
+	phase        string   // Current phase: Exploring, Implementing, Testing, Committing
+	filesRead    int      // Count of files read
+	filesWrite   int      // Count of files written
+	commands     int      // Count of bash commands
+	hasNavigator bool     // Project has Navigator
+	navPhase     string   // Navigator phase: INIT, RESEARCH, IMPL, VERIFY, COMPLETE
+	navIteration int      // Navigator loop iteration
+	navProgress  int      // Navigator-reported progress
+	exitSignal   bool     // Navigator EXIT_SIGNAL detected
+	commitSHAs   []string // Extracted commit SHAs from git output
 	// GH-4964: captured only when a structured exit signal explicitly opts
 	// into the no-op/decline branch (no_op:true + non-empty reason) — see
 	// SignalParser.NoOpExitReason. The bare mandatory exit signal never sets
@@ -709,8 +708,6 @@ type progressState struct {
 	modelName                string   // Model used
 	reportedCostUSD          *float64 // GH-5676: sum of CLI-reported total_cost_usd across invocations; nil if none reported
 	// Note: filesChanged/linesAdded/linesRemoved tracked via git diff at commit time
-	// Intent judge retry tracking (GH-624)
-	intentRetried bool // Set after first intent retry to prevent infinite loops
 	// Budget enforcement (GH-539)
 	budgetExceeded bool               // Set when per-task token/duration limit is exceeded
 	budgetReason   string             // Human-readable reason for budget cancellation
@@ -720,7 +717,7 @@ type progressState struct {
 	// Smart retry tracking (GH-920)
 	smartRetryAttempt int // Current retry attempt for error-based retries
 	// Session resume support (GH-1265)
-	sessionID string // Claude Code session ID for resume in self-review
+	sessionID string // Claude Code session ID for resume in the review-fix round
 	// Modified files tracking (GH-1388)
 	modifiedFiles []string // List of actually modified files from Write/Edit tool events
 }
@@ -1013,15 +1010,11 @@ type ExecutionResult struct {
 	IsEpic bool
 	// EpicPlan contains the planning result for epic tasks (GH-405)
 	EpicPlan *EpicPlan
-	// SelfReviewTerminated is how long the self-review session ran before it was
-	// killed (timeout or cancellation); zero when it was not terminated. Its
-	// edits were discarded by selfReviewTreeHygiene. GH-5900.
-	SelfReviewTerminated time.Duration
 	// PrePRReview is the outcome of the pre-PR review (TASK-620); nil when the
 	// mode is off. Shadow mode records it and acts on nothing.
 	PrePRReview *PrePRReviewOutcome
-	// IntentWarning contains the reason if the intent judge flagged a mismatch.
-	// When set, the PR was created despite intent misalignment (after retry failed).
+	// IntentWarning carries the unfixable pre-push lint issues; the PR is created
+	// with the warning in its completion message.
 	IntentWarning string
 	// TitleRejected indicates the task failed at the conventional-commit title
 	// guard and the runner has already posted a structured "how to fix" comment
@@ -1259,7 +1252,6 @@ type Runner struct {
 	subIssuePRStateCheck   SubIssuePRStateFn                                               // Optional override for querying a sub-issue PR's state before close (GH-4697); nil uses the gh CLI default
 	subIssuePollerSkip     SubIssuePollerSkipFn                                            // GH-3240: marks sub-issues in poller so they aren't re-dispatched
 	prePRReviewer          PrePRReviewer                                                   // Optional pre-PR reviewer, nil when pre_pr_review.mode is off (TASK-620)
-	intentJudge            *IntentJudge                                                    // Optional intent judge for diff-vs-ticket alignment (GH-624)
 	teamChecker            TeamChecker                                                     // Optional team RBAC checker (GH-633)
 	executeFunc            func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
 	skipPreflightChecks    bool                                                            // Skip preflight checks (for testing with mock backends)
@@ -1563,41 +1555,6 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 		}
 	}
 
-	// Initialize intent judge for diff-vs-ticket alignment (GH-624, GH-2817)
-	// Uses Claude Code subprocess — bills to operator's CC subscription, no API key required.
-	if config != nil && config.IntentJudge != nil && (config.IntentJudge.Enabled == nil || *config.IntentJudge.Enabled) {
-		claudeCmd := ""
-		if config.ClaudeCode != nil {
-			claudeCmd = config.ClaudeCode.Command
-		}
-		if claudeCmd == "" {
-			claudeCmd = "claude"
-		}
-		if _, err := exec.LookPath(claudeCmd); err != nil {
-			runner.log.Warn("Intent judge disabled: claude binary not found", slog.String("command", claudeCmd))
-		} else {
-			runner.intentJudge = NewIntentJudge(claudeCmd)
-			if config.IntentJudge.Model != "" {
-				runner.intentJudge.model = config.IntentJudge.Model
-			}
-			if config.IntentJudge.MaxDiffChars > 0 {
-				runner.intentJudge.maxDiffChars = config.IntentJudge.MaxDiffChars
-			}
-			if config.IntentJudge.Timeout != "" {
-				if d, err := time.ParseDuration(config.IntentJudge.Timeout); err == nil {
-					runner.intentJudge.SetJudgeTimeout(d)
-				}
-			}
-			runner.log.Info("Intent judge initialized",
-				slog.String("model", runner.intentJudge.model),
-				slog.Int("max_diff_chars", runner.intentJudge.maxDiffChars),
-				slog.Duration("timeout", runner.intentJudge.judgeTimeout),
-			)
-		}
-	} else if config != nil && config.IntentJudge == nil {
-		runner.log.Debug("Intent judge disabled: no config")
-	}
-
 	// Initialize the pre-PR reviewer (TASK-620): the post-merge reviewer run over
 	// the full diff before the push. Built only when the mode is not off.
 	if config != nil && config.PrePRReviewMode() != PrePRReviewModeOff {
@@ -1661,10 +1618,6 @@ func (r *Runner) backendType() string {
 	return "claude-code"
 }
 
-// selfReviewTimeout returns the per-backend timeout for the self-review phase.
-// OpenCode runs are legitimately slower than Claude Code (server-managed
-// session, larger streaming overhead); a 2-minute cap cancels review while the
-// backend is still working and surfaces as a false regression. GH-2416.
 // effectiveStallTimeout returns the stall detection threshold from config.
 // Delegates to BackendConfig.EffectiveStallTimeout(); returns the 3m default when
 // no config is set. TASK-308.
@@ -1673,19 +1626,12 @@ func (r *Runner) effectiveStallTimeout() time.Duration {
 }
 
 // finalizeTimeout returns the budget finalizeCtx should grant post-backend
-// finalization calls (quality gates, self-review, intent judge, contract
+// finalization calls (quality gates, pre-PR review, contract
 // evidence, push/PR create). Delegates to
 // BackendConfig.EffectiveFinalizeTimeout(); returns the 15m default when no
 // config is set. GH-5346.
 func (r *Runner) finalizeTimeout() time.Duration {
 	return r.config.EffectiveFinalizeTimeout()
-}
-
-// selfReviewTimeout returns the self-review phase budget: executor.self_review_timeout
-// when set, else the per-backend default (2m Claude Code, 10m OpenCode, GH-2416).
-// GH-5900.
-func (r *Runner) selfReviewTimeout() time.Duration {
-	return r.config.EffectiveSelfReviewTimeout(r.backendType())
 }
 
 // fallbackModelName returns the best-known model name for telemetry rows when
@@ -1798,7 +1744,7 @@ func (r *Runner) DailyCapGate() *DailyCapGate {
 // own *ExecutionLifecycle outside the runner (dispatcher.go's ProjectWorker,
 // epic.go's sub-issue finalizers) propagate the same processor into
 // ExecutionLifecycle.SetAlertProcessor, so the finish-tripwire sweep's
-// dead-man relay reaches the same alerts engine runSelfReview/decompose
+// dead-man relay reaches the same alerts engine the review-fix round/decompose
 // alerts already do — one processor, wired once at daemon startup, reused by
 // every terminal-write call site instead of each guessing its own.
 func (r *Runner) AlertProcessor() AlertEventProcessor {
@@ -2001,11 +1947,6 @@ func (r *Runner) SetPrePRReviewer(reviewer PrePRReviewer) {
 	r.prePRReviewer = reviewer
 }
 
-// SetIntentJudge sets the intent judge for diff-vs-ticket alignment verification (GH-624).
-func (r *Runner) SetIntentJudge(judge *IntentJudge) {
-	r.intentJudge = judge
-}
-
 // SetKnowledgeStore sets the knowledge store for experiential memories (GH-994).
 // When set, relevant memories are surfaced in the prompt and decisions are captured post-task.
 func (r *Runner) SetKnowledgeStore(k *memory.KnowledgeStore) {
@@ -2104,9 +2045,6 @@ func (r *Runner) HasMonitor() bool { return r.monitor != nil }
 
 // HasAlertProcessor reports whether an alert processor is wired.
 func (r *Runner) HasAlertProcessor() bool { return r.alertProcessor != nil }
-
-// HasIntentJudge reports whether an intent judge is wired.
-func (r *Runner) HasIntentJudge() bool { return r.intentJudge != nil }
 
 // HasModelRouter reports whether a model router is wired.
 func (r *Runner) HasModelRouter() bool { return r.modelRouter != nil }
@@ -6146,7 +6084,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		}
 
 		// GH-5346: from here through the end of this branch — the quality-gate
-		// first pass, self-review, intent judge, contract-evidence
+		// first pass, pre-PR review, contract-evidence
 		// verification, and the final push/PR-create — every stage runs on a
 		// finalization ctx, not the raw task ctx. The backend has already
 		// returned; a deadline blowing partway through this bookkeeping must
@@ -6156,7 +6094,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		// path too). ctx is shadowed here for the quality-gate first pass,
 		// and re-derived again (via further finalizeCtx calls; search
 		// "GH-5346: re-derive" below) immediately before each later stage —
-		// self-review/intent judge, contract evidence, and push/PR-create —
+		// the pre-PR review, contract evidence, and push/PR-create —
 		// rather than once for the whole rest of the function, because each
 		// of those stages is itself a real LLM/git call that can consume
 		// enough wall-clock to blow a ctx that was still live when the
@@ -6177,9 +6115,6 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		taskCtxWasDone := ctx.Err() != nil
 		ctx, finalizeCancel := finalizeCtx(ctx, r.finalizeTimeout())
 		defer finalizeCancel()
-
-		// Track if quality gates passed for self-review decision (GH-1079)
-		qualityGatesPassed := false
 
 		// GH-4876: quality gates only make sense for tasks that actually
 		// produce code changes. Read-only comms tasks (question/research/
@@ -6279,7 +6214,6 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					// Quality gates passed - exit retry loop
 					if outcome.Passed {
 						finalOutcome = outcome
-						qualityGatesPassed = true
 						r.reportProgress(task.ID, "Quality Passed", 94, "All quality gates passed")
 
 						// Run simplification phase if enabled (GH-995)
@@ -6665,103 +6599,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		// since. finalizeCtx is idempotent to call again: if ctx is still
 		// live, this is just an extra context.WithCancel wrap; if it just
 		// blew its deadline, this is what actually grants the fresh window
-		// self-review and the intent judge run on.
-		ctx, selfReviewCancel := finalizeCtx(ctx, r.finalizeTimeout())
-		defer selfReviewCancel()
-
-		// GH-1079: Run self-review and intent judge in parallel (saves 2-5 min per task)
-		// Both are independent read-only operations:
-		// - Self-review checks code quality (syntax, wiring, style)
-		// - Intent judge verifies diff matches issue intent
-		var intentVerdict *JudgeVerdict
-		var intentErr error
-		var intentDiff string
-		var intentBaseBranch string
-
-		// Determine if intent judge should run
-		// TASK-620: the pre-PR review replaces the in-run intent judge.
-		prePRMode := r.config.PrePRReviewMode()
-		runIntentJudge := r.intentJudge != nil && prePRMode == PrePRReviewModeOff && task.CreatePR && !task.DirectCommit && task.Branch != ""
-
-		// Log skip reasons for intent judge
-		if prePRMode != PrePRReviewModeOff {
-			log.Debug("Intent judge skipped: replaced by the pre-PR review")
-		} else if r.intentJudge == nil {
-			log.Debug("Intent judge skipped: not initialized")
-		} else if !task.CreatePR {
-			log.Debug("Intent judge skipped: CreatePR=false")
-		} else if task.DirectCommit {
-			log.Debug("Intent judge skipped: DirectCommit=true")
-		} else if task.Branch == "" {
-			log.Debug("Intent judge skipped: no branch")
-		}
-
-		// Get diff before parallel execution (needed for intent judge)
-		if runIntentJudge {
-			intentBaseBranch = task.BaseBranch
-			if intentBaseBranch == "" {
-				intentBaseBranch, _ = git.GetDefaultBranch(ctx)
-				if intentBaseBranch == "" {
-					intentBaseBranch = "main"
-				}
-			}
-			var intentBaseSHA string
-			intentDiff, intentBaseSHA, intentErr = git.GetDiffAgainstOrigin(ctx, intentBaseBranch)
-			if intentErr != nil {
-				log.Warn("Intent judge skipped: failed to get diff",
-					slog.String("task_id", task.ID),
-					slog.Any("error", intentErr),
-				)
-				runIntentJudge = false
-			} else if intentDiff == "" {
-				runIntentJudge = false
-			} else {
-				// GH-4988: record the base SHA the judge diff was computed
-				// against so a false "scope creep" veto can be checked
-				// against what was actually on origin/<baseBranch> at judge
-				// time, instead of guessing whether the base was stale.
-				log.Info("Intent judge diff base resolved",
-					slog.String("task_id", task.ID),
-					slog.String("base_branch", intentBaseBranch),
-					slog.String("base_sha", intentBaseSHA),
-				)
-			}
-		}
-
-		// Determine if self-review should run:
-		// 1. Quality gates configured AND passed
-		// 2. OR quality gates not configured AND CreatePR=true (GH-364)
-		runSelfReview := qualityGatesPassed || (r.qualityCheckerFactory == nil && task.CreatePR)
-
-		// Run self-review and intent judge in parallel
-		var wg sync.WaitGroup
-		var selfReviewErr error
-
-		if runSelfReview {
-			r.saveLogEntry(task.LogExecutionID(), "info", "Running self-review...")
-			wg.Add(1)
-			logging.SafeGo("executor-runner", func() {
-				defer wg.Done()
-				if err := r.runSelfReview(ctx, task, executionPath, state); err != nil {
-					selfReviewErr = err
-				}
-			})
-		}
-
-		if runIntentJudge {
-			wg.Add(1)
-			logging.SafeGo("executor-runner", func() {
-				defer wg.Done()
-				log.Info("Intent judge running",
-					slog.String("task_id", task.ID),
-					slog.Int("diff_len", len(intentDiff)),
-				)
-				r.reportProgress(task.ID, "Intent Check", 96, "Verifying diff matches intent...")
-				intentVerdict, intentErr = r.intentJudge.Judge(ctx, task.Title, task.Description, intentDiff)
-			})
-		}
-
-		wg.Wait()
+		// the pre-PR review runs on.
+		ctx, reviewCancel := finalizeCtx(ctx, r.finalizeTimeout())
+		defer reviewCancel()
 
 		// GH-6037: the acceptance evidence runs before the review so the reviewer
 		// reads it as the PR body; nil when the review will not run or there is no
@@ -6771,17 +6611,10 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			prePREvidence = r.collectAcceptanceEvidenceForReview(ctx, task, git.ProjectPath(), result.QualityGates)
 		}
 
-		// TASK-620: pre-PR review after the gates; shadow mode only records.
+		// TASK-620: pre-PR review after the gates; shadow mode only records. It is
+		// the only review pass after the gates (GH-6157 retired the self-review
+		// phase and the in-run intent judge it replaces).
 		result.PrePRReview = r.runPrePRReview(ctx, task, executionPath, git, state, result.QualityGates, prePREvidence)
-
-		// Handle self-review result
-		if runSelfReview && selfReviewErr != nil {
-			log.Warn("Self-review error", slog.Any("error", selfReviewErr))
-			// Continue anyway - self-review is advisory
-		}
-
-		// GH-5900: leave the direct-mode clone clean on every self-review exit.
-		result.SelfReviewTerminated = r.afterSelfReview(task, git, state, runSelfReview, useWorktree)
 
 		// TASK-620 L3: enforce mode gives a REQUEST-CHANGES with a blocking defect
 		// one session-resumed fix and one gate re-check before the push. It runs on
@@ -6794,130 +6627,6 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			prePREvidence = r.evidenceAfterFixRound(ctx, task, git.ProjectPath(), fix, prePREvidence)
 		}
 
-		// Handle intent judge result
-		if runIntentJudge {
-			if intentErr != nil {
-				log.Warn("Intent judge error (continuing to PR)",
-					slog.String("task_id", task.ID),
-					slog.Any("error", intentErr),
-				)
-			} else if intentVerdict != nil && !intentVerdict.Passed {
-				log.Warn("Intent judge vetoed diff",
-					slog.String("task_id", task.ID),
-					slog.String("reason", intentVerdict.Reason),
-					slog.Float64("confidence", intentVerdict.Confidence),
-				)
-
-				if state.intentRetried {
-					result.IntentWarning = intentVerdict.Reason
-				} else if taskCtxWasDone || taskCtx.Err() != nil {
-					// GH-5342 (subtask 3): quality-gate retries above run on
-					// their own fresh, unbounded-relative-to-ctx timeout
-					// (GH-4876), so they can burn real wall-clock while this
-					// task's own ctx keeps ticking independently. By the time
-					// the intent judge flags a mismatch here, ctx may already
-					// have been done (deadline exceeded, or an explicit
-					// cancel) — unlike the no-commit-retry above, nothing
-					// upstream of this branch shares ctx to fail fast on it
-					// first. Spawning another Claude Code process once the
-					// task's own budget is exhausted can't produce anything
-					// usable — backendExecute forwards ctx straight into
-					// exec.CommandContext — so skip the retry and keep the
-					// intent-judge warning instead of burning a doomed
-					// re-invocation.
-					//
-					// GH-5346: two independent signals, either one is enough
-					// to skip. taskCtxWasDone (captured before finalizeCtx
-					// ran, further up this function) catches the case where
-					// the backend itself already timed out — ctx is now the
-					// finalization ctx, a fresh budget that's essentially
-					// never Done, so checking ctx.Err() alone would silently
-					// re-enable exactly the re-invocation this guard exists
-					// to forbid. The live ctx.Err() != nil check stays too,
-					// for the other case: the backend finished comfortably
-					// inside budget, finalizeCtx handed back a plain
-					// context.WithCancel wrapping the still-ticking original
-					// ctx (not a fresh window), and it's the intent-judge
-					// call itself that ran long enough to blow that original
-					// deadline mid-finalization.
-					//
-					// GH-5891: finalizeCtx now also hands back a detached window
-					// while the deadline is still ahead but closer than the
-					// budget, so the finalization ctx no longer reflects the task
-					// deadline; the live check reads the original task ctx.
-					log.Warn("Skipping intent-judge retry: task ctx already done",
-						slog.String("task_id", task.ID),
-						slog.Bool("task_ctx_was_done", taskCtxWasDone),
-						slog.Any("ctx_err", taskCtx.Err()),
-					)
-					result.IntentWarning = intentVerdict.Reason
-				} else {
-					state.intentRetried = true
-					r.recordRetryAttemptEvent(task.LogExecutionID(), "intent_judge_retry", 1)
-					r.reportProgress(task.ID, "Intent Retry", 80, "Retrying with intent feedback...")
-
-					retryPrompt := fmt.Sprintf(
-						"## Intent Alignment Retry\n\nThe intent judge flagged the previous implementation:\n\n**Reason:** %s\n\nPlease fix the issues above. Focus on implementing exactly what the issue asks for.\n\n## Original Task: %s\n\n%s",
-						intentVerdict.Reason, task.Title, task.Description,
-					)
-
-					intentAllowed, intentMCP := r.executionToolOptions()
-					intentRetryResult, retryErr := r.backendExecute(ctx, task, executionPath, ExecuteOptions{
-						Prompt:            retryPrompt,
-						TaskID:            task.ID,
-						Verbose:           task.Verbose,
-						Model:             selectedModel,
-						Effort:            selectedEffort,
-						LivenessPolicy:    policy, // GH-4691/GH-4715
-						AllowedTools:      intentAllowed,
-						MCPConfigPath:     intentMCP,
-						SourceRepo:        task.SourceRepo,                  // GH-4671: gh-guard task identity
-						SourceIssueID:     task.SourceIssueID,               // GH-4671
-						Branch:            task.Branch,                      // GH-4671
-						HeartbeatCallback: r.heartbeatTimeoutCallback(task), // GH-5498
-						EventHandler: func(event BackendEvent) {
-							state.tokensInput += event.TokensInput
-							state.tokensOutput += event.TokensOutput
-							state.cacheCreationInputTokens += event.CacheCreationInputTokens
-							state.cacheReadInputTokens += event.CacheReadInputTokens
-							state.addReportedCost(event.ReportedCostUSD)
-							if event.Type == EventTypeToolResult && event.ToolResult != "" {
-								extractCommitSHA(event.ToolResult, state)
-							}
-						},
-					})
-					r.ingestGhGuardDenials(task, intentRetryResult) // GH-4671
-
-					if retryErr == nil {
-						// Update result tokens
-						result.TokensInput = state.tokensInput
-						result.TokensOutput = state.tokensOutput
-						result.TokensTotal = state.tokensInput + state.tokensOutput
-
-						// Re-judge the new diff. GH-4988: re-fetch origin and
-						// re-resolve the merge-base rather than reusing the
-						// first pass's intentBaseSHA — the retry generation
-						// took real wall-clock time, during which
-						// origin/<baseBranch> can have advanced again.
-						newDiff, newBaseSHA, _ := git.GetDiffAgainstOrigin(ctx, intentBaseBranch)
-						if newDiff != "" {
-							log.Info("Intent judge retry diff base resolved",
-								slog.String("task_id", task.ID),
-								slog.String("base_branch", intentBaseBranch),
-								slog.String("base_sha", newBaseSHA),
-							)
-							v2, _ := r.intentJudge.Judge(ctx, task.Title, task.Description, newDiff)
-							if v2 != nil && !v2.Passed {
-								result.IntentWarning = v2.Reason
-							}
-						}
-					} else {
-						result.IntentWarning = intentVerdict.Reason
-					}
-				}
-			}
-		}
-
 		// Handle direct commit mode: push directly to main
 
 		// Pre-push lint gate (GH-1376)
@@ -6925,7 +6634,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			r.reportProgress(task.ID, "Linting", 95, "Running pre-push lint check...")
 			lintResult := git.autoFixLint(ctx, task.BaseBranch)
 			if !lintResult.Clean && !lintResult.FixedAll {
-				// Include unfixable lint issues in execution result for self-review
+				// Include unfixable lint issues in the execution result
 				if len(lintResult.Issues) > 0 {
 					result.IntentWarning = "Lint issues detected but not auto-fixable:\n" + strings.Join(lintResult.Issues, "\n")
 				}
@@ -6946,8 +6655,8 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		// source for every touched field. Skipped entirely (zero new GitHub
 		// API calls) when no lookup is configured or the diff doesn't touch
 		// a contract file — same failure shape as the QualityChecker gate
-		// above (~:4344-4394), spliced after self-review/intent judge
-		// (wg.Wait() above) and before the DirectCommit/CreatePR branch
+		// above (~:4344-4394), spliced after the pre-PR review and
+		// its fix round and before the DirectCommit/CreatePR branch
 		// below.
 		if r.contractDependencyLookup != nil {
 			contractBaseBranch := task.BaseBranch
@@ -7228,7 +6937,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				r.reportProgress(task.ID, "Linting", 95, "Running pre-push lint check...")
 				lintResult := git.autoFixLint(ctx, task.BaseBranch)
 				if !lintResult.Clean && !lintResult.FixedAll {
-					// Include unfixable lint issues in execution result for self-review
+					// Include unfixable lint issues in the execution result
 					if len(lintResult.Issues) > 0 {
 						result.IntentWarning = "Lint issues detected but not auto-fixable:\n" + strings.Join(lintResult.Issues, "\n")
 					}
@@ -7411,8 +7120,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
 				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates, prePREvidence)
-				prBody += RenderPrePRReviewSection(result.PrePRReview)  // TASK-620
-				prBody += selfReviewPRNote(result.SelfReviewTerminated) // GH-5900
+				prBody += RenderPrePRReviewSection(result.PrePRReview) // TASK-620
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
 				// so CreatePR and the recovery ref get a live ctx (a real cancellation is
@@ -7453,8 +7161,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// for gitlab-sourced tasks (see mrSourceSuffix).
 				prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, mrSourceSuffix(task, creatorKind), task.Description)
 				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates, prePREvidence)
-				prBody += RenderPrePRReviewSection(result.PrePRReview)  // TASK-620
-				prBody += selfReviewPRNote(result.SelfReviewTerminated) // GH-5900
+				prBody += RenderPrePRReviewSection(result.PrePRReview) // TASK-620
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
 				// so CreatePR and the recovery ref get a live ctx (a real cancellation is
@@ -7491,8 +7198,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
 				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates, prePREvidence)
-				prBody += RenderPrePRReviewSection(result.PrePRReview)  // TASK-620
-				prBody += selfReviewPRNote(result.SelfReviewTerminated) // GH-5900
+				prBody += RenderPrePRReviewSection(result.PrePRReview) // TASK-620
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
 				// so CreatePR and the recovery ref get a live ctx (a real cancellation is
@@ -7549,13 +7255,6 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 		// GH-1599: Log task completed milestone
 		completedMsg := "Task completed successfully"
-		if result.SelfReviewTerminated > 0 {
-			completedMsg += "; " + strings.TrimSpace(selfReviewPRNote(result.SelfReviewTerminated)) // GH-5900
-			log.Info("Task completed with terminated self-review",
-				slog.String("task_id", task.ID),
-				slog.Duration("self_review_terminated_after", result.SelfReviewTerminated),
-			)
-		}
 		if result.PrePRReview != nil && result.PrePRReview.Verdict != "" {
 			completedMsg += "; Pre-PR review: " + string(result.PrePRReview.Verdict)
 			if fix := result.PrePRReview.Fix; fix != nil {
@@ -8226,174 +7925,6 @@ func (r *Runner) IsRunning(taskID string) bool {
 	return ok
 }
 
-// runSelfReview executes a self-review phase where Claude examines its changes.
-// This catches issues like unwired config, undefined methods, or incomplete implementations.
-// Returns nil if review passes or is skipped, error only for critical failures.
-func (r *Runner) runSelfReview(ctx context.Context, task *Task, executionPath string, state *progressState) error {
-	// Skip self-review if disabled in config or replaced by the pre-PR review
-	if r.config != nil && r.config.EffectiveSkipSelfReview() {
-		r.log.Debug("Self-review skipped (disabled in config)", slog.String("task_id", task.ID))
-		return nil
-	}
-
-	// Skip for trivial tasks - they don't need self-review
-	complexity := DetectComplexity(task)
-	if complexity.ShouldSkipNavigator() {
-		r.log.Debug("Self-review skipped (trivial task)", slog.String("task_id", task.ID))
-		return nil
-	}
-
-	r.log.Info("Running self-review phase", slog.String("task_id", task.ID))
-	r.reportProgress(task.ID, "Self-Review", 95, "Reviewing changes...")
-	reviewStart := time.Now()
-	state.selfReview = selfReviewOutcome{ran: true}
-
-	reviewPrompt := r.buildSelfReviewPrompt(task)
-
-	// Execute self-review with backend-aware timeout. OpenCode runs are
-	// genuinely slower than Claude Code; the 2-minute default cancels review
-	// mid-flight and surfaces as a regression. GH-2416.
-	reviewCtx, cancel := context.WithTimeout(ctx, r.selfReviewTimeout())
-	defer cancel()
-
-	// Select model and effort (use same routing as main execution).
-	selectedModel := r.resolveSelectedModel(task)
-	selectedEffort := r.modelRouter.SelectEffort(task)
-
-	// GH-1265: Determine if session resume is enabled and session ID is available
-	var resumeSessionID string
-	if r.config != nil && r.config.ClaudeCode != nil && r.config.ClaudeCode.UseSessionResume {
-		if state.sessionID != "" {
-			resumeSessionID = state.sessionID
-			r.log.Debug("Using session resume for self-review",
-				slog.String("task_id", task.ID),
-				slog.String("session_id", resumeSessionID),
-			)
-		}
-	}
-
-	// TASK-441 L2 (GH-4709): record the attempt right before the actual
-	// self-review invocation — not before the config/complexity skip checks
-	// above, which are legitimate "we chose not to run" decisions, not the
-	// "wired to nothing" failure this dead-man tracker exists to catch
-	// (GH-4702: self-review silently dead for months). Relayed through
-	// AlertEventTypeDeadManAttempt since this package cannot import
-	// internal/alerts directly; the tracker itself is registered in
-	// cmd/pilot/poller_github.go under executor.ReviewFixDeadManTrackerName.
-	r.emitAlertEvent(AlertEvent{
-		Type:      AlertEventTypeDeadManAttempt,
-		TaskID:    task.ID,
-		Metadata:  map[string]string{"tracker": ReviewFixDeadManTrackerName},
-		Timestamp: time.Now(),
-	})
-
-	// GH-4715: resolved once here (self-review runs no stall watchdog of its
-	// own, but still needs the same effort-aware hard-heartbeat floor as the
-	// main implementation phase).
-	reviewPolicy := ResolveLivenessPolicy(r.effectiveStallTimeout(), selectedEffort, complexity)
-
-	reviewAllowed, reviewMCP := r.executionToolOptions()
-	result, err := r.backendExecute(reviewCtx, task, executionPath, ExecuteOptions{
-		Prompt:            reviewPrompt,
-		TaskID:            task.ID,
-		Verbose:           task.Verbose,
-		Model:             selectedModel,
-		Effort:            selectedEffort,
-		ResumeSessionID:   resumeSessionID,
-		LivenessPolicy:    reviewPolicy, // GH-4691/GH-4715
-		AllowedTools:      reviewAllowed,
-		MCPConfigPath:     reviewMCP,
-		SourceRepo:        task.SourceRepo,                  // GH-4671: gh-guard task identity
-		SourceIssueID:     task.SourceIssueID,               // GH-4671
-		Branch:            task.Branch,                      // GH-4671
-		HeartbeatCallback: r.heartbeatTimeoutCallback(task), // GH-5498
-		EventHandler: func(event BackendEvent) {
-			// Track tokens from self-review
-			state.tokensInput += event.TokensInput
-			state.tokensOutput += event.TokensOutput
-			state.cacheCreationInputTokens += event.CacheCreationInputTokens
-			state.cacheReadInputTokens += event.CacheReadInputTokens
-			state.addReportedCost(event.ReportedCostUSD)
-			// Extract any new commit SHAs from self-review fixes
-			if event.Type == EventTypeToolResult && event.ToolResult != "" {
-				extractCommitSHA(event.ToolResult, state)
-			}
-		},
-	})
-	r.ingestGhGuardDenials(task, result) // GH-4671
-
-	if err != nil {
-		// GH-5900: remember how the phase ended so the caller can clean the tree.
-		state.selfReview.failed = true
-		state.selfReview.killed = selfReviewWasTerminated(reviewCtx, err)
-		// Floor at 1s: a zero duration means "not terminated" to the caller.
-		state.selfReview.elapsed = max(time.Since(reviewStart).Round(time.Second), time.Second)
-		// Self-review failure is not fatal - log and continue
-		r.log.Warn("Self-review execution failed",
-			slog.String("task_id", task.ID),
-			slog.Any("error", err),
-		)
-		r.emitAlertEvent(AlertEvent{
-			Type:      AlertEventTypeDeadManFailure,
-			TaskID:    task.ID,
-			Error:     err.Error(),
-			Metadata:  map[string]string{"tracker": ReviewFixDeadManTrackerName},
-			Timestamp: time.Now(),
-		})
-		return nil
-	}
-	r.emitAlertEvent(AlertEvent{
-		Type:      AlertEventTypeDeadManSuccess,
-		TaskID:    task.ID,
-		Metadata:  map[string]string{"tracker": ReviewFixDeadManTrackerName},
-		Timestamp: time.Now(),
-	})
-
-	// Check if review found and fixed issues
-	if strings.Contains(result.Output, "REVIEW_FIXED:") {
-		state.selfReview.fixed = true
-		r.log.Info("Self-review fixed issues",
-			slog.String("task_id", task.ID),
-		)
-		r.reportProgress(task.ID, "Self-Review", 97, "Issues fixed during review")
-	} else if strings.Contains(result.Output, "REVIEW_PASSED") {
-		r.log.Info("Self-review passed",
-			slog.String("task_id", task.ID),
-		)
-		r.reportProgress(task.ID, "Self-Review", 97, "Review passed")
-	} else {
-		r.log.Debug("Self-review completed (no explicit signal)",
-			slog.String("task_id", task.ID),
-		)
-	}
-
-	// GH-1955: Extract patterns from self-review output (non-blocking)
-	if r.selfReviewExtractor != nil && result.Output != "" {
-		extractResult, extractErr := r.selfReviewExtractor.ExtractFromSelfReview(ctx, result.Output, task.ProjectPath)
-		if extractErr != nil {
-			r.log.Warn("Failed to extract patterns from self-review",
-				slog.String("task_id", task.ID),
-				slog.Any("error", extractErr),
-			)
-		} else if len(extractResult.Patterns)+len(extractResult.AntiPatterns) > 0 {
-			if saveErr := r.selfReviewExtractor.SaveExtractedPatterns(ctx, extractResult); saveErr != nil {
-				r.log.Warn("Failed to save self-review patterns",
-					slog.String("task_id", task.ID),
-					slog.Any("error", saveErr),
-				)
-			} else {
-				r.log.Info("Saved patterns from self-review",
-					slog.String("task_id", task.ID),
-					slog.Int("patterns", len(extractResult.Patterns)),
-					slog.Int("anti_patterns", len(extractResult.AntiPatterns)),
-				)
-			}
-		}
-	}
-
-	return nil
-}
-
 // parseStreamEvent parses a stream-json event and reports progress
 // Returns (finalResult, errorMessage) - non-empty when task completes
 func (r *Runner) parseStreamEvent(taskID, line string, state *progressState) (string, string) {
@@ -8512,7 +8043,7 @@ func (r *Runner) processBackendEvent(taskID string, event BackendEvent, state *p
 
 	switch event.Type {
 	case EventTypeInit:
-		// GH-1265: Capture session ID for resume in self-review
+		// GH-1265: Capture session ID for resume in the review-fix round
 		if event.SessionID != "" {
 			state.sessionID = event.SessionID
 		}

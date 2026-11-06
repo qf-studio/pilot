@@ -315,7 +315,7 @@ orchestrator:
     pr_timeout: 1h             # Max time to wait for PR merge
 
     # GH-5346: budget granted to post-backend finalization work (quality
-    # gates, self-review, intent judge, contract evidence, push/PR create)
+    # gates, pre-PR review, contract evidence, push/PR create)
     # when the task's own ctx has already hit its deadline. Without this, a
     # backend call that timed out after landing real commits could lose
     # those commits entirely — finalization inherited the same expired ctx
@@ -323,7 +323,6 @@ orchestrator:
     # task ctx is actually Done(); a task that finishes within its normal
     # timeout is unaffected. Default: 15m.
     finalize_timeout: 15m
-    # The self-review phase has its own budget: executor.self_review_timeout.
 
   # Daily brief: a scheduled summary of the last day's runs, delivered to the
   # channels below. A weekly brief (tickets shipped, median time to PR, merged
@@ -852,10 +851,10 @@ executor:
   # pre_pr_review:             # Pre-PR review (TASK-620): the post-merge reviewer's checklist run over the
   #                            # full diff, in a read-only checkout of the worktree HEAD, after the quality
   #                            # gates and before the push. Same place as intent_judge in the pipeline.
-  #   mode: off                # off    = not run; self-review and the intent judge run as today (default)
+  #   mode: off                # off    = not run (default)
   #                            # shadow = run, record the verdict (execution event + log), write nothing to GitHub
   #                            # enforce = shadow plus acting on the verdict (later legs)
-  #                            # Any mode but off replaces the self-review phase and the in-run intent judge.
+  #                            # The self-review phase and the in-run intent judge no longer exist in any mode.
   #   model: ""                # Empty = the executor's default model
   #   timeout: 6m              # Bound on one review (must be >= 0)
   #   fix_timeout: 10m         # Bound on one fix round (used by a later leg)
@@ -869,12 +868,9 @@ executor:
   #   passes: 1                # 1 (default) or 2: a hunk pass then an adjacent pass on one checkout,
   #                            # defects united by location, verdict from the union; timeout is shared
   #   skip_complexity: [trivial]  # Task complexities that skip the review
-  # self_review_timeout: 5m   # Budget for the self-review phase (must be >= 0). Unset/0 keeps the
-  #                           # per-backend defaults (2m claude-code, 10m opencode); a set value applies
-  #                           # to every backend. History: the old hard-coded 2m killed ~77 of ~150
-  #                           # self-reviews at exactly 120s on multi-file changes. In direct mode the
-  #                           # killed session's edits are now discarded (never left in the clone) and the
-  #                           # PR body notes the termination.
+  # skip_self_review / self_review_timeout: deprecated no-ops (the self-review phase was retired in
+  #   GH-6157; the pre-PR review covers it). Still accepted so existing configs load.
+  #   The in-run intent judge is gone too; the pre-flight issue judge (executor.pre_flight_judge) stays.
   # acceptance_evidence_budget: 15m  # Budget for the whole evidence step (default 15m, must be >= 0);
   #                                  # once spent, remaining items render "Not verified: evidence budget exhausted"
   #                                  # and the PR is still created

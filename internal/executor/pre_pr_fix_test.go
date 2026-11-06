@@ -348,6 +348,13 @@ func TestReviewFix_SkippedWhenTaskContextDone(t *testing.T) {
 			cancel()
 			return ctx
 		}},
+		// GH-5342: a task ctx whose deadline blew (not a plain cancel); the round
+		// must not spawn a backend process on it. Ported from the retired intent-judge retry test.
+		{name: "deadline blown on demand", ctx: func(*testing.T) context.Context {
+			ctx := newExpirableCtx()
+			ctx.expire()
+			return ctx
+		}},
 		{name: "deadline exceeded", ctx: func(t *testing.T) context.Context {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
 			t.Cleanup(cancel)
@@ -366,6 +373,9 @@ func TestReviewFix_SkippedWhenTaskContextDone(t *testing.T) {
 			}
 			if e.backend.callCount() != 0 {
 				t.Errorf("backend called %d times, want none", e.backend.callCount())
+			}
+			if e.checker.callCount() != 0 {
+				t.Errorf("gates re-ran %d times on a skipped round, want none", e.checker.callCount())
 			}
 			if e.headSHA(t) != e.head {
 				t.Error("HEAD moved on a skipped round")

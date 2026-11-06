@@ -24,198 +24,6 @@ func mockJudgeRunnerError(err error) func(ctx context.Context, args ...string) (
 	}
 }
 
-func TestIntentJudge_Pass(t *testing.T) {
-	judge := newIntentJudgeWithRunner(mockJudgeRunner("VERDICT: PASS\nThe diff correctly implements the requested feature.\nCONFIDENCE: 0.95"))
-	verdict, err := judge.Judge(context.Background(), "Add login button", "Add a login button to the header", "diff --git a/header.go\n+func LoginButton()")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !verdict.Passed {
-		t.Error("expected PASS verdict")
-	}
-	if verdict.Confidence != 0.95 {
-		t.Errorf("expected confidence 0.95, got %f", verdict.Confidence)
-	}
-}
-
-func TestIntentJudge_Fail(t *testing.T) {
-	judge := newIntentJudgeWithRunner(mockJudgeRunner("VERDICT: FAIL\nThe diff adds database migration but the issue only asked for a UI change.\nCONFIDENCE: 0.85"))
-	verdict, err := judge.Judge(context.Background(), "Fix button color", "Change the submit button to blue", "diff --git a/db/migration.sql\n+ALTER TABLE users ADD COLUMN theme")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if verdict.Passed {
-		t.Error("expected FAIL verdict")
-	}
-	if verdict.Reason == "" {
-		t.Error("expected non-empty reason")
-	}
-	if verdict.Confidence != 0.85 {
-		t.Errorf("expected confidence 0.85, got %f", verdict.Confidence)
-	}
-}
-
-func TestIntentJudge_SubprocessError(t *testing.T) {
-	judge := newIntentJudgeWithRunner(mockJudgeRunnerError(errors.New("exit status 1")))
-	_, err := judge.Judge(context.Background(), "title", "body", "some diff")
-	if err == nil {
-		t.Fatal("expected error for subprocess failure")
-	}
-	if !strings.Contains(err.Error(), "intent judge subprocess") {
-		t.Errorf("expected error to mention 'intent judge subprocess', got: %v", err)
-	}
-}
-
-func TestIntentJudge_MalformedResponse(t *testing.T) {
-	judge := newIntentJudgeWithRunner(mockJudgeRunner("I think this looks good but I'm not sure."))
-	_, err := judge.Judge(context.Background(), "title", "body", "some diff")
-	if err == nil {
-		t.Fatal("expected error for malformed response")
-	}
-	if !strings.Contains(err.Error(), "VERDICT") {
-		t.Errorf("expected error about missing VERDICT, got: %v", err)
-	}
-}
-
-func TestIntentJudge_EmptyDiff(t *testing.T) {
-	judge := newIntentJudgeWithRunner(mockJudgeRunner("VERDICT: PASS\nLooks good.\nCONFIDENCE: 0.9"))
-	_, err := judge.Judge(context.Background(), "title", "body", "")
-	if err == nil {
-		t.Fatal("expected error for empty diff")
-	}
-	if !strings.Contains(err.Error(), "empty diff") {
-		t.Errorf("expected 'empty diff' error, got: %v", err)
-	}
-}
-
-func TestIntentJudge_DiffTruncation(t *testing.T) {
-	var receivedPrompt string
-	runner := func(ctx context.Context, args ...string) ([]byte, error) {
-		// The -p arg is the prompt
-		for i, arg := range args {
-			if arg == "-p" && i+1 < len(args) {
-				receivedPrompt = args[i+1]
-				break
-			}
-		}
-		return []byte("VERDICT: PASS\nLooks good.\nCONFIDENCE: 0.9"), nil
-	}
-
-	// Create a diff larger than maxDiffCharsDefault (32000), with no
-	// "diff --git" boundaries - exercises the plain-cutoff fallback path.
-	largeDiff := strings.Repeat("x", 40000)
-
-	judge := newIntentJudgeWithRunner(runner)
-	verdict, err := judge.Judge(context.Background(), "title", "body", largeDiff)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !verdict.Passed {
-		t.Error("expected PASS verdict")
-	}
-	if !strings.Contains(receivedPrompt, "...[truncated]") {
-		t.Error("expected diff to be truncated in prompt")
-	}
-}
-
-// TestIntentJudge_UnderCapNotTruncated verifies diffs within the (raised)
-// cap are sent through unmodified - GH-15 (23923 chars) previously exceeded
-// the old 8000-char cap and got a mid-file cutoff; it must now fit whole.
-func TestIntentJudge_UnderCapNotTruncated(t *testing.T) {
-	var receivedPrompt string
-	runner := func(ctx context.Context, args ...string) ([]byte, error) {
-		for i, arg := range args {
-			if arg == "-p" && i+1 < len(args) {
-				receivedPrompt = args[i+1]
-				break
-			}
-		}
-		return []byte("VERDICT: PASS\nLooks good.\nCONFIDENCE: 0.9"), nil
-	}
-
-	diff := "diff --git a/foo.go b/foo.go\n" + strings.Repeat("+line of code\n", 1000) // ~24923 chars incl header, mirrors GH-15's 23923
-
-	judge := newIntentJudgeWithRunner(runner)
-	verdict, err := judge.Judge(context.Background(), "title", "body", diff)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !verdict.Passed {
-		t.Error("expected PASS verdict")
-	}
-	if strings.Contains(receivedPrompt, "...[truncated]") {
-		t.Error("diff under maxDiffCharsDefault must not be truncated")
-	}
-	if !strings.Contains(receivedPrompt, diff) {
-		t.Error("expected full, unmodified diff to be present in prompt")
-	}
-}
-
-// TestIntentJudge_PerFileTruncationPreservesManifest is the direct
-// regression test for GH-4407: a diff that spans many files and exceeds the
-// cap must (1) list every touched file in a never-truncated manifest and
-// (2) never zero out any single file's visible content, so the judge can't
-// mistake a truncation marker for "this file wasn't touched".
-func TestIntentJudge_PerFileTruncationPreservesManifest(t *testing.T) {
-	var receivedPrompt string
-	runner := func(ctx context.Context, args ...string) ([]byte, error) {
-		for i, arg := range args {
-			if arg == "-p" && i+1 < len(args) {
-				receivedPrompt = args[i+1]
-				break
-			}
-		}
-		return []byte("VERDICT: PASS\nLooks good.\nCONFIDENCE: 0.9"), nil
-	}
-
-	// Simulate GH-12: many files, total diff far over the cap.
-	var sb strings.Builder
-	var paths []string
-	for i := 0; i < 25; i++ {
-		path := fmt.Sprintf("internal/pkg/file%d.go", i)
-		paths = append(paths, path)
-		fmt.Fprintf(&sb, "diff --git a/%s b/%s\n", path, path)
-		sb.WriteString("--- a/" + path + "\n+++ b/" + path + "\n")
-		sb.WriteString(strings.Repeat(fmt.Sprintf("+func Impl%d() {}\n", i), 200))
-	}
-	diff := sb.String()
-	if len(diff) <= maxDiffCharsDefault {
-		t.Fatalf("test fixture diff (%d chars) must exceed maxDiffCharsDefault (%d) to exercise truncation", len(diff), maxDiffCharsDefault)
-	}
-
-	judge := newIntentJudgeWithRunner(runner)
-	verdict, err := judge.Judge(context.Background(), "title", "body", diff)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !verdict.Passed {
-		t.Error("expected PASS verdict")
-	}
-
-	if !strings.Contains(receivedPrompt, "## Changed Files (25 total") {
-		t.Error("expected a complete Changed Files manifest header")
-	}
-	for _, path := range paths {
-		if !strings.Contains(receivedPrompt, path) {
-			t.Errorf("expected manifest to list every file, missing %q", path)
-		}
-	}
-	if !strings.Contains(receivedPrompt, "...[truncated:") {
-		t.Error("expected per-file truncation markers for a diff this large")
-	}
-}
-
-func TestIntentJudge_Timeout(t *testing.T) {
-	judge := newIntentJudgeWithRunner(mockJudgeRunnerError(context.DeadlineExceeded))
-	_, err := judge.Judge(context.Background(), "title", "body", "some diff")
-	if err == nil {
-		t.Fatal("expected error for timeout")
-	}
-	if !strings.Contains(err.Error(), "intent judge subprocess") {
-		t.Errorf("expected wrapped subprocess error, got: %v", err)
-	}
-}
-
 func TestNewIntentJudge_Defaults(t *testing.T) {
 	judge := NewIntentJudge("")
 	if judge.claudeCmd != "claude" {
@@ -224,12 +32,9 @@ func TestNewIntentJudge_Defaults(t *testing.T) {
 	if judge.model != "claude-haiku-4-5-20251001" {
 		t.Errorf("unexpected model: %s", judge.model)
 	}
-	// GH-4669: raised from 30s/20s after live-box reproduction showed real
-	// (non-trivial) invocations baseline at 18.7-22.5s — the old deadlines
+	// GH-4669: raised from 20s after live-box reproduction showed real
+	// (non-trivial) invocations baseline at 18.7-22.5s — the old deadline
 	// left near-zero margin and caused a 17-day, 100%-failure fail-open streak.
-	if judge.judgeTimeout != 60*time.Second {
-		t.Errorf("unexpected judgeTimeout: %v", judge.judgeTimeout)
-	}
 	if judge.preflightTimeout != 60*time.Second {
 		t.Errorf("unexpected preflightTimeout: %v", judge.preflightTimeout)
 	}
@@ -238,25 +43,15 @@ func TestNewIntentJudge_Defaults(t *testing.T) {
 	}
 }
 
-// TestIntentJudge_SetTimeouts verifies the GH-4669 config-override setters:
+// TestIntentJudge_SetTimeouts verifies the GH-4669 config-override setter:
 // positive durations apply, non-positive values are ignored (keeping the
 // constructor default) rather than silently zeroing the deadline.
 func TestIntentJudge_SetTimeouts(t *testing.T) {
 	judge := NewIntentJudge("")
 
-	judge.SetJudgeTimeout(90 * time.Second)
-	if judge.judgeTimeout != 90*time.Second {
-		t.Errorf("expected judgeTimeout override to apply, got %v", judge.judgeTimeout)
-	}
-
 	judge.SetPreflightTimeout(45 * time.Second)
 	if judge.preflightTimeout != 45*time.Second {
 		t.Errorf("expected preflightTimeout override to apply, got %v", judge.preflightTimeout)
-	}
-
-	judge.SetJudgeTimeout(0)
-	if judge.judgeTimeout != 90*time.Second {
-		t.Errorf("expected non-positive SetJudgeTimeout to be ignored, got %v", judge.judgeTimeout)
 	}
 
 	judge.SetPreflightTimeout(-1 * time.Second)
@@ -269,47 +64,6 @@ func TestNewIntentJudge_CustomCmd(t *testing.T) {
 	judge := NewIntentJudge("/usr/local/bin/claude")
 	if judge.claudeCmd != "/usr/local/bin/claude" {
 		t.Errorf("expected custom claudeCmd, got %q", judge.claudeCmd)
-	}
-}
-
-// TestIntentJudge_IncompleteMultiFileChanges tests detection of dropped features across backends (GH-1321)
-func TestIntentJudge_IncompleteMultiFileChanges(t *testing.T) {
-	judge := newIntentJudgeWithRunner(mockJudgeRunner(
-		"VERDICT: FAIL\nThe issue requests adding rate limiting to ALL backends, but the diff only modifies backend_claudecode.go. Missing changes for backend_opencode.go and backend_qwencode.go.\nCONFIDENCE: 0.92",
-	))
-	verdict, err := judge.Judge(
-		context.Background(),
-		"Add rate limiting to all backends",
-		"Implement rate limiting for all backend engines (ClaudeCode, OpenCode, QwenCode)",
-		"diff --git a/internal/executor/backend_claudecode.go\n+func (b *ClaudeCode) RateLimit()",
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if verdict.Passed {
-		t.Error("expected FAIL verdict for incomplete multi-file change")
-	}
-	if !strings.Contains(verdict.Reason, "backend") {
-		t.Error("reason should mention incomplete backend changes")
-	}
-}
-
-// TestIntentJudge_SingleBackendPass tests that single-backend issues pass when only one backend is modified (GH-1321)
-func TestIntentJudge_SingleBackendPass(t *testing.T) {
-	judge := newIntentJudgeWithRunner(mockJudgeRunner(
-		"VERDICT: PASS\nThe issue requests adding timeout to ClaudeCode backend only, and the diff correctly modifies only backend_claudecode.go.\nCONFIDENCE: 0.95",
-	))
-	verdict, err := judge.Judge(
-		context.Background(),
-		"Add timeout to ClaudeCode backend",
-		"Add a configurable timeout for the ClaudeCode backend engine",
-		"diff --git a/internal/executor/backend_claudecode.go\n+func (b *ClaudeCode) SetTimeout()",
-	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !verdict.Passed {
-		t.Error("expected PASS verdict for single-backend change")
 	}
 }
 
@@ -701,5 +455,62 @@ func TestDefaultCmdRunner_LargePromptViaStdin(t *testing.T) {
 	}
 	if string(out) != prompt {
 		t.Errorf("prompt not passed through stdin intact: got %d bytes, want %d bytes", len(out), len(prompt))
+	}
+}
+
+// --- Diff payload tests (the payload helpers outlived the in-run Judge) ---
+
+func TestBuildJudgeDiffPayload_PlainCutoffWithoutFileBoundaries(t *testing.T) {
+	// Larger than maxDiffCharsDefault, with no "diff --git" boundaries: exercises
+	// the plain-cutoff fallback path.
+	got := buildJudgeDiffPayload(strings.Repeat("x", 40000), maxDiffCharsDefault)
+	if !strings.Contains(got, "...[truncated]") {
+		t.Error("expected diff to be truncated")
+	}
+}
+
+// TestBuildJudgeDiffPayload_UnderCapNotTruncated verifies diffs within the
+// (raised) cap pass through unmodified - GH-15 (23923 chars) previously exceeded
+// the old 8000-char cap and got a mid-file cutoff; it must now fit whole.
+func TestBuildJudgeDiffPayload_UnderCapNotTruncated(t *testing.T) {
+	diff := "diff --git a/foo.go b/foo.go\n" + strings.Repeat("+line of code\n", 1000) // ~24923 chars incl header, mirrors GH-15's 23923
+	if got := buildJudgeDiffPayload(diff, maxDiffCharsDefault); got != diff {
+		t.Error("diff under maxDiffCharsDefault must come back unmodified")
+	}
+}
+
+// TestBuildJudgeDiffPayload_PerFileTruncationPreservesManifest is the direct
+// regression test for GH-4407: a diff that spans many files and exceeds the
+// cap must (1) list every touched file in a never-truncated manifest and
+// (2) never zero out any single file's visible content, so a reader can't
+// mistake a truncation marker for "this file wasn't touched".
+func TestBuildJudgeDiffPayload_PerFileTruncationPreservesManifest(t *testing.T) {
+	// Simulate GH-12: many files, total diff far over the cap.
+	var sb strings.Builder
+	var paths []string
+	for i := 0; i < 25; i++ {
+		path := fmt.Sprintf("internal/pkg/file%d.go", i)
+		paths = append(paths, path)
+		fmt.Fprintf(&sb, "diff --git a/%s b/%s\n", path, path)
+		sb.WriteString("--- a/" + path + "\n+++ b/" + path + "\n")
+		sb.WriteString(strings.Repeat(fmt.Sprintf("+func Impl%d() {}\n", i), 200))
+	}
+	diff := sb.String()
+	if len(diff) <= maxDiffCharsDefault {
+		t.Fatalf("test fixture diff (%d chars) must exceed maxDiffCharsDefault (%d) to exercise truncation", len(diff), maxDiffCharsDefault)
+	}
+
+	got := buildJudgeDiffPayload(diff, maxDiffCharsDefault)
+
+	if !strings.Contains(got, "## Changed Files (25 total") {
+		t.Error("expected a complete Changed Files manifest header")
+	}
+	for _, path := range paths {
+		if !strings.Contains(got, path) {
+			t.Errorf("expected manifest to list every file, missing %q", path)
+		}
+	}
+	if !strings.Contains(got, "...[truncated:") {
+		t.Error("expected per-file truncation markers for a diff this large")
 	}
 }

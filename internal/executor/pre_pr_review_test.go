@@ -221,37 +221,6 @@ func TestRunPrePRReview_Shadow_RecordsOutcomeNoFix(t *testing.T) {
 	}
 }
 
-func TestRunPrePRReview_Shadow_SkipsSelfReview(t *testing.T) {
-	tests := []struct {
-		name       string
-		mode       string
-		wantCalled bool
-	}{
-		{name: "off: self-review still runs", mode: PrePRReviewModeOff, wantCalled: true},
-		{name: "shadow: self-review does not run", mode: PrePRReviewModeShadow, wantCalled: false},
-		{name: "enforce: self-review does not run", mode: PrePRReviewModeEnforce, wantCalled: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir, _ := prePRRepo(t)
-			backend := &guardRecordingBackend{}
-			r := NewRunnerWithBackend(backend)
-			r.skipPreflightChecks = true
-			r.config = &BackendConfig{UseWorktree: boolPtr(false), PrePRReview: &PrePRReviewConfig{Mode: tt.mode}}
-
-			if err := r.runSelfReview(context.Background(), prePRTask(dir), dir, &progressState{}); err != nil {
-				t.Fatalf("runSelfReview: %v", err)
-			}
-			if backend.called != tt.wantCalled {
-				t.Errorf("self-review backend called = %v, want %v", backend.called, tt.wantCalled)
-			}
-			if tt.wantCalled && backend.gotProjectPath != dir {
-				t.Errorf("self-review ran in %q, want %q", backend.gotProjectPath, dir)
-			}
-		})
-	}
-}
-
 func TestRunPrePRReview_Skips(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -383,26 +352,22 @@ func TestRunPrePRReview_NoVerdictOutcomes(t *testing.T) {
 
 func TestPrePRReviewConfig_Effective(t *testing.T) {
 	tests := []struct {
-		name         string
-		cfg          *BackendConfig
-		wantMode     string
-		wantSkipSelf bool
+		name     string
+		cfg      *BackendConfig
+		wantMode string
 	}{
 		{name: "nil config", cfg: nil, wantMode: "off"},
 		{name: "no block", cfg: &BackendConfig{}, wantMode: "off"},
 		{name: "default config", cfg: DefaultBackendConfig(), wantMode: "off"},
-		{name: "explicit skip_self_review", cfg: &BackendConfig{SkipSelfReview: true}, wantMode: "off", wantSkipSelf: true},
-		{name: "shadow", cfg: &BackendConfig{PrePRReview: &PrePRReviewConfig{Mode: "shadow"}}, wantMode: "shadow", wantSkipSelf: true},
-		{name: "enforce", cfg: &BackendConfig{PrePRReview: &PrePRReviewConfig{Mode: "enforce"}}, wantMode: "enforce", wantSkipSelf: true},
+		{name: "explicit skip_self_review", cfg: &BackendConfig{SkipSelfReview: true}, wantMode: "off"},
+		{name: "shadow", cfg: &BackendConfig{PrePRReview: &PrePRReviewConfig{Mode: "shadow"}}, wantMode: "shadow"},
+		{name: "enforce", cfg: &BackendConfig{PrePRReview: &PrePRReviewConfig{Mode: "enforce"}}, wantMode: "enforce"},
 		{name: "empty mode", cfg: &BackendConfig{PrePRReview: &PrePRReviewConfig{}}, wantMode: "off"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.cfg.PrePRReviewMode(); got != tt.wantMode {
 				t.Errorf("PrePRReviewMode = %q, want %q", got, tt.wantMode)
-			}
-			if got := tt.cfg.EffectiveSkipSelfReview(); got != tt.wantSkipSelf {
-				t.Errorf("EffectiveSkipSelfReview = %v, want %v", got, tt.wantSkipSelf)
 			}
 		})
 	}

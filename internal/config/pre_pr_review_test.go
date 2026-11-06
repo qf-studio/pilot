@@ -69,14 +69,11 @@ func TestPrePRReviewConfig_Load(t *testing.T) {
 	if !p.SkipsComplexity(executor.ComplexitySimple) || !p.SkipsComplexity(executor.ComplexityTrivial) || p.SkipsComplexity(executor.ComplexityMedium) {
 		t.Errorf("skip_complexity = %v", p.SkipComplexity)
 	}
-	if !cfg.Executor.EffectiveSkipSelfReview() {
-		t.Error("shadow mode must skip the self-review phase")
-	}
 }
 
 func TestPrePRReviewConfig_DefaultsOff(t *testing.T) {
 	d := executor.DefaultBackendConfig()
-	if d.PrePRReview == nil || d.PrePRReviewMode() != "off" || d.EffectiveSkipSelfReview() {
+	if d.PrePRReview == nil || d.PrePRReviewMode() != "off" {
 		t.Fatalf("default config must leave the pre-PR review off: %+v", d.PrePRReview)
 	}
 	if d.PrePRReview.Timeout != 6*time.Minute || d.PrePRReview.FixTimeout != 10*time.Minute || d.PrePRReview.MaxFixRounds != 1 {

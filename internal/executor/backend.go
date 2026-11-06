@@ -387,9 +387,8 @@ type BackendConfig struct {
 	// or "run dev server" will execute without creating a PR.
 	DetectEphemeral *bool `yaml:"detect_ephemeral,omitempty"`
 
-	// SkipSelfReview disables the self-review phase before PR creation.
-	// When false (default), Pilot runs a self-review phase after quality gates pass
-	// to catch issues like unwired config, undefined methods, or incomplete implementations.
+	// SkipSelfReview is a deprecated no-op: the self-review phase was retired in
+	// GH-6157 and the pre-PR review covers it. Kept so existing configs still load.
 	SkipSelfReview bool `yaml:"skip_self_review,omitempty"`
 
 	// ClaudeCode contains Claude Code specific settings
@@ -419,7 +418,9 @@ type BackendConfig struct {
 	// Decompose contains auto-decomposition settings for complex tasks
 	Decompose *DecomposeConfig `yaml:"decompose,omitempty"`
 
-	// IntentJudge contains intent alignment settings for diff-vs-ticket verification
+	// IntentJudge keeps the intent_judge config block loadable. The in-run
+	// diff-vs-ticket judge was retired in GH-6157 (the pre-PR review replaces it);
+	// the pre-flight issue judge is built from PreFlightJudge.
 	IntentJudge *IntentJudgeConfig `yaml:"intent_judge,omitempty"`
 
 	// PrePRReview configures the pre-PR reviewer that runs after the quality
@@ -527,7 +528,7 @@ type BackendConfig struct {
 	// PrePushLint enables lint checking before pushing to remote.
 	// When true (default), Pilot runs linter (golangci-lint for Go projects) after commit.
 	// If fixable issues are found, they are auto-fixed and re-committed.
-	// Unfixable issues are included in the execution result for self-review.
+	// Unfixable issues are included in the execution result.
 	// GH-1376: Added to prevent lint-failure cascades
 	PrePushLint *bool `yaml:"pre_push_lint,omitempty"`
 
@@ -574,15 +575,14 @@ type BackendConfig struct {
 
 	// FinalizeTimeout bounds the fresh context finalizeCtx grants once the
 	// backend has finished and the task's own timeout ctx has already
-	// expired: quality gates, self-review, intent judge, contract-evidence
+	// expired: quality gates, pre-PR review, contract-evidence
 	// verification, and push/PR creation all run on it. Mirrors
 	// orchestrator.execution.finalize_timeout (config.ExecutionConfig),
 	// which is copied here at startup. Default: 15m. GH-5346.
 	FinalizeTimeout time.Duration `yaml:"finalize_timeout,omitempty"`
 
-	// SelfReviewTimeout bounds the self-review phase. Zero or unset keeps the
-	// per-backend defaults (2m Claude Code, 10m OpenCode); a set value applies
-	// to every backend. GH-5900.
+	// SelfReviewTimeout is a deprecated no-op (self-review retired in GH-6157);
+	// kept so existing configs still load and validate.
 	SelfReviewTimeout time.Duration `yaml:"self_review_timeout,omitempty"`
 
 	// AcceptanceEvidenceBudget bounds the whole acceptance-evidence step
@@ -613,19 +613,6 @@ func (c *BackendConfig) EffectiveFinalizeTimeout() time.Duration {
 		return 15 * time.Minute
 	}
 	return c.FinalizeTimeout
-}
-
-// EffectiveSelfReviewTimeout returns the self-review phase budget for the given
-// backend type: SelfReviewTimeout when set, otherwise 10m for OpenCode (slower
-// server-managed sessions, GH-2416) and 2m for everything else. GH-5900.
-func (c *BackendConfig) EffectiveSelfReviewTimeout(backendType string) time.Duration {
-	if c != nil && c.SelfReviewTimeout > 0 {
-		return c.SelfReviewTimeout
-	}
-	if backendType == BackendTypeOpenCode {
-		return 10 * time.Minute
-	}
-	return 2 * time.Minute
 }
 
 // EffectiveStallTimeout returns the stall detection threshold, applying the
@@ -798,8 +785,9 @@ func DefaultEffortClassifierConfig() *EffortClassifierConfig {
 	}
 }
 
-// IntentJudgeConfig configures the LLM intent judge that compares diffs against
-// the original issue to catch scope creep and missing requirements.
+// IntentJudgeConfig is the executor.intent_judge block. It configured the in-run
+// intent judge, retired in GH-6157 (the pre-PR review replaces it); no runner
+// code reads it now and it stays so existing configs load.
 //
 // Example YAML configuration:
 //
@@ -809,7 +797,7 @@ func DefaultEffortClassifierConfig() *EffortClassifierConfig {
 //	    model: "claude-haiku-4-5-20251001"
 //	    max_diff_chars: 32000
 type IntentJudgeConfig struct {
-	// Enabled controls whether the intent judge runs after execution.
+	// Enabled is not read since the in-run judge was retired.
 	// Default: true (when config block is present).
 	Enabled *bool `yaml:"enabled,omitempty"`
 
@@ -842,8 +830,7 @@ func DefaultIntentJudgeConfig() *IntentJudgeConfig {
 
 // Pre-PR review modes (executor.pre_pr_review.mode).
 const (
-	// PrePRReviewModeOff runs no pre-PR review; self-review and the intent
-	// judge run as before.
+	// PrePRReviewModeOff runs no pre-PR review.
 	PrePRReviewModeOff = "off"
 	// PrePRReviewModeShadow runs the review after the gates, records the
 	// verdict and writes nothing to GitHub.
@@ -872,8 +859,8 @@ const (
 
 // PrePRReviewConfig configures the pre-PR review: the post-merge reviewer's
 // checklist run over the full diff inside the executor, after the quality
-// gates and before the push. When mode is not off it replaces the self-review
-// phase and the in-run intent judge.
+// gates and before the push. It replaced the self-review phase and the in-run
+// intent judge, which GH-6157 removed.
 //
 // Example YAML configuration:
 //
@@ -1013,15 +1000,6 @@ func (c *BackendConfig) PrePRReviewMode() string {
 		return PrePRReviewModeOff
 	}
 	return c.PrePRReview.EffectiveMode()
-}
-
-// EffectiveSkipSelfReview reports whether the self-review phase is skipped:
-// skip_self_review is set, or the pre-PR review replaces it.
-func (c *BackendConfig) EffectiveSkipSelfReview() bool {
-	if c == nil {
-		return false
-	}
-	return c.SkipSelfReview || c.PrePRReviewMode() != PrePRReviewModeOff
 }
 
 // PreFlightJudgeConfig configures the pre-flight issue quality judge (GH-2802).
@@ -1286,8 +1264,8 @@ type ClaudeCodeConfig struct {
 	// UseStructuredOutput enables --json-schema structured output for classifiers and post-execution summary (default: false)
 	UseStructuredOutput bool `yaml:"use_structured_output,omitempty"`
 
-	// UseSessionResume enables session resume for self-review (GH-1265).
-	// When true, self-review uses --resume <session_id> to continue the
+	// UseSessionResume enables session resume for the review-fix round (GH-1265).
+	// When true, the round uses --resume <session_id> to continue the
 	// original session, eliminating ~40% token waste from context rebuild.
 	// Default: false
 	UseSessionResume bool `yaml:"use_session_resume,omitempty"`

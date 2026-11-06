@@ -245,7 +245,7 @@ executor:
   auto_create_pr: true
   direct_commit: false                    # commit directly to branch without PR
   detect_ephemeral: true                  # detect and skip ephemeral changes
-  skip_self_review: false                 # skip self-review step
+  skip_self_review: false                 # deprecated no-op (self-review retired)
   use_worktree: true                      # isolated git worktree per task (default; false = direct mode, logs a startup warning)
 
   # Non-Anthropic provider routing — see Custom Providers guide
@@ -292,7 +292,7 @@ executor:
 | `auto_create_pr` | bool | `true` | Automatically create PRs after execution |
 | `direct_commit` | bool | `false` | Commit directly without PR |
 | `detect_ephemeral` | bool | `true` | Detect and skip ephemeral file changes |
-| `skip_self_review` | bool | `false` | Skip the self-review step |
+| `skip_self_review` | bool | `false` | Deprecated no-op: the self-review phase was retired |
 | `pre_pr_review.mode` | string | `"off"` | Pre-PR review: `off`, `shadow` or `enforce` (see below) |
 | `pre_pr_review.model` | string | `""` | Reviewer model; empty uses the executor's default |
 | `pre_pr_review.timeout` | duration | `6m` | Bound on one review |
@@ -332,7 +332,7 @@ executor:
 | `decompose.max_subtasks` | int | `5` | Maximum subtasks created (2-10) |
 | `decompose.min_description_words` | int | `50` | Minimum description words to decompose |
 
-**Pre-PR review.** `executor.pre_pr_review` runs the post-merge reviewer's checklist over the full diff before the push, in a read-only checkout of the task's worktree HEAD, after the quality gates pass. `mode: off` (default) changes nothing. `mode: shadow` runs the review, records the verdict as a `pre_pr_review` execution event and a log line, and writes nothing to GitHub. `mode: enforce` is shadow plus acting on the verdict: a REQUEST-CHANGES with a blocking defect gets one fix round and a gate re-check, and defects that survive it follow `on_unfixed`. Any mode other than `off` replaces the self-review phase and the in-run intent judge. The review is skipped for tasks whose complexity is in `skip_complexity`, for direct-commit tasks, when the diff is empty, and when less than two minutes remain in the finalize window.
+**Pre-PR review.** `executor.pre_pr_review` runs the post-merge reviewer's checklist over the full diff before the push, in a read-only checkout of the task's worktree HEAD, after the quality gates pass. `mode: off` (default) changes nothing. `mode: shadow` runs the review, records the verdict as a `pre_pr_review` execution event and a log line, and writes nothing to GitHub. `mode: enforce` is shadow plus acting on the verdict: a REQUEST-CHANGES with a blocking defect gets one fix round and a gate re-check, and defects that survive it follow `on_unfixed`. It replaced the self-review phase and the in-run intent judge, which no longer exist in any mode. The review is skipped for tasks whose complexity is in `skip_complexity`, for direct-commit tasks, when the diff is empty, and when less than two minutes remain in the finalize window.
 
 <Tabs items={['Claude Code', 'OpenCode']}>
 
@@ -371,12 +371,12 @@ executor:
 | `opencode.request_timeout` | duration | `"10m"` | HTTP timeout for session creation, message send, and SSE response headers ([GH-2410](https://github.com/qf-studio/pilot/issues/2410)) |
 
 <Callout type="info">
-**Self-review timeout is backend-aware.** The self-review phase is capped at **10 minutes** for OpenCode and **2 minutes** for Claude Code / Qwen Code. OpenCode's SSE streaming legitimately runs slower than a Claude Code subprocess; a 2-minute cap cancels review while the backend is still working and surfaces as a false regression ([GH-2416](https://github.com/qf-studio/pilot/issues/2416)). The cap is not user-configurable today.
+**Self-review timeout.** `self_review_timeout` is a deprecated no-op: the self-review phase was retired, so there is no budget to set. The key is still accepted.
 </Callout>
 
 ### Tool Restriction (per-subprocess token control)
 
-`executor.claude_code.allowed_tools` and `executor.claude_code.mcp_config_path` scope the toolbox each Claude Code subprocess can use. Both flow through to `ExecuteOptions.AllowedTools` / `ExecuteOptions.MCPConfigPath` and are applied to every backend call site (execution, self-review, retry, intent judge, feedback). Trimming the toolbox shaves the per-turn token cost — Claude Code replays the full tool definition list on every turn, and an unused MCP config is the single largest replayed payload.
+`executor.claude_code.allowed_tools` and `executor.claude_code.mcp_config_path` scope the toolbox each Claude Code subprocess can use. Both flow through to `ExecuteOptions.AllowedTools` / `ExecuteOptions.MCPConfigPath` and are applied to every backend call site (execution, retry, review fix, feedback). Trimming the toolbox shaves the per-turn token cost — Claude Code replays the full tool definition list on every turn, and an unused MCP config is the single largest replayed payload.
 
 ```yaml
 executor:

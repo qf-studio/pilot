@@ -189,7 +189,7 @@ type ExecutionConfig struct {
 	PollInterval time.Duration `yaml:"poll_interval"`  // How often to check PR status (default: 30s)
 	PRTimeout    time.Duration `yaml:"pr_timeout"`     // Max wait time for PR merge (default: 1h)
 	// FinalizeTimeout bounds the fresh context granted to post-backend
-	// finalization (quality gates, self-review, intent judge, contract
+	// finalization (quality gates, pre-PR review, contract
 	// evidence, push/PR create) once the task's own timeout ctx has already
 	// expired. Copied into executor.BackendConfig.FinalizeTimeout at
 	// startup. Default: 15m. GH-5346.
@@ -1426,10 +1426,6 @@ func (c *Config) Validate() error {
 			if err := validateBilling(c.Executor.ClaudeCode.Billing); err != nil {
 				return err
 			}
-		}
-		// GH-5900: 0 = per-backend default (2m Claude Code, 10m OpenCode); negative is a config mistake.
-		if c.Executor.SelfReviewTimeout < 0 {
-			return fmt.Errorf("invalid executor.self_review_timeout: %s (must be >= 0; 0 = per-backend default)", c.Executor.SelfReviewTimeout)
 		}
 		// GH-5867: 0 = default (15m); negative is a config mistake.
 		if c.Executor.AcceptanceEvidenceBudget < 0 {
