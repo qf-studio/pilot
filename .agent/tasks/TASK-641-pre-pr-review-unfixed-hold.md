@@ -50,6 +50,10 @@
 - **PR#6134 (B1)**: a closed issue that also carries `pilot-done` returns early before the closed-issue branch, so a stale `pilot-in-progress` stays (`controller.go:11545`); same for the human-recovery-PR early return (`:11567`) · an HTTP decision POST on a cancelled request gets `ErrRequestCancelled` with no matching case in `gateway/approvals.go:310` · the `cancelled` maps in `approval.Manager` and `SlackHandler` are never pruned · the cancel test registers a "telegram" handler, so the Slack click path is covered only by `approval/cancel_test`.
 - **PR#6128 (TASK-642)**: test cases 3 and 4 are the same input; case 1's fix-issue body carries `pr:7`, which a real `ci_post_merge` body never has; `origin_merged` accepts a merge into any base branch (`owner_death.go:324`).
 
+## Process follow-ups (11-06, from "why did this take so long")
+
+Skipped steps this session: hand-written task doc (no `/nav-task`, no recall), wide research after the first draft, graph node not set to `dispatched`, no marker. Fixes: pilot `CLAUDE.md` § Session checklist (0b5316e96) and three Navigator issues with `pilot`: [navigator#40](https://github.com/qf-studio/navigator/issues/40) task_doc_guard PreToolUse gate · [navigator#41](https://github.com/qf-studio/navigator/issues/41) stop gate refuses the exit signal without a marker · [navigator#42](https://github.com/qf-studio/navigator/issues/42) task IDs from origin/main + archive (the TASK-640 collision → this repo's guard doc renumbered TASK-642).
+
 ## Founder decisions
 
 | # | Question | Decision |
