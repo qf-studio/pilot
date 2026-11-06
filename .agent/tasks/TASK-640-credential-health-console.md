@@ -28,7 +28,7 @@ What the console does today (`origin/main` 11-06):
 4. **Chat gate**: `handleSendMessage` refuses a turn with `409 anthropic_key_invalid` (message: the stored `error`) when the org's Anthropic health is `error` and the org runs on its own key. The UI treats it like `chat_not_enabled`: composer disabled, one-line reason with a link to Connections. A platform-key org is never gated by this.
 5. **Save still validates**; a save that passes resets the health to `ok` with `checked_at = now()`, so the row is truthful the second the founder pastes a good key.
 6. **No alert channel yet** (brief email/Slack is C6, held on I3). The bell and the rows are the surface.
-7. **Operator fix for the live tenant is separate** — 11-06: new Anthropic key saved + daemon restarted 09:46Z (Anthropic 200); the GitHub PAT is still dead (401, SDK poller disabled) until the founder saves a new one and the daemon restarts.: the founder saves a new key and PAT, the tenant daemon restarts (it reads `/run/pilot/env` at service start). This task prevents the next silent week, not this one.
+7. **Operator fix for the live tenant is separate** — 11-06: new Anthropic key saved + daemon restarted 09:46Z (Anthropic 200); new fine-grained PAT saved + daemon restarted 10:57Z → GitHub 200, push true, `/ready` github true, poller started. **Tenant incident closed.**: the founder saves a new key and PAT, the tenant daemon restarts (it reads `/run/pilot/env` at service start). This task prevents the next silent week, not this one.
 
 ## Legs (K1 → deploy console-api → K2)
 
