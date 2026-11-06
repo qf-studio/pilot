@@ -1,6 +1,6 @@
 # TASK-640: Credential health — the console re-checks the org's own Anthropic key and tracker tokens, shows a truthful status, and gates chat on a dead key
 
-**Status**: 🟡 **holding (console#490 post-merge minors run, then K3 residue) — 10:05Z: the post-merge reviewer filed [console#490](https://github.com/qf-studio/pilot-console/issues/490) with nine minors that cover every K3 item (status fight ×2, 403, wording ×2, stale-over-fresh ×2, platform-key stale row, Slack ok stamp). K3 waits for its PR: if #490 patches the status fight instead of the split (`health_status` column, sweep never writes `status`), K3 files as the residue; else K3 shrinks to the UI contract. Earlier 09:50Z: — 11-06 09:50Z: K1 console#488 → PR#489 merged 09:33Z; review found two design defects in decision 3 (the sweep writes `status` and fights the ready probe; stale-over-fresh race) → LEG K3 drafted, files after the post-merge reviewer's own round (same files). Prod console-api not redeployed yet (`/api/v1/credentials` has no `health_status`). K2 after K3 + redeploy.** Earlier: 🚀 K1 dispatched 08:2xZ.
+**Status**: 🟢 **K1 LIVE ON PROD 09:50Z — the first sweep already tells the truth: `GET /api/v1/credentials` → anthropic `health_status: ok` (checked 09:50:05Z, the new key); `GET /api/v1/connections` → github `status: error`, `health_error: "orgs: github rejected token (status 401)"`. Holding on console#490 (post-merge minors, running) → K3 residue (the status split) → redeploy → K2.** Earlier 10:05Z: console#490 filed with nine minors covering every K3 item.
 **Created**: 2026-11-06
 **Assignee**: Navigator (plan) → Pilot (legs) · founder (go; the live tenant's dead key and PAT are an operator fix, not this task)
 **Parent**: [TASK-583](TASK-583-wave1-design-update-proof-surface.md) proof surface · incident 2026-11-05 21:21Z (marker `2026-11-06-0740_console-session-board-landed-tenant-credentials-dead.md`)
@@ -28,7 +28,7 @@ What the console does today (`origin/main` 11-06):
 4. **Chat gate**: `handleSendMessage` refuses a turn with `409 anthropic_key_invalid` (message: the stored `error`) when the org's Anthropic health is `error` and the org runs on its own key. The UI treats it like `chat_not_enabled`: composer disabled, one-line reason with a link to Connections. A platform-key org is never gated by this.
 5. **Save still validates**; a save that passes resets the health to `ok` with `checked_at = now()`, so the row is truthful the second the founder pastes a good key.
 6. **No alert channel yet** (brief email/Slack is C6, held on I3). The bell and the rows are the surface.
-7. **Operator fix for the live tenant is separate**: the founder saves a new key and PAT, the tenant daemon restarts (it reads `/run/pilot/env` at service start). This task prevents the next silent week, not this one.
+7. **Operator fix for the live tenant is separate** — 11-06: new Anthropic key saved + daemon restarted 09:46Z (Anthropic 200); the GitHub PAT is still dead (401, SDK poller disabled) until the founder saves a new one and the daemon restarts.: the founder saves a new key and PAT, the tenant daemon restarts (it reads `/run/pilot/env` at service start). This task prevents the next silent week, not this one.
 
 ## Legs (K1 → deploy console-api → K2)
 
