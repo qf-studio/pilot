@@ -3860,6 +3860,19 @@
           "context",
           "workflow"
         ]
+      },
+      "TASK-644": {
+        "path": ".agent/tasks/TASK-644-desktop-content-container-figma-grid.md",
+        "title": "Desktop content container per the Figma layout grid — 1072 px centered, 6 × 162 px columns, 20 px gutter",
+        "status": "dispatched",
+        "concepts": [
+          "frontend",
+          "testing",
+          "deployment"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot-console-ui/issues/390"
+        ]
       }
     },
     "memories": {
@@ -15694,6 +15707,21 @@
       "from": "mem-294",
       "to": "TASK-641",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-644",
+      "to": "frontend",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-644",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-644",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
