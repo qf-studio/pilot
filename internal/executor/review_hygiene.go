@@ -17,11 +17,10 @@ const reviewHygieneTimeout = 30 * time.Second
 // the caller can decide what to do with edits the session left in the working
 // tree. GH-5900.
 type reviewPhaseOutcome struct {
-	ran     bool          // the backend was actually invoked (not skipped)
-	fixed   bool          // output carried REVIEW_FIXED:
-	failed  bool          // the backend returned an error
-	killed  bool          // the session was terminated (timeout / cancellation)
-	elapsed time.Duration // wall-clock time until the failure, set when failed
+	ran    bool // the backend was actually invoked (not skipped)
+	fixed  bool // output carried REVIEW_FIXED:
+	failed bool // the backend returned an error
+	killed bool // the session was terminated (timeout / cancellation)
 }
 
 // reviewPhase names a review phase for tree hygiene: the label in its log lines

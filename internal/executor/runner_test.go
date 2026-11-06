@@ -3047,39 +3047,6 @@ func (m *mockSelfReviewBackend) Execute(_ context.Context, opts ExecuteOptions) 
 	return &BackendResult{Success: true, Output: m.output}, nil
 }
 
-func (m *mockSelfReviewBackend) lastExecuteOptions() ExecuteOptions {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.lastOpts
-}
-
-// mockSelfReviewExtractor implements SelfReviewExtractor for testing.
-type mockSelfReviewExtractor struct {
-	mu           sync.Mutex
-	extractCalls int
-	saveCalls    int
-	lastResult   *memory.ExtractionResult
-	extractFunc  func(ctx context.Context, output string, projectPath string) (*memory.ExtractionResult, error)
-}
-
-func (m *mockSelfReviewExtractor) ExtractFromSelfReview(ctx context.Context, output string, projectPath string) (*memory.ExtractionResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.extractCalls++
-	if m.extractFunc != nil {
-		return m.extractFunc(ctx, output, projectPath)
-	}
-	return &memory.ExtractionResult{}, nil
-}
-
-func (m *mockSelfReviewExtractor) SaveExtractedPatterns(ctx context.Context, result *memory.ExtractionResult) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.saveCalls++
-	m.lastResult = result
-	return nil
-}
-
 func TestLocalModeSkipsNavigatorAutoInit(t *testing.T) {
 	projectDir := t.TempDir()
 
