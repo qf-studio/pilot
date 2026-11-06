@@ -44,6 +44,12 @@
 
 **Effect on TASK-620's rollout.** Stage-3 criterion "`pilot-review-rc` holds ≤ 2/10" measures PRs parked for a human; under A2 those become needs-human holds without a PR. Re-state the criterion as "pre-PR holds (needs_human with reason pre-PR review) ≤ 2/10" when A2 ships, and count `fixed` against the A1 budget, not the 5m cap. L4 and L6 stay gated on the stage-3 read.
 
+## Post-merge minors (unfiled, 11-05 verdicts)
+
+- **PR#6133 (A1)**: a red gate plus a timed-out gate is classified `regate_timeout` though the red gate refuted the fix (`pre_pr_fix.go:256`) · `budgetSpent` is read after `Check` returns and tested before the gate result, so a re-gate that passes at the budget edge is reverted as `regate_timeout` (`:221`) · `reviewFixMinRemaining` 12m comment no longer matches a 20m re-gate (`:22`; the re-gate runs on `context.Background()`, so the floor only covers the fix session) · `PreReviewReason` drops the literal status string (`scope_guard.go:252`) · stale `PrePRFixNone` contract comment (`pre_pr_review_render.go:19`) · validation test lives in `pre_pr_review_test.go`, not `config_test.go`. Fold the first two into A2's hold comment wording ("not verified" only when no gate went red) or a later fast-follow.
+- **PR#6134 (B1)**: a closed issue that also carries `pilot-done` returns early before the closed-issue branch, so a stale `pilot-in-progress` stays (`controller.go:11545`); same for the human-recovery-PR early return (`:11567`) · an HTTP decision POST on a cancelled request gets `ErrRequestCancelled` with no matching case in `gateway/approvals.go:310` · the `cancelled` maps in `approval.Manager` and `SlackHandler` are never pruned · the cancel test registers a "telegram" handler, so the Slack click path is covered only by `approval/cancel_test`.
+- **PR#6128 (TASK-640)**: test cases 3 and 4 are the same input; case 1's fix-issue body carries `pr:7`, which a real `ci_post_merge` body never has; `origin_merged` accepts a merge into any base branch (`owner_death.go:324`).
+
 ## Founder decisions
 
 | # | Question | Decision |
