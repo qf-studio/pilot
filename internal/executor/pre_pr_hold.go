@@ -107,7 +107,7 @@ func (r *Runner) holdPrePRReview(ctx context.Context, task *Task, git *GitOperat
 		}
 	}
 
-	RecordPrePRFix("hold")
+	RecordPrePRHold(task.ProjectPath)
 	log.Info("Pre-PR review hold",
 		slog.String("task_id", task.ID),
 		slog.String("branch", task.Branch),

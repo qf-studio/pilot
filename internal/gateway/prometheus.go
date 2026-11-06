@@ -626,6 +626,14 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	for _, o := range sortedKeys(fixes) {
 		writeCounter(w, "pilot_pre_pr_fixes_total", fixes[o], "outcome", o)
 	}
+	// pilot_pre_pr_holds_total (GH-6148): runs the pre-PR review parked
+	// needs_human with unfixed blocking defects, by project.
+	writeHelp(w, "pilot_pre_pr_holds_total", "Total pre-PR review holds (run ended needs_human with unfixed blocking defects), by project. Resets to 0 on restart")
+	writeType(w, "pilot_pre_pr_holds_total", "counter")
+	holds := executor.PrePRHoldsTotal()
+	for _, p := range sortedKeys(holds) {
+		writeCounter(w, "pilot_pre_pr_holds_total", holds[p], "project", p)
+	}
 
 	// pilot_chat_turns_rejected_total: web chat turns refused by the org-wide
 	// daily turn cap (adapters.chat.daily_turn_cap).

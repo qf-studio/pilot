@@ -849,3 +849,42 @@ func TestDashboardProjectPathScoping(t *testing.T) {
 		}
 	}
 }
+
+// TestDashboardStats_NeedsHumanField is GH-6148: /api/v1/metrics exposes the
+// needs_human count (lifetime and windowed) next to succeeded/failed, equal to
+// the store's counts.
+func TestDashboardStats_NeedsHumanField(t *testing.T) {
+	store := &mockDashboardStore{
+		lifetimeTokens: &memory.LifetimeTokens{},
+		taskCounts:     &memory.LifetimeTaskCounts{Total: 6, Succeeded: 3, Failed: 1, NeedsHuman: 2},
+		windowedStats:  memory.WindowedStats{AttemptNeedsHuman: 2},
+	}
+	s := newTestServerWithDashboard(store)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/metrics", nil)
+	w := httptest.NewRecorder()
+	s.handleDashboardMetrics(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := raw["needsHumanTasks"]; !ok {
+		t.Fatalf("response lacks needsHumanTasks: %s", w.Body.String())
+	}
+	var resp dashboardMetricsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.NeedsHumanTasks != store.taskCounts.NeedsHuman {
+		t.Errorf("NeedsHumanTasks = %d, want %d", resp.NeedsHumanTasks, store.taskCounts.NeedsHuman)
+	}
+	if resp.FailedTasks != 1 {
+		t.Errorf("FailedTasks = %d, want 1 (a hold is not a failure)", resp.FailedTasks)
+	}
+	if resp.Window.NeedsHuman != store.windowedStats.AttemptNeedsHuman {
+		t.Errorf("Window.NeedsHuman = %d, want %d", resp.Window.NeedsHuman, store.windowedStats.AttemptNeedsHuman)
+	}
+}

@@ -4952,12 +4952,16 @@ type LifetimeTaskCounts struct {
 	RateLimited int
 	Infra       int
 	Skipped     int
+	// NeedsHuman counts status='needs_human' rows (holdPushedBranch and the
+	// pre-PR review hold): terminal, neither an attempt success nor a failure.
+	NeedsHuman int
 }
 
 // NonFailure returns the total of all non-failure terminal outcomes (everything
-// that is neither succeeded nor a genuine failure). TASK-358.
+// that is neither succeeded nor a genuine failure). TASK-358. A needs_human
+// hold is a non-failure outcome (GH-6148).
 func (c LifetimeTaskCounts) NonFailure() int {
-	return c.NoOp + c.Stalled + c.Declined + c.RateLimited + c.Infra + c.Skipped
+	return c.NoOp + c.Stalled + c.Declined + c.RateLimited + c.Infra + c.Skipped + c.NeedsHuman
 }
 
 // GetLifetimeTaskCounts returns cumulative task counts across all executions.
@@ -4974,7 +4978,8 @@ func (s *Store) GetLifetimeTaskCounts(projectPath string) (*LifetimeTaskCounts, 
 			COALESCE(SUM(CASE WHEN status = 'stalled' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'rate_limited' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'infra' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'needs_human' THEN 1 ELSE 0 END), 0)
 		FROM executions`
 	var row *sql.Row
 	// GH-4240: canary sandbox executions never count toward these lifetime
@@ -4987,7 +4992,7 @@ func (s *Store) GetLifetimeTaskCounts(projectPath string) (*LifetimeTaskCounts, 
 
 	var tc LifetimeTaskCounts
 	if err := row.Scan(&tc.Total, &tc.Succeeded, &tc.Failed, &tc.Declined, &tc.NoOp, &tc.Stalled,
-		&tc.RateLimited, &tc.Infra, &tc.Skipped); err != nil {
+		&tc.RateLimited, &tc.Infra, &tc.Skipped, &tc.NeedsHuman); err != nil {
 		return nil, fmt.Errorf("failed to get lifetime task counts: %w", err)
 	}
 	return &tc, nil
@@ -5036,6 +5041,7 @@ type WindowedStats struct {
 	AttemptRateLimited int
 	AttemptInfra       int
 	AttemptSkipped     int
+	AttemptNeedsHuman  int // status = 'needs_human' (GH-6148): a hold is neither an attempt success nor a failure
 }
 
 // GetWindowedStats returns cost/success stats for executions with
@@ -5062,7 +5068,8 @@ func (s *Store) GetWindowedStats(projectPath string, since time.Time) (WindowedS
 			COALESCE(SUM(CASE WHEN status = 'stalled' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'rate_limited' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'infra' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'needs_human' THEN 1 ELSE 0 END), 0)
 		FROM executions
 		WHERE created_at >= ? AND COALESCE(is_canary, 0) = 0`
 
@@ -5076,7 +5083,8 @@ func (s *Store) GetWindowedStats(projectPath string, since time.Time) (WindowedS
 	var ws WindowedStats
 	if err := row.Scan(&ws.TotalCostUSD, &ws.IssuesAttempted, &ws.IssuesDelivered, &ws.AttemptTotal,
 		&ws.AttemptCompleted, &ws.AttemptFailed, &ws.AttemptDeclined, &ws.AttemptNoOp,
-		&ws.AttemptStalled, &ws.AttemptRateLimited, &ws.AttemptInfra, &ws.AttemptSkipped); err != nil {
+		&ws.AttemptStalled, &ws.AttemptRateLimited, &ws.AttemptInfra, &ws.AttemptSkipped,
+		&ws.AttemptNeedsHuman); err != nil {
 		return WindowedStats{}, fmt.Errorf("failed to get windowed stats: %w", err)
 	}
 

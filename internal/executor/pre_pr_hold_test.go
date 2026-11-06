@@ -182,6 +182,8 @@ var revertedGate = &QualityOutcome{Passed: false}
 
 func TestPrePRHold_NoPRWhenBlockingUnfixed(t *testing.T) {
 	e := newHoldEnv(t, holdDefects, true, revertedGate) // fix commits, re-gate fails: reverted
+	holdProject := e.task.ProjectPath
+	before := PrePRHoldsTotal()[holdProject]
 	result := e.run(t)
 
 	if e.prCount() != 0 || fileExists(e.prCreated) {
@@ -242,8 +244,11 @@ func TestPrePRHold_NoPRWhenBlockingUnfixed(t *testing.T) {
 			t.Errorf("log lacks %q:\n%s", want, logs)
 		}
 	}
-	if PrePRFixesTotal()["hold"] == 0 {
-		t.Error(`pre-PR fix counter has no "hold" outcome`)
+	if PrePRFixesTotal()["hold"] != 0 {
+		t.Error(`a hold must not be counted as a pre-PR fix outcome`)
+	}
+	if PrePRHoldsTotal()[holdProject] != before+1 {
+		t.Errorf("pre-PR holds for %q = %d, want %d", holdProject, PrePRHoldsTotal()[holdProject], before+1)
 	}
 }
 

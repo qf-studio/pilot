@@ -109,16 +109,19 @@ func (s *Server) SetDailyTicketCap(dailyCap int, timezone string) {
 // --- JSON response types (mirrors desktop/types.go) ---
 
 type dashboardMetricsResponse struct {
-	TotalTokens    int64     `json:"totalTokens"`
-	InputTokens    int64     `json:"inputTokens"`
-	OutputTokens   int64     `json:"outputTokens"`
-	TotalCostUSD   float64   `json:"totalCostUSD"`
-	TotalTasks     int       `json:"totalTasks"`
-	SucceededTasks int       `json:"succeededTasks"`
-	FailedTasks    int       `json:"failedTasks"`
-	TokenSparkline []int64   `json:"tokenSparkline"`
-	CostSparkline  []float64 `json:"costSparkline"`
-	QueueSparkline []int     `json:"queueSparkline"`
+	TotalTokens    int64   `json:"totalTokens"`
+	InputTokens    int64   `json:"inputTokens"`
+	OutputTokens   int64   `json:"outputTokens"`
+	TotalCostUSD   float64 `json:"totalCostUSD"`
+	TotalTasks     int     `json:"totalTasks"`
+	SucceededTasks int     `json:"succeededTasks"`
+	FailedTasks    int     `json:"failedTasks"`
+	// NeedsHumanTasks counts needs_human holds (GH-6148): terminal, neither
+	// succeeded nor failed.
+	NeedsHumanTasks int       `json:"needsHumanTasks"`
+	TokenSparkline  []int64   `json:"tokenSparkline"`
+	CostSparkline   []float64 `json:"costSparkline"`
+	QueueSparkline  []int     `json:"queueSparkline"`
 	// Window carries the GH-4735 rolling-window headline numbers. Lifetime
 	// fields above are kept unchanged for desktop app back-compat.
 	Window dashboardWindowResponse `json:"window"`
@@ -149,6 +152,9 @@ type dashboardWindowResponse struct {
 	IssuesDelivered     int     `json:"issuesDelivered"`
 	DeliveryRate        float64 `json:"deliveryRate"`
 	AttemptSuccessRate  float64 `json:"attemptSuccessRate"`
+	// NeedsHuman counts needs_human holds in the window (GH-6148); outside
+	// the AttemptSuccessRate denominator.
+	NeedsHuman int `json:"needsHuman"`
 }
 
 type queueTaskResponse struct {
@@ -248,16 +254,17 @@ func (s *Server) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) 
 	chatTotals, chatDaily := chatMetrics(store, projectPath, since, now)
 
 	resp := dashboardMetricsResponse{
-		TotalTokens:    lt.TotalTokens,
-		InputTokens:    lt.InputTokens,
-		OutputTokens:   lt.OutputTokens,
-		TotalCostUSD:   lt.TotalCostUSD,
-		TotalTasks:     tc.Total,
-		SucceededTasks: tc.Succeeded,
-		FailedTasks:    tc.Failed,
-		TokenSparkline: tokenSparkline,
-		CostSparkline:  costSparkline,
-		QueueSparkline: queueSparkline,
+		TotalTokens:     lt.TotalTokens,
+		InputTokens:     lt.InputTokens,
+		OutputTokens:    lt.OutputTokens,
+		TotalCostUSD:    lt.TotalCostUSD,
+		TotalTasks:      tc.Total,
+		SucceededTasks:  tc.Succeeded,
+		FailedTasks:     tc.Failed,
+		NeedsHumanTasks: tc.NeedsHuman,
+		TokenSparkline:  tokenSparkline,
+		CostSparkline:   costSparkline,
+		QueueSparkline:  queueSparkline,
 		Window: dashboardWindowResponse{
 			Days:                windowDays,
 			TotalCostUSD:        ws.TotalCostUSD,
@@ -266,6 +273,7 @@ func (s *Server) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) 
 			IssuesDelivered:     ws.IssuesDelivered,
 			DeliveryRate:        ws.DeliveryRate,
 			AttemptSuccessRate:  ws.AttemptSuccessRate,
+			NeedsHuman:          ws.AttemptNeedsHuman,
 		},
 		ChatTurns:   chatTotals.Turns,
 		ChatCostUSD: chatTotals.CostUSD,

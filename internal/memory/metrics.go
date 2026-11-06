@@ -41,6 +41,7 @@ type MetricsSummary struct {
 	TotalExecutions int
 	SuccessCount    int
 	FailedCount     int
+	NeedsHumanCount int // status = 'needs_human' (GH-6148): a hold, neither success nor failure
 	SuccessRate     float64
 
 	// Duration
@@ -87,10 +88,10 @@ type DailyMetrics struct {
 	CacheReadTokens  int64
 	CacheWriteTokens int64
 	TotalCostUSD     float64
-	FilesChanged    int
-	LinesAdded      int
-	LinesRemoved    int
-	PRsCreated      int
+	FilesChanged     int
+	LinesAdded       int
+	LinesRemoved     int
+	PRsCreated       int
 }
 
 // ProjectMetrics holds metrics aggregated by project
@@ -269,6 +270,7 @@ func (s *Store) GetMetricsSummary(query MetricsQuery) (*MetricsSummary, error) {
 			COUNT(*) as total,
 			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as completed,
 			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
+			COALESCE(SUM(CASE WHEN status = 'needs_human' THEN 1 ELSE 0 END), 0) as needs_human,
 			COALESCE(SUM(duration_ms), 0) as total_duration,
 			CAST(COALESCE(AVG(CASE WHEN status = 'completed' THEN duration_ms END), 0) AS INTEGER) as avg_duration,
 			COALESCE(MIN(CASE WHEN status = 'completed' THEN duration_ms END), 0) as min_duration,
@@ -290,6 +292,7 @@ func (s *Store) GetMetricsSummary(query MetricsQuery) (*MetricsSummary, error) {
 		&summary.TotalExecutions,
 		&summary.SuccessCount,
 		&summary.FailedCount,
+		&summary.NeedsHumanCount,
 		&summary.TotalDurationMs,
 		&summary.AvgDurationMs,
 		&summary.MinDurationMs,
