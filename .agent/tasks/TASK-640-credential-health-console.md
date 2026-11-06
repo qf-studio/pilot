@@ -1,6 +1,6 @@
 # TASK-640: Credential health — the console re-checks the org's own Anthropic key and tracker tokens, shows a truthful status, and gates chat on a dead key
 
-**Status**: 🚀 **K4 DISPATCHED 13:05Z — [ui#384](https://github.com/qf-studio/pilot-console-ui/issues/384) (`pilot` + `no-decompose`, pre-check 0): seed `keyInvalid` from credentials health on mount, `syncKeyHealth` store action, `force` refetch on Connections, `Fix key` Model row only, mock lockstep. Live on prod: K3 PR#493 (console-api 11:19Z) · K2 PR#379 (ui 12:06Z) · lockout fix PR#381 (ui 12:3xZ, composer enabled + notice) · PR#383 (ui, merged 12:57Z: save clears the notice, recovery test). Connections reads `Connected · checked …` on both rows; both credentials healthy. ✅ when K4 merges, deploys and the live check passes.** Earlier: 🟡 K2 live 12:06Z + lockout fix in flight · 🟢 K3 merged 11:07Z.
+**Status**: 🟡 **K4 PR#385 RED ON A TEST-HARNESS ROUTE 13:54Z → hand-filed CI fix [ui#386](https://github.com/qf-studio/pilot-console-ui/issues/386) 14:08Z (autopilot-fix shape, continues `pilot/GH-384`). K4 review found a prod regression (the save response has no `health_status`, so the notice no longer clears on save) → LEG K5 drafted, dispatch after PR#385 merges. Live on prod: K3 PR#493 · K2 PR#379 · PR#381 (composer enabled) · PR#383 (save clears). ✅ when K4 + K5 are live and the live check passes.** Earlier: 🚀 K4 dispatched 13:05Z · 🟢 K3 merged 11:07Z.
 **Created**: 2026-11-06
 **Assignee**: Navigator (plan) → Pilot (legs) · founder (go; the live tenant's dead key and PAT are an operator fix, not this task)
 **Parent**: [TASK-583](TASK-583-wave1-design-update-proof-surface.md) proof surface · incident 2026-11-05 21:21Z (marker `2026-11-06-0740_console-session-board-landed-tenant-credentials-dead.md`)
@@ -115,6 +115,10 @@ Post-merge reviewer (12:04Z) found what the Navigator review missed: **the compo
 
 Fix PR#381 (ui#380, +6 −6): removes the `:disabled` on `keyInvalid` in ChatView and DashboardView — notice shown, composer enabled, a retry after the fix sends and a successful send clears the notice. **Design change accepted (K2 said "composer disabled"): the disabled form had no reachable clearing path; the console still gates the turn with 409.** Pre-PR enforce APPROVE-w-notes (save does not clear the notice; no view-level recovery test). Navigator review APPROVE-w-notes on the PR. Post-merge round on PR#381 → review-minor ui#382 → PR#383 (+54 −1): save clears `keyInvalid` by a direct store write, DOM-level recovery test, catch comment; Navigator APPROVE-w-notes. The remaining items are LEG K4 below (dispatched after PR#383's post-merge round — same files).
 
+## K4 review (PR#385, 11-06 13:5xZ) — one defect (Navigator spec error)
+
+Met: `syncKeyHealth` action; seed on Research/Home mount; `{force}` loaders + Connections mount refetch; `Fix key` anthropic-only; mock health seeds + `mockFlags.deadAnthropicKey` + `upsertCredential` heals; specs. **Defect:** the leg said the save response carries `health_status`; the console `PUT /api/v1/credentials/{key}` returns `{key, last4}` only (`handlers.go` `credentialResponse`), so on prod `syncKeyHealth` after a save sees no health and the notice stays — PR#383's direct clear regressed; the mock returns `ok` from a save, so the spec passed. Also: mount sync applies a cached `ok` over a fresh `keyInvalid`; mock dead-key row has `configured: false`. → LEG K5 (re-read credentials after save and on mount; mock seed fix). **CI on PR#385 red 13:54Z:** 1123 tests green, one unhandled rejection — the new DashboardView test's memory router has only `/` while the view renders `RouterLink {name: 'board'}`; the CI fix size guard declined (259 additions > 200) → `pilot-needs-human` on ui#384 → **hand-filed [ui#386](https://github.com/qf-studio/pilot-console-ui/issues/386)** in the autopilot-fix shape (routes array like the sibling test; test-only) 14:08Z. Close #386 by hand after PR#385 merges (borrowed-branch fix issues never self-close). Lesson: a leg that says "the response carries X" must cite the handler line; verify the wire on the producer before the consumer leg is written.
+
 Lesson (memory `disabled-gate-whose-only-clearing-path-is-the-disabled-action-locks-out`): a gate that disables the only action which can clear it is a lockout — every "disabled until X" needs a clearing path that does not go through the disabled control.
 
 ### LEG K2 — repo: qf-studio/pilot-console-ui — title: feat(connections): credential health on the Connections rows and a dead-key notice on the composer — Fix key / Fix connection with the reason and the check time; chat composer disabled on anthropic_key_invalid
@@ -178,9 +182,38 @@ Any change to the composer `disabled` prop (PR#381 settled it: enabled). Tracker
 ## Refs
 - Navigator TASK-640 § K2 review · ui#378 / PR#379 · ui#380 / PR#381 · ui#382 / PR#383 · ui CLAUDE.md lockstep rule
 
+### LEG K5 — repo: qf-studio/pilot-console-ui — title: fix(credential-health): a saved Anthropic key clears the dead-key notice on prod — re-read credentials after the save and on Research mount; mock seed only reports a dead key on a configured row
+
+## Context
+K4 ([ui#384](https://github.com/qf-studio/pilot-console-ui/issues/384) → PR#385) made `saveCredential('anthropic')` in `src/views/ConnectionsView.vue` call `chat.syncKeyHealth(credentialFor('anthropic'))` on the row that `session.upsertCredential` stored from the `PUT /api/v1/credentials/{key}` response. The console answers that PUT with `{key, last4}` only — no `health_status` — so on prod the stored row has `healthStatus` undefined, `syncKeyHealth` in `src/stores/chat.ts` leaves `keyInvalid` untouched, and the "Your Anthropic key was rejected" notice stays up after a good save until the next successful send (PR#383's direct clear worked; K4 regressed it; the mock's `upsertCredential` returns `healthStatus: 'ok'`, which is why the spec passed). The console does write the anthropic health row `ok` on every save, so `GET /api/v1/credentials` returns truth right after. Second gap: `ChatView.vue`/`DashboardView.vue` seed `keyInvalid` from the cached `session.loadCredentials()`, so a list loaded before the key died applies a stale `ok` over a fresh `keyInvalid` on navigation. Third: `src/lib/api/mockAdapter.ts` `listCredentials` with `mockFlags.deadAnthropicKey` reports `error` on the default seed's anthropic row that has `configured: false`, so the composer notice shows while the Connections `Fix key` branch (which requires `configured`) stays hidden.
+
+probe: present qf-studio/pilot-console-ui syncKeyHealth
+probe: present qf-studio/pilot-console-ui deadAnthropicKey
+probe: present qf-studio/pilot-console-ui force: true
+
+## Scope
+- `src/views/ConnectionsView.vue` `saveCredential`: after `session.upsertCredential(key, secret)` resolves and `key === 'anthropic'`, `await session.loadCredentials({ force: true })` then `chat.syncKeyHealth(session.credentialFor('anthropic'))`. The mount's forced loads stay; the save path's own re-read comes after the save, so an in-flight mount read cannot overwrite the saved row with pre-save data for the health call.
+- `src/views/ChatView.vue` and `src/views/DashboardView.vue` `onMounted`: `session.loadCredentials({ force: true })` before `chat.syncKeyHealth(...)` (one GET per mount; the stale-`ok`-over-fresh-error case goes away). Keep the `.catch(() => {})`.
+- `src/stores/chat.ts`: the docblock on `keyInvalid` and the poll comment name all clearing paths: a successful send, `reset()`, `syncKeyHealth` with `ok`, and any other chat error code (which `applyChatErrorCode` sets to `null`).
+- `src/lib/api/mockAdapter.ts`: with `mockFlags.deadAnthropicKey`, `listCredentials` reports `error` only when the anthropic row is `configured: true` (the default seed flips `configured: true, last4: '9f2a'` for that row while the flag is on); jira seed rows carry `healthStatus: 'unknown'`. `upsertCredential` keeps returning `healthStatus: 'ok'` (the real PUT returns no health; the ui must not depend on it — document that in the mock comment).
+- Tests: `ConnectionsView.spec.ts` — a save whose adapter response has no `healthStatus` (spy returns `{ key, configured: true, last4 }`) and whose `listCredentials` then returns `ok` clears `keyInvalid` (mutation pin: drop the `force` re-read → fails); `ChatView.spec.ts` — a cached `ok` list plus `listCredentials` now returning `error` seeds the notice on mount (pin: mount reads the list again); `mockAdapter.spec.ts` — the dead-key row is `configured: true`; existing GH-382/384 specs still green.
+
+## Acceptance
+- [ ] `npm test` passes; paste the output into the PR body.
+- [ ] Remove the `loadCredentials({ force: true })` re-read in `saveCredential` -> the ConnectionsView.spec "save with a health-less PUT response clears keyInvalid" assertion fails
+- [ ] `npm run build` passes; paste the output into the PR body.
+- [ ] `npm run lint` passes; paste the output into the PR body.
+
+## Out of scope
+The console PUT response shape (a console leg may add `health_status` to it later; the ui must work without it). Composer `disabled` behaviour (PR#381 settled it). Tracker rows.
+
+## Refs
+- Navigator TASK-640 § K4 review · ui#384 / PR#385 · console `internal/orgs/handlers.go` `handlePutCredential` (`credentialResponse{Key, Last4}`) · ui#382 / PR#383
+
 ## Refs
 
 - K1 → https://github.com/qf-studio/pilot-console/issues/488
 - K3 → https://github.com/qf-studio/pilot-console/issues/492
 - K2 → https://github.com/qf-studio/pilot-console-ui/issues/378
 - K4 → https://github.com/qf-studio/pilot-console-ui/issues/384
+- K5 → (filled by the dispatch script)
