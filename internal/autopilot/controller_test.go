@@ -12858,3 +12858,89 @@ func TestMaybeRetryInfraFailure_RestartsCIWaitTimer(t *testing.T) {
 		})
 	}
 }
+
+// mutation pin: a post-merge re-run inside the no-workflow grace window must restart the timer and leave the probe deferred (PostMergeCINoWorkflowChecked false) -> this test fails
+func TestHandlePostMergeCI_RerunInsideGraceDefersNoWorkflowProbe(t *testing.T) {
+	const sha = "gracesha1"
+
+	var rerunCalled bool
+	server := gh4533InfraTestServer(t, sha, &rerunCalled, nil)
+	defer server.Close()
+
+	var logBuf bytes.Buffer
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	c := NewController(cfg, ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+	c.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	// A red check lands 60s after the timer start: inside the 90s grace, so the
+	// no-workflow probe has not run yet.
+	started := time.Now().Add(-60 * time.Second)
+	prState := &PRState{
+		PRNumber: 83, Stage: StagePostMergeCI, PostMergeSHA: sha,
+		PostMergeCIStartedAt: started,
+	}
+	c.mu.Lock()
+	c.activePRs[83] = prState
+	c.mu.Unlock()
+
+	if err := c.handlePostMergeCI(context.Background(), prState); err != nil {
+		t.Fatalf("handlePostMergeCI: %v", err)
+	}
+	if !rerunCalled {
+		t.Fatal("re-run was not issued")
+	}
+	if prState.PostMergeCINoWorkflowChecked {
+		t.Error("PostMergeCINoWorkflowChecked = true, want false: the probe must not have run inside the grace window")
+	}
+	if !prState.PostMergeCIStartedAt.After(started) {
+		t.Errorf("PostMergeCIStartedAt = %v, want it restarted after %v", prState.PostMergeCIStartedAt, started)
+	}
+	if since := time.Since(prState.PostMergeCIStartedAt); since >= postMergeCINoWorkflowGrace {
+		t.Errorf("timer age = %v, want under the %v grace so the probe is deferred past the re-run", since, postMergeCINoWorkflowGrace)
+	}
+	if !strings.Contains(logBuf.String(), "post-merge CI wait timer restarted after re-run") {
+		t.Errorf("log lacks the timer-restart line:\n%s", logBuf.String())
+	}
+}
+
+// mutation pin: the pre-merge infra re-run reset must read the waiting-CI clock (ciNow) and log the restart at INFO -> this test fails
+func TestMaybeRetryInfraFailure_ResetUsesCIClockAndLogs(t *testing.T) {
+	const sha = "timersha3"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/actions/jobs/100":
+			_ = json.NewEncoder(w).Encode(ghadapter.WorkflowJob{ID: 100, RunID: 500, Name: "lint", Status: "completed"})
+		case r.URL.Path == "/repos/owner/repo/actions/runs/500/rerun-failed-jobs" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+		default:
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	var logBuf bytes.Buffer
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo", WithStepLogClient(stepClient))
+	c.log = slog.New(slog.NewTextHandler(&logBuf, nil))
+	// A clock far from the wall clock: time.Now() would not equal it.
+	fakeNow := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	c.ciPollClock = func() time.Time { return fakeNow }
+
+	prState := &PRState{PRNumber: 84, HeadSHA: sha, Stage: StageCIFailed, CIWaitStartedAt: fakeNow.Add(-25 * time.Minute)}
+	verdict := NewVerdict(FailureClassInfra, "429 action download", "test", "owner/repo")
+	if _, retried := c.maybeRetryInfraFailure(context.Background(), prState, []FailedCheckLog{{CheckName: "lint", JobID: 100}}, verdict); !retried {
+		t.Fatal("maybeRetryInfraFailure did not retry")
+	}
+	if !prState.CIWaitStartedAt.Equal(fakeNow) {
+		t.Errorf("CIWaitStartedAt = %v, want the waiting-CI clock's %v", prState.CIWaitStartedAt, fakeNow)
+	}
+	out := logBuf.String()
+	if !strings.Contains(out, "level=INFO") || !strings.Contains(out, "CI wait timer restarted after infra re-run") || !strings.Contains(out, "ci_timer=restarted") {
+		t.Errorf("log lacks the INFO timer-restart line:\n%s", out)
+	}
+}
