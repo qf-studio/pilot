@@ -1,6 +1,6 @@
 # TASK-640: Credential health — the console re-checks the org's own Anthropic key and tracker tokens, shows a truthful status, and gates chat on a dead key
 
-**Status**: 🚀 **K3 DISPATCHED 10:4xZ — [console#492](https://github.com/qf-studio/pilot-console/issues/492) (`pilot` + `no-decompose`, pre-check 0): the status split + connection compare-and-set + 403 + one pool. Prod runs K1 + PR#491 since 10:27Z. K2 (ui) after K3 merges and deploys (wire resync against that ref).** Earlier: 🟡 K3 ready after PR#491.
+**Status**: 🚀 **K2 DISPATCHED 11:24Z — [ui#378](https://github.com/qf-studio/pilot-console-ui/issues/378) (`pilot` + `no-decompose`, pre-check 0; wire resync against console main `d833a09`). K3 PR#493 is on prod: console-api deployed 11:19Z, `GET /api/v1/connections` carries `health_status: ok` · `health_checked_at 2026-11-06T11:17:06Z` on the GitHub row and `GET /api/v1/credentials` reads anthropic `ok` 11:17:05Z. No post-merge `review-minor` issue for PR#493 (today's cap went to console#490). After K2 merges and deploys: live check of Connections + composer notice → ✅.** Earlier: 🟢 K3 merged 11:07Z (PR#493, +452 −192, 18 files; Navigator review § K3 review).
 **Created**: 2026-11-06
 **Assignee**: Navigator (plan) → Pilot (legs) · founder (go; the live tenant's dead key and PAT are an operator fix, not this task)
 **Parent**: [TASK-583](TASK-583-wave1-design-update-proof-surface.md) proof surface · incident 2026-11-05 21:21Z (marker `2026-11-06-0740_console-session-board-landed-tenant-credentials-dead.md`)
@@ -103,6 +103,10 @@ The UI (K2, which renders both facts). Alert channels. The daemon's `/ready` sem
 ## Refs
 - Navigator TASK-640 K3 (review of PR#489) · console#488 · console#189 (store_present)
 
+## K3 review (PR#493, 11-06 11:15Z) — APPROVE-with-notes
+
+Verified in the diff: 0043 adds `health_status` (`ok|error|unknown`, default unknown) on `connections`; `SetConnectionHealth` no longer sets `status` (mutation pin `TestSweep_ReadyProbeErrorSurvivesPassingSweep`); the PR#491 guard in `recordReadyChecks` is gone — the two writers own different columns; connection compare-and-set on `health_checked_at` with a dropped-verdict log line; the credhealth store is closed on shutdown. Reviewer notes, all accepted: the PUT save path still writes `status=connected` (correct: validated on save) and syncoutbound still writes `status=error` (correct: a real failure) — the "single writer" wording in the leg was too strong; no backfill of `health_status` for rows the 0042 sweep judged (the next sweep corrects within 15 min); a config PATCH between the sweep's list and its per-connection `started` can let an old-config verdict land (narrow; a per-connection re-read of config before validate closes it — fold into any later credhealth leg); the store-backed pins skip without `DATABASE_URL` locally (CI runs them).
+
 ### LEG K2 — repo: qf-studio/pilot-console-ui — title: feat(connections): credential health on the Connections rows and a dead-key notice on the composer — Fix key / Fix connection with the reason and the check time; chat composer disabled on anthropic_key_invalid
 
 ## Context
@@ -113,7 +117,7 @@ probe: present qf-studio/pilot-console-ui chat_not_enabled
 probe: present qf-studio/pilot-console-ui data-header-meta
 
 ## Scope
-- Resync the wire contract first: `scripts/sync-console-wire-fields.sh` against the console ref that carries K1 (never edit `console-wire-fields.txt` by hand); `src/lib/api/types.ts` `Credential` gains `healthStatus?: 'ok' | 'error' | 'unknown'`, `healthCheckedAt?: string`, `healthError?: string`; `Connection` gains `healthCheckedAt?`, `healthError?`; `src/lib/api/httpAdapter.ts` maps them (loose-parse: absent fields stay undefined).
+- Resync the wire contract first: `scripts/sync-console-wire-fields.sh` against the console ref that carries K3 (main `d833a09`, PR#493; never edit `console-wire-fields.txt` by hand); `src/lib/api/types.ts` `Credential` gains `healthStatus?: 'ok' | 'error' | 'unknown'`, `healthCheckedAt?: string`, `healthError?: string`; `Connection` gains `healthCheckedAt?`, `healthError?`; `src/lib/api/httpAdapter.ts` maps them (loose-parse: absent fields stay undefined).
 - `src/views/ConnectionsView.vue`: the Model row renders `health_status === 'error'` as the needs-you dot + `Fix key` (same affordance as the tracker rows' `Fix connection`) with the `healthError` text and `checked <relative time>`; `ok` renders `Connected · checked <relative time>`; `unknown`/absent renders as today. Tracker rows: `healthStatus === 'error'` → `Fix connection` + `healthError` + `checked <relative time>`; `healthStatus === 'ok'` and `status === 'error'` → warning dot + `Saved, not live on the box yet` (the daemon still runs the old secret; a restart or redeploy picks it up); both ok → `Connected · checked <relative time>`.
 - `src/stores/chat.ts`: code `anthropic_key_invalid` → `keyInvalid` (with the message); `reset()` clears it. `src/views/ChatView.vue` and `src/views/DashboardView.vue` (Home composer): when `keyInvalid`, the composer is disabled and a one-line notice reads `Your Anthropic key was rejected: <message>. Fix it on Connections.` with a `RouterLink` to `/connections`, in the same place and type as the `boxStopped` line.
 - Tests: `ConnectionsView.spec.ts` — the three Model-row states and the tracker-row reason line; `chat.spec.ts` — the new code sets `keyInvalid` and `reset()` clears it; `ChatView.spec.ts` and `DashboardView.spec.ts` — the notice + disabled composer on `keyInvalid`; `httpAdapter.spec.ts` — the new fields map and absent fields stay undefined; `checkWireFields` stays green on the resynced list.
@@ -139,4 +143,4 @@ Mobile layout changes (the rows reuse the existing responsive markup). The Insta
 
 - K1 → https://github.com/qf-studio/pilot-console/issues/488
 - K3 → https://github.com/qf-studio/pilot-console/issues/492
-- K2 → (filled by the dispatch script)
+- K2 → https://github.com/qf-studio/pilot-console-ui/issues/378

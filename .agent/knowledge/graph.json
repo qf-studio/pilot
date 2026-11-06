@@ -3787,9 +3787,9 @@
         ]
       },
       "TASK-640": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/pilot-console-nav-start-521e07/.agent/tasks/TASK-640-credential-health-console.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-640-credential-health-console.md",
         "title": "Credential health — the console re-checks the org's own Anthropic key and tracker tokens, shows a truthful status, and gates chat on a dead key",
-        "status": "backlog",
+        "status": "dispatched",
         "concepts": [
           "context",
           "markers",
@@ -3799,6 +3799,11 @@
           "deployment",
           "authentication",
           "frontend"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot-console/issues/488",
+          "https://github.com/qf-studio/pilot-console/issues/492",
+          "https://github.com/qf-studio/pilot-console-ui/issues/378"
         ]
       },
       "TASK-641": {
