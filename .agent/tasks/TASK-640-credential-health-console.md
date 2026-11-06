@@ -1,6 +1,6 @@
 # TASK-640: Credential health — the console re-checks the org's own Anthropic key and tracker tokens, shows a truthful status, and gates chat on a dead key
 
-**Status**: 📋 PLANNED 2026-11-06 08:10Z — audit done, two legs drafted (K1 console → K2 ui). Holding on the founder's go to dispatch K1.
+**Status**: 🚀 **K1 DISPATCHED 2026-11-06 08:2xZ — [console#488](https://github.com/qf-studio/pilot-console/issues/488) (`pilot` + `no-decompose`, pre-check 0). K2 files after K1 merges and console-api prod is redeployed (the wire resync needs the deployed ref).** Earlier: 📋 08:10Z planned.
 **Created**: 2026-11-06
 **Assignee**: Navigator (plan) → Pilot (legs) · founder (go; the live tenant's dead key and PAT are an operator fix, not this task)
 **Parent**: [TASK-583](TASK-583-wave1-design-update-proof-surface.md) proof surface · incident 2026-11-05 21:21Z (marker `2026-11-06-0740_console-session-board-landed-tenant-credentials-dead.md`)
@@ -98,5 +98,5 @@ Mobile layout changes (the rows reuse the existing responsive markup). The Insta
 
 ## Refs
 
-- K1 → (filled by the dispatch script)
+- K1 → https://github.com/qf-studio/pilot-console/issues/488
 - K2 → (filled by the dispatch script)
