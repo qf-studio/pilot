@@ -1,6 +1,6 @@
 # TASK-644: Desktop content container per the Figma layout grid — 1072 px centered, 6 × 162 px columns, 20 px gutter
 
-**Status**: 🟢 **G1 MERGED 11-06 17:35Z → PR#393 `3e83f222`, ui#390 `pilot-done`; deploy in flight.** Post-merge review 17:38Z REQUEST-CHANGES — both blocking items are the pre-PR's accepted deviation from the leg text (`h-full` → `min-h-full` + `grow`), not defects → autopilot [ui#394](https://github.com/qf-studio/pilot-console-ui/issues/394) (`autopilot-fix`, queued behind the K5 retry) **steered by Navigator before pick-up: specs-only, do not revert to `h-full`** (body section + comment) → **PR#395 18:05Z (+18 −2: docblocks naming the divergence, `data-dashboard-root`, spec pins against `h-full`) reviewed APPROVE-w-notes ~18:12Z** — the pre-PR round still reads ui#390's literal class string and calls the divergence "kept, not fixed"; answered with the live measurements (container = `<main>`'s box, scroll region definite, composer pinned). CI pending at review time. **LEG G2 (Research page container) dispatches after #394 lands** (same file `AppShell.vue`). **Live tenant check PASSED 17:4xZ (deploy 17:40Z, bundle `index-ClyInbwa.js`, viewport 1492 px): `[data-page-container]` 1072 @ 208 = 68 + (1352 − 1072)/2, `[data-home-context]` 344 @ 936, stat cards 162 @ 208/390/572/754, composer pinned at the bottom (1545–1586 of 1608).** Earlier: 🟡 G1 PR#393 reviewed APPROVE-w-notes ~17:35Z (geometry verified in the mock dev build at 1440 / 1920 / 1200 px); 🚀 G1 dispatched → [ui#390](https://github.com/qf-studio/pilot-console-ui/issues/390) 16:2xZ (pre-check hit PR#350 "390×844", ownership guard held; one stall 16:26Z, re-run 16:47Z).
+**Status**: 🚀 **G2 DISPATCHED 11-06 18:3xZ → [ui#397](https://github.com/qf-studio/pilot-console-ui/issues/397)** (`pilot` + `no-decompose`, pre-check 0, dry run clean against ui main `6fab325d`): the Research page (`/chat`) gets the 1072 px column. G1 ✅ live since 17:40Z (PR#393; live geometry check passed). Post-merge chain on G1: ui#394 → PR#395 merged 18:22Z (divergence documented + pinned) → post-merge RC: the Settings `md:grow` spec the steer asked for was not added → [ui#396](https://github.com/qf-studio/pilot-console-ui/issues/396) (`autopilot-fix`, steered to that one spec). ui queue (serial): K5 retry-2 (ui#389) running → #396 → #397. ✅ when G2 is live and `/chat` measures 1072 @ the same left as Home. Earlier: 🟢 G1 merged 17:35Z; 🟡 G1 PR#393 reviewed APPROVE-w-notes; 🚀 G1 dispatched → [ui#390](https://github.com/qf-studio/pilot-console-ui/issues/390) 16:2xZ.
 **Created**: 2026-11-06
 **Assignee**: Pilot (ui leg) · Navigator (review, live check)
 
@@ -108,7 +108,7 @@ probe: present qf-studio/pilot-console-ui max-w-ds-page
 ## Refs
 
 - G1 → https://github.com/qf-studio/pilot-console-ui/issues/390
-- G2 → (filled by the dispatch script)
+- G2 → https://github.com/qf-studio/pilot-console-ui/issues/397
 
 ---
 

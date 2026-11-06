@@ -3871,7 +3871,8 @@
           "deployment"
         ],
         "issues": [
-          "https://github.com/qf-studio/pilot-console-ui/issues/390"
+          "https://github.com/qf-studio/pilot-console-ui/issues/390",
+          "https://github.com/qf-studio/pilot-console-ui/issues/397"
         ]
       }
     },
