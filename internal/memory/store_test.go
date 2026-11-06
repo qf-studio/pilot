@@ -7228,3 +7228,79 @@ func TestGetLatestExecutionByExactTaskID(t *testing.T) {
 		t.Errorf("GetLatestExecutionByTaskID(GH-25) = %+v, %v; want the substring match exec-2500", got, err)
 	}
 }
+
+// TestLifetimeTaskCounts_NeedsHumanBucket is GH-6148: a needs_human hold is a
+// terminal non-failure outcome, in neither Failed nor the attempts denominator.
+func TestLifetimeTaskCounts_NeedsHumanBucket(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	for _, r := range []struct{ id, status string }{
+		{"nh-completed", "completed"}, {"nh-failed", "failed"}, {"nh-hold", "needs_human"},
+	} {
+		if err := store.SaveExecution(&Execution{ID: r.id, TaskID: "T-" + r.id, ProjectPath: "/p", Status: r.status}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", r.id, err)
+		}
+	}
+
+	tc, err := store.GetLifetimeTaskCounts("")
+	if err != nil {
+		t.Fatalf("GetLifetimeTaskCounts: %v", err)
+	}
+	if tc.Total != 3 || tc.Succeeded != 1 || tc.Failed != 1 {
+		t.Errorf("total=%d succeeded=%d failed=%d, want 3/1/1", tc.Total, tc.Succeeded, tc.Failed)
+	}
+	if tc.NeedsHuman != 1 {
+		t.Errorf("NeedsHuman = %d, want 1", tc.NeedsHuman)
+	}
+	// NonFailure excludes Succeeded (reclassify_outcomes_test pins that), so
+	// here it is the hold alone; Total - Failed would count the success too.
+	if got := tc.NonFailure(); got != 1 {
+		t.Errorf("NonFailure() = %d, want 1 (the hold)", got)
+	}
+	if attempts := tc.Succeeded + tc.Failed; attempts != 2 {
+		t.Errorf("attempts = %d, want 2 (a hold is not an attempt)", attempts)
+	}
+}
+
+// TestWindowedStats_NeedsHumanBucket is the GH-6148 windowed twin: the hold
+// has its own bucket and stays out of the success-rate denominator.
+func TestWindowedStats_NeedsHumanBucket(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now().UTC()
+	since := now.AddDate(0, 0, -30)
+	for _, r := range []struct{ id, status string }{
+		{"wnh-completed", "completed"}, {"wnh-failed", "failed"}, {"wnh-hold", "needs_human"},
+	} {
+		if err := store.SaveExecution(&Execution{
+			ID: r.id, TaskID: "T-" + r.id, ProjectPath: "/p", Status: r.status, CreatedAt: since.Add(time.Hour),
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", r.id, err)
+		}
+	}
+
+	ws, err := store.GetWindowedStats("", since)
+	if err != nil {
+		t.Fatalf("GetWindowedStats: %v", err)
+	}
+	if ws.AttemptTotal != 3 || ws.AttemptCompleted != 1 || ws.AttemptFailed != 1 {
+		t.Errorf("total=%d completed=%d failed=%d, want 3/1/1", ws.AttemptTotal, ws.AttemptCompleted, ws.AttemptFailed)
+	}
+	if ws.AttemptNeedsHuman != 1 {
+		t.Errorf("AttemptNeedsHuman = %d, want 1", ws.AttemptNeedsHuman)
+	}
+	if ws.AttemptSuccessRate != 0.5 {
+		t.Errorf("AttemptSuccessRate = %v, want 0.5 (completed / (completed + failed))", ws.AttemptSuccessRate)
+	}
+	if ws.IssuesAttempted != 2 {
+		t.Errorf("IssuesAttempted = %d, want 2 (a hold is not an attempt)", ws.IssuesAttempted)
+	}
+}

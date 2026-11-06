@@ -19,7 +19,12 @@ const (
 	runStoryOutcomeReviewNeeded = "review_needed"
 	runStoryOutcomeMerged       = "merged"
 	runStoryOutcomeFailed       = "failed"
+	runStoryOutcomeNeedsHuman   = "needs_human"
 )
+
+// runStoryNeedsHumanNextStep is the card's next step for a needs_human hold:
+// the re-arm path is removing pilot-needs-human (cmd/pilot/rearm_needs_human.go).
+const runStoryNeedsHumanNextStep = "Edit the issue or the branch, then remove pilot-needs-human"
 
 // Run-story failure classes.
 const (
@@ -68,6 +73,10 @@ type executionReadResponse struct {
 //	                        PR state row on merge, so it carries no merge time)
 //	timings.duration_ms     executions.duration_ms once the run finished
 //	outcome                 executions.status + execution_events stage=merged
+//	hold                    set only when outcome is needs_human (GH-6148): reason =
+//	                        executions.error, branch = executions.task_branch,
+//	                        commit_sha = executions.commit_sha (the pushed HEAD)
+//	next_step               set only when outcome is needs_human
 //	failure_class           executions.error classified by briefs.ClassifyFailure, plus
 //	                        "scope" for scope-guard text; a ci_failed event with an
 //	                        unclassifiable error maps to ci
@@ -81,6 +90,17 @@ type runStoryObject struct {
 	// FailureClass is set only when Outcome is "failed".
 	FailureClass *string `json:"failure_class"`
 	ModelName    *string `json:"model_name"`
+	// Hold and NextStep are set only when Outcome is "needs_human".
+	Hold     *runStoryHold `json:"hold"`
+	NextStep *string       `json:"next_step"`
+}
+
+// runStoryHold describes a needs_human hold: why the run stopped and where its
+// work is parked (a pushed branch, no PR).
+type runStoryHold struct {
+	Reason    *string `json:"reason"`
+	Branch    *string `json:"branch"`
+	CommitSHA *string `json:"commit_sha"`
 }
 
 type runStoryAsked struct {
@@ -213,6 +233,15 @@ func buildRunStory(exec *memory.Execution, events []*memory.Event, prs []*Autopi
 
 	outcome := runStoryOutcome(exec, merged != nil)
 	rs.Outcome = strPtr(outcome)
+	if outcome == runStoryOutcomeNeedsHuman {
+		// A hold is not a failure: classifyRunStoryFailure is not consulted.
+		rs.Hold = &runStoryHold{
+			Reason:    strPtr(exec.Error),
+			Branch:    strPtr(exec.TaskBranch),
+			CommitSHA: strPtr(exec.CommitSHA),
+		}
+		rs.NextStep = strPtr(runStoryNeedsHumanNextStep)
+	}
 	if outcome == runStoryOutcomeFailed {
 		class := classifyRunStoryFailure(exec.Error)
 		if class == runStoryFailureUnknown && sawCIFailedEvent {
@@ -224,7 +253,7 @@ func buildRunStory(exec *memory.Execution, events []*memory.Event, prs []*Autopi
 }
 
 // runStoryOutcome maps the execution status (plus a recorded merge) to the
-// card's four outcomes. Terminal non-failure statuses that never opened a PR
+// card's outcomes (running, review_needed, merged, failed, needs_human). Terminal non-failure statuses that never opened a PR
 // (no_op, skipped, superseded, ...) have no card outcome, so nil.
 func runStoryOutcome(exec *memory.Execution, merged bool) string {
 	switch exec.Status {
@@ -232,6 +261,8 @@ func runStoryOutcome(exec *memory.Execution, merged bool) string {
 		return runStoryOutcomeRunning
 	case "failed":
 		return runStoryOutcomeFailed
+	case "needs_human":
+		return runStoryOutcomeNeedsHuman
 	case "completed":
 		switch {
 		case merged:

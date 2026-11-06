@@ -270,3 +270,37 @@ func eqTime(t *testing.T, field string, got *time.Time, want time.Time) {
 		t.Errorf("%s = %v, want %v", field, *got, want)
 	}
 }
+
+// TestRunStory_NeedsHumanOutcome is GH-6148: a needs_human hold is its own
+// outcome (not failed), carries the reason, branch and HEAD SHA, and names the
+// re-arm step.
+func TestRunStory_NeedsHumanOutcome(t *testing.T) {
+	t0 := time.Date(2026, 11, 6, 9, 0, 0, 0, time.UTC)
+	const (
+		reason = "pre-PR review: blocking defects not fixed"
+		branch = "pilot/GH-6138"
+		sha    = "0123456789abcdef0123456789abcdef01234567"
+	)
+	exec := &memory.Execution{
+		ID: "exec-h", TaskID: "GH-6138", Status: "needs_human",
+		Error: reason, TaskBranch: branch, CommitSHA: sha, CreatedAt: t0,
+	}
+	rs := buildRunStory(exec, nil, nil)
+
+	eqStr(t, "outcome", rs.Outcome, "needs_human")
+	if rs.FailureClass != nil {
+		t.Errorf("failure_class = %q, want nil (a hold is not classified as a failure)", *rs.FailureClass)
+	}
+	if rs.Hold == nil {
+		t.Fatal("hold = nil, want reason/branch/commit_sha")
+	}
+	eqStr(t, "hold.reason", rs.Hold.Reason, reason)
+	eqStr(t, "hold.branch", rs.Hold.Branch, branch)
+	eqStr(t, "hold.commit_sha", rs.Hold.CommitSHA, sha)
+	eqStr(t, "next_step", rs.NextStep, "Edit the issue or the branch, then remove pilot-needs-human")
+
+	// Other outcomes carry no hold block.
+	if got := buildRunStory(&memory.Execution{ID: "x", Status: "failed", Error: "boom"}, nil, nil); got.Hold != nil || got.NextStep != nil {
+		t.Errorf("failed run has hold=%v next_step=%v, want none", got.Hold, got.NextStep)
+	}
+}

@@ -84,6 +84,7 @@ func newMetricsSummaryCmd() *cobra.Command {
 			fmt.Printf("   Total:    %d\n", summary.TotalExecutions)
 			fmt.Printf("   Success:  %d (%.1f%%)\n", summary.SuccessCount, summary.SuccessRate*100)
 			fmt.Printf("   Failed:   %d\n", summary.FailedCount)
+			fmt.Printf("   Needs human: %d\n", summary.NeedsHumanCount)
 			fmt.Printf("   PRs:      %d\n", summary.PRsCreated)
 			fmt.Println()
 

@@ -869,3 +869,28 @@ func TestPrometheusExporter_PrePRReviewFamilies(t *testing.T) {
 		}
 	}
 }
+
+// TestPrometheus_PrePRHoldsCounter is GH-6148: each pre-PR hold increments
+// pilot_pre_pr_holds_total once under its project label.
+func TestPrometheus_PrePRHoldsCounter(t *testing.T) {
+	const project = "/test-holds-counter-project"
+	before := executor.PrePRHoldsTotal()[project]
+	executor.RecordPrePRHold(project)
+
+	exporter := NewPrometheusExporter(autopilot.NewMetrics())
+	var buf bytes.Buffer
+	if err := exporter.WritePrometheus(&buf); err != nil {
+		t.Fatalf("WritePrometheus() error = %v", err)
+	}
+	output := buf.String()
+
+	for _, want := range []string{
+		"# HELP pilot_pre_pr_holds_total",
+		"# TYPE pilot_pre_pr_holds_total counter",
+		fmt.Sprintf(`pilot_pre_pr_holds_total{project=%q} %d`, project, before+1),
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("output missing %q", want)
+		}
+	}
+}
