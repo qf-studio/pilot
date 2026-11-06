@@ -578,3 +578,147 @@ func TestController_RearmDeadOwnerSource_DemotesSupersededLedgerRow(t *testing.T
 		t.Errorf("expected status=failed after re-arm demote, got %q", exec.Status)
 	}
 }
+
+// resultingLabels applies the add/remove calls recorded by the fake GitHub
+// server for issue to its starting label set, in call order.
+func (s *ownerDeathGHServer) resultingLabels(issue int, start []github.Label) map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	set := map[string]bool{}
+	for _, l := range start {
+		set[l.Name] = true
+	}
+	prefix := fmt.Sprintf("%d:", issue)
+	for _, c := range s.addLabelCalls {
+		if strings.HasPrefix(c, prefix) {
+			set[strings.TrimPrefix(c, prefix)] = true
+		}
+	}
+	for _, c := range s.removeLabelCalls {
+		if strings.HasPrefix(c, prefix) {
+			delete(set, strings.TrimPrefix(c, prefix))
+		}
+	}
+	return set
+}
+
+// TestController_RearmDeadOwnerSource_StripsInProgress is GH-6163's coverage:
+// the SDK poller skips every open issue carrying pilot-in-progress before it
+// reaches the retry-ready rung, so the re-arm must strip it in the same
+// mutation that adds pilot-retry-ready.
+func TestController_RearmDeadOwnerSource_StripsInProgress(t *testing.T) {
+	source := &github.Issue{
+		Number: 100,
+		State:  github.StateOpen,
+		Labels: []github.Label{{Name: github.LabelPilot}, {Name: github.LabelInProgress}, {Name: github.LabelFailed}},
+	}
+	srv := newOwnerDeathGHServer()
+	srv.issues[100] = source
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, ts.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+	c.SetAlertsEngine(&fakeAlertSink{})
+
+	c.rearmDeadOwnerSource(context.Background(), source, "its designated fix issue #200 died (declined)")
+
+	if len(srv.addLabelCalls) != 1 || srv.addLabelCalls[0] != "100:"+github.LabelRetryReady {
+		t.Errorf("expected exactly one add of pilot-retry-ready, got %v", srv.addLabelCalls)
+	}
+	for _, label := range []string{github.LabelInProgress, github.LabelFailed, github.LabelSuperseded} {
+		if !srv.hasRemoveLabel(100, label) {
+			t.Errorf("expected %q to be removed from source #100, calls=%v", label, srv.removeLabelCalls)
+		}
+	}
+	got := srv.resultingLabels(100, source.Labels)
+	if got[github.LabelInProgress] {
+		t.Errorf("re-armed source still carries %s: %v", github.LabelInProgress, got)
+	}
+	if !got[github.LabelRetryReady] || !got[github.LabelPilot] {
+		t.Errorf("re-armed source should carry pilot and pilot-retry-ready, got %v", got)
+	}
+	if len(srv.comments) != 1 || !strings.Contains(srv.comments[0], "removed so the poller's retry rung sees the issue") {
+		t.Errorf("expected re-arm comment to mention the pilot-in-progress removal, got %v", srv.comments)
+	}
+}
+
+// TestController_EscalateDeadOwnerSource_StripsInProgressAndRetryLabels pins
+// that an escalated source neither looks in-flight nor retry-able.
+func TestController_EscalateDeadOwnerSource_StripsInProgressAndRetryLabels(t *testing.T) {
+	source := &github.Issue{
+		Number: 100,
+		State:  github.StateOpen,
+		Labels: []github.Label{
+			{Name: github.LabelPilot}, {Name: github.LabelInProgress}, {Name: github.LabelRetry1},
+			{Name: github.LabelRetryExhausted},
+		},
+	}
+	srv := newOwnerDeathGHServer()
+	srv.issues[100] = source
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, ts.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+	c.SetAlertsEngine(&fakeAlertSink{})
+
+	c.escalateDeadOwnerSource(context.Background(), source, "its designated fix issue #200 died (declined)")
+
+	got := srv.resultingLabels(100, source.Labels)
+	if !got[labelNeedsHuman] {
+		t.Errorf("escalated source missing %s: %v", labelNeedsHuman, got)
+	}
+	for _, label := range []string{github.LabelInProgress, github.LabelRetryReady, github.LabelRetry1, github.LabelRetry2} {
+		if got[label] {
+			t.Errorf("escalated source still carries %s: %v", label, got)
+		}
+	}
+}
+
+// TestController_ReactToDeadFixIssue_RearmedSourcePassesPollerSkip evaluates
+// the re-armed label set against the SDK poller's skip predicate
+// (HasLabel(LabelInProgress) || HasLabel(LabelDone)): the poller must not skip
+// the issue before its retry-ready rung.
+func TestController_ReactToDeadFixIssue_RearmedSourcePassesPollerSkip(t *testing.T) {
+	fixIssueBody := "Fixes CI failure.\n\n<!-- autopilot-meta branch:pilot/GH-100 pr:7 iteration:1 source:100 -->"
+
+	tests := []struct {
+		name   string
+		labels []github.Label
+	}{
+		{"pilot-failed only", []github.Label{{Name: github.LabelPilot}, {Name: github.LabelFailed}}},
+		{"stale pilot-in-progress", []github.Label{{Name: github.LabelPilot}, {Name: github.LabelInProgress}, {Name: github.LabelFailed}}},
+		{"stale pilot-in-progress and pilot-superseded", []github.Label{{Name: github.LabelInProgress}, {Name: github.LabelFailed}, {Name: github.LabelSuperseded}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := &github.Issue{Number: 100, State: github.StateOpen, Labels: tt.labels}
+			srv := newOwnerDeathGHServer()
+			srv.issues[100] = source
+			ts := httptest.NewServer(srv.handler())
+			defer ts.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, ts.URL)
+			c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+			c.SetAlertsEngine(&fakeAlertSink{})
+
+			deadIssue := &github.Issue{Number: 200, State: github.StateClosed, Body: fixIssueBody}
+			c.reactToDeadFixIssue(context.Background(), deadIssue, "declined at pre-flight")
+
+			set := srv.resultingLabels(100, tt.labels)
+			if !set[github.LabelRetryReady] {
+				t.Fatalf("source was not re-armed: %v", set)
+			}
+			var after []github.Label
+			for name := range set {
+				after = append(after, github.Label{Name: name})
+			}
+			rearmed := &github.Issue{Number: 100, State: github.StateOpen, Labels: after}
+			if github.HasLabel(rearmed, github.LabelInProgress) || github.HasLabel(rearmed, github.LabelDone) {
+				t.Errorf("poller would skip the re-armed source: %v", set)
+			}
+		})
+	}
+}

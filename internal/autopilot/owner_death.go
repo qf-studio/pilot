@@ -535,23 +535,20 @@ func (c *Controller) reactToDeadFixIssue(ctx context.Context, deadIssue *github.
 // re-enters the normal retry ladder, mirroring the relabeling notifyExternalClose
 // already performs for the reactive-close path (controller.go).
 func (c *Controller) rearmDeadOwnerSource(ctx context.Context, source *github.Issue, reasonMsg string) {
-	if err := c.labeler.AddLabels(ctx, c.owner, c.repo, source.Number, []string{github.LabelRetryReady}); err != nil {
-		c.log.Warn("owner-death: failed to add retry-ready label", "issue", source.Number, "error", err)
-	}
-	if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, source.Number, github.LabelFailed); err != nil {
-		c.log.Debug("owner-death: failed to remove pilot-failed label (may not exist)", "issue", source.Number, "error", err)
-	}
-	// GH-5249: also strip pilot-superseded — the durable-claim fallback above
+	// GH-5249: strip pilot-superseded too — the durable-claim fallback above
 	// means `designated` can now be reached via a source that hand off (not
 	// pilot-failed) designated to the dead fix issue, which carries
 	// pilot-superseded rather than pilot-failed. Leaving it on would land the
 	// re-armed issue in a contradictory {pilot-retry-ready, pilot-superseded}
-	// state — the SDK poller has no skip rung for pilot-superseded (that's
-	// the GH-5249 root defect), but a human reading the labels would still
-	// see "superseded" and "retry-ready" fighting each other.
-	if err := c.labeler.RemoveLabel(ctx, c.owner, c.repo, source.Number, github.LabelSuperseded); err != nil {
-		c.log.Debug("owner-death: failed to remove pilot-superseded label (may not exist)", "issue", source.Number, "error", err)
-	}
+	// state — a human reading the labels would see "superseded" and
+	// "retry-ready" fighting each other.
+	// GH-6163: strip pilot-in-progress as well. The SDK poller skips every open
+	// issue carrying it before it reaches the retry-ready rung, so a re-armed
+	// source with the stale label is never re-picked (same poller skip as the
+	// GH-5375 path in verifyFixPRDeliversSourceScope). All removals and the add
+	// land in one mutation.
+	labelsRemoved := []string{github.LabelFailed, github.LabelSuperseded, github.LabelInProgress}
+	c.mutateIssueLabels(ctx, source.Number, []string{github.LabelRetryReady}, labelsRemoved)
 	// GH-5252: the label strip above is cosmetic only — HasTerminalCompletion
 	// reads the ledger, not labels. If this source's latest terminal evidence
 	// is a 'superseded' execution row (the durable-claim fallback above can
@@ -572,23 +569,26 @@ func (c *Controller) rearmDeadOwnerSource(ctx context.Context, source *github.Is
 		}
 	}
 	comment := fmt.Sprintf(
-		"\U0001F501 **Owner-death recovery**: %s. Re-armed for automatic retry (`%s` restored).",
-		reasonMsg, github.LabelRetryReady,
+		"\U0001F501 **Owner-death recovery**: %s. Re-armed for automatic retry (`%s` restored). `%s` removed so the poller's retry rung sees the issue.",
+		reasonMsg, github.LabelRetryReady, github.LabelInProgress,
 	)
 	if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, source.Number, comment); err != nil {
 		c.log.Warn("owner-death: failed to post re-arm comment", "issue", source.Number, "error", err)
 	}
 	c.fireOwnerDeathAlert(source.Number, reasonMsg, "rearmed")
-	c.log.Warn("owner-death: source re-armed after designated fix issue died", "source", source.Number, "reason", reasonMsg)
+	c.log.Warn("owner-death: source re-armed after designated fix issue died", "source", source.Number, "reason", reasonMsg, "labels_removed", labelsRemoved)
 }
 
 // escalateDeadOwnerSource holds the source issue for manual review instead
 // of re-arming, because its retry budget is already exhausted — re-arming
 // here would silently bypass the retry-exhausted ceiling.
 func (c *Controller) escalateDeadOwnerSource(ctx context.Context, source *github.Issue, reasonMsg string) {
-	if err := c.labeler.AddLabels(ctx, c.owner, c.repo, source.Number, []string{labelNeedsHuman}); err != nil {
-		c.log.Warn("owner-death: failed to add needs-human label", "issue", source.Number, "error", err)
-	}
+	// GH-6163: an escalated issue must not look retry-able or in-flight, so
+	// the same single mutation strips pilot-in-progress and the retry ladder.
+	c.mutateIssueLabels(ctx, source.Number,
+		[]string{labelNeedsHuman},
+		[]string{github.LabelInProgress, github.LabelRetryReady, github.LabelRetry1, github.LabelRetry2},
+	)
 	comment := fmt.Sprintf(
 		"\U0001F6A8 **Owner-death recovery**: %s, and its retries are already exhausted. Holding for manual review (`%s`).",
 		reasonMsg, labelNeedsHuman,
