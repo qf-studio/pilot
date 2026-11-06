@@ -3864,7 +3864,7 @@
       "TASK-644": {
         "path": ".agent/tasks/TASK-644-desktop-content-container-figma-grid.md",
         "title": "Desktop content container per the Figma layout grid — 1072 px centered, 6 × 162 px columns, 20 px gutter",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "frontend",
           "testing",
