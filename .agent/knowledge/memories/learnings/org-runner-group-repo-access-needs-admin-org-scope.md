@@ -31,3 +31,7 @@ gh api -X PUT orgs/qf-studio/actions/runner-groups/5/repositories/$REPO_ID
 A deploy job on `runs-on: [self-hosted, aws-pilot-fleet-deployer]` in a repo
 outside the group queues forever with no error — check the group before
 debugging the workflow.
+
+## Addendum 2026-11-06 — the group's workflow pin blocks tag-triggered deploys
+
+Group 4 `quantflow-deployer` has `restricted_to_workflows: true` with every entry pinned `@refs/heads/main`. A workflow started by a `prod-*` tag push runs at `refs/tags/<tag>` and never matches, so the job sits `queued` with the runner online and idle (qf-website prod-7.1.10, run 42236403888, 12 min; a runner-service restart changed nothing). Fix without touching the group: `gh workflow run deploy-quantflow-aws.yml --ref main -f confirm=deploy -f ref=<tag>`. Check `gh api orgs/qf-studio/actions/runner-groups/<id>` → `selected_workflows` before debugging the runner. Repos whose deploy is `workflow_run` on main (navigator-docs, pilot-docs) are unaffected.
