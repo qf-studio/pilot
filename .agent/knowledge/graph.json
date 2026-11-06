@@ -3757,15 +3757,18 @@
         ]
       },
       "TASK-640": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-640-gh5351-guard-ci-post-merge.md",
-        "title": "GH-5351 delivery-mismatch guard skips post-merge CI fixes and already-merged originals",
-        "status": "dispatched",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/pilot-console-nav-start-521e07/.agent/tasks/TASK-640-credential-health-console.md",
+        "title": "Credential health \u2014 the console re-checks the org's own Anthropic key and tracker tokens, shows a truthful status, and gates chat on a dead key",
+        "status": "backlog",
         "concepts": [
+          "context",
+          "markers",
+          "database",
+          "api",
           "testing",
           "deployment",
-          "context",
-          "api",
-          "workflow"
+          "authentication",
+          "frontend"
         ]
       },
       "TASK-641": {
@@ -15412,6 +15415,26 @@
       "from": "mem-287",
       "to": "TASK-641",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-640",
+      "to": "markers",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-640",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-640",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-640",
+      "to": "frontend",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -15789,7 +15812,8 @@
       "TASK-628",
       "TASK-585",
       "TASK-631",
-      "TASK-633"
+      "TASK-633",
+      "TASK-640"
     ],
     "auto-merge": [
       "mem-103"
@@ -16340,7 +16364,8 @@
       "TASK-585",
       "TASK-631",
       "parallel-console-legs-with-migrations-collide-on-the-number",
-      "TASK-633"
+      "TASK-633",
+      "TASK-640"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -16908,7 +16933,8 @@
       "TASK-596",
       "TASK-585",
       "TASK-637",
-      "TASK-639"
+      "TASK-639",
+      "TASK-640"
     ],
     "gateway": [
       "TASK-01",
@@ -17280,7 +17306,8 @@
       "TASK-627",
       "TASK-633",
       "TASK-632",
-      "TASK-634"
+      "TASK-634",
+      "TASK-640"
     ],
     "memory": [
       "TASK-358",
@@ -18642,10 +18669,10 @@
       "mem-283"
     ]
   },
-  "last_updated": "2026-11-05T21:35:08.912292+00:00",
+  "last_updated": "2026-11-06T08:41:48.547550+00:00",
   "stats": {
     "total_nodes": 869,
-    "total_edges": 1025,
+    "total_edges": 1029,
     "memory_count": 475
   },
   "metadata": {
