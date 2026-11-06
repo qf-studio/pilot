@@ -1,6 +1,6 @@
 # TASK-508: Post-merge CI fix issues borrow the merged PR branch and short-circuit as delivered
 
-**Status**: ✅ **A1 MERGED 11-05 22:26Z → [PR#6132](https://github.com/qf-studio/pilot/pull/6132)** (pre-PR enforce APPROVE-w-notes 0/4; post-merge APPROVE-w-notes, minors: PostMergeCIStartedAt is not restarted after the code-class re-run, so the 30-min timeout can push the PR to StageFailed with no fix issue — same shape on the infra path; the run-permalink match misses when truncateKeepingTail cuts the first check's "Full log:" line; handleMerged spends one GetPullRequest per merge). Unreleased → next tag. **Follow-up A2 (unfiled): restart PostMergeCIStartedAt after any post-merge re-run, code and infra paths.** Was: 🚀 11-05: A1 DISPATCHED → [#6125](https://github.com/qf-studio/pilot/issues/6125) (`pilot` + `no-decompose`): post-merge CI keys on the PR's own MergeCommitSHA instead of the main head, one code-class re-run before a fix issue, fix-issue dedup by workflow-run permalink. Trigger: #6107 + #6108 both filed for run 42062140402 (a GitHub `commit_refs` rejection on docs-sync) → PR#6114 merged, PR#6115 closed as a duplicate. The ownership check moved to TASK-640 (#6123). Was: 🟡 10-20: #5564 shipped (`pilot-done`); #5551 closed. **Kept active: the three follow-ups below are still unfiled.** Prior: 🚀 DISPATCHED 2026-10-01 → [#5564](https://github.com/qf-studio/pilot/issues/5564) (`pilot`, `no-decompose`, `bug`). One PR, three changes (A emitter, B dispatcher safety net, C host-checker reason). **Post-merge review of PR#5569 DONE 2026-10-02: APPROVE-w-notes** (legs A/B/C verified on main; notes: two other merged-PR short-circuits in dispatcher.go unguarded for a borrowed origin · close/label failures only logged · supersede path GitHub-only · borrow is in-memory, lost on restart).
+**Status**: ✅ **A1 MERGED 11-05 22:26Z → [PR#6132](https://github.com/qf-studio/pilot/pull/6132)** (pre-PR enforce APPROVE-w-notes 0/4; post-merge APPROVE-w-notes, minors: PostMergeCIStartedAt is not restarted after the code-class re-run, so the 30-min timeout can push the PR to StageFailed with no fix issue — same shape on the infra path; the run-permalink match misses when truncateKeepingTail cuts the first check's "Full log:" line; handleMerged spends one GetPullRequest per merge). Unreleased → next tag. **A2 DISPATCHED 11-06 → [#6137](https://github.com/qf-studio/pilot/issues/6137)** (`pilot` + `no-decompose`): every re-run restarts its CI timer — PostMergeCIStartedAt on both post-merge paths, CIWaitStartedAt on the pre-merge infra path. Was: 🚀 11-05: A1 DISPATCHED → [#6125](https://github.com/qf-studio/pilot/issues/6125) (`pilot` + `no-decompose`): post-merge CI keys on the PR's own MergeCommitSHA instead of the main head, one code-class re-run before a fix issue, fix-issue dedup by workflow-run permalink. Trigger: #6107 + #6108 both filed for run 42062140402 (a GitHub `commit_refs` rejection on docs-sync) → PR#6114 merged, PR#6115 closed as a duplicate. The ownership check moved to TASK-640 (#6123). Was: 🟡 10-20: #5564 shipped (`pilot-done`); #5551 closed. **Kept active: the three follow-ups below are still unfiled.** Prior: 🚀 DISPATCHED 2026-10-01 → [#5564](https://github.com/qf-studio/pilot/issues/5564) (`pilot`, `no-decompose`, `bug`). One PR, three changes (A emitter, B dispatcher safety net, C host-checker reason). **Post-merge review of PR#5569 DONE 2026-10-02: APPROVE-w-notes** (legs A/B/C verified on main; notes: two other merged-PR short-circuits in dispatcher.go unguarded for a borrowed origin · close/label failures only logged · supersede path GitHub-only · borrow is in-memory, lost on restart).
 **Created**: 2026-10-01 · **Owner**: Navigator plans, Pilot executes · **Related**: TASK-460 (false-success class), TASK-507 (Jev gate 3 reads post-merge failures)
 
 ## Why
@@ -80,3 +80,41 @@ The LLM failure classifier and its rubric in `internal/autopilot/ci_failure_clas
 ## Refs
 
 - A1 → https://github.com/qf-studio/pilot/issues/6125
+- A2 → https://github.com/qf-studio/pilot/issues/6137
+
+### LEG A2 — repo: qf-studio/pilot — title: fix(autopilot): a CI re-run restarts the CI wait timer, so a slow re-run cannot hit the timeout and park the PR in StageFailed with no fix issue
+
+## Context
+
+Found by the post-merge review of PR 6132 (leg A1). Verified on main in `internal/autopilot/controller.go`: the post-merge timeout check in handlePostMergeCI (near line 6906) compares time.Since(prState.PostMergeCIStartedAt) with ciTimeout and, when exceeded, moves the PR to StageFailed (near line 6957) with no fix issue and no second verdict. The timer is set once, on the first tick (near line 6872). Both post-merge re-run helpers return without touching it: maybeRetryPostMergeInfraFailure (near line 4839) and maybeRetryPostMergeCodeFailure (near line 4882) call rerunInfraFailures, bump their budget pair and return true, and handlePostMergeCI returns nil to wait for CheckCI. A re-run that takes longer than what is left of the budget therefore ends in a timeout, not in a verdict. The pre-merge path has the same shape: maybeRetryInfraFailure (near line 4738) re-runs jobs and leaves prState.CIWaitStartedAt, which the pre-merge deadline check reads through c.ciNow() (near line 3465).
+
+The recorded pitfall for this class: the 30-minute CI timeout moves the PR to a terminal StageFailed with no revival.
+
+probe: present qf-studio/pilot func[[:space:]]\(c[[:space:]]\*Controller\)[[:space:]]maybeRetryPostMergeCodeFailure\(
+probe: present qf-studio/pilot func[[:space:]]\(c[[:space:]]\*Controller\)[[:space:]]maybeRetryPostMergeInfraFailure\(
+probe: present qf-studio/pilot func[[:space:]]\(c[[:space:]]\*Controller\)[[:space:]]maybeRetryInfraFailure\(
+probe: present qf-studio/pilot PostMergeCIStartedAt[[:space:]]time\.Time
+probe: absent qf-studio/pilot TestHandlePostMergeCI_RerunRestartsCITimer
+
+## Scope
+
+- `internal/autopilot/controller.go`: after a successful re-run (rerunCount above zero) in maybeRetryPostMergeInfraFailure and in maybeRetryPostMergeCodeFailure, set prState.PostMergeCIStartedAt to the current time and log the restart at INFO with the attributes pr, sha and ci_timer=restarted. In maybeRetryInfraFailure, do the same for prState.CIWaitStartedAt using c.ciNow(). A re-run that re-ran no job leaves the timer alone, as today.
+- The no-workflow grace check near line 6886 reads the same timer; it has already run by the time a re-run happens, and PostMergeCINoWorkflowChecked is set, so it does not fire again. Keep that behaviour and say so in a comment next to the restart.
+- Tests, named exactly, in `internal/autopilot/controller_test.go`: TestHandlePostMergeCI_RerunRestartsCITimer (table over the code-class and the infra-class re-run: PostMergeCIStartedAt starts ciTimeout minus one minute in the past, the first red triggers a re-run, the timer is now within one minute of the present, the stage is still StagePostMergeCI, no fix issue was filed; model the fake GitHub client on TestHandlePostMergeCI_CodeClassRerunsOnceBeforeFixIssue near line 12599) and TestMaybeRetryInfraFailure_RestartsCIWaitTimer (CIWaitStartedAt moves to the fake clock's now after a re-run; unchanged when no job was re-run).
+
+## Acceptance
+
+- [ ] `go test -race ./internal/autopilot/ -run 'TestHandlePostMergeCI_RerunRestartsCITimer|TestMaybeRetryInfraFailure_RestartsCIWaitTimer|TestHandlePostMergeCI_Timeout|TestHandlePostMergeCI_CodeClassRerunsOnceBeforeFixIssue'` passes; paste the output into the PR body.
+- [ ] leave PostMergeCIStartedAt untouched after a code-class re-run -> TestHandlePostMergeCI_RerunRestartsCITimer fails
+- [ ] leave CIWaitStartedAt untouched after a pre-merge infra re-run -> TestMaybeRetryInfraFailure_RestartsCIWaitTimer fails
+- [ ] Do not re-run make build, make test or make lint as evidence: the daemon's quality gates already run them on this repo.
+
+## Out of scope
+
+The re-run budgets and their persisted fields; the GH-5238 correlated-timeout breaker; the timeout value itself; the fix-issue dedup from leg A1; the pre-merge CI timeout when no re-run happened.
+
+## Refs
+
+- https://github.com/qf-studio/pilot/pull/6132
+- #6125
+
