@@ -1280,6 +1280,36 @@
         "name": "Hosted",
         "aliases": [],
         "domain": "general"
+      },
+      "post-merge-ci": {
+        "name": "Post-Merge-Ci",
+        "aliases": [],
+        "domain": "general"
+      },
+      "fix-issue": {
+        "name": "Fix-Issue",
+        "aliases": [],
+        "domain": "general"
+      },
+      "attribution": {
+        "name": "Attribution",
+        "aliases": [],
+        "domain": "general"
+      },
+      "operator": {
+        "name": "Operator",
+        "aliases": [],
+        "domain": "general"
+      },
+      "quoting": {
+        "name": "Quoting",
+        "aliases": [],
+        "domain": "general"
+      },
+      "pilot-aws": {
+        "name": "Pilot-Aws",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -7688,9 +7718,9 @@
         ],
         "confidence": 0.95,
         "created": "2026-09-10",
-        "contradiction": "compliance/eligibility vs sunk Stripe scaffolding",
-        "separation": "system",
-        "principle": "keep the domain contract, replace the vendor adapter"
+        "contradiction": "compliance/eligibility (Stripe unavailable for the founder's jurisdiction) vs. the sunk Stripe scaffolding and its familiarity.",
+        "separation": "system — swap the provider behind the console's existing billing-status contract rather than redesigning billing.",
+        "principle": "keep the domain contract, replace the vendor adapter."
       },
       "issue-body-literal-migration-version-collides-with-sibling-leg": {
         "type": "pitfall",
@@ -10308,6 +10338,38 @@
         ],
         "created": "2026-11-05",
         "last_validated": "2026-11-05"
+      },
+      "mem-290": {
+        "type": "pitfall",
+        "summary": "handlePostMergeCI pinned the main head, not the PR's merge commit: two merges 23 s apart filed two fix issues for one docs-sync run",
+        "path": "memories/pitfalls/mem-290.md",
+        "confidence": 0.95,
+        "concepts": [
+          "autopilot",
+          "post-merge-ci",
+          "fix-issue",
+          "dedup",
+          "attribution"
+        ],
+        "created": "2026-11-06",
+        "last_validated": "2026-11-06",
+        "source": "reconcile"
+      },
+      "mem-291": {
+        "type": "pitfall",
+        "summary": "SSM RunShellScript payloads lose shell variables inside sudo -iu … bash -c; a for-loop over task ids ran pilot task cancel with no argument",
+        "path": "memories/pitfalls/mem-291.md",
+        "confidence": 0.9,
+        "concepts": [
+          "ssm",
+          "aws",
+          "operator",
+          "quoting",
+          "pilot-aws"
+        ],
+        "created": "2026-11-06",
+        "last_validated": "2026-11-06",
+        "source": "reconcile"
       }
     }
   },
@@ -15481,6 +15543,16 @@
       "from": "TASK-642",
       "to": "workflow",
       "type": "implements"
+    },
+    {
+      "from": "mem-290",
+      "to": "TASK-508",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-291",
+      "to": "TASK-409",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -15948,7 +16020,8 @@
       "autopilot-hold-redrive-strips-pilot-needs-human-failed-issue-with-open-pr-re-picked",
       "declined-run-repicked-and-evidence-fail-files-false-fix-issue",
       "TASK-634",
-      "mem-282"
+      "mem-282",
+      "mem-290"
     ],
     "aws": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -15967,7 +16040,8 @@
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid",
       "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb",
       "mem-215",
-      "mem-217"
+      "mem-217",
+      "mem-291"
     ],
     "bake-test": [
       "bake-workflow-tee-masked-failure-promoted-source-ami"
@@ -16422,7 +16496,8 @@
       "epic-children-on-shared-files-conflict-multi-part-leg-needs-no-decompose"
     ],
     "dedup": [
-      "mem-143"
+      "mem-143",
+      "mem-290"
     ],
     "dependencies": [
       "mem-148"
@@ -17672,7 +17747,8 @@
     ],
     "ssm": [
       "apply-script-silent-rollback-causes",
-      "founder-tenant-legacy-ssm-layout-key-source-unknown-unmetered"
+      "founder-tenant-legacy-ssm-layout-key-source-unknown-unmetered",
+      "mem-291"
     ],
     "stalled": [
       "mem-171",
@@ -18713,14 +18789,30 @@
       "mem-283"
     ],
     "operator": [
-      "mem-283"
+      "mem-283",
+      "mem-291"
+    ],
+    "post-merge-ci": [
+      "mem-290"
+    ],
+    "fix-issue": [
+      "mem-290"
+    ],
+    "attribution": [
+      "mem-290"
+    ],
+    "quoting": [
+      "mem-291"
+    ],
+    "pilot-aws": [
+      "mem-291"
     ]
   },
-  "last_updated": "2026-11-06T08:41:48.547550+00:00",
+  "last_updated": "2026-11-06T11:14:23.459619+00:00",
   "stats": {
-    "total_nodes": 869,
-    "total_edges": 1029,
-    "memory_count": 475
+    "total_nodes": 878,
+    "total_edges": 1034,
+    "memory_count": 477
   },
   "metadata": {
     "last_updated": null

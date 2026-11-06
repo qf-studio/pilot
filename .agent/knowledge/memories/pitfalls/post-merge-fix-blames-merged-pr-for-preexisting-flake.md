@@ -12,3 +12,6 @@ type: pitfall
 - When reviewing a `fix(ci): resolve post-merge CI failure from PR #N`, first check whether the failing test covers PR #N's diff. If not, it is a pre-existing flake exposed by timing — review the fix as a production change.
 - For the TASK-508 flake-guard follow-up: classify "failing test outside the merged diff" as its own issue type; do not decline it as flake and do not attribute it to the PR.
 - Concurrency regression tests that pass 0/20 locally may still pin the bug under CI scheduling; try `-race -cpu=2` before calling a mutation survivor.
+
+## Update 2026-11-06
+- The attribution gap had a second root cause: `handlePostMergeCI` pinned the main head instead of the PR's merge commit (mem-290). Fixed by #6125 → PR#6132 (merge-commit SHA, one code-class re-run before a fix issue, dedup by run permalink) and #6137 → PR#6140 (the re-run restarts the CI timer). The "failing test outside the merged diff" classification above is still unfiled.
