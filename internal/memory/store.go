@@ -3718,6 +3718,23 @@ func (s *Store) SetExecutionBranchPushed(id string, pushed bool) error {
 	})
 }
 
+// SetExecutionCommitSHA records the HEAD sha of a non-completed terminal
+// outcome (GH-6152: a needs_human hold's Run Story card reads it; only the
+// completed path writes commit_sha through MarkExecutionCompleted). Guarded
+// like SetExecutionBranchPushed so a row some other writer already finished is
+// not stamped, and a no-op for an empty sha.
+func (s *Store) SetExecutionCommitSHA(id, sha string) error {
+	if sha == "" {
+		return nil
+	}
+	notTerminal, notTerminalArgs := notTerminalClause()
+	return s.withRetry("SetExecutionCommitSHA", func() error {
+		args := append([]interface{}{sha, id}, notTerminalArgs...)
+		_, err := s.db.Exec(`UPDATE executions SET commit_sha = ? WHERE id = ? AND status NOT IN (`+notTerminal+`)`, args...)
+		return err
+	})
+}
+
 // SetExecutionInheritedHead records the stale task-branch head sha a re-pick
 // inherited from a previous run (GH-5864). Guarded like SetExecutionBranchPushed
 // so a row some other writer already finished is not stamped.

@@ -360,6 +360,17 @@ func (l *ExecutionLifecycle) Persist(execID string, outcome FinishOutcome, resul
 		pushErr = l.store.SetExecutionBranchPushed(execID, *result.BranchPushed)
 	}
 
+	// GH-6152: a needs_human hold's HEAD sha (result.CommitSHA, set by the
+	// pre-PR hold) has no column write on the non-completed path, so the Run
+	// Story card's hold.commit_sha was always null. Same companion-write rules
+	// as the push result above: before the status CAS, guarded to non-terminal
+	// rows. The completed path writes it via MarkExecutionCompletedIfNotTerminal.
+	if result != nil && result.CommitSHA != "" && outcome.Status == ExecStatusNeedsHuman {
+		if err := l.store.SetExecutionCommitSHA(execID, result.CommitSHA); err != nil && pushErr == nil {
+			pushErr = err
+		}
+	}
+
 	// GH-4423: both branches route through the CAS-guarded store writes — a
 	// duplicate Finish call (the same execID finished twice, e.g. a retried
 	// callback) can no longer silently overwrite a terminal status this row

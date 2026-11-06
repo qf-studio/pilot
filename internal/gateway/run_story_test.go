@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -303,4 +304,39 @@ func TestRunStory_NeedsHumanOutcome(t *testing.T) {
 	if got := buildRunStory(&memory.Execution{ID: "x", Status: "failed", Error: "boom"}, nil, nil); got.Hold != nil || got.NextStep != nil {
 		t.Errorf("failed run has hold=%v next_step=%v, want none", got.Hold, got.NextStep)
 	}
+}
+
+// TestRunStory_NeedsHumanCommitSHAFromPersistedRow (GH-6152) drives the real
+// ExecutionLifecycle.Persist and reads the row back through the store's
+// executionDetailColumns, so hold.commit_sha is proven end to end instead of
+// from a hand-built Execution.
+func TestRunStory_NeedsHumanCommitSHAFromPersistedRow(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	task := &executor.Task{ID: "GH-6138", ProjectPath: "/tmp/project", Branch: "pilot/GH-6138"}
+	lifecycle := executor.NewExecutionLifecycle(store)
+	execID, err := lifecycle.Begin(task, executor.ExecStatusRunning)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	outcome := executor.FinishOutcome{Status: executor.ExecStatusNeedsHuman, Error: "pre-PR review: blocking defects not fixed"}
+	if err := lifecycle.Persist(execID, outcome, &executor.ExecutionResult{TaskID: task.ID, CommitSHA: sha}, time.Second); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	row, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	rs := buildRunStory(row, nil, nil)
+	if rs.Hold == nil {
+		t.Fatal("hold = nil, want the persisted hold block")
+	}
+	eqStr(t, "hold.commit_sha", rs.Hold.CommitSHA, sha)
+	eqStr(t, "hold.reason", rs.Hold.Reason, outcome.Error)
 }
