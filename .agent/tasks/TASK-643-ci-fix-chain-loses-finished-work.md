@@ -46,7 +46,7 @@
 
 ## Legs — pilot (daemon)
 
-### LEG A — repo: qf-studio/pilot — title: fix(autopilot): the stale-branch sweep keeps a closed-PR branch that an open autopilot-fix issue or a pending execution still references, and applies the 24h age gate to closed-PR branches
+### LEG A1 — repo: qf-studio/pilot — title: fix(autopilot): the stale-branch sweep keeps a closed-PR branch that an open autopilot-fix issue or a pending execution still references, and applies the 24h age gate to closed-PR branches
 probe: present qf-studio/pilot func \(c \*Controller\) sweepStaleBranches\(
 probe: present qf-studio/pilot func \(c \*Controller\) staleBranchLiveTasks\(
 probe: present qf-studio/pilot func \(c \*Controller\) forgetBorrowedBranchForIssue\(
@@ -79,7 +79,7 @@ probe: present qf-studio/pilot func \(c \*Controller\) forgetBorrowedBranchForIs
 - Incident log 2026-11-06 16:46:30Z `stale branch sweep: deleted orphaned branch … branch=pilot/GH-6157 pr=6165`
 - `internal/autopilot/branch_sweeper.go` lines 16, 57–70, 86–170 · `controller.go` 1441–1458 (borrowed-branch registry)
 
-### LEG B — repo: qf-studio/pilot — title: fix(autopilot): autopilot-generated CI-fix issues pass pre-flight — the judge accepts autopilot-fix issues with a valid autopilot-meta footer, and the generated Task section names every failing test from the full log and states that the tests or the implementation must change
+### LEG B1 — repo: qf-studio/pilot — title: fix(autopilot): autopilot-generated CI-fix issues pass pre-flight — the judge accepts autopilot-fix issues with a valid autopilot-meta footer, and the generated Task section names every failing test from the full log and states that the tests or the implementation must change
 probe: present qf-studio/pilot func \(s \*sdkPreFlightJudge\) JudgeIssue\(
 probe: present qf-studio/pilot func \(f \*FeedbackLoop\) generateBody\(
 probe: present qf-studio/pilot const preflightJudgeSystemPrompt
@@ -110,7 +110,7 @@ Three autopilot CI-fix issues were rejected `reject_vague` by the pre-flight jud
 - #6155, #6167, console-ui #392 (declined 2026-11-06); #6107/#6108 (accepted 2026-11-05)
 - `cmd/pilot/poller_github.go` 288–307 · `internal/executor/intent_judge.go` 267, 318–352, 660 · `internal/autopilot/feedback_loop.go` 55, 157, 777, ~850 · `internal/autopilot/ci_failure_excerpt.go` 23
 
-### LEG C — repo: qf-studio/pilot — title: fix(autopilot): owner-death re-arm keeps the dead fix issue's branch and sha — the re-arm comment carries them and the retry continues that branch instead of starting from main
+### LEG C1 — repo: qf-studio/pilot — title: fix(autopilot): owner-death re-arm keeps the dead fix issue's branch and sha — the re-arm comment carries them and the retry continues that branch instead of starting from main
 probe: present qf-studio/pilot func \(c \*Controller\) reactToDeadFixIssue\(
 probe: present qf-studio/pilot func \(c \*Controller\) rearmDeadOwnerSource\(
 
@@ -141,7 +141,7 @@ When a designated fix issue dies (pre-flight decline, close, supersede), `reactT
 - `internal/autopilot/owner_death.go` 477–479, 537–582 · `internal/autopilot/controller.go` 1441–1458
 - #6157 re-arm comment 2026-11-06 16:47Z; TASK-642 (#6128 touched `verifyFixPRDeliversSourceScope` in the same file); #6163 (in flight, same function family — rebase after it merges)
 
-### LEG D — repo: qf-studio/pilot — title: fix(upgrade): the hot-upgrade drain does not re-pause admission every cooldown while one long task runs — after a drain timeout the upgrader waits for the running set to empty before pausing again
+### LEG D1 — repo: qf-studio/pilot — title: fix(upgrade): the hot-upgrade drain does not re-pause admission every cooldown while one long task runs — after a drain timeout the upgrader waits for the running set to empty before pausing again
 probe: present qf-studio/pilot func \(h \*HotUpgrader\) PerformHotUpgrade\(
 probe: present qf-studio/pilot func \(d \*Dispatcher\) PauseAdmission\(
 
