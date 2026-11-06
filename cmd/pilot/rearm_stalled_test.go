@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -370,5 +372,124 @@ func TestSweepStalledRearm_GatedIssue_NoGitHubProbeCall(t *testing.T) {
 	}
 	if exec.Status != "stalled" {
 		t.Errorf("expected the row to remain untouched while gated, got status %q", exec.Status)
+	}
+}
+
+// seedRestartStalledRow seeds a stalled row carrying the error the boot
+// reconcile writes (internal/executor/dispatcher.go, GH-4392).
+func seedRestartStalledRow(t *testing.T, store *memory.Store, id, taskID, projectPath string, completedAt time.Time) {
+	t.Helper()
+	if err := store.SaveExecution(&memory.Execution{
+		ID: id, TaskID: taskID, ProjectPath: projectPath,
+		Status: "stalled", Error: "orphaned by daemon restart: non-terminal claimed row at boot before this process claimed any work (GH-4392)", CompletedAt: &completedAt,
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+}
+
+// TestSweepStalledRearm_RestartStallNeverEscalates is GH-6177's acceptance
+// test: a daemon-restart stall is never handed to pilot-needs-human on the
+// no-evidence streak. With the daemon's own pre-stall retry label on the issue
+// the first sweep re-arms it; with no evidence at all the third sweep re-queues
+// it instead of escalating. Neither posts a comment or applies a label.
+func TestSweepStalledRearm_RestartStallNeverEscalates(t *testing.T) {
+	const daemon = "pilot-bot"
+	tests := []struct {
+		name       string
+		labeledBy  string
+		wantSweeps int // sweeps until the row is re-armed
+	}{
+		{"daemon retry label predates the stall", daemon, 1},
+		{"no evidence at all", "operator", 3},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTerminalCompletionCheckerTestStore(t)
+			stallTime := time.Now().Add(-time.Hour)
+			issueNum := 6152 + i
+			base := "/repos/owner/repo/issues/" + strconv.Itoa(issueNum)
+			issue := &github.Issue{
+				Number: issueNum, State: "open",
+				Labels: []github.Label{{Name: "pilot"}, {Name: github.LabelBlocked}, {Name: github.LabelRetryReady}},
+			}
+			events := []*github.IssueEvent{
+				{Event: "labeled", CreatedAt: stallTime.Add(-90 * time.Minute), Label: &github.Label{Name: github.LabelRetryReady}, Actor: &github.User{Login: tt.labeledBy}},
+			}
+
+			var mu sync.Mutex
+			var comments, addLabels, blockedRemovals int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				mu.Lock()
+				defer mu.Unlock()
+				switch {
+				case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodGet:
+					if p := r.URL.Query().Get("page"); p != "1" && p != "" {
+						_ = json.NewEncoder(w).Encode([]*github.Issue{})
+						return
+					}
+					_ = json.NewEncoder(w).Encode([]*github.Issue{issue})
+				case r.URL.Path == base && r.Method == http.MethodGet:
+					_ = json.NewEncoder(w).Encode(issue)
+				case r.URL.Path == base+"/events" && r.Method == http.MethodGet:
+					_ = json.NewEncoder(w).Encode(events)
+				case r.URL.Path == "/user" && r.Method == http.MethodGet:
+					_ = json.NewEncoder(w).Encode(&github.User{Login: daemon})
+				case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
+					_, _ = w.Write([]byte(`{"data":{"repository":{"issue":{"lastEditedAt":null,"editor":null}}}}`))
+				case r.URL.Path == base+"/labels/"+github.LabelBlocked && r.Method == http.MethodDelete:
+					blockedRemovals++
+					w.WriteHeader(http.StatusNotFound)
+				case r.URL.Path == base+"/comments" && r.Method == http.MethodPost:
+					comments++
+					_, _ = w.Write([]byte(`{"id":1}`))
+				case r.URL.Path == base+"/labels" && r.Method == http.MethodPost:
+					addLabels++
+					_, _ = w.Write([]byte(`[]`))
+				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(srv.Close)
+
+			checker := terminalCompletionChecker{
+				store: store, ghClient: github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL),
+				repoOwner: "owner", repoName: "repo", triggerLabel: "pilot",
+			}
+			taskID, projectPath := "GH-"+strconv.Itoa(issueNum), "/project-gh6177-"+strconv.Itoa(i)
+			seedRestartStalledRow(t, store, "exec-gh6177-"+strconv.Itoa(i), taskID, projectPath, stallTime)
+			key := repickBackoffKey(projectPath, taskID)
+			t.Cleanup(func() { repickBackoff.recordSuccess(key) })
+			t.Cleanup(func() { stalledRearmNoEvidenceStreaks.reset(key) })
+
+			status := func() string {
+				exec, err := store.GetExecution("exec-gh6177-" + strconv.Itoa(i))
+				if err != nil {
+					t.Fatalf("GetExecution: %v", err)
+				}
+				return exec.Status
+			}
+
+			for sweep := 1; sweep <= 3; sweep++ {
+				checker.sweepStalledRearm(context.Background(), projectPath)
+				forceRepickBackoffReady(key)
+				if got := status(); sweep < tt.wantSweeps && got != "stalled" {
+					t.Fatalf("after sweep %d: status=%q, want stalled until sweep %d", sweep, got, tt.wantSweeps)
+				}
+			}
+
+			if got := status(); got != "failed" {
+				t.Errorf("status = %q after three sweeps, want failed (re-armed through the normal retry path)", got)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if comments != 0 || addLabels != 0 {
+				t.Errorf("expected no escalation comment or pilot-needs-human label, got comments=%d addLabels=%d", comments, addLabels)
+			}
+			if blockedRemovals != 1 {
+				t.Errorf("expected exactly 1 pilot-blocked removal when the row is re-armed, got %d", blockedRemovals)
+			}
+		})
 	}
 }

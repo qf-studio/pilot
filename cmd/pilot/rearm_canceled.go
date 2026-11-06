@@ -138,3 +138,53 @@ func containsLabelFold(labels []string, name string) bool {
 	}
 	return false
 }
+
+// daemonRestartStallPrefix opens the error the boot reconcile writes on a row it
+// stalls (internal/executor/dispatcher.go, reconcileOrphanedExecutions).
+const daemonRestartStallPrefix = "orphaned by daemon restart"
+
+// isDaemonRestartStall reports whether a stalled row's error says the daemon's
+// own restart stalled it, rather than a hard cap, an identical-failure streak
+// or an operator (GH-6177).
+func isDaemonRestartStall(stallReason string) bool {
+	return strings.HasPrefix(stallReason, daemonRestartStallPrefix)
+}
+
+// latestRearmEventForStall is latestRearmEvent plus GH-6177's one extension for
+// a daemon-restart stall: a pilot-retry-ready/-1/-2 label that is still on the
+// issue and was added by the daemon itself (the labeled event's actor is
+// daemonLogin) counts as evidence even when it predates the stall. The retry
+// path labels the issue when it re-queues the task, so a restart that lands
+// afterwards stalls a retry that was already armed — the label is the daemon's
+// own re-arm, and the stall is not an operator's decision. Any other stall
+// reason keeps the strict after-the-stall rule, so a human-caused stall is
+// never re-armed by a label that was already there.
+//
+// issue supplies the labels present at sweep time (an unlabeled event leaves
+// the event list but not the issue's current labels, so the event alone would
+// not prove the label is still on). daemonLogin is compared case-insensitively;
+// "" never matches.
+func latestRearmEventForStall(events []*github.IssueEvent, issue *github.Issue, since time.Time, stallReason, daemonLogin string, labels ...string) *github.IssueEvent {
+	if ev := latestRearmEvent(events, since, labels...); ev != nil {
+		return ev
+	}
+	if !isDaemonRestartStall(stallReason) || daemonLogin == "" || issue == nil {
+		return nil
+	}
+	var latest *github.IssueEvent
+	for _, ev := range events {
+		if ev == nil || ev.Event != "labeled" || ev.Label == nil || ev.Actor == nil {
+			continue
+		}
+		if !containsLabelFold(retryReadyRearmLabels, ev.Label.Name) || !github.HasLabel(issue, ev.Label.Name) {
+			continue
+		}
+		if !strings.EqualFold(ev.Actor.Login, daemonLogin) {
+			continue
+		}
+		if latest == nil || ev.CreatedAt.After(latest.CreatedAt) {
+			latest = ev
+		}
+	}
+	return latest
+}

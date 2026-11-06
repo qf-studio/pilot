@@ -195,10 +195,14 @@ type Dispatcher struct {
 	decomposer *TaskDecomposer           // Optional task decomposer
 	workers    map[string]*ProjectWorker // key: project path
 	mu         sync.RWMutex
-	log        *slog.Logger
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+	// bootRequeued holds the project paths of claimed queued/pending rows
+	// reconcileOrphanedExecutions left in place at boot (GH-6177);
+	// signalBootRequeued wakes their workers once the workers exist.
+	bootRequeued []string
+	log          *slog.Logger
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
 
 	// dispatchMu serializes QueueTask's duplicate-task check + executions-row
 	// insert (GH-4347). The two steps were separate, unlocked store calls
@@ -372,6 +376,10 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	// still catches genuine orphans on the next tick.
 	adopted := d.adoptQueuedProjects()
 
+	// GH-6177: wake the lane of every claimed queued row the boot reconcile
+	// left queued, so it drains on the first cycle.
+	d.signalBootRequeued()
+
 	// Recover queued tasks that still have no worker after adoption — genuine
 	// orphans only (e.g. a duplicate of an already-completed task, or a
 	// project removed from config). See
@@ -446,7 +454,8 @@ func (d *Dispatcher) reconcileOrphanedExecutions() int {
 		return 0
 	}
 
-	var reconciled int
+	var reconciled, requeued int
+	d.bootRequeued = nil
 	for _, exec := range orphans {
 		if allComplete, childIDs, evidence, gErr := decomposedChildrenAllComplete(d.store, exec.TaskID, exec.ProjectPath, d.log); gErr != nil {
 			d.log.Warn("Failed to check decomposed-parent guard during boot orphan reconciliation",
@@ -513,6 +522,21 @@ func (d *Dispatcher) reconcileOrphanedExecutions() int {
 			}
 		}
 
+		// GH-6177: a queued/pending row has no process that can have died — it
+		// is just waiting for its lane. Stalling it would strand a retry the
+		// daemon itself queued (the re-arm sweep then escalated it to
+		// pilot-needs-human with no human involved). Leave the row and its
+		// claim intact; signalBootRequeued wakes the worker after adoption.
+		if exec.Status != string(ExecStatusRunning) {
+			d.log.Info("Queued execution found at boot — leaving it queued for its project worker",
+				slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID),
+				slog.String("project", exec.ProjectPath), slog.String("prior_status", exec.Status))
+			requeued++
+			d.bootRequeued = append(d.bootRequeued, exec.ProjectPath)
+			d.clearBootRepickBackoff(exec)
+			continue
+		}
+
 		d.log.Warn("Reconciling dead-owner execution found at boot — transitioning to stalled to free its claim for retry",
 			slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID),
 			slog.String("project", exec.ProjectPath), slog.String("prior_status", exec.Status),
@@ -536,18 +560,41 @@ func (d *Dispatcher) reconcileOrphanedExecutions() int {
 		// do with the task itself. Clear any accumulated backoff state here so
 		// the retry this stall enables starts a fresh consecutive-drop count
 		// instead of inheriting one inflated by the restart.
-		backoffKey := repickBackoffKey(exec.ProjectPath, exec.TaskID)
-		if err := d.ClearRepickBackoffState(backoffKey); err != nil {
-			d.log.Warn("failed to clear repick backoff state for boot-stalled execution",
-				slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID),
-				slog.String("project", exec.ProjectPath), slog.Any("error", err))
-		}
+		d.clearBootRepickBackoff(exec)
 	}
 
-	if reconciled > 0 {
-		d.log.Info("boot-time orphan reconciliation complete", slog.Int("reconciled", reconciled), slog.Int("found", len(orphans)))
+	if reconciled > 0 || requeued > 0 {
+		d.log.Info("boot-time orphan reconciliation complete", slog.Int("reconciled", reconciled), slog.Int("requeued", requeued), slog.Int("found", len(orphans)))
 	}
 	return reconciled
+}
+
+// clearBootRepickBackoff resets the repick_backoff state of a row the boot
+// reconcile touched (GH-4454): a daemon restart is not evidence the task
+// can't succeed, so the next dispatch must not inherit a drop count inflated
+// by restart churn.
+func (d *Dispatcher) clearBootRepickBackoff(exec *memory.Execution) {
+	backoffKey := repickBackoffKey(exec.ProjectPath, exec.TaskID)
+	if err := d.ClearRepickBackoffState(backoffKey); err != nil {
+		d.log.Warn("failed to clear repick backoff state for boot-reconciled execution",
+			slog.String("execution_id", exec.ID), slog.String("task_id", exec.TaskID),
+			slog.String("project", exec.ProjectPath), slog.Any("error", err))
+	}
+}
+
+// signalBootRequeued wakes the project worker of every queued row the boot
+// reconcile left in place (GH-6177), creating the worker if adoption has not.
+// ensureWorker signals an existing worker and starts-then-signals a new one.
+func (d *Dispatcher) signalBootRequeued() {
+	seen := make(map[string]bool, len(d.bootRequeued))
+	for _, path := range d.bootRequeued {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		d.ensureWorker(path)
+	}
+	d.bootRequeued = nil
 }
 
 // healOpenPRExecution returns the URL of the open PR a claimed running row has
