@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 // TestGithubPollerRegistration_Fields verifies the SDK-based registration has the correct
@@ -716,47 +719,133 @@ const autopilotFixTestBody = "# Autopilot: Auto-Generated Fix Request\n\n## Task
 
 const autopilotFixTestFooter = "<!-- autopilot-meta branch:pilot/GH-6100 pr:6165 iteration:1 source:6100 sha:0123456789abcdef0123456789abcdef01234567 -->"
 
-// TestPreFlight_AutopilotFixFooterSkipsJudge: an issue ending in a complete
-// autopilot-meta footer is accepted without a model call (GH-6182). The judge
-// binary does not exist, so any call would return an error.
-func TestPreFlight_AutopilotFixFooterSkipsJudge(t *testing.T) {
-	metrics := autopilot.NewMetrics()
-	sp := &sdkPreFlightJudge{
-		judge:   executor.NewIntentJudge("/nonexistent/gh-6182-claude-binary"),
-		metrics: metrics,
-	}
-	body := autopilotFixTestBody + autopilotFixTestFooter + "\n"
+const autopilotFixTestTitle = "fix(ci): resolve CI failure from PR #6165"
 
-	v, err := sp.JudgeIssue(context.Background(), "fix(ci): resolve CI failure from PR #6165", body, "")
+// autopilotFixLabelServer serves GET /repos/o/r/issues the way GitHub does for
+// the real github.Client: one open issue per entry, labels attached. It
+// returns the pre-flight judge wired to that server and a request counter.
+func autopilotFixLabelServer(t *testing.T, issues []map[string]any, status int) (*sdkPreFlightJudge, *atomic.Int32) {
+	t.Helper()
+	calls := new(atomic.Int32)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path != "/repos/o/r/issues" {
+			http.NotFound(w, r)
+			return
+		}
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	t.Cleanup(srv.Close)
+	return &sdkPreFlightJudge{
+		judge:        executor.NewIntentJudge("/nonexistent/gh-6182-claude-binary"),
+		metrics:      autopilot.NewMetrics(),
+		repoFullName: "o/r",
+		ghClient:     githubSDK.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL),
+	}, calls
+}
+
+func autopilotFixIssue(title, body string, labels ...string) map[string]any {
+	ls := []map[string]any{}
+	for _, l := range labels {
+		ls = append(ls, map[string]any{"name": l})
+	}
+	return map[string]any{"number": 1, "title": title, "body": body, "state": "open", "labels": ls}
+}
+
+// TestPreFlight_AutopilotFixFooterSkipsJudge: an issue carrying the
+// autopilot-fix label AND ending in a complete autopilot-meta footer is
+// accepted without a model call (GH-6182). The judge binary does not exist,
+// so any call would return an error.
+func TestPreFlight_AutopilotFixFooterSkipsJudge(t *testing.T) {
+	body := autopilotFixTestBody + autopilotFixTestFooter + "\n"
+	sp, _ := autopilotFixLabelServer(t, []map[string]any{
+		autopilotFixIssue(autopilotFixTestTitle, body, "pilot", "autopilot-fix"),
+	}, http.StatusOK)
+
+	v, err := sp.JudgeIssue(context.Background(), autopilotFixTestTitle, body, "")
 	if err != nil {
-		t.Fatalf("judge was invoked for a footer-bearing autopilot-fix issue: %v", err)
+		t.Fatalf("judge was invoked for a labelled footer-bearing autopilot-fix issue: %v", err)
 	}
 	if !v.Accepted || v.Decision != "accept" || v.Reason != "autopilot-fix footer" {
 		t.Errorf("verdict = %+v, want accept / autopilot-fix footer", v)
 	}
-	if snap := metrics.Snapshot(); len(snap.IntentJudgeFailures) != 0 {
+	if snap := sp.metrics.Snapshot(); len(snap.IntentJudgeFailures) != 0 {
 		t.Errorf("no judge failure should be recorded: %+v", snap.IntentJudgeFailures)
 	}
 }
 
-// TestPreFlight_AutopilotFixWithoutFooterStillJudged: a body without a
-// well-formed footer still reaches the judge (here: errors on the missing binary).
+// TestPreFlight_AutopilotFixFooterWithoutLabelStillJudged: a complete footer
+// (even with the generator's heading and auto-generated line copied verbatim)
+// does not skip the judge unless the issue carries the autopilot-fix label.
+func TestPreFlight_AutopilotFixFooterWithoutLabelStillJudged(t *testing.T) {
+	body := autopilotFixTestBody + autopilotFixTestFooter + "\n"
+	handFiled := "Please fix the thing.\n\n" + autopilotFixTestFooter + "\n"
+	cases := map[string]struct {
+		issues []map[string]any
+		status int
+		noGH   bool
+		body   string // overrides the generated body when set
+	}{
+		"issue has no autopilot-fix label": {
+			issues: []map[string]any{autopilotFixIssue(autopilotFixTestTitle, body, "pilot")},
+			status: http.StatusOK,
+		},
+		"labelled issue has a different body": {
+			issues: []map[string]any{autopilotFixIssue(autopilotFixTestTitle, "other body", "autopilot-fix")},
+			status: http.StatusOK,
+		},
+		"hand-filed footer, no label": {
+			issues: []map[string]any{autopilotFixIssue(autopilotFixTestTitle, handFiled, "pilot")},
+			status: http.StatusOK,
+			body:   handFiled,
+		},
+		"label lookup fails": {status: http.StatusInternalServerError},
+		"no github client":   {status: http.StatusOK, noGH: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			sp, _ := autopilotFixLabelServer(t, tc.issues, tc.status)
+			if tc.noGH {
+				sp.ghClient = nil
+			}
+			b := body
+			if tc.body != "" {
+				b = tc.body
+			}
+			if _, err := sp.JudgeIssue(context.Background(), autopilotFixTestTitle, b, ""); err == nil {
+				t.Error("expected the judge to be invoked (error from missing binary), got a bypass")
+			}
+		})
+	}
+}
+
+// TestPreFlight_AutopilotFixWithoutFooterStillJudged: even with the label, a
+// body without a well-formed footer still reaches the judge (here: errors on
+// the missing binary) and the label is not even looked up.
 func TestPreFlight_AutopilotFixWithoutFooterStillJudged(t *testing.T) {
 	cases := map[string]string{
-		"no footer":              "## Task\n\nFix the CI failures.\n",
-		"footer missing sha":     autopilotFixTestBody + "<!-- autopilot-meta branch:pilot/GH-6100 pr:6165 iteration:1 source:6100 -->\n",
-		"footer missing pr":      autopilotFixTestBody + "<!-- autopilot-meta branch:pilot/GH-6100 iteration:1 source:6100 sha:0123456789abcdef -->\n",
-		"footer missing src":     autopilotFixTestBody + "<!-- autopilot-meta branch:pilot/GH-6100 pr:6165 iteration:1 sha:0123456789abcdef -->\n",
-		"footer missing brnch":   autopilotFixTestBody + "<!-- autopilot-meta pr:6165 iteration:1 source:6100 sha:0123456789abcdef -->\n",
-		"footer not last":        autopilotFixTestBody + autopilotFixTestFooter + "\n\ntrailing prose\n",
-		"hand-filed footer only": "Please fix the thing.\n\n" + autopilotFixTestFooter + "\n",
-		"footer in code fence":   "## Task\n\n```\n" + autopilotFixTestFooter + "\n```\n",
+		"no footer":            "## Task\n\nFix the CI failures.\n",
+		"footer missing sha":   autopilotFixTestBody + "<!-- autopilot-meta branch:pilot/GH-6100 pr:6165 iteration:1 source:6100 -->\n",
+		"footer missing pr":    autopilotFixTestBody + "<!-- autopilot-meta branch:pilot/GH-6100 iteration:1 source:6100 sha:0123456789abcdef -->\n",
+		"footer missing src":   autopilotFixTestBody + "<!-- autopilot-meta branch:pilot/GH-6100 pr:6165 iteration:1 sha:0123456789abcdef -->\n",
+		"footer missing brnch": autopilotFixTestBody + "<!-- autopilot-meta pr:6165 iteration:1 source:6100 sha:0123456789abcdef -->\n",
+		"footer not last":      autopilotFixTestBody + autopilotFixTestFooter + "\n\ntrailing prose\n",
+		"footer in code fence": "## Task\n\n```\n" + autopilotFixTestFooter + "\n```\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			sp := &sdkPreFlightJudge{judge: executor.NewIntentJudge("/nonexistent/gh-6182-claude-binary")}
+			sp, calls := autopilotFixLabelServer(t, []map[string]any{
+				autopilotFixIssue("title", body, "autopilot-fix"),
+			}, http.StatusOK)
 			if _, err := sp.JudgeIssue(context.Background(), "title", body, ""); err == nil {
 				t.Error("expected the judge to be invoked (error from missing binary), got a bypass")
+			}
+			if n := calls.Load(); n != 0 {
+				t.Errorf("label lookup ran %d times for a body without a valid footer", n)
 			}
 		})
 	}
