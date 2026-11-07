@@ -2850,7 +2850,6 @@ func TestRunner_saveLogEntry_WritesEntry(t *testing.T) {
 	runner.saveLogEntry("exec-42", "info", "Branch created: pilot/GH-42")
 	runner.saveLogEntry("exec-42", "info", "Implementing changes...")
 	runner.saveLogEntry("exec-42", "info", "Running tests...")
-	runner.saveLogEntry("exec-42", "info", "Running self-review...")
 	runner.saveLogEntry("exec-42", "info", "PR created: https://github.com/test/repo/pull/42")
 	runner.saveLogEntry("exec-42", "info", "Task completed successfully")
 
@@ -2860,8 +2859,8 @@ func TestRunner_saveLogEntry_WritesEntry(t *testing.T) {
 		t.Fatalf("failed to get recent logs: %v", err)
 	}
 
-	if len(logs) != 7 {
-		t.Fatalf("expected 7 log entries, got %d", len(logs))
+	if len(logs) != 6 {
+		t.Fatalf("expected 6 log entries, got %d", len(logs))
 	}
 
 	// Logs are returned newest-first
@@ -2879,7 +2878,7 @@ func TestRunner_saveLogEntry_WritesEntry(t *testing.T) {
 	}
 
 	// Verify first entry (oldest, at end of list)
-	if logs[6].Message != "Task started: Add feature X" {
+	if logs[5].Message != "Task started: Add feature X" {
 		t.Errorf("oldest log message = %q, want %q", logs[6].Message, "Task started: Add feature X")
 	}
 }
@@ -3029,18 +3028,16 @@ func TestRunner_recordExecutionEvent_WritesEvent(t *testing.T) {
 	}
 }
 
-// --- GH-1955: Self-review pattern extraction ---
-
-// mockSelfReviewBackend implements Backend for self-review tests.
-type mockSelfReviewBackend struct {
+// mockDoneBackend is a minimal Backend that returns a fixed output and records the last ExecuteOptions.
+type mockDoneBackend struct {
 	mu       sync.Mutex
 	output   string
 	lastOpts ExecuteOptions
 }
 
-func (m *mockSelfReviewBackend) Name() string      { return "mock" }
-func (m *mockSelfReviewBackend) IsAvailable() bool { return true }
-func (m *mockSelfReviewBackend) Execute(_ context.Context, opts ExecuteOptions) (*BackendResult, error) {
+func (m *mockDoneBackend) Name() string      { return "mock" }
+func (m *mockDoneBackend) IsAvailable() bool { return true }
+func (m *mockDoneBackend) Execute(_ context.Context, opts ExecuteOptions) (*BackendResult, error) {
 	m.mu.Lock()
 	m.lastOpts = opts
 	m.mu.Unlock()
@@ -3050,7 +3047,7 @@ func (m *mockSelfReviewBackend) Execute(_ context.Context, opts ExecuteOptions) 
 func TestLocalModeSkipsNavigatorAutoInit(t *testing.T) {
 	projectDir := t.TempDir()
 
-	backend := &mockSelfReviewBackend{output: "done"}
+	backend := &mockDoneBackend{output: "done"}
 	runner := NewRunnerWithBackend(backend)
 	runner.config = &BackendConfig{
 		UseWorktree: boolPtr(false),
@@ -3108,7 +3105,7 @@ func TestNavigatorAutoInit_HonoursProjectNavigatorFlag(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			projectDir := t.TempDir()
 
-			backend := &mockSelfReviewBackend{output: "done"}
+			backend := &mockDoneBackend{output: "done"}
 			runner := NewRunnerWithBackend(backend)
 			runner.config = &BackendConfig{UseWorktree: boolPtr(false), Navigator: &NavigatorConfig{AutoInit: true}}
 			runner.SetRecordingEnabled(false)
@@ -3238,7 +3235,7 @@ func TestLocalModeRunsQualityGates(t *testing.T) {
 	// deps are pre-installed so OOM risk is mitigated).
 	projectDir := t.TempDir()
 
-	backend := &mockSelfReviewBackend{output: "done"}
+	backend := &mockDoneBackend{output: "done"}
 	runner := NewRunnerWithBackend(backend)
 	runner.config = &BackendConfig{UseWorktree: boolPtr(false)}
 	runner.SetRecordingEnabled(false)
@@ -4323,7 +4320,7 @@ func TestRunner_NoChanges_NoDecline(t *testing.T) {
 func TestExecute_PopulatesEffortAndComplexityOnResult(t *testing.T) {
 	projectDir := t.TempDir()
 
-	backend := &mockSelfReviewBackend{output: "done"}
+	backend := &mockDoneBackend{output: "done"}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
 	// Enable effort routing so SelectEffort returns a non-empty string.

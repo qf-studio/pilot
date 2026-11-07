@@ -1298,10 +1298,9 @@ type Runner struct {
 	// GH-1599: Execution log store for milestone entries
 	logStore *memory.Store // Optional log store for writing execution milestones
 	// GH-1811: Learning system (self-improvement)
-	learningLoop        LearningRecorder            // Optional learning loop for pattern extraction + feedback
-	patternContext      *PatternContext             // Optional pattern context for prompt injection
-	selfReviewExtractor SelfReviewExtractor         // Optional extractor for self-review pattern learning (GH-1955)
-	outcomeTracker      *memory.ModelOutcomeTracker // Optional outcome tracker for model escalation (GH-1991)
+	learningLoop   LearningRecorder            // Optional learning loop for pattern extraction + feedback
+	patternContext *PatternContext             // Optional pattern context for prompt injection
+	outcomeTracker *memory.ModelOutcomeTracker // Optional outcome tracker for model escalation (GH-1991)
 	// GH-2015: Knowledge graph integration for execution learnings
 	knowledgeGraph KnowledgeGraphRecorder // Optional knowledge graph for cross-project learnings
 	// GH-2256: Dry-run mode to suppress real gh CLI calls (issue close/comment)
@@ -1997,11 +1996,6 @@ func (r *Runner) HasLearningLoop() bool { return r.learningLoop != nil }
 
 // HasPatternContext reports whether a pattern context is wired.
 func (r *Runner) HasPatternContext() bool { return r.patternContext != nil }
-
-// SetSelfReviewExtractor sets the extractor for self-review pattern learning (GH-1955).
-func (r *Runner) SetSelfReviewExtractor(e SelfReviewExtractor) {
-	r.selfReviewExtractor = e
-}
 
 // SetOutcomeTracker sets the outcome tracker for model escalation (GH-1991).
 func (r *Runner) SetOutcomeTracker(t *memory.ModelOutcomeTracker) {

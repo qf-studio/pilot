@@ -1537,7 +1537,6 @@ Examples:
 
 					gwRunner.SetLearningLoop(gwLearningLoop)
 					gwRunner.SetPatternContext(gwPatternContext)
-					gwRunner.SetSelfReviewExtractor(gwExtractor)
 
 					if gwAutopilotController != nil {
 						gwAutopilotController.SetLearningLoop(gwLearningLoop)
@@ -2811,7 +2810,6 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 			runner.SetLearningLoop(learningLoop)
 			runner.SetPatternContext(patternContext)
-			runner.SetSelfReviewExtractor(extractor)
 
 			// GH-1823: Wire review learning into autopilot controllers
 			for _, ctrl := range autopilotControllers {

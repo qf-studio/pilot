@@ -19,7 +19,7 @@ func TestDirectPath_ClaudeStartedAndImplementationStartedEvents(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	backend := &mockSelfReviewBackend{output: "done"}
+	backend := &mockDoneBackend{output: "done"}
 	runner := NewRunnerWithBackend(backend)
 	runner.config = &BackendConfig{}
 	runner.SetRecordingEnabled(false)
@@ -357,7 +357,7 @@ func TestDirectPath_QualityGateRetryEndToEnd(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	backend := &mockSelfReviewBackend{output: "done"}
+	backend := &mockDoneBackend{output: "done"}
 	runner := NewRunnerWithBackend(backend)
 	runner.config = &BackendConfig{}
 	runner.SetRecordingEnabled(false)
