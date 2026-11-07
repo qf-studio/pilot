@@ -1125,6 +1125,20 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 			slog.String("source", source),
 		)
 	}
+	// GH-6183: an owner-death re-armed source carries its dead fix issue's
+	// branch in a comment footer, not in the body — continue that branch
+	// (verified on the remote) instead of cutting a fresh worktree from main.
+	// Only reached when the body footer did not already resolve a branch.
+	if fromPR == 0 && specClient != nil && repoOwner != "" && repoName != "" && hasRetryFamilyLabel(liveLabels) {
+		if rb, rp, rs, ok := resolveRearmBranch(ctx, specClient, repoOwner, repoName, issueNum, projectPath, taskID); ok {
+			branchName, fromPR, fixFromSHA = rb, rp, rs
+			logging.WithComponent("github").Info("Reusing branch from owner-death re-arm comment",
+				slog.String("task_id", taskID),
+				slog.String("branch", branchName),
+				slog.Int("from_pr", fromPR),
+			)
+		}
+	}
 	// GH-5421: record the borrowed branch/origin-PR before dispatch so the
 	// primary SDK OnPRCreated hook (githubOnPRCreatedHandler in
 	// poller_github.go) can route this task's resulting PR to

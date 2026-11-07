@@ -621,7 +621,7 @@ func TestController_RearmDeadOwnerSource_StripsInProgress(t *testing.T) {
 	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
 	c.SetAlertsEngine(&fakeAlertSink{})
 
-	c.rearmDeadOwnerSource(context.Background(), source, "its designated fix issue #200 died (declined)")
+	c.rearmDeadOwnerSource(context.Background(), source, "its designated fix issue #200 died (declined)", nil)
 
 	if len(srv.addLabelCalls) != 1 || srv.addLabelCalls[0] != "100:"+github.LabelRetryReady {
 		t.Errorf("expected exactly one add of pilot-retry-ready, got %v", srv.addLabelCalls)

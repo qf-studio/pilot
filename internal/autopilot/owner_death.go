@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/alerts"
@@ -477,6 +478,9 @@ func (c *Controller) ReactToDeclinedFixIssue(ctx context.Context, issueNumber in
 func (c *Controller) reactToDeadFixIssue(ctx context.Context, deadIssue *github.Issue, detail string) {
 	// GH-5937: the issue is dead whether or not it traces back to a source.
 	c.forgetBorrowedBranchForIssue(deadIssue.Number)
+	// GH-6183: read the dead issue's branch/pr/sha before it is lost, so a
+	// re-armed source continues that branch.
+	carry, hasCarry := parseRearmCarry(deadIssue.Body)
 	sourceNum, ok := parseFixIssueSource(deadIssue.Body)
 	if !ok {
 		// Not a Pilot-spawned fix issue (or body doesn't carry the
@@ -528,13 +532,99 @@ func (c *Controller) reactToDeadFixIssue(ctx context.Context, deadIssue *github.
 		c.escalateDeadOwnerSource(ctx, source, reasonMsg)
 		return
 	}
-	c.rearmDeadOwnerSource(ctx, source, reasonMsg)
+	var carryPtr *rearmCarry
+	if hasCarry {
+		carryPtr = &carry
+	}
+	c.rearmDeadOwnerSource(ctx, source, reasonMsg, carryPtr)
+}
+
+// rearmCarry is the dead fix issue's branch/PR/sha, read from its
+// autopilot-meta footer, that a re-armed source's retry continues instead of
+// restarting from the default branch (GH-6183).
+type rearmCarry struct {
+	branch    string
+	pr        int
+	sha       string
+	iteration int // the dead fix issue's own iteration; the re-arm footer carries +1
+}
+
+var (
+	fixMetaBlockRe     = regexp.MustCompile(`<!--\s*autopilot-meta\b(.*?)-->`)
+	fixMetaBranchRe    = regexp.MustCompile(`\bbranch:(\S+)`)
+	fixMetaSHARe       = regexp.MustCompile(`\bsha:([0-9a-fA-F]{7,40})\b`)
+	fixMetaIterationRe = regexp.MustCompile(`\biteration:(\d+)`)
+	// fixMetaBranchOKRe mirrors cmd/pilot's isValidAutopilotBranch: only a
+	// ref-safe pilot/ branch is ever handed on to a dispatcher.
+	fixMetaBranchOKRe = regexp.MustCompile(`^pilot/[A-Za-z0-9._/-]+$`)
+)
+
+// parseRearmCarry reads branch, pr, sha and iteration from a dead fix issue's
+// autopilot-meta footer. ok is false when the footer carries no usable branch,
+// in which case the re-arm degrades to the pre-GH-6183 reason-only comment.
+func parseRearmCarry(body string) (rearmCarry, bool) {
+	m := fixMetaBlockRe.FindStringSubmatch(body)
+	if len(m) < 2 {
+		return rearmCarry{}, false
+	}
+	meta := m[1]
+	bm := fixMetaBranchRe.FindStringSubmatch(meta)
+	if len(bm) < 2 || !fixMetaBranchOKRe.MatchString(bm[1]) ||
+		strings.Contains(bm[1], "..") || strings.HasSuffix(bm[1], "/") || strings.HasSuffix(bm[1], ".lock") {
+		return rearmCarry{}, false
+	}
+	carry := rearmCarry{branch: bm[1]}
+	if n, ok := parseFixIssuePR(body); ok {
+		carry.pr = n
+	}
+	if sm := fixMetaSHARe.FindStringSubmatch(meta); len(sm) >= 2 {
+		carry.sha = sm[1]
+	}
+	if im := fixMetaIterationRe.FindStringSubmatch(meta); len(im) >= 2 {
+		carry.iteration, _ = strconv.Atoi(im[1])
+	}
+	return carry, true
+}
+
+// rearmCommentFooter renders the human line plus the machine-readable footer
+// appended to the re-arm comment, in the autopilot-meta shape the dispatcher
+// already parses. The footer is the last line, as the dispatcher's parser
+// requires.
+func rearmCommentFooter(carry rearmCarry, source int) string {
+	var human strings.Builder
+	fmt.Fprintf(&human, "Retry continues branch `%s`", carry.branch)
+	if carry.sha != "" {
+		sha7 := carry.sha
+		if len(sha7) > 7 {
+			sha7 = sha7[:7]
+		}
+		fmt.Fprintf(&human, " at `%s`", sha7)
+	}
+	if carry.pr > 0 {
+		fmt.Fprintf(&human, "; the closed PR #%d holds the review history", carry.pr)
+	}
+	human.WriteString(".")
+
+	meta := "branch:" + carry.branch
+	if carry.pr > 0 {
+		meta += fmt.Sprintf(" pr:%d", carry.pr)
+	}
+	meta += fmt.Sprintf(" iteration:%d source:%d", carry.iteration+1, source)
+	if carry.sha != "" {
+		meta += " sha:" + carry.sha
+	}
+	return fmt.Sprintf("\n\n%s\n\n<!-- autopilot-meta %s -->", human.String(), meta)
 }
 
 // rearmDeadOwnerSource restores pilot-retry-ready on the source issue so it
 // re-enters the normal retry ladder, mirroring the relabeling notifyExternalClose
 // already performs for the reactive-close path (controller.go).
-func (c *Controller) rearmDeadOwnerSource(ctx context.Context, source *github.Issue, reasonMsg string) {
+//
+// GH-6183: a non-nil carry hands the dead fix issue's branch to the source —
+// recorded in the borrowed-branch registry under the source's task ID and
+// rendered as an autopilot-meta footer in the re-arm comment — so the retry
+// continues that branch instead of building a fresh worktree from main.
+func (c *Controller) rearmDeadOwnerSource(ctx context.Context, source *github.Issue, reasonMsg string, carry *rearmCarry) {
 	// GH-5249: strip pilot-superseded too — the durable-claim fallback above
 	// means `designated` can now be reached via a source that hand off (not
 	// pilot-failed) designated to the dead fix issue, which carries
@@ -572,6 +662,12 @@ func (c *Controller) rearmDeadOwnerSource(ctx context.Context, source *github.Is
 		"\U0001F501 **Owner-death recovery**: %s. Re-armed for automatic retry (`%s` restored). `%s` removed so the poller's retry rung sees the issue.",
 		reasonMsg, github.LabelRetryReady, github.LabelInProgress,
 	)
+	if carry != nil {
+		if c.borrowedBranchLookup != nil && source.Number > 0 {
+			c.borrowedBranchLookup.RecordBorrowedBranch(fmt.Sprintf("GH-%d", source.Number), carry.branch, carry.pr)
+		}
+		comment += rearmCommentFooter(*carry, source.Number)
+	}
 	if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, source.Number, comment); err != nil {
 		c.log.Warn("owner-death: failed to post re-arm comment", "issue", source.Number, "error", err)
 	}
