@@ -50,8 +50,10 @@ func (r *Runner) onBorrowedBranch(task *Task) bool {
 	if task.FromPR > 0 {
 		return true
 	}
-	_, _, ok := r.BorrowedBranch(task.ID)
-	return ok
+	// An entry on the task's own pilot/<ID> branch is a sweep-protection record
+	// (owner-death re-arm, GH-6198), not a borrow of another PR's head.
+	branch, _, ok := r.BorrowedBranch(task.ID)
+	return ok && branch != "pilot/"+task.ID
 }
 
 // prePRHoldConfig returns the effective pre_pr_review config (the zero value when unset).

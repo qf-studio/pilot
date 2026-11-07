@@ -658,13 +658,22 @@ func rearmCommentFooter(carry rearmCarry, source int) string {
 
 // applyRearmCarry hands a dead fix issue's branch to its source and returns the
 // footer to append to the re-arm comment. The borrowed-branch registry entry is
-// recorded only when the branch differs from the source's own pilot/GH-N: the
-// fix-issue footer usually names the source PR's own branch, and the dispatcher
-// deliberately skips such self-entries (handlers.go: branchName != pilot/taskID),
-// so recording one would only route the retry's PR through the fix-issue path.
+// always recorded: the stale-branch sweep protects only registry branches and
+// open fix-issue footers (branch_sweeper.go), and the dead fix issue is closed,
+// so without the entry the branch is unprotected between the re-arm and the
+// retry being queued. When the branch is the source's own pilot/GH-N (the usual
+// case) the entry carries fromPR=0: the dispatcher deliberately skips such
+// self-entries (handlers.go: branchName != pilot/taskID) and every routing gate
+// that sends a PR through the fix-issue path requires fromPR > 0 (and the
+// pre-PR hold bypass ignores an entry on the task's own branch), so the entry
+// protects the branch without re-homing the retry's PR.
 func (c *Controller) applyRearmCarry(sourceNum int, carry rearmCarry) string {
-	if c.borrowedBranchLookup != nil && sourceNum > 0 && carry.branch != fmt.Sprintf("pilot/GH-%d", sourceNum) {
-		c.borrowedBranchLookup.RecordBorrowedBranch(fmt.Sprintf("GH-%d", sourceNum), carry.branch, carry.pr)
+	if c.borrowedBranchLookup != nil && sourceNum > 0 {
+		fromPR := carry.pr
+		if carry.branch == fmt.Sprintf("pilot/GH-%d", sourceNum) {
+			fromPR = 0
+		}
+		c.borrowedBranchLookup.RecordBorrowedBranch(fmt.Sprintf("GH-%d", sourceNum), carry.branch, fromPR)
 	}
 	return rearmCommentFooter(carry, sourceNum)
 }

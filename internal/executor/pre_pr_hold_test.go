@@ -440,3 +440,18 @@ func TestNeedsHumanHold_NotRetriedByDispatcher(t *testing.T) {
 // PrePRHoldReasonForTest lets the external test package (which can import
 // internal/briefs, an import cycle for this one) read the hold reason.
 var PrePRHoldReasonForTest = prePRHoldReason
+
+// GH-6198: a registry entry on the task's own pilot/<ID> branch (recorded by the
+// owner-death re-arm to protect it from the stale-branch sweep) is not a borrow.
+func TestOnBorrowedBranch_SelfEntryIsNotABorrow(t *testing.T) {
+	r := NewRunner()
+	task := &Task{ID: "GH-100"}
+	r.RecordBorrowedBranch("GH-100", "pilot/GH-100", 0)
+	if r.onBorrowedBranch(task) {
+		t.Error("self-branch entry must not count as a borrowed branch")
+	}
+	r.RecordBorrowedBranch("GH-100", "pilot/GH-150", 0)
+	if !r.onBorrowedBranch(task) {
+		t.Error("an entry on another branch is a borrow")
+	}
+}
