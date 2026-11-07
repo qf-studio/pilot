@@ -11601,6 +11601,10 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 		// double-dispatch work a follow-up issue is already doing).
 		issueLabel := github.LabelRetryReady
 		nextSteps := "The issue has been marked pilot-retry-ready and will be retried automatically."
+		// GH-6191: the dead owner's branch, carried on the retry-ready comment
+		// below so this path continues it like reactToDeadFixIssue does.
+		var deadOwnerCarry *rearmCarry
+		var deadOwnerReason string
 		if prState.TerminalLabel != "" {
 			issueLabel = prState.TerminalLabel
 			nextSteps = "This issue will not be retried automatically under its own number — see the reason above for what happens next."
@@ -11648,6 +11652,9 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 					c.log.Warn("owner-death: claimed fix issue is dead, re-arming source instead of stranding it",
 						"pr", prState.PRNumber, "fix_issue", fixIssue, "source", prState.IssueNumber)
 					c.fireOwnerDeathAlert(prState.IssueNumber, reasonMsg, "rearmed")
+					if carry, ok := parseRearmCarry(fixGH.Body); ok {
+						deadOwnerCarry, deadOwnerReason = &carry, reasonMsg
+					}
 				default:
 					issueLabel = github.LabelFailed
 					nextSteps = fmt.Sprintf("This issue will not be retried automatically under its own number — fix issue #%d already owns this work.", fixIssue)
@@ -11773,6 +11780,12 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 		// there's no retry/label state to protect, but the PR-closed context
 		// is still useful history on the issue.
 		issueComment += "\n\n" + nextSteps
+		// GH-6191: only a comment that actually re-queues the source carries the
+		// branch; a closed or exhausted source keeps the plain text.
+		if deadOwnerCarry != nil && issueLabel == github.LabelRetryReady && !issueAlreadyClosed && !exhaustedParked {
+			issueComment += fmt.Sprintf("\n\n\U0001F501 **%s**: %s.", RearmCommentMarker, deadOwnerReason) +
+				c.applyRearmCarry(prState.IssueNumber, *deadOwnerCarry)
+		}
 		if _, cerr := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, issueComment); cerr != nil {
 			c.log.Warn("failed to comment on issue after PR close", "issue", prState.IssueNumber, "error", cerr)
 		}
