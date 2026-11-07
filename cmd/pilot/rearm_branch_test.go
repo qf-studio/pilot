@@ -5,18 +5,23 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"strconv"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/qf-studio/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/logging"
 	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 const rearmSHA = "b57d141c0ffee0123456789abcdef0123456789a"
 
+// rearmComment renders the comment the way the producer does: the heading from
+// autopilot.RearmCommentMarker and the footer from the producer's own renderer,
+// so a drift in either breaks the consumer tests (GH-6191).
 func rearmComment(source int, branch string) string {
-	return "\U0001F501 **Owner-death recovery**: its designated fix issue #200 died. Re-armed.\n\n" +
-		"Retry continues branch `" + branch + "` at `b57d141`; the closed PR #6165 holds the review history.\n\n" +
-		"<!-- autopilot-meta branch:" + branch + " pr:6165 iteration:2 source:" + strconv.Itoa(source) + " sha:" + rearmSHA + " -->"
+	return "\U0001F501 **" + autopilot.RearmCommentMarker + "**: its designated fix issue #200 died. Re-armed." +
+		autopilot.RenderRearmCommentFooter(branch, 6165, rearmSHA, 1, source)
 }
 
 func TestParseRearmFooterFromComments(t *testing.T) {
@@ -64,7 +69,10 @@ func (f fakeCommentLister) ListIssueComments(context.Context, string, string, in
 	return out, f.err
 }
 
-func TestResolveRearmBranch(t *testing.T) {
+// rearmRemoteFixture returns a local clone whose origin carries main and
+// pilot/GH-100.
+func rearmRemoteFixture(t *testing.T) string {
+	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -87,7 +95,11 @@ func TestResolveRearmBranch(t *testing.T) {
 	git(local, "commit", "-m", "initial")
 	git(local, "push", "-u", "origin", "main")
 	git(local, "push", "origin", "main:refs/heads/pilot/GH-100")
+	return local
+}
 
+func TestResolveRearmBranch(t *testing.T) {
+	local := rearmRemoteFixture(t)
 	ctx := context.Background()
 	t.Run("branch on remote is reused", func(t *testing.T) {
 		b, pr, sha, ok := resolveRearmBranch(ctx, fakeCommentLister{bodies: []string{rearmComment(100, "pilot/GH-100")}}, "o", "r", 100, local, "GH-100")
@@ -103,6 +115,117 @@ func TestResolveRearmBranch(t *testing.T) {
 	t.Run("comment list error falls back", func(t *testing.T) {
 		if _, _, _, ok := resolveRearmBranch(ctx, fakeCommentLister{err: errors.New("boom")}, "o", "r", 100, local, "GH-100"); ok {
 			t.Error("expected fallback on a comment-list error")
+		}
+	})
+}
+
+// captureLogs routes the daemon logger to a temp file for the test and returns
+// a reader for what was logged.
+func captureLogs(t *testing.T) func() string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "daemon.log")
+	if err := logging.Init(&logging.Config{Level: "debug", Format: "text", Output: path}); err != nil {
+		t.Fatalf("logging.Init: %v", err)
+	}
+	t.Cleanup(func() { _ = logging.Init(logging.DefaultConfig()) })
+	return func() string {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read log: %v", err)
+		}
+		return string(b)
+	}
+}
+
+// mutation pin: the producer's rendered comment is not parsed back by the consumer (format drift) -> this test fails
+func TestRearmCommentRoundTripsProducerFormat(t *testing.T) {
+	body := rearmComment(100, "pilot/GH-6168")
+	if !strings.HasSuffix(strings.TrimSpace(body), "-->") {
+		t.Fatalf("producer footer must be the last line:\n%s", body)
+	}
+	branch, pr, sha, ok := parseRearmFooterFromComments([]string{body}, 100)
+	if !ok || branch != "pilot/GH-6168" || pr != 6165 || sha != rearmSHA {
+		t.Fatalf("consumer read (%q, %d, %q, %v) from the producer's comment:\n%s", branch, pr, sha, ok, body)
+	}
+	if !strings.Contains(body, rearmCommentMarker) {
+		t.Errorf("producer comment lacks the marker the consumer requires:\n%s", body)
+	}
+}
+
+// mutation pin: the newest re-arm comment is honoured on every later retry, not only the one that follows it -> this test fails
+func TestParseRearmFooterFromComments_StaleAfterLaterExecution(t *testing.T) {
+	rearm := rearmComment(100, "pilot/GH-2")
+	tests := []struct {
+		name   string
+		bodies []string
+		ok     bool
+	}{
+		{"retry directly after the re-arm", []string{"chatter", rearm}, true},
+		{"task already started after the re-arm", []string{rearm, "\U0001F916 **Pilot started working on this issue**\n\nTask ID: `GH-100`"}, false},
+		{"another path re-queued the source afterwards", []string{rearm, "PR #7 was closed without merging: reviewer closed it\n\nThe issue has been marked pilot-retry-ready and will be retried automatically."}, false},
+		{"a newer re-arm comment is honoured again", []string{rearm, "\U0001F916 **Pilot started working on this issue**", rearmComment(100, "pilot/GH-3")}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, _, _, ok := parseRearmFooterFromComments(tt.bodies, 100); ok != tt.ok {
+				t.Errorf("ok = %v, want %v", ok, tt.ok)
+			}
+		})
+	}
+}
+
+// mutation pin: a re-arm footer without pr: silently falls back to main -> this test fails
+func TestResolveRearmBranch_NoPRLogsFallback(t *testing.T) {
+	local := rearmRemoteFixture(t)
+	read := captureLogs(t)
+	noPR := "\U0001F501 **" + autopilot.RearmCommentMarker + "**: died." + autopilot.RenderRearmCommentFooter("pilot/GH-100", 0, "", 1, 100)
+
+	if _, _, _, ok := resolveRearmBranch(context.Background(), fakeCommentLister{bodies: []string{noPR}}, "o", "r", 100, local, "GH-100"); ok {
+		t.Fatal("a footer without pr: must keep the from-main path")
+	}
+	if got := read(); !strings.Contains(got, "re-arm footer carries no PR number, starting from main") {
+		t.Errorf("fallback not logged, got %q", got)
+	}
+}
+
+// mutation pin: the handler wiring (retry-family gate and branch/PR/sha assignment) is not driven by any test -> this test fails
+func TestContinueRearmBranch(t *testing.T) {
+	local := rearmRemoteFixture(t)
+	ctx := context.Background()
+	lister := fakeCommentLister{bodies: []string{rearmComment(100, "pilot/GH-100")}}
+	const own = "pilot/GH-100x"
+
+	tests := []struct {
+		name       string
+		labels     []string
+		fromPR     int
+		owner      string
+		wantBranch string
+		wantPR     int
+		wantSHA    string
+	}{
+		{"retry-family label continues the re-arm branch", []string{"pilot", "pilot-retry-1"}, 0, "o", "pilot/GH-100", 6165, rearmSHA},
+		{"retry-ready label continues the re-arm branch", []string{"pilot-retry-ready"}, 0, "o", "pilot/GH-100", 6165, rearmSHA},
+		{"no retry-family label keeps the task branch", []string{"pilot", "pilot-in-progress"}, 0, "o", own, 0, ""},
+		{"a body footer that already resolved a branch wins", []string{"pilot-retry-ready"}, 55, "o", own, 55, ""},
+		{"unknown repo owner keeps the task branch", []string{"pilot-retry-ready"}, 0, "", own, 0, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, pr, sha := continueRearmBranch(ctx, lister, tt.owner, "r", 100, local, "GH-100", tt.labels, own, tt.fromPR, "")
+			if b != tt.wantBranch || pr != tt.wantPR || sha != tt.wantSHA {
+				t.Errorf("got (%q, %d, %q), want (%q, %d, %q)", b, pr, sha, tt.wantBranch, tt.wantPR, tt.wantSHA)
+			}
+		})
+	}
+
+	t.Run("handler routes through continueRearmBranch after the body footer", func(t *testing.T) {
+		body := githubFuncBody(t, "handlers.go", "func handleGithubIssueEventSDK(")
+		footerIdx := strings.Index(body, "resolveAutopilotFixBranch(ev.Labels, ev.Body)")
+		rearmIdx := strings.Index(body, "continueRearmBranch(ctx, specClient, repoOwner, repoName, issueNum, projectPath, taskID, liveLabels, branchName, fromPR, fixFromSHA)")
+		taskIdx := strings.Index(body, "task := &executor.Task{")
+		if footerIdx < 0 || rearmIdx < footerIdx || taskIdx < rearmIdx {
+			t.Error("handleGithubIssueEventSDK must call continueRearmBranch between the body-footer resolution and the Task construction")
 		}
 	})
 }

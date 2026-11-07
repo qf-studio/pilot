@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
 	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
@@ -16,7 +17,16 @@ import (
 // (internal/autopilot/owner_death.go) posts; only such comments are trusted as
 // a source of a continuation branch, so a stray autopilot-meta quote in a human
 // comment can never steer a retry onto another branch (GH-6183).
-const rearmCommentMarker = "Owner-death recovery"
+const rearmCommentMarker = autopilot.RearmCommentMarker
+
+// Comments that begin or re-queue a later execution. A re-arm comment is
+// honoured only by the retry that directly follows it (GH-6191): once either
+// appears after it, that retry has run or another path has re-armed the source
+// on its own terms, and the old branch must not be revived.
+const (
+	taskStartedCommentMarker = "Pilot started working on this issue"
+	plainRetryCommentMarker  = "was closed without merging"
+)
 
 var autopilotSourceFieldRe = regexp.MustCompile(`\bsource:(\d+)`)
 
@@ -39,10 +49,22 @@ func hasRetryFamilyLabel(labels []string) bool {
 	return false
 }
 
+// rearmSuperseded reports whether any body after a re-arm comment starts or
+// re-queues a later execution (see taskStartedCommentMarker).
+func rearmSuperseded(later []string) bool {
+	for _, b := range later {
+		if strings.Contains(b, taskStartedCommentMarker) || strings.Contains(b, plainRetryCommentMarker) {
+			return true
+		}
+	}
+	return false
+}
+
 // parseRearmFooterFromComments returns the branch/PR/sha of the latest owner-
 // death re-arm comment for issueNum, oldest-to-newest bodies in. A comment only
 // counts when it is a re-arm comment, its footer parses (GH-5390 validation via
-// parseAutopilotBranch), and its source: field names issueNum.
+// parseAutopilotBranch), its source: field names issueNum, and no later comment
+// started or re-queued an execution (GH-6191).
 func parseRearmFooterFromComments(bodies []string, issueNum int) (branch string, pr int, sha string, ok bool) {
 	for i := len(bodies) - 1; i >= 0; i-- {
 		body := bodies[i]
@@ -56,6 +78,9 @@ func parseRearmFooterFromComments(bodies []string, issueNum int) (branch string,
 		footer := extractAutopilotMetaFooter(body)
 		if m := autopilotSourceFieldRe.FindStringSubmatch(footer); len(m) < 2 || m[1] != strconv.Itoa(issueNum) {
 			continue
+		}
+		if rearmSuperseded(bodies[i+1:]) {
+			return "", 0, "", false
 		}
 		return b, parseAutopilotPR(body), parseAutopilotSHA(body), true
 	}
@@ -81,11 +106,36 @@ func resolveRearmBranch(ctx context.Context, lister issueCommentLister, owner, r
 		}
 	}
 	branch, pr, sha, ok = parseRearmFooterFromComments(bodies, issueNum)
-	if !ok || pr <= 0 {
+	if !ok {
+		return "", 0, "", false
+	}
+	if pr <= 0 {
+		logging.WithComponent("github").Warn("re-arm footer carries no PR number, starting from main",
+			slog.String("task_id", taskID), slog.String("branch", branch))
 		return "", 0, "", false
 	}
 	if !executor.NewGitOperations(projectPath).RearmBranchAvailable(ctx, branch) {
 		return "", 0, "", false
 	}
 	return branch, pr, sha, true
+}
+
+// continueRearmBranch is the dispatch-time wiring (GH-6183): when the body
+// footer did not already resolve a branch (fromPR == 0) and the issue carries a
+// retry-family label, an owner-death re-arm comment may hand the retry the dead
+// fix issue's branch. Returns the inputs unchanged on any miss.
+func continueRearmBranch(ctx context.Context, lister issueCommentLister, owner, repo string, issueNum int, projectPath, taskID string, liveLabels []string, branchName string, fromPR int, fixFromSHA string) (string, int, string) {
+	if fromPR != 0 || owner == "" || repo == "" || !hasRetryFamilyLabel(liveLabels) {
+		return branchName, fromPR, fixFromSHA
+	}
+	rb, rp, rs, ok := resolveRearmBranch(ctx, lister, owner, repo, issueNum, projectPath, taskID)
+	if !ok {
+		return branchName, fromPR, fixFromSHA
+	}
+	logging.WithComponent("github").Info("Reusing branch from owner-death re-arm comment",
+		slog.String("task_id", taskID),
+		slog.String("branch", rb),
+		slog.Int("from_pr", rp),
+	)
+	return rb, rp, rs
 }
