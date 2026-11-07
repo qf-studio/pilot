@@ -3791,7 +3791,7 @@
         ]
       },
       "TASK-640": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-640-credential-health-console.md",
+        "path": ".agent/tasks/archive/TASK-640-credential-health-console.md",
         "title": "Credential health — the console re-checks the org's own Anthropic key and tracker tokens, shows a truthful status, and gates chat on a dead key",
         "status": "completed",
         "concepts": [
@@ -3869,7 +3869,7 @@
         ]
       },
       "TASK-644": {
-        "path": ".agent/tasks/TASK-644-desktop-content-container-figma-grid.md",
+        "path": ".agent/tasks/archive/TASK-644-desktop-content-container-figma-grid.md",
         "title": "Desktop content container per the Figma layout grid — 1072 px centered, 6 × 162 px columns, 20 px gutter",
         "status": "completed",
         "concepts": [
