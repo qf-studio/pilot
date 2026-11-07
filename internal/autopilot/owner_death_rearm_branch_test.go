@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/testutil"
@@ -187,9 +188,10 @@ func TestReactToDeadFixIssue_ReplayWorktreeHeadIsDeadBranchSha(t *testing.T) {
 	c.reactToDeadFixIssue(ctx, dead, "declined at preflight")
 
 	// The retry: branch and sha both from the comment footer. The fix issue's
-	// branch is the source's own, so the dispatcher gets no registry entry.
-	if len(reg.recorded) != 0 {
-		t.Errorf("self-branch carry must not be registered, got %+v", reg.recorded)
+	// branch is the source's own, so the entry carries no origin PR (inert for
+	// the dispatcher's routing) but still protects the branch from the sweep.
+	if len(reg.recorded) != 1 || reg.recorded[0] != (recordedBorrowedBranch{taskID: "GH-100", branch: "pilot/GH-100"}) {
+		t.Errorf("self-branch carry must be registered with fromPR=0, got %+v", reg.recorded)
 	}
 	if len(srv.comments) != 1 {
 		t.Fatalf("expected the re-arm comment, got %v", srv.comments)
@@ -243,8 +245,8 @@ func TestParseRearmCarry_OnlyTrustsLastLineFooter(t *testing.T) {
 	}
 }
 
-// mutation pin: the registry entry is recorded for a self-branch carry (GH-N -> pilot/GH-N) -> this test fails
-func TestRearmDeadOwnerSource_SelfBranchCarryIsNotRegistered(t *testing.T) {
+// mutation pin: the self-branch carry is not recorded in the registry (or is recorded with the origin PR) -> this test fails
+func TestRearmDeadOwnerSource_SelfBranchCarryIsRegisteredInert(t *testing.T) {
 	srv := newOwnerDeathGHServer()
 	source := failedSource(100)
 	srv.issues[100] = source
@@ -252,11 +254,47 @@ func TestRearmDeadOwnerSource_SelfBranchCarryIsNotRegistered(t *testing.T) {
 
 	c.rearmDeadOwnerSource(context.Background(), source, "its designated fix issue #200 died", &rearmCarry{branch: "pilot/GH-100", pr: 6165, iteration: 1})
 
-	if len(reg.recorded) != 0 {
-		t.Errorf("self-entry must not be recorded (the dispatcher skips it), got %+v", reg.recorded)
+	if len(reg.recorded) != 1 || reg.recorded[0] != (recordedBorrowedBranch{taskID: "GH-100", branch: "pilot/GH-100", fromPR: 0}) {
+		t.Errorf("self-entry must be recorded with fromPR=0 (every fix-issue routing gate needs fromPR>0), got %+v", reg.recorded)
 	}
 	if len(srv.comments) != 1 || !strings.Contains(srv.comments[0], "branch:pilot/GH-100 pr:6165") {
 		t.Errorf("the footer must still be rendered, got %v", srv.comments)
+	}
+}
+
+// GH-6198 replay: the dead fix issue is closed, so its footer no longer holds the
+// branch; the re-arm's registry entry is what keeps the sweep (24h past the PR
+// close) from deleting pilot/GH-100 before the retry is queued. Uses the real
+// executor.Runner registry and the real sweep.
+//
+// mutation pin: applyRearmCarry skips the registry entry for a self-branch carry -> this test fails (branch deleted)
+func TestRearmDeadOwnerSource_SelfBranchSurvivesStaleSweep(t *testing.T) {
+	runner := executor.NewRunner()
+
+	srv := newOwnerDeathGHServer()
+	source := failedSource(100)
+	srv.issues[100] = source
+	rearm, _ := newRearmTestController(t, srv)
+	rearm.SetBorrowedBranchLookup(runner)
+	rearm.rearmDeadOwnerSource(context.Background(), source, "its designated fix issue #200 died", &rearmCarry{branch: "pilot/GH-100", pr: 6165, iteration: 1})
+
+	if _, fromPR, ok := runner.BorrowedBranch("GH-100"); !ok || fromPR != 0 {
+		t.Fatalf("BorrowedBranch(GH-100) = fromPR %d, ok %v; want an entry with fromPR 0", fromPR, ok)
+	}
+
+	f := &fakeBranchGitHub{
+		branches: []string{"pilot/GH-100"},
+		closed:   []*github.PullRequest{closedPRAgo(6165, "pilot/GH-100", 25*time.Hour)},
+	}
+	sweep := newSweepController(t, f, true)
+	sweep.SetBorrowedBranchLookup(runner)
+	log := sweepLog(t, sweep)
+
+	if got := f.deletedSorted(); len(got) != 0 {
+		t.Fatalf("pilot/GH-100 was deleted between the re-arm and the retry: %v\n%s", got, log)
+	}
+	if !keptLine(log, "pilot/GH-100", "fix_issue") {
+		t.Errorf("expected kept line with reason=fix_issue:\n%s", log)
 	}
 }
 
