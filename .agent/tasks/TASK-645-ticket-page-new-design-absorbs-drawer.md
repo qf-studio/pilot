@@ -1,6 +1,6 @@
 # TASK-645: Ticket page in the new design — a Board row opens the page, the page absorbs the drawer's settings, the drawer retires
 
-**Status**: 📋 **PLANNED 2026-11-07 — three serial legs (A1 → A2 → B1), A1 ready to dispatch on the founder's go.**
+**Status**: 🚀 **A1 DISPATCHED 2026-11-07 → [ui#404](https://github.com/qf-studio/pilot-console-ui/issues/404)** (`pilot` + `no-decompose`, pre-check 0, dry run clean against ui main). A2 after A1's post-merge round; B1 after A2's. Founder go 11-07.
 **Created**: 2026-11-07
 **Assignee**: Pilot (ui legs) · Navigator (reviews, live checks)
 
@@ -150,7 +150,7 @@ The mobile Board block and `ApproveSheet`. The ticket page itself (A1/A2). `useC
 
 ## Refs
 
-- A1 → (filled by the dispatch script)
+- A1 → https://github.com/qf-studio/pilot-console-ui/issues/404
 - A2 → (filled by the dispatch script)
 - B1 → (filled by the dispatch script)
 
