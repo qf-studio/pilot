@@ -30,9 +30,11 @@ type fakeBranchGitHub struct {
 	deleteStatus map[string]int // branch -> forced status for DELETE
 	deleted      []string
 	requests     int
-	branchGets   map[string]int // branch -> GET /branches/{name} count
-	deleteCalls  map[string]int // branch -> DELETE attempts
-	matchingReqs int            // GET git/matching-refs requests
+	branchGets   map[string]int  // branch -> GET /branches/{name} count
+	deleteCalls  map[string]int  // branch -> DELETE attempts
+	matchingReqs int             // GET git/matching-refs requests
+	issues       []*github.Issue // open issues served by GET /issues and /issues/{n}
+	issuesStatus int             // forced status for GET /issues (0 = serve)
 }
 
 func (f *fakeBranchGitHub) page(r *http.Request, n int) (int, int) {
@@ -81,6 +83,22 @@ func (f *fakeBranchGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		s, e := f.page(r, len(prs))
 		_ = writeJSON(w, prs[s:e])
+	case r.Method == http.MethodGet && p == base+"/issues":
+		if f.issuesStatus != 0 {
+			w.WriteHeader(f.issuesStatus)
+			return
+		}
+		s, e := f.page(r, len(f.issues))
+		_ = writeJSON(w, f.issues[s:e])
+	case r.Method == http.MethodGet && strings.HasPrefix(p, base+"/issues/"):
+		n, _ := strconv.Atoi(strings.TrimPrefix(p, base+"/issues/"))
+		for _, is := range f.issues {
+			if is.Number == n {
+				_ = writeJSON(w, is)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
 	case r.Method == http.MethodGet && strings.HasPrefix(p, base+"/branches/"):
 		name := strings.TrimPrefix(p, base+"/branches/")
 		if f.branchGets == nil {
@@ -131,9 +149,38 @@ func newSweepController(t *testing.T, f *fakeBranchGitHub, enabled bool) *Contro
 	return c
 }
 
+// closedPR is a PR closed 72h ago, comfortably past DefaultStaleBranchMinAge.
 func closedPR(n int, head string) *github.PullRequest {
-	return &github.PullRequest{Number: n, State: "closed", Head: github.PRRef{Ref: head}, Base: github.PRRef{Ref: "main"}}
+	return closedPRAgo(n, head, 72*time.Hour)
 }
+
+func closedPRAgo(n int, head string, ago time.Duration) *github.PullRequest {
+	return &github.PullRequest{Number: n, State: "closed", Head: github.PRRef{Ref: head}, Base: github.PRRef{Ref: "main"},
+		UpdatedAt: time.Now().Add(-ago).UTC().Format(time.RFC3339)}
+}
+
+// fixIssue is an open autopilot-fix issue whose footer names branch, in the
+// shape FeedbackLoop writes (branch/pr/iteration/source/sha).
+func fixIssue(n int, branch string, pr int) *github.Issue {
+	return &github.Issue{Number: n, State: "open", Labels: []github.Label{{Name: "autopilot-fix"}, {Name: "pilot"}},
+		Body: fmt.Sprintf("CI failed.\n\n<!-- autopilot-meta branch:%s pr:%d iteration:1 source:%d -->\n", branch, pr, n-10)}
+}
+
+// queueLiveness is a DispatcherLiveness that also exposes the queue view.
+type queueLiveness struct {
+	mockDispatcherLiveness
+	queued []string
+}
+
+func (q *queueLiveness) GetQueuedTaskIDs() []string { return q.queued }
+
+// borrowedLister is a BorrowedBranchLookup whose registry lists branches.
+type borrowedLister struct {
+	BorrowedBranchLookup
+	branches []string
+}
+
+func (b *borrowedLister) BorrowedBranches() []string { return b.branches }
 
 func openPR(n int, head, base string) *github.PullRequest {
 	return &github.PullRequest{Number: n, State: "open", Head: github.PRRef{Ref: head}, Base: github.PRRef{Ref: base}}
@@ -156,7 +203,7 @@ func TestSweepStaleBranches(t *testing.T) {
 			wantDeleted: []string{"pilot/GH-1"},
 		},
 		{
-			name: "closed PR, young tip still deleted (PR state alone decides)",
+			name: "closed PR long ago, young tip still deleted (tip age is for no-PR branches only)",
 			fake: &fakeBranchGitHub{branches: []string{"pilot/GH-2"}, closed: []*github.PullRequest{closedPR(11, "pilot/GH-2")},
 				tipDate: map[string]time.Time{"pilot/GH-2": young}},
 			wantDeleted: []string{"pilot/GH-2"},
@@ -389,5 +436,205 @@ func TestStaleBranchSweepInterval(t *testing.T) {
 		if got := c.staleBranchSweepInterval(); got != tt.want {
 			t.Errorf("window %v: interval = %v, want %v", tt.window, got, tt.want)
 		}
+	}
+}
+
+// sweepLog runs one sweep with a debug logger and returns the captured log.
+func sweepLog(t *testing.T, c *Controller) string {
+	t.Helper()
+	var buf bytes.Buffer
+	c.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	c.sweepStaleBranches(context.Background())
+	return buf.String()
+}
+
+func keptLine(log, branch, reason string) bool {
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, "stale branch sweep: kept branch") &&
+			strings.Contains(line, "branch="+branch) && strings.Contains(line, "reason="+reason) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSweepStaleBranches_GH6181Holds pins the three GH-6181 guards: an open
+// autopilot-fix issue or a queued task that references a closed-PR branch
+// keeps it, and a closed-PR branch is age-gated like a no-PR one.
+func TestSweepStaleBranches_GH6181Holds(t *testing.T) {
+	tests := []struct {
+		name        string
+		fake        *fakeBranchGitHub
+		setup       func(c *Controller)
+		wantDeleted []string
+		wantKept    string // reason= of the kept line for pilot/GH-100, "" = none
+		wantSummary string
+	}{
+		{
+			name: "open autopilot-fix issue footer keeps a long-closed PR branch",
+			fake: &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, closed: []*github.PullRequest{closedPRAgo(7, "pilot/GH-100", 25*time.Hour)},
+				issues: []*github.Issue{fixIssue(110, "pilot/GH-100", 7)}},
+			wantKept:    "fix_issue",
+			wantSummary: "skipped_fix_issue=1",
+		},
+		{
+			name: "fix issue footer for another branch does not hold this one",
+			fake: &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, closed: []*github.PullRequest{closedPR(7, "pilot/GH-100")},
+				issues: []*github.Issue{fixIssue(110, "pilot/GH-999", 8)}},
+			wantDeleted: []string{"pilot/GH-100"},
+		},
+		{
+			name: "borrowed-branch registry entry keeps the branch",
+			fake: &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, closed: []*github.PullRequest{closedPR(7, "pilot/GH-100")}},
+			setup: func(c *Controller) {
+				c.SetBorrowedBranchLookup(&borrowedLister{branches: []string{"pilot/GH-100"}})
+			},
+			wantKept:    "fix_issue",
+			wantSummary: "skipped_fix_issue=1",
+		},
+		{
+			name: "queued task whose issue footer names the branch keeps it",
+			fake: &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, closed: []*github.PullRequest{closedPR(7, "pilot/GH-100")},
+				issues: []*github.Issue{{Number: 120, State: "open", Labels: []github.Label{{Name: "pilot"}},
+					Body: "revise\n\n<!-- autopilot-meta branch:pilot/GH-100 pr:7 iteration:1 -->"}}},
+			setup: func(c *Controller) {
+				c.SetDispatcherLiveness(&queueLiveness{queued: []string{"GH-120"}})
+			},
+			wantKept:    "pending_task",
+			wantSummary: "skipped_pending_task=1",
+		},
+		{
+			name: "queued task keeps its own pilot/<id> branch",
+			fake: &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, closed: []*github.PullRequest{closedPR(7, "pilot/GH-100")},
+				issues: []*github.Issue{{Number: 100, State: "open", Body: "plain"}}},
+			setup: func(c *Controller) {
+				c.SetDispatcherLiveness(&queueLiveness{queued: []string{"GH-100"}})
+			},
+			wantKept:    "pending_task",
+			wantSummary: "skipped_pending_task=1",
+		},
+		{
+			name:        "closed 25h ago, no references: deleted",
+			fake:        &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, closed: []*github.PullRequest{closedPRAgo(7, "pilot/GH-100", 25*time.Hour)}},
+			wantDeleted: []string{"pilot/GH-100"},
+		},
+		{
+			name:        "closed 1h ago, no references: skipped_young",
+			fake:        &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, closed: []*github.PullRequest{closedPRAgo(7, "pilot/GH-100", time.Hour)}},
+			wantKept:    "young",
+			wantSummary: "skipped_young=1",
+		},
+		{
+			name:        "closed PR with no timestamps is treated as young",
+			fake:        &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, closed: []*github.PullRequest{{Number: 7, State: "closed", Head: github.PRRef{Ref: "pilot/GH-100"}}}},
+			wantKept:    "young",
+			wantSummary: "skipped_young=1",
+		},
+		{
+			name: "merged-at later than updated-at is the close time",
+			fake: &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, closed: []*github.PullRequest{{Number: 7, State: "closed", Head: github.PRRef{Ref: "pilot/GH-100"},
+				UpdatedAt: time.Now().Add(-72 * time.Hour).UTC().Format(time.RFC3339), MergedAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)}}},
+			wantKept:    "young",
+			wantSummary: "skipped_young=1",
+		},
+		{
+			name: "no-PR young branch referenced by a fix issue logs fix_issue",
+			fake: &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, tipDate: map[string]time.Time{"pilot/GH-100": time.Now().Add(-72 * time.Hour)},
+				issues: []*github.Issue{fixIssue(110, "pilot/GH-100", 7)}},
+			wantKept:    "fix_issue",
+			wantSummary: "skipped_fix_issue=1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newSweepController(t, tt.fake, true)
+			if tt.setup != nil {
+				tt.setup(c)
+			}
+			log := sweepLog(t, c)
+
+			if got := strings.Join(tt.fake.deletedSorted(), ","); got != strings.Join(tt.wantDeleted, ",") {
+				t.Errorf("deleted = %q, want %q\n%s", got, tt.wantDeleted, log)
+			}
+			if tt.wantKept != "" {
+				if !keptLine(log, "pilot/GH-100", tt.wantKept) {
+					t.Errorf("missing 'kept branch' line with reason=%s:\n%s", tt.wantKept, log)
+				}
+				if !strings.Contains(log, tt.wantSummary) {
+					t.Errorf("summary missing %q:\n%s", tt.wantSummary, log)
+				}
+			} else if strings.Contains(log, "kept branch") {
+				t.Errorf("unexpected 'kept branch' line:\n%s", log)
+			}
+		})
+	}
+}
+
+// TestSweepStaleBranches_GH6181ReplayFixIssueOutlivesClosedPR replays
+// 2026-11-06: autopilot closed PR#6165 and filed CI-fix #6167 (footer
+// branch:pilot/GH-6157 pr:6165); the startup sweep ran 14 minutes later and
+// deleted pilot/GH-6157. The age gate is set to 10 minutes so the PR (closed 14
+// minutes ago) is past it — only the fix-issue guard can hold the branch, so
+// dropping that guard fails this test.
+func TestSweepStaleBranches_GH6181ReplayFixIssueOutlivesClosedPR(t *testing.T) {
+	f := &fakeBranchGitHub{
+		branches: []string{"pilot/GH-6157"},
+		closed:   []*github.PullRequest{closedPRAgo(6165, "pilot/GH-6157", 14*time.Minute)},
+		issues:   []*github.Issue{fixIssue(6167, "pilot/GH-6157", 6165)},
+	}
+	c := newSweepController(t, f, true)
+	c.config.StaleBranchMinAge = 10 * time.Minute
+	// #6167 is queued under its own id, not running: no live-task guard matches.
+	c.SetDispatcherLiveness(&queueLiveness{queued: []string{"GH-6167"}})
+
+	log := sweepLog(t, c)
+	if got := f.deletedSorted(); len(got) != 0 {
+		t.Fatalf("pilot/GH-6157 was deleted: %v\n%s", got, log)
+	}
+	if !keptLine(log, "pilot/GH-6157", "fix_issue") {
+		t.Errorf("expected kept line with reason=fix_issue:\n%s", log)
+	}
+}
+
+// TestSweepStaleBranches_GH6181UnknownProtectionSetSkipsSweep: if the open
+// fix-issue list or a queued task's issue cannot be read, nothing is deleted.
+func TestSweepStaleBranches_GH6181UnknownProtectionSetSkipsSweep(t *testing.T) {
+	t.Run("fix issue list fails", func(t *testing.T) {
+		f := &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, closed: []*github.PullRequest{closedPR(7, "pilot/GH-100")}, issuesStatus: http.StatusInternalServerError}
+		c := newSweepController(t, f, true)
+		c.sweepStaleBranches(context.Background())
+		if got := f.deletedSorted(); len(got) != 0 {
+			t.Errorf("deleted %v with unknown fix-issue set", got)
+		}
+	})
+	t.Run("queued task issue unreadable", func(t *testing.T) {
+		f := &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, closed: []*github.PullRequest{closedPR(7, "pilot/GH-100")}}
+		c := newSweepController(t, f, true)
+		c.SetDispatcherLiveness(&queueLiveness{queued: []string{"GH-555"}}) // 404 in the fake
+		c.sweepStaleBranches(context.Background())
+		if got := f.deletedSorted(); len(got) != 0 {
+			t.Errorf("deleted %v with unreadable queued issue", got)
+		}
+	})
+}
+
+func TestAutopilotMetaBranches(t *testing.T) {
+	tests := []struct {
+		name, body string
+		want       string
+	}{
+		{"footer", "x\n<!-- autopilot-meta branch:pilot/GH-1 pr:2 iteration:1 -->\n", "pilot/GH-1"},
+		{"no space after marker variants", "<!--autopilot-meta branch:pilot/GH-2 pr:3-->", "pilot/GH-2"},
+		{"branch not last field", "<!-- autopilot-meta pr:3 branch:pilot/GH-3 sha:abc1234 -->", "pilot/GH-3"},
+		{"non-pilot branch ignored", "<!-- autopilot-meta branch:feature/x pr:3 -->", ""},
+		{"no footer", "branch:pilot/GH-4 in prose", ""},
+		{"two footers", "<!-- autopilot-meta branch:pilot/GH-5 -->\n<!-- autopilot-meta branch:pilot/GH-6 -->", "pilot/GH-5,pilot/GH-6"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := strings.Join(autopilotMetaBranches(tt.body), ","); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

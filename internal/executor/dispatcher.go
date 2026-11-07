@@ -3375,6 +3375,30 @@ func (d *Dispatcher) GetRunningTaskIDs() []string {
 	return ids
 }
 
+// queuedTaskIDsLimit bounds GetQueuedTaskIDs' store read.
+const queuedTaskIDsLimit = 1000
+
+// GetQueuedTaskIDs returns the task IDs of every queued or pending execution
+// across all projects, read from the same store rows the workers drain
+// (GetQueuedTasks) — so it also covers a project whose worker has not been
+// re-created yet after a restart. GH-6181: the autopilot stale-branch sweep
+// keeps the branch of a task that has not started running. A store error
+// yields nil.
+func (d *Dispatcher) GetQueuedTaskIDs() []string {
+	if d.store == nil {
+		return nil
+	}
+	tasks, err := d.store.GetQueuedTasks(queuedTaskIDsLimit)
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(tasks))
+	for _, t := range tasks {
+		ids = append(ids, t.TaskID)
+	}
+	return ids
+}
+
 // QueuedOrRunningCount returns the number of tasks currently queued or being
 // processed for projectPath — the same live/store-backed signals
 // GetWorkerStatus exposes, collapsed to one int for a single project. A
