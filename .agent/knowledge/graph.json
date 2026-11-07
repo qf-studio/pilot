@@ -3640,7 +3640,9 @@
         ],
         "issues": [
           "https://github.com/qf-studio/pilot/issues/6037",
-          "https://github.com/qf-studio/pilot/issues/6157"
+          "https://github.com/qf-studio/pilot/issues/6157",
+          "https://github.com/qf-studio/pilot/issues/6168",
+          "https://github.com/qf-studio/pilot/issues/6189"
         ]
       },
       "TASK-585": {
@@ -3850,7 +3852,7 @@
       "TASK-643": {
         "path": ".agent/tasks/TASK-643-ci-fix-chain-loses-finished-work.md",
         "title": "Autopilot CI-fix chain loses finished work — sweep deletes the fix branch, pre-flight rejects the fix issue, re-arm restarts from scratch, the upgrade drain pauses admission behind a long task",
-        "status": "dispatched",
+        "status": "active",
         "concepts": [
           "deployment",
           "frontend",
