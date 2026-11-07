@@ -291,13 +291,21 @@ type sdkPreFlightJudge struct {
 // labelAutopilotFix is the label FeedbackLoop puts on every generated fix issue.
 const labelAutopilotFix = "autopilot-fix"
 
+// autopilotFixBodyHeading is the heading FeedbackLoop.generateBody writes on CI-fix
+// issues. Review-feedback issues (CreateReviewIssue) carry the same label and
+// footer but a different heading and embed untrusted reviewer text, so they stay judged.
+const autopilotFixBodyHeading = "# Autopilot: Auto-Generated Fix Request"
+
 // autopilotFixFooterVerdict is the footer half of the deterministic pre-flight
 // bypass for autopilot-generated CI-fix issues (GH-6182). ok is true when body
 // ends with a well-formed autopilot-meta footer carrying branch, pr, source and
-// sha. The bypass additionally needs the autopilot-fix label —
+// sha under the CI-fix heading. The bypass additionally needs the autopilot-fix label —
 // hasAutopilotFixLabel — because hand-filed revision issues
 // (resolveAutopilotFixBranch, GH-5379) carry the footer without it.
 func autopilotFixFooterVerdict(body string) (branch string, pr int, ok bool) {
+	if !strings.HasPrefix(strings.TrimSpace(body), autopilotFixBodyHeading) {
+		return "", 0, false
+	}
 	footer := extractAutopilotMetaFooter(body)
 	if footer == "" {
 		return "", 0, false

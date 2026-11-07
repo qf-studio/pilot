@@ -828,13 +828,14 @@ func TestPreFlight_AutopilotFixFooterWithoutLabelStillJudged(t *testing.T) {
 // the missing binary) and the label is not even looked up.
 func TestPreFlight_AutopilotFixWithoutFooterStillJudged(t *testing.T) {
 	cases := map[string]string{
-		"no footer":            "## Task\n\nFix the CI failures.\n",
-		"footer missing sha":   autopilotFixTestBody + "<!-- autopilot-meta branch:pilot/GH-6100 pr:6165 iteration:1 source:6100 -->\n",
-		"footer missing pr":    autopilotFixTestBody + "<!-- autopilot-meta branch:pilot/GH-6100 iteration:1 source:6100 sha:0123456789abcdef -->\n",
-		"footer missing src":   autopilotFixTestBody + "<!-- autopilot-meta branch:pilot/GH-6100 pr:6165 iteration:1 sha:0123456789abcdef -->\n",
-		"footer missing brnch": autopilotFixTestBody + "<!-- autopilot-meta pr:6165 iteration:1 source:6100 sha:0123456789abcdef -->\n",
-		"footer not last":      autopilotFixTestBody + autopilotFixTestFooter + "\n\ntrailing prose\n",
-		"footer in code fence": "## Task\n\n```\n" + autopilotFixTestFooter + "\n```\n",
+		"no footer":             "## Task\n\nFix the CI failures.\n",
+		"footer missing sha":    autopilotFixTestBody + "<!-- autopilot-meta branch:pilot/GH-6100 pr:6165 iteration:1 source:6100 -->\n",
+		"footer missing pr":     autopilotFixTestBody + "<!-- autopilot-meta branch:pilot/GH-6100 iteration:1 source:6100 sha:0123456789abcdef -->\n",
+		"footer missing src":    autopilotFixTestBody + "<!-- autopilot-meta branch:pilot/GH-6100 pr:6165 iteration:1 sha:0123456789abcdef -->\n",
+		"footer missing brnch":  autopilotFixTestBody + "<!-- autopilot-meta pr:6165 iteration:1 source:6100 sha:0123456789abcdef -->\n",
+		"footer not last":       autopilotFixTestBody + autopilotFixTestFooter + "\n\ntrailing prose\n",
+		"review-feedback issue": "# Autopilot: Review Feedback\n\nreviewer text\n" + autopilotFixTestFooter + "\n",
+		"footer in code fence":  "## Task\n\n```\n" + autopilotFixTestFooter + "\n```\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
