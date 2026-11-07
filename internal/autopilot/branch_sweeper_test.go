@@ -169,10 +169,16 @@ func fixIssue(n int, branch string, pr int) *github.Issue {
 // queueLiveness is a DispatcherLiveness that also exposes the queue view.
 type queueLiveness struct {
 	mockDispatcherLiveness
-	queued []string
+	queued  []string
+	project string // when set, only this project path sees the queue
 }
 
-func (q *queueLiveness) GetQueuedTaskIDs() []string { return q.queued }
+func (q *queueLiveness) GetQueuedTaskIDs(projectPath string) []string {
+	if q.project != "" && q.project != projectPath {
+		return nil
+	}
+	return q.queued
+}
 
 // borrowedLister is a BorrowedBranchLookup whose registry lists branches.
 type borrowedLister struct {
@@ -636,5 +642,18 @@ func TestAutopilotMetaBranches(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestSweepStaleBranches_GH6181QueueScopedToProject: another repo's queued task
+// must neither stop this repo's sweep nor hold its branches.
+func TestSweepStaleBranches_GH6181QueueScopedToProject(t *testing.T) {
+	f := &fakeBranchGitHub{branches: []string{"pilot/GH-555"}, closed: []*github.PullRequest{closedPR(7, "pilot/GH-555")}}
+	c := newSweepController(t, f, true)
+	c.projectPath = "/repo-a"
+	c.SetDispatcherLiveness(&queueLiveness{queued: []string{"GH-555"}, project: "/repo-b"})
+	c.sweepStaleBranches(context.Background())
+	if got := strings.Join(f.deletedSorted(), ","); got != "pilot/GH-555" {
+		t.Errorf("deleted = %q, want pilot/GH-555", got)
 	}
 }

@@ -10,18 +10,21 @@ import (
 )
 
 // TestDispatcher_GetQueuedTaskIDs pins GH-6181: queued and pending rows are
-// reported (any project, no worker needed); running and completed rows are not.
+// reported (this project only, no worker needed); running and completed rows are not.
 func TestDispatcher_GetQueuedTaskIDs(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 	d := NewDispatcher(store, NewRunner(), nil)
 
 	for id, status := range map[string]string{"GH-1": "queued", "GH-2": "pending", "GH-3": "running", "GH-4": "completed"} {
-		if err := store.SaveExecution(&memory.Execution{ID: "exec-" + id, TaskID: id, ProjectPath: "/proj-" + id, Status: status, CreatedAt: time.Now()}); err != nil {
+		if err := store.SaveExecution(&memory.Execution{ID: "exec-" + id, TaskID: id, ProjectPath: "/proj", Status: status, CreatedAt: time.Now()}); err != nil {
 			t.Fatalf("save %s: %v", id, err)
 		}
 	}
-	got := d.GetQueuedTaskIDs()
+	if err := store.SaveExecution(&memory.Execution{ID: "exec-other", TaskID: "GH-9", ProjectPath: "/other", Status: "queued", CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("save other: %v", err)
+	}
+	got := d.GetQueuedTaskIDs("/proj")
 	sort.Strings(got)
 	if fmt.Sprint(got) != "[GH-1 GH-2]" {
 		t.Errorf("GetQueuedTaskIDs = %v, want [GH-1 GH-2]", got)

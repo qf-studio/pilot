@@ -67,10 +67,10 @@ const (
 
 // DispatcherQueueView is the optional queue-side companion of
 // DispatcherLiveness: the task IDs the dispatcher holds as queued or pending
-// (not yet running). The Dispatcher passed to SetDispatcherLiveness satisfies
+// (not yet running) for one project — task IDs collide across repos. The Dispatcher passed to SetDispatcherLiveness satisfies
 // it, so the sweep picks it up without extra wiring.
 type DispatcherQueueView interface {
-	GetQueuedTaskIDs() []string
+	GetQueuedTaskIDs(projectPath string) []string
 }
 
 // BorrowedBranchLister is the non-destructive listing side of the
@@ -122,7 +122,7 @@ func (c *Controller) staleBranchLiveTasks() (running, queued map[string]bool) {
 			running[id] = true
 		}
 		if qv, ok := c.dispatcherLive.(DispatcherQueueView); ok {
-			for _, id := range qv.GetQueuedTaskIDs() {
+			for _, id := range qv.GetQueuedTaskIDs(c.projectPath) {
 				queued[id] = true
 			}
 		}
