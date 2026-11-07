@@ -13,7 +13,14 @@ import (
 type HotUpgrader struct {
 	graceful    *GracefulUpgrader
 	taskChecker TaskChecker
+
+	// clock drives the passive wait's poll loop; nil means realClock{}.
+	// Swapped for a fake in tests.
+	clock clock
 }
+
+// DefaultMaxWait is how long the passive wait (see drainRunningTasks) runs before it alerts that a long task blocks the drain.
+const DefaultMaxWait = 6 * time.Hour
 
 // HotUpgradeConfig configures the hot upgrade behavior
 type HotUpgradeConfig struct {
@@ -22,6 +29,30 @@ type HotUpgradeConfig struct {
 
 	// TaskTimeout is the max time to wait for tasks (default: 2 minutes)
 	TaskTimeout time.Duration
+
+	// MaxWait caps the passive wait that follows a drain timeout (default:
+	// DefaultMaxWait). On expiry OnMaxWait fires once and the wait goes on —
+	// a task is never killed for an upgrade.
+	MaxWait time.Duration
+
+	// PollInterval is how often the passive wait looks at the running set
+	// (default: DefaultCheckInterval).
+	PollInterval time.Duration
+
+	// PauseAdmission stops the dispatcher from starting new executions. It is
+	// called for the first drain window and again only once the running set
+	// is empty; nil disables pausing.
+	PauseAdmission func()
+
+	// ResumeAdmission undoes PauseAdmission. PerformHotUpgrade calls it when a
+	// drain window times out, so admission stays open during the passive wait.
+	// After a successful drain admission stays paused: the caller resumes it
+	// if the install fails.
+	ResumeAdmission func()
+
+	// OnMaxWait is called once when the passive wait outlasts MaxWait, with
+	// the time waited and the task IDs still blocking the drain.
+	OnMaxWait func(waited time.Duration, blockedBy []string)
 
 	// FlushSession is called before restart to persist any in-memory state
 	FlushSession func() error
@@ -35,6 +66,7 @@ func DefaultHotUpgradeConfig() *HotUpgradeConfig {
 	return &HotUpgradeConfig{
 		WaitForTasks: true,
 		TaskTimeout:  2 * time.Minute,
+		MaxWait:      DefaultMaxWait,
 	}
 }
 
@@ -125,17 +157,8 @@ func (h *HotUpgrader) PerformHotUpgrade(ctx context.Context, release *Release, c
 
 	// Step 1: Wait for running tasks (if any)
 	if cfg.WaitForTasks && h.taskChecker != nil {
-		runningTasks := h.taskChecker.GetRunningTaskIDs()
-		if len(runningTasks) > 0 {
-			progress(5, fmt.Sprintf("Waiting for %d task(s) to complete...", len(runningTasks)))
-
-			waitCtx, cancel := context.WithTimeout(ctx, cfg.TaskTimeout)
-			defer cancel()
-
-			if err := h.taskChecker.WaitForTasks(waitCtx, cfg.TaskTimeout); err != nil {
-				return fmt.Errorf("timeout waiting for tasks: %w", err)
-			}
-			progress(15, "Tasks completed")
+		if err := h.drainRunningTasks(ctx, cfg, progress); err != nil {
+			return err
 		}
 	}
 
@@ -213,6 +236,105 @@ func (h *HotUpgrader) PerformHotUpgrade(ctx context.Context, release *Release, c
 
 	// This line is never reached on success
 	return nil
+}
+
+// drainRunningTasks pauses admission and waits for the running set to empty.
+//
+// Decision (GH-6187, founder 2026-11-07): the first drain window is paused for
+// TaskTimeout; if one long task outlasts it, admission is resumed and the
+// upgrade waits passively — polling without pausing — until the running set is
+// empty, then pauses, re-checks and proceeds. Re-pausing every cooldown kept
+// every project on the box paused for most of 90 minutes on 2026-11-06 while a
+// single 2 h task ran. The cost is accepted: the box may run the old binary
+// until the longest task ends. Returns nil with admission paused.
+func (h *HotUpgrader) drainRunningTasks(ctx context.Context, cfg *HotUpgradeConfig, progress func(int, string)) error {
+	clk := h.clock
+	if clk == nil {
+		clk = realClock{}
+	}
+	pause := func() {
+		if cfg.PauseAdmission != nil {
+			cfg.PauseAdmission()
+		}
+	}
+	resume := func() {
+		if cfg.ResumeAdmission != nil {
+			cfg.ResumeAdmission()
+		}
+	}
+
+	pause()
+	runningTasks := h.taskChecker.GetRunningTaskIDs()
+	if len(runningTasks) == 0 {
+		return nil
+	}
+
+	progress(5, fmt.Sprintf("Waiting for %d task(s) to complete...", len(runningTasks)))
+	waitCtx, cancel := context.WithTimeout(ctx, cfg.TaskTimeout)
+	err := h.taskChecker.WaitForTasks(waitCtx, cfg.TaskTimeout)
+	cancel()
+	if err == nil {
+		progress(15, "Tasks completed")
+		return nil
+	}
+	if ctx.Err() != nil {
+		return fmt.Errorf("timeout waiting for tasks: %w", err)
+	}
+
+	// Drain window timed out: reopen admission and wait for a natural gap.
+	resume()
+	maxWait := cfg.MaxWait
+	if maxWait <= 0 {
+		maxWait = DefaultMaxWait
+	}
+	poll := cfg.PollInterval
+	if poll <= 0 {
+		poll = DefaultCheckInterval
+	}
+	waitStart := clk.Now()
+	maxWaitFired := false
+	announce := true
+
+	for {
+		blockedBy := h.taskChecker.GetRunningTaskIDs()
+		if len(blockedBy) == 0 {
+			// Close the race with admission: pause, then look again.
+			pause()
+			blockedBy = h.taskChecker.GetRunningTaskIDs()
+			if len(blockedBy) == 0 {
+				progress(15, "Tasks completed")
+				return nil
+			}
+			resume()
+			announce = true
+		}
+
+		if announce {
+			slog.Info("self-upgrade: passive wait, admission open",
+				slog.Any("drainBlockedBy", blockedBy),
+				slog.Duration("max_wait", maxWait),
+			)
+			progress(5, fmt.Sprintf("Waiting for %d long-running task(s); admission open", len(blockedBy)))
+			announce = false
+		}
+
+		if waited := clk.Now().Sub(waitStart); !maxWaitFired && waited >= maxWait {
+			maxWaitFired = true
+			slog.Warn("self-upgrade: passive wait exceeded max_wait, still waiting",
+				slog.Any("drainBlockedBy", blockedBy),
+				slog.Duration("waited", waited),
+			)
+			if cfg.OnMaxWait != nil {
+				cfg.OnMaxWait(waited, blockedBy)
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout waiting for tasks: %w", ctx.Err())
+		case <-clk.After(poll):
+		}
+	}
 }
 
 // canHotRestart is an overridable seam (mirrors runSmokeTest) so tests can

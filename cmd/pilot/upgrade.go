@@ -56,6 +56,35 @@ func reportUpgradeFailure(alertsEngine *alerts.Engine, currentVersion, targetVer
 	})
 }
 
+// reportUpgradeMaxWait raises the one alert for a passive wait that outlasted
+// upgrade.max_wait (GH-6187): a long task blocks the drain. The wait keeps
+// going afterwards — a task is never killed for an upgrade.
+func reportUpgradeMaxWait(alertsEngine *alerts.Engine, currentVersion, targetVersion string, waited time.Duration, blockedBy []string) {
+	msg := fmt.Sprintf("self-upgrade waited %.0f h; a long task blocks the drain", waited.Hours())
+	slog.Warn(msg,
+		slog.String("current_version", currentVersion),
+		slog.String("target_version", targetVersion),
+		slog.Any("drainBlockedBy", blockedBy),
+	)
+
+	if alertsEngine == nil {
+		return
+	}
+
+	alertsEngine.ProcessEvent(alerts.Event{
+		Type:      alerts.EventTypeConfigError,
+		TaskID:    "self-upgrade",
+		TaskTitle: "Self-upgrade waiting on a long task",
+		Error:     fmt.Sprintf("%s (blocked by %v)", msg, blockedBy),
+		Metadata: map[string]string{
+			"check":           "self_upgrade_max_wait",
+			"current_version": currentVersion,
+			"target_version":  targetVersion,
+		},
+		Timestamp: time.Now(),
+	})
+}
+
 // runningOnlyTaskChecker adapts *executor.Monitor to upgrade.TaskChecker,
 // counting only tasks that are actually RUNNING right now — never queued
 // ones. GH-4683: passing the Monitor directly made PerformHotUpgrade's drain

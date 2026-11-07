@@ -89,6 +89,11 @@ type UpgradeConfig struct {
 	// StaleReleaseThreshold is how many releases behind triggers a WARN log
 	// + alert that self-upgrade may not be firing. 0 disables the check.
 	StaleReleaseThreshold int `yaml:"stale_release_threshold"`
+	// MaxWait is how long the self-upgrade waits passively (admission open)
+	// for a long task to finish before it alerts once and keeps waiting
+	// (GH-6187). Zero means the 6h default; a task is never killed for an
+	// upgrade.
+	MaxWait time.Duration `yaml:"max_wait"`
 }
 
 // TeamConfig holds settings for team-based project access control (GH-635).
@@ -746,6 +751,7 @@ func DefaultConfig() *Config {
 		Upgrade: &UpgradeConfig{
 			AutoHotUpgrade:        true,
 			StaleReleaseThreshold: 3,
+			MaxWait:               6 * time.Hour, // mirrors upgrade.DefaultMaxWait
 		},
 	}
 }

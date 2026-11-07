@@ -1003,7 +1003,11 @@ func TestHotUpgrader_PerformHotUpgrade(t *testing.T) {
 			TaskTimeout:  time.Millisecond,
 		}
 
-		err := h.PerformHotUpgrade(context.Background(), release, cfg)
+		// GH-6187: the drain timeout enters the passive wait; the error
+		// surfaces when ctx ends.
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		err := h.PerformHotUpgrade(ctx, release, cfg)
 		if err == nil {
 			t.Fatal("PerformHotUpgrade() should return error on task timeout")
 		}
