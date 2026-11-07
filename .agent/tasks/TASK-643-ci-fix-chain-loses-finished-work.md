@@ -1,6 +1,6 @@
 # TASK-643: Autopilot CI-fix chain loses finished work — sweep deletes the fix branch, pre-flight rejects the fix issue, re-arm restarts from scratch, the upgrade drain pauses admission behind a long task
 
-**Status**: 📋 **PLANNED 2026-11-06 17:20Z — four legs drafted (A sweep guard · B pre-flight for autopilot-fix · C re-arm keeps the branch · D drain does not re-pause admission). Founder review before dispatch; D is a founder call.** Incident salvage done the same evening: branch `pilot/GH-6157` restored from `refs/pull/6165/head`, hand-filed fix [#6168](https://github.com/qf-studio/pilot/issues/6168) (autopilot-fix shape, three tests named) picked up by Pilot; #6167 closed; #6157 unlabelled so its from-scratch re-run drops at admission.
+**Status**: 🚀 **A1/B1/C1 DISPATCHED 2026-11-07 → [#6181](https://github.com/qf-studio/pilot/issues/6181) · [#6182](https://github.com/qf-studio/pilot/issues/6182) · [#6183](https://github.com/qf-studio/pilot/issues/6183)** (`pilot` + `no-decompose`; serial pilot queue runs them in that order; C1 rebases after #6163). **D1 HELD — founder call on the drain design.** Was: 📋 PLANNED 2026-11-06 17:20Z — four legs drafted (A sweep guard · B pre-flight for autopilot-fix · C re-arm keeps the branch · D drain does not re-pause admission). Founder review before dispatch; D is a founder call.** Incident salvage done the same evening: branch `pilot/GH-6157` restored from `refs/pull/6165/head`, hand-filed fix [#6168](https://github.com/qf-studio/pilot/issues/6168) (autopilot-fix shape, three tests named) picked up by Pilot; #6167 closed; #6157 unlabelled so its from-scratch re-run drops at admission.
 **Created**: 2026-11-06 · **Owner**: Navigator plans, Pilot executes · **Related**: TASK-508 (CI-fix attribution), TASK-641/TASK-642 (owner-death family; #6163 in flight fixes the `pilot-in-progress` strip in the same re-arm path), TASK-620 (L4 is the run that was lost)
 
 ---
@@ -217,3 +217,9 @@ go test -race ./internal/upgrade/ -run 'TestPerformHotUpgrade'
 - Marker `2026-11-06_pm-v2.314.0-stage3-read-l4-dispatched-task460-research-task629-m3m4-released.md`
 
 **Last Updated**: 2026-11-06
+
+## Refs
+
+- A1 → https://github.com/qf-studio/pilot/issues/6181
+- B1 → https://github.com/qf-studio/pilot/issues/6182
+- C1 → https://github.com/qf-studio/pilot/issues/6183
