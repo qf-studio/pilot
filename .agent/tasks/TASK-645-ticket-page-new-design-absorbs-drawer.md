@@ -1,6 +1,6 @@
 # TASK-645: Ticket page in the new design — a Board row opens the page, the page absorbs the drawer's settings, the drawer retires
 
-**Status**: ⏸ **A2 PR#408 in `awaiting_approval` since ~12:05Z (CI green; the autopilot size gate holds +1036 −153 for the founder's approval click — never `gh pr merge` in parallel). Reviewed APPROVE-w-notes ~11:55Z (+1036 −153: `useCardMove` + `DispatchModal`, editing on the page, drawer specs ported, root fix + A1 notes in; 1174 tests green, CI pending).** **Status**: 🚀 **A2 DISPATCHED 11-07 ~11:35Z → [ui#407](https://github.com/qf-studio/pilot-console-ui/issues/407)** (`pilot` + `no-decompose`, pre-check 0; scope carries the A1 review notes + the live-found root fix). **A1 ✅ LIVE**: PR#405 merged 11:13Z, deployed 11:19Z, tenant check passed (1072 @ 208, four context cards, no band); ui#406 (post-merge minors) closed as folded into A2. B1 after A2's post-merge round. **Status**: 🟡 **A1 PR#405 reviewed APPROVE-w-notes 11-07 ~11:20Z (+310 −175: `KeyValueCard`, `TicketSideCards` rendered twice, title row, `issue` out of `UNTITLED_ROUTES`, timeline on ds tokens; 1142 tests green, CI test pending). Notes folded into A2: status chip variant via `STATUS_CHIP` (moot: becomes a select), mobile cards straight after the body, share input without `bg-surface`, class guard with the share enabled.** Earlier: 🚀 A1 dispatched → [ui#404](https://github.com/qf-studio/pilot-console-ui/issues/404).
+**Status**: 🟡 **B1 PR#410 reviewed APPROVE-w-notes 11-07 ~15:45Z (+14 −1059: row click → `router.push` to the ticket page, `BoardCardDrawer` + spec deleted, Board drawer wiring and its unused move composable removed, surface table updated; 1149 tests green, CI pending). B1 dispatched ~15:25Z → [ui#409](https://github.com/qf-studio/pilot-console-ui/issues/409) (pre-check hit PR#238/#46 — "409" as an HTTP status in their titles; ownership guard). **A2 ✅ LIVE**: PR#408 approved by the founder, merged 14:59Z, deployed 15:04Z; tenant check (read-only) passed — root `flex flex-col`, five context cards with the Status/Priority selects, title input, body, comments + form, 150 px bottom gap; post-merge APPROVE-w-notes, no new issue. **A1 ✅ LIVE** since 11:19Z. **Status**: ⏸ **A2 PR#408 in `awaiting_approval` since ~12:05Z (CI green; the autopilot size gate holds +1036 −153 for the founder's approval click — never `gh pr merge` in parallel). Reviewed APPROVE-w-notes ~11:55Z (+1036 −153: `useCardMove` + `DispatchModal`, editing on the page, drawer specs ported, root fix + A1 notes in; 1174 tests green, CI pending).** **Status**: 🚀 **A2 DISPATCHED 11-07 ~11:35Z → [ui#407](https://github.com/qf-studio/pilot-console-ui/issues/407)** (`pilot` + `no-decompose`, pre-check 0; scope carries the A1 review notes + the live-found root fix). **A1 ✅ LIVE**: PR#405 merged 11:13Z, deployed 11:19Z, tenant check passed (1072 @ 208, four context cards, no band); ui#406 (post-merge minors) closed as folded into A2. B1 after A2's post-merge round. **Status**: 🟡 **A1 PR#405 reviewed APPROVE-w-notes 11-07 ~11:20Z (+310 −175: `KeyValueCard`, `TicketSideCards` rendered twice, title row, `issue` out of `UNTITLED_ROUTES`, timeline on ds tokens; 1142 tests green, CI test pending). Notes folded into A2: status chip variant via `STATUS_CHIP` (moot: becomes a select), mobile cards straight after the body, share input without `bg-surface`, class guard with the share enabled.** Earlier: 🚀 A1 dispatched → [ui#404](https://github.com/qf-studio/pilot-console-ui/issues/404).
 **Created**: 2026-11-07
 **Assignee**: Pilot (ui legs) · Navigator (reviews, live checks)
 
@@ -155,11 +155,14 @@ The mobile Board block and `ApproveSheet`. The ticket page itself (A1/A2). `useC
 ## Refs
 - Navigator TASK-645 § Design 7–8 · TASK-639 B2 · GH-376 · ui CLAUDE.md § surface table
 
+### B1 review — PR#410 (Navigator, 11-07 ~15:45Z, comment) — APPROVE-WITH-NOTES
+Scope met (see the PR comment). Pilot also removed `useCardMove` + `DispatchModal` from `BoardView` (no caller left — allowed by the leg). Pre-PR minors: dead `isConnected` in `BoardView.vue`, unused error imports in `BoardView.spec.ts`, a cut refresh docblock, `ModalDialog` docblock naming `BoardView` as a host → tidy-up bucket. Live check after the deploy: row click → ticket page, no dialog.
+
 ## Refs
 
 - A1 → https://github.com/qf-studio/pilot-console-ui/issues/404
 - A2 → https://github.com/qf-studio/pilot-console-ui/issues/407
-- B1 → (filled by the dispatch script)
+- B1 → https://github.com/qf-studio/pilot-console-ui/issues/409
 
 ---
 
