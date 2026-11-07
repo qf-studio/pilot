@@ -670,3 +670,44 @@ func TestGithubPollerMetricsAdapter_OtherReasonsDoNotLog(t *testing.T) {
 		t.Errorf("RecordUnsourcedLabeledIssues not bridged to SetUnsourcedLabeledIssues correctly, got %d", metrics.UnsourcedLabeledIssues["owner/repo"])
 	}
 }
+
+// TestIntentJudgePreflightStillWired pins that GH-6157, which retired the in-run
+// intent judge, left the pre-flight issue judge wired: with executor.pre_flight_judge
+// enabled the per-repo builder returns a judge that answers through the claude
+// subprocess, and with it disabled it returns none.
+func TestIntentJudgePreflightStillWired(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available on this system")
+	}
+	scriptPath := t.TempDir() + "/fake-claude.sh"
+	script := "#!/bin/sh\ncat >/dev/null\nprintf 'DECISION: accept\\nREASON: Clear and specific.\\nCONFIDENCE: 0.9\\n'\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	repoLog := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	newCfg := func(enabled bool) *config.Config {
+		return &config.Config{Executor: &executor.BackendConfig{
+			ClaudeCode:     &executor.ClaudeCodeConfig{Command: scriptPath},
+			PreFlightJudge: &executor.PreFlightJudgeConfig{Enabled: enabled, Timeout: "5s"},
+			// The retired in-run judge's block must not matter to the pre-flight judge.
+			IntentJudge: executor.DefaultIntentJudgeConfig(),
+		}}
+	}
+
+	judge := newPreFlightJudge(newCfg(true), "o/r", nil, nil, repoLog)
+	if judge == nil {
+		t.Fatal("pre-flight judge is not wired with pre_flight_judge.enabled=true")
+	}
+	var _ sdkcore.PreFlightJudger = judge
+	v, err := judge.JudgeIssue(context.Background(), "Add login button", "Add a login button to the header nav", "")
+	if err != nil {
+		t.Fatalf("JudgeIssue: %v", err)
+	}
+	if !v.Accepted || v.Decision != string(executor.PreFlightAccept) {
+		t.Errorf("verdict = %+v, want an accept through the subprocess", v)
+	}
+
+	if got := newPreFlightJudge(newCfg(false), "o/r", nil, nil, repoLog); got != nil {
+		t.Error("pre-flight judge wired although pre_flight_judge.enabled=false")
+	}
+}

@@ -576,7 +576,8 @@ func buildExecutionComment(result *executor.ExecutionResult, branchName string) 
 		fmt.Fprintf(&sb, "| PR | %s |\n", result.PRUrl)
 	}
 
-	// Intent warning (from intent judge, GH-624)
+	// Warning line: unfixable pre-push lint issues (the in-run intent judge that
+	// also wrote it was retired in GH-6157)
 	if result.IntentWarning != "" {
 		fmt.Fprintf(&sb, "\n⚠️ **Intent Warning:** %s\n", result.IntentWarning)
 	}

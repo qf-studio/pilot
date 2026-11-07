@@ -28,7 +28,7 @@ const (
 
 // reviewFixGitTimeout bounds each HEAD read and reset of a fix round. It is a
 // var so a test can shrink it below the duration of a fake fix session.
-var reviewFixGitTimeout = selfReviewHygieneTimeout
+var reviewFixGitTimeout = reviewHygieneTimeout
 
 // ReviewFixStatus is how a pre-PR fix round ended.
 type ReviewFixStatus string
@@ -164,11 +164,11 @@ func (r *Runner) runReviewFix(taskCtx context.Context, taskCtxWasDone bool, task
 	fixCtx, fixCancel := reviewFixCtx(taskCtx, cfg.EffectiveFixTimeout())
 	defer fixCancel()
 
-	phase := selfReviewOutcome{ran: true}
+	phase := reviewPhaseOutcome{ran: true}
 	result, execErr := r.runReviewFixSession(fixCtx, task, executionPath, state, blocking)
 	if execErr != nil {
 		phase.failed = true
-		phase.killed = selfReviewWasTerminated(fixCtx, execErr)
+		phase.killed = reviewWasTerminated(fixCtx, execErr)
 		if phase.killed {
 			fix.Terminated = max(time.Since(start).Round(time.Second), time.Second)
 		}

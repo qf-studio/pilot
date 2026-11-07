@@ -15,31 +15,16 @@ import (
 	"time"
 )
 
-// JudgeVerdict is the result of an intent judge evaluation.
-type JudgeVerdict struct {
-	// Passed indicates whether the diff aligns with the issue intent.
-	Passed bool
-	// Reason explains why the verdict was PASS or FAIL.
-	Reason string
-	// Confidence is the judge's confidence level (0.0-1.0).
-	Confidence float64
-}
-
-// IntentJudge compares git diffs against the original issue to catch scope creep,
-// missing requirements, and unrelated changes. Uses Claude Code subprocess so
-// calls bill to the operator's CC subscription — no separate API key required.
-// Industry research (Spotify) shows this catches ~25% of PRs that would ship wrong code.
+// IntentJudge runs the pre-flight issue judge (JudgeIssue) as a Claude Code
+// subprocess, so calls bill to the operator's CC subscription — no separate API
+// key required. The in-run diff-vs-ticket Judge was retired in GH-6157: the
+// pre-PR review covers it. The post-merge reviewer borrows the subprocess runner.
 type IntentJudge struct {
 	claudeCmd        string
 	model            string
-	judgeTimeout     time.Duration
 	preflightTimeout time.Duration
-	// maxDiffChars caps the diff payload sent to the judge. GH-4407: kept
-	// per-instance (not just a package constant) so it can be overridden
-	// from IntentJudgeConfig.MaxDiffChars.
-	maxDiffChars int
-	log          *slog.Logger
-	cmdRunner    func(ctx context.Context, args ...string) ([]byte, error)
+	log              *slog.Logger
+	cmdRunner        func(ctx context.Context, args ...string) ([]byte, error)
 }
 
 // NewIntentJudge creates a new IntentJudge that calls Claude Code subprocess.
@@ -51,12 +36,11 @@ type IntentJudge struct {
 // absorbed by the SDK poller's fail-open path. Live reproduction on the box
 // with realistic prompt sizes (5.8KB-27KB, matching real issue bodies/diffs)
 // showed baseline `claude` CLI subprocess latency of ~18.7-22.5s, leaving the
-// old 20s preflightTimeout / 30s judgeTimeout almost no margin. Contention,
+// old 20s preflightTimeout almost no margin. Contention,
 // env/model-routing leakage, ctx-deadline propagation from a shorter parent
 // context, and stale binary resolution were all ruled out empirically. The
-// timeouts below are raised to give real headroom over that measured
-// baseline; both default to 60s (overridable via IntentJudgeConfig.Timeout /
-// PreFlightJudgeConfig.Timeout).
+// timeout below is raised to give real headroom over that measured baseline;
+// it defaults to 60s (overridable via PreFlightJudgeConfig.Timeout).
 func NewIntentJudge(claudeCmd string) *IntentJudge {
 	if claudeCmd == "" {
 		claudeCmd = "claude"
@@ -64,21 +48,11 @@ func NewIntentJudge(claudeCmd string) *IntentJudge {
 	j := &IntentJudge{
 		claudeCmd:        claudeCmd,
 		model:            "claude-haiku-4-5-20251001",
-		judgeTimeout:     60 * time.Second,
 		preflightTimeout: 60 * time.Second,
-		maxDiffChars:     maxDiffCharsDefault,
 		log:              slog.Default(),
 	}
 	j.cmdRunner = j.defaultCmdRunner
 	return j
-}
-
-// SetJudgeTimeout overrides the post-hoc Judge() subprocess deadline. Values
-// <= 0 are ignored (keeps the constructor default). GH-4669.
-func (j *IntentJudge) SetJudgeTimeout(d time.Duration) {
-	if d > 0 {
-		j.judgeTimeout = d
-	}
 }
 
 // SetPreflightTimeout overrides the pre-flight JudgeIssue() subprocess
@@ -269,10 +243,6 @@ func (v *PreFlightVerdict) IsRejection() bool {
 }
 
 var (
-	verdictPassRegex = regexp.MustCompile(`VERDICT:\s*PASS`)
-	verdictFailRegex = regexp.MustCompile(`VERDICT:\s*FAIL`)
-	confidenceRegex  = regexp.MustCompile(`CONFIDENCE:\s*([0-9]*\.?[0-9]+)`)
-
 	// maxDiffCharsDefault caps the total diff payload sent to the judge model.
 	// GH-4407: raised from 8000 — that cap sliced mid-file on any diff over
 	// ~150 changed lines (e.g. GH-15 at 23923 chars, GH-12 at 54240 chars),
@@ -351,47 +321,6 @@ Output exactly:
 DECISION: <classification>
 REASON: <one sentence explanation>
 CONFIDENCE: <0.0-1.0>`
-
-const intentJudgeSystemPrompt = `You are a code review judge. Compare the git diff against the original issue title and description. Determine if the diff implements what was requested.
-
-Check for:
-1) Scope creep (changes unrelated to the issue)
-2) Missing requirements (issue asks for X but diff doesn't include it)
-3) Unrelated changes (refactoring or cleanup not mentioned in issue)
-4) Incomplete multi-file changes (if the issue implies changes to multiple backends, adapters, or sibling files, verify ALL were updated — not just one)
-
-IMPORTANT — truncation handling: Large diffs are prefixed with a "## Changed Files" manifest listing every file the diff touches, with add/remove line counts. That manifest is always complete and NEVER truncated, even when the diff body below it is shortened for length. A "...[truncated: N more bytes ... omitted]" marker inside a file's diff body means ONLY that content was cut to fit — it is NOT evidence that the file, a function, or a feature is missing or unimplemented. Judge scope and completeness using the Changed Files manifest, not the presence of a truncation marker. Never cite a truncation marker itself as a reason for VERDICT:FAIL.
-
-Output exactly one of: VERDICT:PASS or VERDICT:FAIL followed by a brief reason on the next line.
-Then output CONFIDENCE:X.X (0.0-1.0).`
-
-// Judge evaluates whether a git diff aligns with the original issue intent.
-func (j *IntentJudge) Judge(ctx context.Context, issueTitle, issueBody, diff string) (*JudgeVerdict, error) {
-	if diff == "" {
-		return nil, fmt.Errorf("empty diff")
-	}
-
-	// Truncate diff to prevent token overflow, distributing the cut across
-	// files (with a full file manifest) rather than a single blind cutoff.
-	maxChars := j.maxDiffChars
-	if maxChars <= 0 {
-		maxChars = maxDiffCharsDefault
-	}
-	diff = buildJudgeDiffPayload(diff, maxChars)
-
-	prompt := fmt.Sprintf("%s\n\n## Issue Title\n%s\n\n## Issue Description\n%s\n\n## Git Diff\n```diff\n%s\n```",
-		intentJudgeSystemPrompt, issueTitle, issueBody, diff)
-
-	judgeCtx, cancel := context.WithTimeout(ctx, j.judgeTimeout)
-	defer cancel()
-
-	output, err := j.cmdRunner(judgeCtx, "--print", "-p", prompt, "--model", j.model, "--output-format", "text")
-	if err != nil {
-		return nil, fmt.Errorf("intent judge subprocess: %w", err)
-	}
-
-	return parseJudgeResponse(string(output))
-}
 
 // diffFileSection is one file's slice of a unified diff, delimited by
 // "diff --git a/X b/Y" header lines.
@@ -704,47 +633,6 @@ func parsePreFlightResponse(text string) (*PreFlightVerdict, error) {
 			verdict.Confidence = c
 		}
 	}
-
-	return verdict, nil
-}
-
-// parseJudgeResponse extracts verdict, reason, and confidence from the judge's response.
-func parseJudgeResponse(text string) (*JudgeVerdict, error) {
-	verdict := &JudgeVerdict{}
-
-	if verdictPassRegex.MatchString(text) {
-		verdict.Passed = true
-	} else if verdictFailRegex.MatchString(text) {
-		verdict.Passed = false
-	} else {
-		return nil, fmt.Errorf("no VERDICT signal found in response")
-	}
-
-	// Extract confidence
-	if m := confidenceRegex.FindStringSubmatch(text); len(m) >= 2 {
-		if c, err := strconv.ParseFloat(m[1], 64); err == nil {
-			verdict.Confidence = c
-		}
-	}
-
-	// Extract reason: text between verdict line and confidence line
-	lines := strings.Split(text, "\n")
-	var reasonLines []string
-	pastVerdict := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if verdictPassRegex.MatchString(trimmed) || verdictFailRegex.MatchString(trimmed) {
-			pastVerdict = true
-			continue
-		}
-		if confidenceRegex.MatchString(trimmed) {
-			break
-		}
-		if pastVerdict && trimmed != "" {
-			reasonLines = append(reasonLines, trimmed)
-		}
-	}
-	verdict.Reason = strings.Join(reasonLines, " ")
 
 	return verdict, nil
 }

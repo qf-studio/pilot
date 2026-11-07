@@ -20,11 +20,3 @@ type KnowledgeGraphRecorder interface {
 	AddExecutionLearning(title, content string, filesChanged []string, patterns []string, outcome string) error
 	GetRelatedByKeywords(keywords []string) []*memory.GraphNode
 }
-
-// SelfReviewExtractor extracts and persists patterns from self-review output.
-// This interface is satisfied by memory.PatternExtractor and allows the executor
-// to extract patterns without tight coupling to the memory package implementation.
-type SelfReviewExtractor interface {
-	ExtractFromSelfReview(ctx context.Context, selfReviewOutput string, projectPath string) (*memory.ExtractionResult, error)
-	SaveExtractedPatterns(ctx context.Context, result *memory.ExtractionResult) error
-}

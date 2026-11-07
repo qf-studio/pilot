@@ -81,41 +81,6 @@ func TestNewRunnerWithConfig(t *testing.T) {
 	}
 }
 
-func TestSelfReviewTimeout(t *testing.T) {
-	t.Run("opencode uses longer self-review timeout", func(t *testing.T) {
-		runner, err := NewRunnerWithConfig(&BackendConfig{
-			UseWorktree: boolPtr(false),
-			Type:        BackendTypeOpenCode,
-			OpenCode: &OpenCodeConfig{
-				ServerURL: "http://localhost:5000",
-			},
-		})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got := runner.selfReviewTimeout(); got != 10*time.Minute {
-			t.Fatalf("selfReviewTimeout() = %v, want %v", got, 10*time.Minute)
-		}
-	})
-
-	t.Run("claude-code keeps short self-review timeout", func(t *testing.T) {
-		runner, err := NewRunnerWithConfig(&BackendConfig{UseWorktree: boolPtr(false), Type: BackendTypeClaudeCode})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got := runner.selfReviewTimeout(); got != 2*time.Minute {
-			t.Fatalf("selfReviewTimeout() = %v, want %v", got, 2*time.Minute)
-		}
-	})
-
-	t.Run("default backend keeps short self-review timeout", func(t *testing.T) {
-		r := &Runner{}
-		if got := r.selfReviewTimeout(); got != 2*time.Minute {
-			t.Fatalf("selfReviewTimeout() = %v, want %v", got, 2*time.Minute)
-		}
-	})
-}
-
 func TestNewRunnerWithConfigInvalid(t *testing.T) {
 	config := &BackendConfig{
 		UseWorktree: boolPtr(false),
@@ -2210,230 +2175,6 @@ func TestNewRunnerWithConfig_DecomposeDisabled(t *testing.T) {
 	}
 }
 
-// Test self-review prompt generation (GH-364)
-func TestBuildSelfReviewPrompt(t *testing.T) {
-	runner := NewRunner()
-
-	task := &Task{
-		ID:          "TEST-001",
-		Title:       "Test task",
-		Description: "Test description",
-		ProjectPath: "/tmp/test",
-	}
-
-	prompt := runner.buildSelfReviewPrompt(task)
-
-	// Verify key elements
-	if !strings.Contains(prompt, "Self-Review Phase") {
-		t.Error("Prompt should contain Self-Review Phase header")
-	}
-	if !strings.Contains(prompt, "git diff") {
-		t.Error("Prompt should include diff analysis")
-	}
-	if !strings.Contains(prompt, "go build") {
-		t.Error("Prompt should include build verification")
-	}
-	if !strings.Contains(prompt, "REVIEW_PASSED") {
-		t.Error("Prompt should include success signal")
-	}
-	if !strings.Contains(prompt, "REVIEW_FIXED") {
-		t.Error("Prompt should include fixed signal")
-	}
-	if !strings.Contains(prompt, "Wiring Check") {
-		t.Error("Prompt should include wiring check")
-	}
-	if !strings.Contains(prompt, "Method Existence Check") {
-		t.Error("Prompt should include method existence check")
-	}
-}
-
-// Test self-review config option (GH-364)
-func TestBackendConfig_SkipSelfReview(t *testing.T) {
-	// Default config should have SkipSelfReview as false
-	config := DefaultBackendConfig()
-	if config.SkipSelfReview {
-		t.Error("Default config should not skip self-review")
-	}
-
-	// Test with skip enabled
-	config.SkipSelfReview = true
-	if !config.SkipSelfReview {
-		t.Error("SkipSelfReview should be true when set")
-	}
-}
-
-// Test that self-review is skipped for trivial tasks (GH-364)
-func TestSelfReviewSkipsTrivialTasks(t *testing.T) {
-	// Trivial task should be skipped
-	trivialTask := &Task{
-		ID:          "TRIV-001",
-		Title:       "Fix typo in README",
-		Description: "Fix typo in README",
-		ProjectPath: "/tmp/test",
-	}
-
-	complexity := DetectComplexity(trivialTask)
-	if !complexity.ShouldSkipNavigator() {
-		t.Error("Expected trivial task to be detected as trivial")
-	}
-
-	// The self-review should skip trivial tasks without needing backend execution
-	// We can't fully test runSelfReview without mocking, but we verify the complexity check
-	if complexity != ComplexityTrivial {
-		t.Errorf("Expected complexity to be trivial, got %s", complexity)
-	}
-
-	// Non-trivial task should NOT be skipped
-	mediumTask := &Task{
-		ID:          "MED-001",
-		Title:       "Add user authentication with JWT tokens",
-		Description: "Implement user authentication flow with JWT tokens and session management",
-		ProjectPath: "/tmp/test",
-	}
-
-	mediumComplexity := DetectComplexity(mediumTask)
-	if mediumComplexity.ShouldSkipNavigator() {
-		t.Error("Expected medium complexity task to NOT skip Navigator/self-review")
-	}
-}
-
-// Test runner with SkipSelfReview config (GH-364)
-func TestNewRunnerWithConfig_SkipSelfReview(t *testing.T) {
-	config := &BackendConfig{
-		UseWorktree: boolPtr(false),
-		Type:        "claude-code",
-		ClaudeCode: &ClaudeCodeConfig{
-			Command: "claude",
-		},
-		SkipSelfReview: true,
-	}
-
-	runner, err := NewRunnerWithConfig(config)
-	if err != nil {
-		t.Fatalf("NewRunnerWithConfig failed: %v", err)
-	}
-
-	if runner.config == nil {
-		t.Fatal("Expected runner.config to be set")
-	}
-	if !runner.config.SkipSelfReview {
-		t.Error("Expected SkipSelfReview to be true in runner config")
-	}
-}
-
-// Test that IntentJudgeConfig.MaxDiffChars flows into the wired IntentJudge (GH-4407).
-func TestNewRunnerWithConfig_IntentJudgeMaxDiffChars(t *testing.T) {
-	enabled := true
-	config := &BackendConfig{
-		UseWorktree: boolPtr(false),
-		Type:        "claude-code",
-		ClaudeCode: &ClaudeCodeConfig{
-			Command: "sh", // guaranteed present on PATH so exec.LookPath succeeds
-		},
-		IntentJudge: &IntentJudgeConfig{
-			Enabled:      &enabled,
-			MaxDiffChars: 64000,
-		},
-	}
-
-	runner, err := NewRunnerWithConfig(config)
-	if err != nil {
-		t.Fatalf("NewRunnerWithConfig failed: %v", err)
-	}
-	if runner.intentJudge == nil {
-		t.Fatal("expected intent judge to be wired")
-	}
-	if runner.intentJudge.maxDiffChars != 64000 {
-		t.Errorf("maxDiffChars = %d, want 64000", runner.intentJudge.maxDiffChars)
-	}
-}
-
-// Test that an unset MaxDiffChars falls back to the package default rather
-// than zero (which would defeat truncation entirely). GH-4407.
-func TestNewRunnerWithConfig_IntentJudgeDefaultMaxDiffChars(t *testing.T) {
-	enabled := true
-	config := &BackendConfig{
-		UseWorktree: boolPtr(false),
-		Type:        "claude-code",
-		ClaudeCode: &ClaudeCodeConfig{
-			Command: "sh",
-		},
-		IntentJudge: &IntentJudgeConfig{
-			Enabled: &enabled,
-			// MaxDiffChars left zero - NewIntentJudge should apply the default.
-		},
-	}
-
-	runner, err := NewRunnerWithConfig(config)
-	if err != nil {
-		t.Fatalf("NewRunnerWithConfig failed: %v", err)
-	}
-	if runner.intentJudge == nil {
-		t.Fatal("expected intent judge to be wired")
-	}
-	if runner.intentJudge.maxDiffChars != maxDiffCharsDefault {
-		t.Errorf("maxDiffChars = %d, want default %d", runner.intentJudge.maxDiffChars, maxDiffCharsDefault)
-	}
-}
-
-// Test that IntentJudgeConfig.Timeout flows into the wired IntentJudge's
-// judgeTimeout (GH-4669: the raised-default fix needs a config override path
-// too, so an operator can tune it without a binary rebuild).
-func TestNewRunnerWithConfig_IntentJudgeTimeout(t *testing.T) {
-	enabled := true
-	config := &BackendConfig{
-		UseWorktree: boolPtr(false),
-		Type:        "claude-code",
-		ClaudeCode: &ClaudeCodeConfig{
-			Command: "sh",
-		},
-		IntentJudge: &IntentJudgeConfig{
-			Enabled: &enabled,
-			Timeout: "90s",
-		},
-	}
-
-	runner, err := NewRunnerWithConfig(config)
-	if err != nil {
-		t.Fatalf("NewRunnerWithConfig failed: %v", err)
-	}
-	if runner.intentJudge == nil {
-		t.Fatal("expected intent judge to be wired")
-	}
-	if runner.intentJudge.judgeTimeout != 90*time.Second {
-		t.Errorf("judgeTimeout = %v, want 90s", runner.intentJudge.judgeTimeout)
-	}
-}
-
-// Test that an unset Timeout falls back to the raised 60s default rather
-// than the pre-GH-4669 30s, which live-box reproduction showed leaves
-// near-zero margin over real subprocess latency.
-func TestNewRunnerWithConfig_IntentJudgeDefaultTimeout(t *testing.T) {
-	enabled := true
-	config := &BackendConfig{
-		UseWorktree: boolPtr(false),
-		Type:        "claude-code",
-		ClaudeCode: &ClaudeCodeConfig{
-			Command: "sh",
-		},
-		IntentJudge: &IntentJudgeConfig{
-			Enabled: &enabled,
-			// Timeout left empty - NewIntentJudge should apply the 60s default.
-		},
-	}
-
-	runner, err := NewRunnerWithConfig(config)
-	if err != nil {
-		t.Fatalf("NewRunnerWithConfig failed: %v", err)
-	}
-	if runner.intentJudge == nil {
-		t.Fatal("expected intent judge to be wired")
-	}
-	if runner.intentJudge.judgeTimeout != 60*time.Second {
-		t.Errorf("judgeTimeout = %v, want default 60s", runner.intentJudge.judgeTimeout)
-	}
-}
-
 // Test ExtractRepoName function (GH-386)
 func TestExtractRepoName(t *testing.T) {
 	tests := []struct {
@@ -3065,48 +2806,6 @@ func TestBuildPrompt_ConstantsSourced(t *testing.T) {
 	}
 }
 
-// TestBuildSelfReviewPrompt_ConstantValueSanity verifies self-review includes check #6 (GH-1321)
-func TestBuildSelfReviewPrompt_ConstantValueSanity(t *testing.T) {
-	runner := NewRunner()
-
-	task := &Task{
-		ID:          "TEST-1321",
-		Title:       "Test task",
-		Description: "Test description",
-		ProjectPath: "/tmp/test",
-	}
-
-	prompt := runner.buildSelfReviewPrompt(task)
-
-	if !strings.Contains(prompt, "Constant Value Sanity Check") {
-		t.Error("Self-review prompt should contain 'Constant Value Sanity Check'")
-	}
-	if !strings.Contains(prompt, "SUSPICIOUS_VALUE") {
-		t.Error("Self-review prompt should contain 'SUSPICIOUS_VALUE' signal")
-	}
-}
-
-// TestBuildSelfReviewPrompt_CrossFileParity verifies self-review includes check #7 (GH-1321)
-func TestBuildSelfReviewPrompt_CrossFileParity(t *testing.T) {
-	runner := NewRunner()
-
-	task := &Task{
-		ID:          "TEST-1321",
-		Title:       "Test task",
-		Description: "Test description",
-		ProjectPath: "/tmp/test",
-	}
-
-	prompt := runner.buildSelfReviewPrompt(task)
-
-	if !strings.Contains(prompt, "Cross-File Parity Check") {
-		t.Error("Self-review prompt should contain 'Cross-File Parity Check'")
-	}
-	if !strings.Contains(prompt, "PARITY_GAP") {
-		t.Error("Self-review prompt should contain 'PARITY_GAP' signal")
-	}
-}
-
 // TestRunner_SetLogStore verifies SetLogStore wires the log store to the runner.
 func TestRunner_SetLogStore(t *testing.T) {
 	runner := NewRunner()
@@ -3151,7 +2850,6 @@ func TestRunner_saveLogEntry_WritesEntry(t *testing.T) {
 	runner.saveLogEntry("exec-42", "info", "Branch created: pilot/GH-42")
 	runner.saveLogEntry("exec-42", "info", "Implementing changes...")
 	runner.saveLogEntry("exec-42", "info", "Running tests...")
-	runner.saveLogEntry("exec-42", "info", "Running self-review...")
 	runner.saveLogEntry("exec-42", "info", "PR created: https://github.com/test/repo/pull/42")
 	runner.saveLogEntry("exec-42", "info", "Task completed successfully")
 
@@ -3161,8 +2859,8 @@ func TestRunner_saveLogEntry_WritesEntry(t *testing.T) {
 		t.Fatalf("failed to get recent logs: %v", err)
 	}
 
-	if len(logs) != 7 {
-		t.Fatalf("expected 7 log entries, got %d", len(logs))
+	if len(logs) != 6 {
+		t.Fatalf("expected 6 log entries, got %d", len(logs))
 	}
 
 	// Logs are returned newest-first
@@ -3180,7 +2878,7 @@ func TestRunner_saveLogEntry_WritesEntry(t *testing.T) {
 	}
 
 	// Verify first entry (oldest, at end of list)
-	if logs[6].Message != "Task started: Add feature X" {
+	if logs[5].Message != "Task started: Add feature X" {
 		t.Errorf("oldest log message = %q, want %q", logs[6].Message, "Task started: Add feature X")
 	}
 }
@@ -3330,262 +3028,26 @@ func TestRunner_recordExecutionEvent_WritesEvent(t *testing.T) {
 	}
 }
 
-// --- GH-1955: Self-review pattern extraction ---
-
-// mockSelfReviewBackend implements Backend for self-review tests.
-type mockSelfReviewBackend struct {
+// mockDoneBackend is a minimal Backend that returns a fixed output and records the last ExecuteOptions.
+type mockDoneBackend struct {
 	mu       sync.Mutex
 	output   string
 	lastOpts ExecuteOptions
 }
 
-func (m *mockSelfReviewBackend) Name() string      { return "mock" }
-func (m *mockSelfReviewBackend) IsAvailable() bool { return true }
-func (m *mockSelfReviewBackend) Execute(_ context.Context, opts ExecuteOptions) (*BackendResult, error) {
+func (m *mockDoneBackend) Name() string      { return "mock" }
+func (m *mockDoneBackend) IsAvailable() bool { return true }
+func (m *mockDoneBackend) Execute(_ context.Context, opts ExecuteOptions) (*BackendResult, error) {
 	m.mu.Lock()
 	m.lastOpts = opts
 	m.mu.Unlock()
 	return &BackendResult{Success: true, Output: m.output}, nil
 }
 
-func (m *mockSelfReviewBackend) lastExecuteOptions() ExecuteOptions {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.lastOpts
-}
-
-// mockSelfReviewExtractor implements SelfReviewExtractor for testing.
-type mockSelfReviewExtractor struct {
-	mu           sync.Mutex
-	extractCalls int
-	saveCalls    int
-	lastResult   *memory.ExtractionResult
-	extractFunc  func(ctx context.Context, output string, projectPath string) (*memory.ExtractionResult, error)
-}
-
-func (m *mockSelfReviewExtractor) ExtractFromSelfReview(ctx context.Context, output string, projectPath string) (*memory.ExtractionResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.extractCalls++
-	if m.extractFunc != nil {
-		return m.extractFunc(ctx, output, projectPath)
-	}
-	return &memory.ExtractionResult{}, nil
-}
-
-func (m *mockSelfReviewExtractor) SaveExtractedPatterns(ctx context.Context, result *memory.ExtractionResult) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.saveCalls++
-	m.lastResult = result
-	return nil
-}
-
-func TestRunSelfReview_ExtractsPatterns(t *testing.T) {
-	backend := &mockSelfReviewBackend{
-		output: "REVIEW_FIXED: found unwired config field\nSUSPICIOUS_VALUE: hardcoded 999",
-	}
-	runner := NewRunnerWithBackend(backend)
-	runner.skipPreflightChecks = true
-
-	extractor := &mockSelfReviewExtractor{
-		extractFunc: func(_ context.Context, output string, projectPath string) (*memory.ExtractionResult, error) {
-			// Delegate to real PatternExtractor logic via simple simulation
-			result := &memory.ExtractionResult{
-				ExecutionID: "test",
-				ProjectPath: projectPath,
-			}
-			if strings.Contains(output, "REVIEW_FIXED") {
-				result.AntiPatterns = append(result.AntiPatterns, &memory.ExtractedPattern{
-					Type:        "review_fix",
-					Title:       "Self-review fix",
-					Description: "Self-review found and fixed issues",
-					Confidence:  0.5,
-				})
-			}
-			if strings.Contains(output, "SUSPICIOUS_VALUE") {
-				result.AntiPatterns = append(result.AntiPatterns, &memory.ExtractedPattern{
-					Type:        "suspicious_value",
-					Title:       "Suspicious hardcoded value",
-					Description: "Hardcoded constant needs verification",
-					Confidence:  0.5,
-				})
-			}
-			return result, nil
-		},
-	}
-	runner.SetSelfReviewExtractor(extractor)
-
-	task := &Task{
-		ID:          "SR-001",
-		Title:       "Add user authentication with JWT tokens and session management",
-		Description: "Implement full auth flow with JWT tokens, refresh tokens, and session management",
-		ProjectPath: t.TempDir(),
-	}
-	state := &progressState{}
-
-	err := runner.runSelfReview(context.Background(), task, task.ProjectPath, state)
-	if err != nil {
-		t.Fatalf("runSelfReview returned error: %v", err)
-	}
-
-	extractor.mu.Lock()
-	defer extractor.mu.Unlock()
-
-	if extractor.extractCalls != 1 {
-		t.Errorf("expected 1 extract call, got %d", extractor.extractCalls)
-	}
-	if extractor.saveCalls != 1 {
-		t.Errorf("expected 1 save call, got %d", extractor.saveCalls)
-	}
-	if extractor.lastResult == nil {
-		t.Fatal("expected lastResult to be set")
-	}
-	if len(extractor.lastResult.AntiPatterns) != 2 {
-		t.Errorf("expected 2 anti-patterns, got %d", len(extractor.lastResult.AntiPatterns))
-	}
-}
-
-func TestRunSelfReview_SkipsExtractionWhenNoExtractor(t *testing.T) {
-	backend := &mockSelfReviewBackend{
-		output: "REVIEW_FIXED: found issue",
-	}
-	runner := NewRunnerWithBackend(backend)
-	runner.skipPreflightChecks = true
-
-	// No extractor set — should not panic
-	task := &Task{
-		ID:          "SR-002",
-		Title:       "Add complex feature with multiple components",
-		Description: "Implement a complex multi-step feature requiring significant changes",
-		ProjectPath: t.TempDir(),
-	}
-	state := &progressState{}
-
-	err := runner.runSelfReview(context.Background(), task, task.ProjectPath, state)
-	if err != nil {
-		t.Fatalf("runSelfReview returned error: %v", err)
-	}
-}
-
-func TestRunSelfReview_SkipsExtractionWhenEmptyOutput(t *testing.T) {
-	backend := &mockSelfReviewBackend{
-		output: "", // empty output
-	}
-	runner := NewRunnerWithBackend(backend)
-	runner.skipPreflightChecks = true
-
-	extractor := &mockSelfReviewExtractor{}
-	runner.SetSelfReviewExtractor(extractor)
-
-	task := &Task{
-		ID:          "SR-003",
-		Title:       "Add complex feature with multiple components",
-		Description: "Implement a complex multi-step feature requiring significant changes",
-		ProjectPath: t.TempDir(),
-	}
-	state := &progressState{}
-
-	err := runner.runSelfReview(context.Background(), task, task.ProjectPath, state)
-	if err != nil {
-		t.Fatalf("runSelfReview returned error: %v", err)
-	}
-
-	extractor.mu.Lock()
-	defer extractor.mu.Unlock()
-
-	if extractor.extractCalls != 0 {
-		t.Errorf("expected 0 extract calls for empty output, got %d", extractor.extractCalls)
-	}
-}
-
-func TestRunSelfReview_SkipsSaveWhenNoPatternsExtracted(t *testing.T) {
-	backend := &mockSelfReviewBackend{
-		output: "REVIEW_PASSED",
-	}
-	runner := NewRunnerWithBackend(backend)
-	runner.skipPreflightChecks = true
-
-	extractor := &mockSelfReviewExtractor{
-		extractFunc: func(_ context.Context, _ string, _ string) (*memory.ExtractionResult, error) {
-			// No patterns found
-			return &memory.ExtractionResult{
-				Patterns:     make([]*memory.ExtractedPattern, 0),
-				AntiPatterns: make([]*memory.ExtractedPattern, 0),
-			}, nil
-		},
-	}
-	runner.SetSelfReviewExtractor(extractor)
-
-	task := &Task{
-		ID:          "SR-004",
-		Title:       "Add complex feature with multiple components",
-		Description: "Implement a complex multi-step feature requiring significant changes",
-		ProjectPath: t.TempDir(),
-	}
-	state := &progressState{}
-
-	err := runner.runSelfReview(context.Background(), task, task.ProjectPath, state)
-	if err != nil {
-		t.Fatalf("runSelfReview returned error: %v", err)
-	}
-
-	extractor.mu.Lock()
-	defer extractor.mu.Unlock()
-
-	if extractor.extractCalls != 1 {
-		t.Errorf("expected 1 extract call, got %d", extractor.extractCalls)
-	}
-	if extractor.saveCalls != 0 {
-		t.Errorf("expected 0 save calls when no patterns extracted, got %d", extractor.saveCalls)
-	}
-}
-
-// TestRunSelfReview_RunsInWorktree is the GH-4702 regression guard.
-//
-// Before the fix runSelfReview always passed ProjectPath: task.ProjectPath —
-// the daemon's repo root — even when worktree isolation was active, so the
-// review's `git diff --cached` saw nothing and its own instructions to "FIX
-// the issue" if the diff looked empty caused it to re-derive the spec and
-// stage a phantom reimplementation into the shared root (the 2026-08-04
-// orphan-staged-GH-4659-helper incident). This is the third recurrence of the
-// TASK-323/GH-3577 class; runSelfReview was missed by both prior fixes. With
-// the fix, self-review runs in executionPath (the worktree), not
-// task.ProjectPath.
-func TestRunSelfReview_RunsInWorktree(t *testing.T) {
-	backend := &mockSelfReviewBackend{output: "REVIEW_PASSED"}
-	runner := NewRunnerWithBackend(backend)
-	runner.skipPreflightChecks = true
-
-	worktreePath := t.TempDir()
-	task := &Task{
-		ID:          "GH-4702",
-		Title:       "Add complex feature with multiple components",
-		Description: "Implement a complex multi-step feature requiring significant changes",
-		ProjectPath: t.TempDir(), // simulates the daemon's shared repo root
-	}
-	state := &progressState{}
-
-	// executionPath (worktreePath) is deliberately different from
-	// task.ProjectPath to simulate worktree isolation being active.
-	err := runner.runSelfReview(context.Background(), task, worktreePath, state)
-	if err != nil {
-		t.Fatalf("runSelfReview returned error: %v", err)
-	}
-
-	got := backend.lastExecuteOptions().ProjectPath
-	if got != worktreePath {
-		t.Errorf("self-review ProjectPath = %q, want worktree path %q", got, worktreePath)
-	}
-	if got == task.ProjectPath {
-		t.Errorf("self-review ran in task.ProjectPath %q; it must run in the worktree", task.ProjectPath)
-	}
-}
-
 func TestLocalModeSkipsNavigatorAutoInit(t *testing.T) {
 	projectDir := t.TempDir()
 
-	backend := &mockSelfReviewBackend{output: "done"}
+	backend := &mockDoneBackend{output: "done"}
 	runner := NewRunnerWithBackend(backend)
 	runner.config = &BackendConfig{
 		UseWorktree: boolPtr(false),
@@ -3643,7 +3105,7 @@ func TestNavigatorAutoInit_HonoursProjectNavigatorFlag(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			projectDir := t.TempDir()
 
-			backend := &mockSelfReviewBackend{output: "done"}
+			backend := &mockDoneBackend{output: "done"}
 			runner := NewRunnerWithBackend(backend)
 			runner.config = &BackendConfig{UseWorktree: boolPtr(false), Navigator: &NavigatorConfig{AutoInit: true}}
 			runner.SetRecordingEnabled(false)
@@ -3773,7 +3235,7 @@ func TestLocalModeRunsQualityGates(t *testing.T) {
 	// deps are pre-installed so OOM risk is mitigated).
 	projectDir := t.TempDir()
 
-	backend := &mockSelfReviewBackend{output: "done"}
+	backend := &mockDoneBackend{output: "done"}
 	runner := NewRunnerWithBackend(backend)
 	runner.config = &BackendConfig{UseWorktree: boolPtr(false)}
 	runner.SetRecordingEnabled(false)
@@ -4858,7 +4320,7 @@ func TestRunner_NoChanges_NoDecline(t *testing.T) {
 func TestExecute_PopulatesEffortAndComplexityOnResult(t *testing.T) {
 	projectDir := t.TempDir()
 
-	backend := &mockSelfReviewBackend{output: "done"}
+	backend := &mockDoneBackend{output: "done"}
 	runner := NewRunnerWithBackend(backend)
 	runner.skipPreflightChecks = true
 	// Enable effort routing so SelectEffort returns a non-empty string.

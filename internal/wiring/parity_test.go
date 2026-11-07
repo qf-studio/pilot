@@ -74,7 +74,6 @@ func TestPollingGatewayParity(t *testing.T) {
 		{"HasTeamChecker", func(h *Harness) bool { return h.Runner.HasTeamChecker() }},
 		{"HasDecomposer", func(h *Harness) bool { return h.Runner.HasDecomposer() }},
 		{"HasAlertProcessor", func(h *Harness) bool { return h.Runner.HasAlertProcessor() }},
-		{"HasIntentJudge", func(h *Harness) bool { return h.Runner.HasIntentJudge() }},
 		{"HasDriftDetector", func(h *Harness) bool { return h.Runner.HasDriftDetector() }},
 		{"HasProfileManager", func(h *Harness) bool { return h.Runner.HasProfileManager() }},
 		{"HasParallelRunner", func(h *Harness) bool { return h.Runner.HasParallelRunner() }},

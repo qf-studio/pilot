@@ -129,7 +129,7 @@ func (c *runnerMissingChecker) Check(_ context.Context) (*QualityOutcome, error)
 }
 
 func TestExecute_RunnerMissingGateFailsOnceWithCommandInError(t *testing.T) {
-	backend := &mockSelfReviewBackend{output: "done"}
+	backend := &mockDoneBackend{output: "done"}
 	runner := NewRunnerWithBackend(backend)
 	runner.config = &BackendConfig{}
 	runner.SetRecordingEnabled(false)
