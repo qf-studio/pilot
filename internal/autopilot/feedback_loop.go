@@ -773,6 +773,47 @@ func (f *FeedbackLoop) generateTitle(prState *PRState, failureType FailureType) 
 	}
 }
 
+// ciFixDecisionTask is the Task text of a CI-fix issue (GH-6182): it states
+// that the PR's change stands and that either side of a failing test may be
+// what has to change, which the pre-flight judge otherwise reads as an
+// unanswered "tests or implementation?" question (#6155, #6167).
+const ciFixDecisionTask = "The PR's change is the intended one. First decide per failing test whether the test is stale " +
+	"(asserts behaviour the PR removed) or the change is wrong; port stale tests, fix wrong code; say which in the PR body. " +
+	"Run tests locally before committing."
+
+// maxListedFailingTests caps the `## Failing tests` list.
+const maxListedFailingTests = 60
+
+// failingTestsFromLogs returns the failing tests carried by logs: parsed from
+// the block GetFailedCheckExcerpts embeds when logs is a step-excerpt bundle,
+// else extracted from the raw log text itself.
+func failingTestsFromLogs(logs string) []FailingTest {
+	if bundle, ok := strings.CutPrefix(logs, ciExcerptSentinel); ok {
+		tests, _ := splitFailingTestsBlock(bundle)
+		return tests
+	}
+	return extractFailingTests(logs)
+}
+
+func writeFailingTests(sb *strings.Builder, tests []FailingTest) {
+	if len(tests) == 0 {
+		return
+	}
+	sb.WriteString("## Failing tests\n\n")
+	for i, t := range tests {
+		if i == maxListedFailingTests {
+			fmt.Fprintf(sb, "- … and %d more (see the CI log)\n", len(tests)-i)
+			break
+		}
+		if t.Assertion != "" {
+			fmt.Fprintf(sb, "- `%s` — `%s`\n", t.Name, t.Assertion)
+		} else {
+			fmt.Fprintf(sb, "- `%s`\n", t.Name)
+		}
+	}
+	sb.WriteString("\n")
+}
+
 // generateBody creates a detailed issue body with context for Pilot.
 func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, failedChecks []string, logs string, iteration int, knownPatterns []*memory.CrossPattern) string {
 	var sb strings.Builder
@@ -803,11 +844,18 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 		sb.WriteString("\n")
 	}
 
+	// GH-6182: name every failing test from the full log, above the
+	// (budget-truncated) excerpt, so the fix session sees all of them.
+	if failureType == FailureCIPreMerge || failureType == FailureCIPostMerge {
+		writeFailingTests(&sb, failingTestsFromLogs(logs))
+	}
+
 	// Error logs section in collapsible details block (GH-1567)
 	if logs != "" {
 		sb.WriteString("<details><summary>CI Error Logs</summary>\n\n")
 		sb.WriteString("```\n")
 		if bundle, ok := strings.CutPrefix(logs, ciExcerptSentinel); ok {
+			_, bundle = splitFailingTestsBlock(bundle)
 			// GH-4460: logs is already a pre-assembled, budget-capped bundle
 			// of per-check failing-step excerpts (CIMonitor.GetFailedCheckExcerpts).
 			// Re-running the single-blob marker search below would misfire —
@@ -848,9 +896,10 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 	sb.WriteString("## Task\n\n")
 	switch failureType {
 	case FailureCIPreMerge:
-		sb.WriteString("Fix the CI failures listed above. Run tests locally before committing.\n")
+		sb.WriteString(ciFixDecisionTask + "\n")
 	case FailureCIPostMerge:
-		sb.WriteString("The PR was merged but CI failed afterward. Investigate and fix.\n")
+		sb.WriteString("The PR was merged but CI failed afterward. Investigate and fix.\n\n")
+		sb.WriteString(ciFixDecisionTask + "\n")
 	case FailureMerge:
 		sb.WriteString("Resolve the merge conflicts and ensure the changes integrate properly.\n")
 	case FailureDeployment:

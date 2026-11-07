@@ -45,6 +45,134 @@ type FailingStepExcerpt struct {
 	Tail         string
 	PermalinkURL string
 	Source       string // "step", "annotations", or "job" — which fallback tier produced Tail
+	// FailingTests lists every `--- FAIL:` test found in the FULL job log
+	// (GH-6182), before Tail's match-anchored extraction and budget cuts.
+	FailingTests []FailingTest
+}
+
+// FailingTest is one failed Go test pulled from a job log: its name and the
+// assertion line printed just before its `--- FAIL:` line (empty when none).
+type FailingTest struct {
+	Name      string
+	Assertion string
+}
+
+const (
+	// failingTestsOpen/failingTestsClose fence the machine-readable failing
+	// tests block GetFailedCheckExcerpts puts right after ciExcerptSentinel
+	// (GH-6182), so FeedbackLoop.generateBody can render `## Failing tests`
+	// from the full log without the bundle's budget cuts losing names.
+	failingTestsOpen  = "<!-- gh6182:failing-tests\n"
+	failingTestsClose = "-->\n"
+
+	// assertionLookback bounds how far above a `--- FAIL:` line the
+	// assertion search goes (and how far below it for non -v output).
+	assertionLookback = 6
+)
+
+var (
+	failTestLineRe  = regexp.MustCompile(`^\s*--- FAIL: (\S+)`)
+	assertionLineRe = regexp.MustCompile(`^\s*\S+\.go:\d+:`)
+	// testBoundaryRe marks lines that end one test's output block, so the
+	// assertion lookback never borrows a neighbouring test's message.
+	testBoundaryRe = regexp.MustCompile(`^\s*(=== |--- |FAIL\b|ok\s|PASS\b)`)
+)
+
+// extractFailingTests returns every distinct `--- FAIL: <Name>` in logs, in
+// first-seen order, each paired with the assertion line that precedes it
+// (`go test -v` order) or, failing that, the one right after it (plain
+// `go test` order). Subtests and their parents are listed separately.
+func extractFailingTests(logs string) []FailingTest {
+	lines := strings.Split(logs, "\n")
+	for i, l := range lines {
+		lines[i] = jobLogLineTimestampRe.ReplaceAllString(strings.TrimRight(l, "\r"), "")
+	}
+
+	var tests []FailingTest
+	seen := make(map[string]bool)
+	for i, line := range lines {
+		m := failTestLineRe.FindStringSubmatch(line)
+		if m == nil || seen[m[1]] {
+			continue
+		}
+		seen[m[1]] = true
+		tests = append(tests, FailingTest{Name: m[1], Assertion: findAssertion(lines, i)})
+	}
+	return tests
+}
+
+func findAssertion(lines []string, failIdx int) string {
+	for j := failIdx - 1; j >= 0 && j >= failIdx-assertionLookback; j-- {
+		if assertionLineRe.MatchString(lines[j]) {
+			return strings.TrimSpace(lines[j])
+		}
+		if testBoundaryRe.MatchString(lines[j]) {
+			break
+		}
+	}
+	for j := failIdx + 1; j < len(lines) && j <= failIdx+assertionLookback; j++ {
+		if assertionLineRe.MatchString(lines[j]) {
+			return strings.TrimSpace(lines[j])
+		}
+		if testBoundaryRe.MatchString(lines[j]) {
+			break
+		}
+	}
+	return ""
+}
+
+// mergeFailingTests concatenates per-check lists, de-duplicated by name.
+func mergeFailingTests(excerpts []FailingStepExcerpt) []FailingTest {
+	var out []FailingTest
+	seen := make(map[string]bool)
+	for _, ex := range excerpts {
+		for _, t := range ex.FailingTests {
+			if !seen[t.Name] {
+				seen[t.Name] = true
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
+
+// encodeFailingTestsBlock renders tests as the fenced block parsed back by
+// splitFailingTestsBlock. Returns "" for an empty list.
+func encodeFailingTestsBlock(tests []FailingTest) string {
+	if len(tests) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString(failingTestsOpen)
+	for _, t := range tests {
+		a := strings.ReplaceAll(strings.ReplaceAll(t.Assertion, "-->", "--&gt;"), "\t", " ")
+		sb.WriteString(t.Name + "\t" + a + "\n")
+	}
+	sb.WriteString(failingTestsClose)
+	return sb.String()
+}
+
+// splitFailingTestsBlock removes a leading failing tests block from bundle
+// (the text after ciExcerptSentinel) and returns the parsed tests plus the
+// remaining bundle. A bundle without the block comes back unchanged.
+func splitFailingTestsBlock(bundle string) ([]FailingTest, string) {
+	rest, ok := strings.CutPrefix(bundle, failingTestsOpen)
+	if !ok {
+		return nil, bundle
+	}
+	block, remainder, ok := strings.Cut(rest, failingTestsClose)
+	if !ok {
+		return nil, bundle
+	}
+	var tests []FailingTest
+	for _, l := range strings.Split(block, "\n") {
+		if l == "" {
+			continue
+		}
+		name, assertion, _ := strings.Cut(l, "\t")
+		tests = append(tests, FailingTest{Name: name, Assertion: assertion})
+	}
+	return tests, remainder
 }
 
 // resolveFailingStep returns the step that actually caused the job to fail,
