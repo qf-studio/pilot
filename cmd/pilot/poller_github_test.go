@@ -851,3 +851,83 @@ func TestPreFlight_AutopilotFixWithoutFooterStillJudged(t *testing.T) {
 		})
 	}
 }
+
+// mutation pin: item 1, a hand-filed unlabelled copy of a live autopilot-fix issue still skips the judge (title+body matched, label read from the labelled twin only) -> this test fails
+func TestPreFlight_AutopilotFixUnlabelledDuplicateStillJudged(t *testing.T) {
+	body := autopilotFixTestBody + autopilotFixTestFooter + "\n"
+	sp, _ := autopilotFixLabelServer(t, []map[string]any{
+		autopilotFixIssue(autopilotFixTestTitle, body, "pilot", "autopilot-fix"),
+		autopilotFixIssue(autopilotFixTestTitle, body),
+	}, http.StatusOK)
+
+	if _, err := sp.JudgeIssue(context.Background(), autopilotFixTestTitle, body, ""); err == nil {
+		t.Error("expected the judge to be invoked (error from missing binary): an unlabelled copy shares the title and body, got a bypass")
+	}
+}
+
+// mutation pin: item 2, every footer-bearing candidate costs its own full open-issue listing -> this test fails
+func TestPreFlight_AutopilotFixListingReusedAcrossCandidates(t *testing.T) {
+	bodyA := autopilotFixTestBody + autopilotFixTestFooter + "\n"
+	bodyB := autopilotFixTestBody + strings.Replace(autopilotFixTestFooter, "pr:6165", "pr:6166", 1) + "\n"
+	sp, calls := autopilotFixLabelServer(t, []map[string]any{
+		autopilotFixIssue("fix A", bodyA, "autopilot-fix"),
+		autopilotFixIssue("fix B", bodyB, "autopilot-fix"),
+	}, http.StatusOK)
+
+	for title, body := range map[string]string{"fix A": bodyA, "fix B": bodyB} {
+		if _, err := sp.JudgeIssue(context.Background(), title, body, ""); err != nil {
+			t.Fatalf("%s: judge was invoked for a labelled footer-bearing issue: %v", title, err)
+		}
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("open-issue listings = %d for two candidates in one cycle, want 1", n)
+	}
+
+	// A candidate missing from the reused listing was created after it: the
+	// listing is refetched once before the issue is judged.
+	bodyC := autopilotFixTestBody + strings.Replace(autopilotFixTestFooter, "pr:6165", "pr:6167", 1) + "\n"
+	if _, err := sp.JudgeIssue(context.Background(), "fix C", bodyC, ""); err == nil {
+		t.Error("expected the judge to be invoked for an issue absent from the listing")
+	}
+	if n := calls.Load(); n != 2 {
+		t.Errorf("open-issue listings = %d after an unseen candidate, want 2", n)
+	}
+}
+
+// mutation pin: item 3, issue_labels without autopilot-fix turns the bypass off with no message -> this test fails
+func TestNewPreFlightJudge_WarnsWhenAutopilotFixLabelNotConfigured(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available on this system")
+	}
+	newCfg := func(labels []string) *config.Config {
+		return &config.Config{
+			Executor: &executor.BackendConfig{
+				ClaudeCode:     &executor.ClaudeCodeConfig{Command: "sh"},
+				PreFlightJudge: &executor.PreFlightJudgeConfig{Enabled: true},
+			},
+			Orchestrator: &config.OrchestratorConfig{
+				Autopilot: &autopilot.Config{AutoCreateIssues: true, IssueLabels: labels},
+			},
+		}
+	}
+	cases := map[string]struct {
+		labels   []string
+		wantWarn bool
+	}{
+		"override without autopilot-fix": {labels: []string{"pilot", "ci-fix"}, wantWarn: true},
+		"default labels":                 {labels: []string{"pilot", "autopilot-fix"}},
+		"autopilot-fix, other casing":    {labels: []string{"Autopilot-Fix"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			repoLog := slog.New(slog.NewTextHandler(&buf, nil))
+			if newPreFlightJudge(newCfg(tc.labels), "o/r", nil, nil, repoLog) == nil {
+				t.Fatal("pre-flight judge not built")
+			}
+			if got := strings.Contains(buf.String(), "autopilot.issue_labels lacks autopilot-fix"); got != tc.wantWarn {
+				t.Errorf("warning logged = %v, want %v; log: %s", got, tc.wantWarn, buf.String())
+			}
+		})
+	}
+}

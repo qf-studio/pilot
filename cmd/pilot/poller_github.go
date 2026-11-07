@@ -284,6 +284,11 @@ type sdkPreFlightJudge struct {
 	// (hasAutopilotFixLabel); nil disables the bypass.
 	ghClient *githubSDK.Client
 
+	// listed/listedAt cache the last open-issue listing (see openIssues).
+	listMu   sync.Mutex
+	listed   []*githubSDK.Issue
+	listedAt time.Time
+
 	trackerOnce sync.Once
 	tracker     *alerts.DeadManTracker
 }
@@ -318,6 +323,33 @@ func autopilotFixFooterVerdict(body string) (branch string, pr int, ok bool) {
 	return branch, pr, true
 }
 
+// autopilotFixListTTL bounds how long one open-issue listing is reused across
+// JudgeIssue calls. The SDK lists every open issue (paged, labels filtered in
+// code), so a poll cycle with several CI-fix candidates would otherwise pay
+// one full listing each.
+const autopilotFixListTTL = 30 * time.Second
+
+// openIssues returns the repo's open issues, reusing a listing younger than
+// autopilotFixListTTL unless fresh is set. cached reports whether the result
+// came from the reuse.
+func (s *sdkPreFlightJudge) openIssues(ctx context.Context, owner, repo string, fresh bool) (issues []*githubSDK.Issue, cached bool, err error) {
+	s.listMu.Lock()
+	defer s.listMu.Unlock()
+	if !fresh && s.listed != nil && time.Since(s.listedAt) < autopilotFixListTTL {
+		return s.listed, true, nil
+	}
+	// The label is deliberately not passed as a filter: the copies of this
+	// issue that lack it are exactly what hasAutopilotFixLabel must see.
+	issues, err = s.ghClient.ListIssues(ctx, owner, repo, &githubSDK.ListIssuesOptions{
+		State: githubSDK.StateOpen,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	s.listed, s.listedAt = issues, time.Now()
+	return issues, false, nil
+}
+
 // hasAutopilotFixLabel reports whether the open issue with this exact title
 // and body carries the autopilot-fix label.
 //
@@ -325,7 +357,10 @@ func autopilotFixFooterVerdict(body string) (branch string, pr int, ok bool) {
 // hands the judge only title, body and repoContext, and the SDK poller calls
 // it as JudgeIssue(ctx, issue.Title, issue.Body, "") — issue.Labels never
 // reaches this shim, and the issue number is not passed either. The label is
-// therefore read back from GitHub, matching the issue by title and body. Any
+// therefore read back from GitHub, matching the issue by title and body. With
+// no number to tell identical issues apart, every open issue sharing that
+// title and body must carry the label: a hand-filed, unlabelled copy of a live
+// autopilot-fix issue makes the match ambiguous and the issue is judged. Any
 // failure (no client, API error, no match) returns false so the issue is
 // judged as before.
 func (s *sdkPreFlightJudge) hasAutopilotFixLabel(ctx context.Context, title, body string) bool {
@@ -336,22 +371,37 @@ func (s *sdkPreFlightJudge) hasAutopilotFixLabel(ctx context.Context, title, bod
 	if !found || owner == "" || repo == "" {
 		return false
 	}
-	issues, err := s.ghClient.ListIssues(ctx, owner, repo, &githubSDK.ListIssuesOptions{
-		State:  githubSDK.StateOpen,
-		Labels: []string{labelAutopilotFix},
-	})
+	want := strings.TrimSpace(body)
+	count := func(issues []*githubSDK.Issue) (matched, labelled int) {
+		for _, is := range issues {
+			if is.PullRequest == nil && is.Title == title && strings.TrimSpace(is.Body) == want {
+				matched++
+				if githubSDK.HasLabel(is, labelAutopilotFix) {
+					labelled++
+				}
+			}
+		}
+		return matched, labelled
+	}
+	issues, cached, err := s.openIssues(ctx, owner, repo, false)
 	if err != nil {
 		logging.WithComponent("github-sdk-poller").Warn("pre-flight: autopilot-fix label lookup failed; judging the issue",
 			slog.String("repo", s.repoFullName),
 			slog.Any("error", err))
 		return false
 	}
-	for _, is := range issues {
-		if is.PullRequest == nil && is.Title == title && strings.TrimSpace(is.Body) == strings.TrimSpace(body) {
-			return true
+	matched, labelled := count(issues)
+	if matched == 0 && cached {
+		// The issue may have been created after the reused listing.
+		if issues, _, err = s.openIssues(ctx, owner, repo, true); err != nil {
+			logging.WithComponent("github-sdk-poller").Warn("pre-flight: autopilot-fix label lookup failed; judging the issue",
+				slog.String("repo", s.repoFullName),
+				slog.Any("error", err))
+			return false
 		}
+		matched, labelled = count(issues)
 	}
-	return false
+	return matched > 0 && matched == labelled
 }
 
 func (s *sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoContext string) (sdkcore.Verdict, error) {
@@ -384,6 +434,24 @@ func (s *sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoCon
 	}, nil
 }
 
+// warnAutopilotFixLabelMissing logs when the configured autopilot issue_labels
+// omit autopilot-fix: the producer then stops labelling CI-fix issues with it
+// and the pre-flight footer bypass (hasAutopilotFixLabel) never fires, so every
+// generated issue goes to the judge. It fails safe, but silently, hence the warning.
+func warnAutopilotFixLabelMissing(cfg *config.Config, repoFullName string, repoLog *slog.Logger) {
+	if cfg.Orchestrator == nil || cfg.Orchestrator.Autopilot == nil || !cfg.Orchestrator.Autopilot.AutoCreateIssues {
+		return
+	}
+	for _, l := range cfg.Orchestrator.Autopilot.IssueLabels {
+		if strings.EqualFold(l, labelAutopilotFix) {
+			return
+		}
+	}
+	repoLog.Warn("Pre-flight footer bypass disabled: autopilot.issue_labels lacks "+labelAutopilotFix+"; autopilot-generated CI-fix issues will be judged",
+		slog.String("repo", repoFullName),
+		slog.Any("issue_labels", cfg.Orchestrator.Autopilot.IssueLabels))
+}
+
 // newPreFlightJudge builds the pre-flight issue judge for one repo, or nil when
 // it is disabled in config or the claude binary is missing. It is the only
 // intent-judge wiring left since GH-6157 retired the in-run judge.
@@ -410,6 +478,7 @@ func newPreFlightJudge(cfg *config.Config, repoFullName string, controller *auto
 	if controller != nil {
 		judgeMetrics = controller.Metrics()
 	}
+	warnAutopilotFixLabelMissing(cfg, repoFullName, repoLog)
 	preflightJudge := executor.NewIntentJudge(claudeCmd)
 	// GH-4669: allow overriding the raised 60s default from config.
 	if cfg.Executor.PreFlightJudge.Timeout != "" {
