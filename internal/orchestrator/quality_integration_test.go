@@ -112,19 +112,14 @@ func (m *mockBackend) getPrompts() []string {
 // TestQualityGatesHappyPath tests that quality gates pass and task completes successfully
 func TestQualityGatesHappyPath(t *testing.T) {
 	// Setup mock backend that returns success
-	// With self-review enabled (GH-364), backend is called twice:
-	// 1. Initial execution
-	// 2. Self-review phase (after quality gates pass)
+	// The in-run self-review phase is retired (TASK-620 L4), so the backend
+	// is called once: the initial execution.
 	backend := &mockBackend{
 		name: "test-backend",
 		execResults: []*executor.BackendResult{
 			{
 				Success: true,
 				Output:  "Task completed",
-			},
-			{
-				Success: true,
-				Output:  "REVIEW_PASSED",
 			},
 		},
 	}
@@ -177,19 +172,18 @@ func TestQualityGatesHappyPath(t *testing.T) {
 		t.Errorf("Expected quality checker to be called 1 time, got %d", callCount)
 	}
 
-	// Verify backend was called twice (initial + self-review, GH-364)
-	if execCount := backend.execCount(); execCount != 2 {
-		t.Errorf("Expected backend to be called 2 times (initial + self-review), got %d", execCount)
+	// Verify backend was called once (initial only)
+	if execCount := backend.execCount(); execCount != 1 {
+		t.Errorf("Expected backend to be called 1 time (initial only), got %d", execCount)
 	}
 }
 
 // TestQualityGatesRetrySuccess tests that failing quality gates trigger retry and succeed
 func TestQualityGatesRetrySuccess(t *testing.T) {
 	// Setup mock backend:
-	// With self-review enabled (GH-364), backend is called 3 times:
+	// Backend is called twice (the self-review phase is retired, TASK-620 L4):
 	// 1. Initial execution
 	// 2. Retry execution (after quality gate fails)
-	// 3. Self-review phase (after quality gates pass on retry)
 	backend := &mockBackend{
 		name: "test-backend",
 		execResults: []*executor.BackendResult{
@@ -200,10 +194,6 @@ func TestQualityGatesRetrySuccess(t *testing.T) {
 			{
 				Success: true,
 				Output:  "Fixed implementation",
-			},
-			{
-				Success: true,
-				Output:  "REVIEW_PASSED",
 			},
 		},
 	}
@@ -261,9 +251,9 @@ func TestQualityGatesRetrySuccess(t *testing.T) {
 		t.Errorf("Expected quality checker to be called 2 times, got %d", callCount)
 	}
 
-	// Verify backend was called 3 times (initial + retry + self-review, GH-364)
-	if execCount := backend.execCount(); execCount != 3 {
-		t.Errorf("Expected backend to be called 3 times (initial + retry + self-review), got %d", execCount)
+	// Verify backend was called twice (initial + retry)
+	if execCount := backend.execCount(); execCount != 2 {
+		t.Errorf("Expected backend to be called 2 times (initial + retry), got %d", execCount)
 	}
 }
 
@@ -507,16 +497,14 @@ func TestQualityGatesOrchestratorWiring(t *testing.T) {
 // TestQualityGatesRetryFeedbackPropagation tests that retry feedback is properly passed to backend
 func TestQualityGatesRetryFeedbackPropagation(t *testing.T) {
 	// Backend that captures prompts via the mockBackend struct
-	// With self-review enabled (GH-364), backend is called 3 times:
+	// Backend is called twice (the self-review phase is retired, TASK-620 L4):
 	// 1. Initial execution
 	// 2. Retry execution
-	// 3. Self-review phase
 	backend := &mockBackend{
 		name: "test-backend",
 		execResults: []*executor.BackendResult{
 			{Success: true, Output: "Initial"},
 			{Success: true, Output: "After retry"},
-			{Success: true, Output: "REVIEW_PASSED"},
 		},
 	}
 
@@ -562,9 +550,9 @@ func TestQualityGatesRetryFeedbackPropagation(t *testing.T) {
 	// Get captured prompts
 	receivedPrompts := backend.getPrompts()
 
-	// Should have 3 prompts (initial + retry + self-review, GH-364)
-	if len(receivedPrompts) != 3 {
-		t.Fatalf("Expected 3 prompts (initial + retry + self-review), got %d", len(receivedPrompts))
+	// Should have 2 prompts (initial + retry)
+	if len(receivedPrompts) != 2 {
+		t.Fatalf("Expected 2 prompts (initial + retry), got %d", len(receivedPrompts))
 	}
 
 	// First prompt should be original task
@@ -584,11 +572,5 @@ func TestQualityGatesRetryFeedbackPropagation(t *testing.T) {
 	}
 	if !strings.Contains(retryPrompt, "Expected: 42") {
 		t.Error("Retry prompt should contain the error feedback")
-	}
-
-	// Third prompt should be self-review
-	selfReviewPrompt := receivedPrompts[2]
-	if !strings.Contains(selfReviewPrompt, "Self-Review Phase") {
-		t.Error("Third prompt should be self-review prompt")
 	}
 }

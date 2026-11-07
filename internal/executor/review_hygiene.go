@@ -3,30 +3,25 @@ package executor
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 )
 
-// selfReviewHygieneTimeout bounds the git calls selfReviewTreeHygiene makes.
+// reviewHygieneTimeout bounds the git calls reviewPhaseTreeHygiene makes.
 // They run on a fresh context because the review context is usually the thing
 // that just expired.
-const selfReviewHygieneTimeout = 30 * time.Second
+const reviewHygieneTimeout = 30 * time.Second
 
-// reviewPhaseOutcome records how a review phase (self-review, the pre-PR fix
-// round) ended so the caller can decide what to do with edits the session left
-// in the working tree. GH-5900.
+// reviewPhaseOutcome records how a review phase (the pre-PR fix round) ended so
+// the caller can decide what to do with edits the session left in the working
+// tree. GH-5900.
 type reviewPhaseOutcome struct {
-	ran     bool          // the backend was actually invoked (not skipped)
-	fixed   bool          // output carried REVIEW_FIXED:
-	failed  bool          // the backend returned an error
-	killed  bool          // the session was terminated (timeout / cancellation)
-	elapsed time.Duration // wall-clock time until the failure, set when failed
+	ran    bool // the backend was actually invoked (not skipped)
+	fixed  bool // output carried REVIEW_FIXED:
+	failed bool // the backend returned an error
+	killed bool // the session was terminated (timeout / cancellation)
 }
-
-// selfReviewOutcome is the self-review phase's reviewPhaseOutcome.
-type selfReviewOutcome = reviewPhaseOutcome
 
 // reviewPhase names a review phase for tree hygiene: the label in its log lines
 // and the message of the commit that keeps its edits.
@@ -35,10 +30,7 @@ type reviewPhase struct {
 	commitMessage string
 }
 
-var (
-	selfReviewPhase = reviewPhase{name: "Self-review", commitMessage: "chore(self-review): apply self-review fixes"}
-	reviewFixPhase  = reviewPhase{name: "Review-fix", commitMessage: "chore(review-fix): apply pre-PR review fixes"}
-)
+var reviewFixPhase = reviewPhase{name: "Review-fix", commitMessage: "chore(review-fix): apply pre-PR review fixes"}
 
 // hygieneAction is what a hygiene pass did to the tree.
 type hygieneAction string
@@ -49,11 +41,11 @@ const (
 	hygieneDiscarded hygieneAction = "discarded" // edits reset away (or reset failed)
 )
 
-// selfReviewWasTerminated reports whether err means the review session was
+// reviewWasTerminated reports whether err means the review session was
 // killed by its context (deadline or cancellation) rather than failing on
 // its own: the shutdown_terminated / timeout backend error types, or a dead
 // review context.
-func selfReviewWasTerminated(reviewCtx context.Context, err error) bool {
+func reviewWasTerminated(reviewCtx context.Context, err error) bool {
 	if reviewCtx != nil && reviewCtx.Err() != nil {
 		return true
 	}
@@ -70,44 +62,12 @@ func selfReviewWasTerminated(reviewCtx context.Context, err error) bool {
 	return false
 }
 
-// selfReviewPRNote is the PR-body line for a terminated self-review; empty
-// when the review was not terminated.
-func selfReviewPRNote(terminatedAfter time.Duration) string {
-	if terminatedAfter <= 0 {
-		return ""
-	}
-	return fmt.Sprintf("\n\nSelf-review was terminated after %ds; its edits were discarded.", int(terminatedAfter.Seconds()))
-}
-
-// afterSelfReview runs once the self-review phase has returned (success, error
-// or timeout). In direct mode it cleans the clone via selfReviewTreeHygiene;
-// worktree mode skips that, since the worktree is discarded. Returns how long
-// the session ran when it was terminated, else zero.
-func (r *Runner) afterSelfReview(task *Task, git *GitOperations, state *progressState, executed, useWorktree bool) time.Duration {
-	if !executed {
-		return 0
-	}
-	if !useWorktree {
-		r.selfReviewTreeHygiene(task, git, state.selfReview)
-	}
-	if state.selfReview.killed {
-		return state.selfReview.elapsed
-	}
-	return 0
-}
-
-// selfReviewTreeHygiene is reviewPhaseTreeHygiene for the self-review phase.
-func (r *Runner) selfReviewTreeHygiene(task *Task, git *GitOperations, out selfReviewOutcome) {
-	r.reviewPhaseTreeHygiene(task, git, selfReviewPhase, out)
-}
-
 // reviewPhaseTreeHygiene leaves the working tree clean after a review phase,
 // whatever way it ended. The prompt tells the session to fix what it finds, so
 // it edits files in the tree; nothing else commits or resets those edits, and a
 // dirty clone fails the git_clean pre-flight of every later task on the project.
-// The self-review caller skips it in worktree mode, where the worktree is
-// discarded; the pre-PR fix round runs it in both modes, because the worktree is
-// what gets pushed.
+// The pre-PR fix round runs it in both modes, because the worktree is what
+// gets pushed.
 //
 // Dirty tree + REVIEW_FIXED + session not killed -> commit the edits on the
 // task branch. Anything else -> reset to HEAD. Logs one Info line naming the
@@ -119,7 +79,7 @@ func (r *Runner) reviewPhaseTreeHygiene(task *Task, git *GitOperations, phase re
 	}
 	log := r.log.With(slog.String("task_id", task.ID))
 
-	ctx, cancel := context.WithTimeout(context.Background(), selfReviewHygieneTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), reviewHygieneTimeout)
 	defer cancel()
 
 	dirty, err := git.dirtyProjectPaths(ctx)

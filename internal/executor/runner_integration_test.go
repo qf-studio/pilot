@@ -9,6 +9,15 @@ import (
 	"time"
 )
 
+// integrationProjectDir returns a fresh git repo: the pre-flight git_clean
+// check rejects a ProjectPath that is not one.
+func integrationProjectDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	return dir
+}
+
 // mockAlertProcessor implements AlertEventProcessor for integration tests
 type mockAlertProcessor struct {
 	events []AlertEvent
@@ -88,7 +97,7 @@ func TestRunner_Integration_TaskExecution(t *testing.T) {
 		ID:          "INTEG-001",
 		Title:       "Integration test task",
 		Description: "Test runner executes tasks correctly",
-		ProjectPath: t.TempDir(),
+		ProjectPath: integrationProjectDir(t),
 	}
 
 	// Execute
@@ -140,7 +149,7 @@ func TestRunner_Integration_StateTransitions(t *testing.T) {
 		ID:          "INTEG-002",
 		Title:       "State transition test",
 		Description: "Verify state transitions",
-		ProjectPath: t.TempDir(),
+		ProjectPath: integrationProjectDir(t),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -179,7 +188,7 @@ func TestRunner_Integration_AlertEmission(t *testing.T) {
 		ID:          "INTEG-003",
 		Title:       "Alert emission test",
 		Description: "Verify alerts are emitted",
-		ProjectPath: t.TempDir(),
+		ProjectPath: integrationProjectDir(t),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -216,15 +225,11 @@ func TestRunner_Integration_AlertEmission(t *testing.T) {
 
 // TestRunner_Integration_QualityGates verifies quality gate integration
 func TestRunner_Integration_QualityGates(t *testing.T) {
-	// Backend: initial execution -> self-review (after quality passes)
+	// Backend: initial execution only (self-review phase is retired)
 	backend := newMockIntegrationBackend("test-backend", true)
 	backend.addResult(&BackendResult{
 		Success: true,
 		Output:  "Implementation done",
-	})
-	backend.addResult(&BackendResult{
-		Success: true,
-		Output:  "REVIEW_PASSED",
 	})
 
 	runner := NewRunnerWithBackend(backend)
@@ -248,7 +253,7 @@ func TestRunner_Integration_QualityGates(t *testing.T) {
 		ID:          "INTEG-004",
 		Title:       "Quality gates test",
 		Description: "Verify quality gates are checked",
-		ProjectPath: t.TempDir(),
+		ProjectPath: integrationProjectDir(t),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -268,19 +273,18 @@ func TestRunner_Integration_QualityGates(t *testing.T) {
 		t.Errorf("Expected quality checker to be called 1 time, got %d", qualityCheckerCalls)
 	}
 
-	// Verify backend called twice (initial + self-review)
-	if backend.getExecCount() != 2 {
-		t.Errorf("Expected backend to be called 2 times, got %d", backend.getExecCount())
+	// Verify backend called once (initial only)
+	if backend.getExecCount() != 1 {
+		t.Errorf("Expected backend to be called 1 time, got %d", backend.getExecCount())
 	}
 }
 
 // TestRunner_Integration_QualityGatesRetry verifies quality gate retry flow
 func TestRunner_Integration_QualityGatesRetry(t *testing.T) {
-	// Backend: initial -> retry -> self-review
+	// Backend: initial -> retry
 	backend := newMockIntegrationBackend("test-backend", true)
 	backend.addResult(&BackendResult{Success: true, Output: "First attempt"})
 	backend.addResult(&BackendResult{Success: true, Output: "Fixed after feedback"})
-	backend.addResult(&BackendResult{Success: true, Output: "REVIEW_PASSED"})
 
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
@@ -307,7 +311,7 @@ func TestRunner_Integration_QualityGatesRetry(t *testing.T) {
 		ID:          "INTEG-005",
 		Title:       "Quality retry test",
 		Description: "Verify quality gate retry",
-		ProjectPath: t.TempDir(),
+		ProjectPath: integrationProjectDir(t),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -327,9 +331,9 @@ func TestRunner_Integration_QualityGatesRetry(t *testing.T) {
 		t.Errorf("Expected quality checker called 2 times, got %d", callCount)
 	}
 
-	// Backend called 3 times (initial + retry + self-review)
-	if backend.getExecCount() != 3 {
-		t.Errorf("Expected backend called 3 times, got %d", backend.getExecCount())
+	// Backend called twice (initial + retry)
+	if backend.getExecCount() != 2 {
+		t.Errorf("Expected backend called 2 times, got %d", backend.getExecCount())
 	}
 }
 
@@ -350,7 +354,7 @@ func TestRunner_Integration_ContextCancellation(t *testing.T) {
 		ID:          "INTEG-006",
 		Title:       "Cancellation test",
 		Description: "Verify context cancellation",
-		ProjectPath: t.TempDir(),
+		ProjectPath: integrationProjectDir(t),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -388,7 +392,7 @@ func TestRunner_Integration_MultipleTasksSequential(t *testing.T) {
 			ID:          id,
 			Title:       "Sequential task " + id,
 			Description: "Test sequential execution",
-			ProjectPath: t.TempDir(),
+			ProjectPath: integrationProjectDir(t),
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

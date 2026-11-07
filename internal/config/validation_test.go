@@ -1451,39 +1451,20 @@ func TestAcceptanceEvidenceBudget(t *testing.T) {
 	})
 }
 
-// TestSelfReviewTimeoutConfig covers executor.self_review_timeout (GH-5900):
-// unset keeps the per-backend defaults, a set value is read, negatives are
-// rejected at load with a message naming the key.
-func TestSelfReviewTimeoutConfig(t *testing.T) {
-	tests := []struct {
-		name    string
-		yaml    string
-		want    time.Duration
-		wantErr bool
-	}{
-		{"unset keeps 2m for claude-code", "version: \"1.0\"\n", 2 * time.Minute, false},
-		{"7m applies to claude-code", "executor:\n  type: claude-code\n  self_review_timeout: 7m\n", 7 * time.Minute, false},
-		{"negative rejected", "executor:\n  self_review_timeout: -1m\n", 0, true},
+// TestDeprecatedSelfReviewKeysStillLoad covers GH-6157: skip_self_review and
+// self_review_timeout are no-ops now, but configs that still carry them must
+// load, whatever the value.
+func TestDeprecatedSelfReviewKeysStillLoad(t *testing.T) {
+	body := "executor:\n  type: claude-code\n  skip_self_review: true\n  self_review_timeout: -1m\n"
+	path := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			path := t.TempDir() + "/config.yaml"
-			if err := os.WriteFile(path, []byte(tt.yaml), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := Load(path)
-			if tt.wantErr {
-				if err == nil || !strings.Contains(err.Error(), "self_review_timeout") {
-					t.Fatalf("expected error naming self_review_timeout, got %v", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("Load: %v", err)
-			}
-			if got := cfg.Executor.EffectiveSelfReviewTimeout(cfg.Executor.Type); got != tt.want {
-				t.Errorf("EffectiveSelfReviewTimeout = %v, want %v", got, tt.want)
-			}
-		})
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with deprecated self-review keys: %v", err)
+	}
+	if !cfg.Executor.SkipSelfReview || cfg.Executor.SelfReviewTimeout != -time.Minute {
+		t.Errorf("deprecated keys not read: skip=%v timeout=%v", cfg.Executor.SkipSelfReview, cfg.Executor.SelfReviewTimeout)
 	}
 }

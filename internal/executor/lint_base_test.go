@@ -2,7 +2,6 @@ package executor
 
 import (
 	"slices"
-	"strings"
 	"testing"
 )
 
@@ -23,12 +22,6 @@ func TestLintBaseRefFollowsTaskBaseBranch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if args := goLintArgs(tt.baseBranch); !slices.Contains(args, tt.wantFlag) {
 				t.Errorf("goLintArgs(%q) = %v, want it to contain %q", tt.baseBranch, args, tt.wantFlag)
-			}
-
-			r := &Runner{}
-			prompt := r.buildSelfReviewPrompt(&Task{ID: "GH-1", Title: "t", BaseBranch: tt.baseBranch})
-			if !strings.Contains(prompt, "golangci-lint run "+tt.wantFlag+" ./...") {
-				t.Errorf("self-review prompt missing lint command with %q", tt.wantFlag)
 			}
 		})
 	}

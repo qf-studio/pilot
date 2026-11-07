@@ -965,7 +965,6 @@ Examples:
 
 							runner.SetLearningLoop(learningLoop)
 							runner.SetPatternContext(patternContext)
-							runner.SetSelfReviewExtractor(extractor)
 
 							logging.WithComponent("learning").Info("Learning system initialized")
 

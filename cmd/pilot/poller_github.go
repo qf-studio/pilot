@@ -303,6 +303,47 @@ func (s *sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoCon
 	}, nil
 }
 
+// newPreFlightJudge builds the pre-flight issue judge for one repo, or nil when
+// it is disabled in config or the claude binary is missing. It is the only
+// intent-judge wiring left since GH-6157 retired the in-run judge.
+func newPreFlightJudge(cfg *config.Config, repoFullName string, controller *autopilot.Controller, alertsEngine *alerts.Engine, repoLog *slog.Logger) *sdkPreFlightJudge {
+	if cfg.Executor == nil || cfg.Executor.PreFlightJudge == nil || !cfg.Executor.PreFlightJudge.Enabled {
+		return nil
+	}
+	claudeCmd := ""
+	if cfg.Executor.ClaudeCode != nil {
+		claudeCmd = cfg.Executor.ClaudeCode.Command
+	}
+	if claudeCmd == "" {
+		claudeCmd = "claude"
+	}
+	if _, err := exec.LookPath(claudeCmd); err != nil {
+		repoLog.Warn("Pre-flight judge disabled: claude binary not found",
+			slog.String("command", claudeCmd))
+		return nil
+	}
+	// GH-4377: wire this repo's autopilot metrics (if any) so judge
+	// subprocess failures are visible as pilot_intent_judge_failures_total
+	// instead of only a WARN log line the SDK poller emits on fail-open.
+	var judgeMetrics *autopilot.Metrics
+	if controller != nil {
+		judgeMetrics = controller.Metrics()
+	}
+	preflightJudge := executor.NewIntentJudge(claudeCmd)
+	// GH-4669: allow overriding the raised 60s default from config.
+	if cfg.Executor.PreFlightJudge.Timeout != "" {
+		if d, err := time.ParseDuration(cfg.Executor.PreFlightJudge.Timeout); err == nil {
+			preflightJudge.SetPreflightTimeout(d)
+		}
+	}
+	return &sdkPreFlightJudge{
+		judge:        preflightJudge,
+		metrics:      judgeMetrics,
+		alertsEngine: alertsEngine,
+		repoFullName: repoFullName,
+	}
+}
+
 // trackerFor lazily registers this judge's alerts.DeadManTracker against
 // s.alertsEngine (TASK-441 L2, GH-4709) — RegisterDeadManTracker is
 // nil-receiver-safe (a nil *alerts.Engine, e.g. a repo with no alerts
@@ -713,48 +754,17 @@ func startGithubSDKPollerForRepo(ctx context.Context, deps *PollerDeps, log *slo
 
 	// GH-2802: pre-flight judge (CC subprocess, no API key) — mirrors the
 	// in-tree gating incl. the claude-binary lookup.
-	if deps.Cfg.Executor != nil && deps.Cfg.Executor.PreFlightJudge != nil && deps.Cfg.Executor.PreFlightJudge.Enabled {
-		claudeCmd := ""
-		if deps.Cfg.Executor.ClaudeCode != nil {
-			claudeCmd = deps.Cfg.Executor.ClaudeCode.Command
-		}
-		if claudeCmd == "" {
-			claudeCmd = "claude"
-		}
-		if _, err := exec.LookPath(claudeCmd); err != nil {
-			repoLog.Warn("Pre-flight judge disabled: claude binary not found",
-				slog.String("command", claudeCmd))
-		} else {
-			// GH-4377: wire this repo's autopilot metrics (if any) so judge
-			// subprocess failures are visible as pilot_intent_judge_failures_total
-			// instead of only a WARN log line the SDK poller emits on fail-open.
-			var judgeMetrics *autopilot.Metrics
-			if controller != nil {
-				judgeMetrics = controller.Metrics()
-			}
-			preflightJudge := executor.NewIntentJudge(claudeCmd)
-			// GH-4669: allow overriding the raised 60s default from config.
-			if deps.Cfg.Executor.PreFlightJudge.Timeout != "" {
-				if d, err := time.ParseDuration(deps.Cfg.Executor.PreFlightJudge.Timeout); err == nil {
-					preflightJudge.SetPreflightTimeout(d)
-				}
-			}
-			pollerDeps.PreFlightJudge = &sdkPreFlightJudge{
-				judge:        preflightJudge,
-				metrics:      judgeMetrics,
-				alertsEngine: deps.AlertsEngine,
-				repoFullName: target.repoFullName,
-			}
-			if deps.Store != nil {
-				// GH-4842: wire the per-repo controller (may be nil) so a
-				// preflight decline of a Pilot-spawned fix issue can react
-				// via the owner-death path.
-				// GH-5400: also wire the in-process Runner (may be nil) so a
-				// decline that fires against a task_id with a live execution
-				// (stale-label/rearm race) cancels it instead of letting it
-				// run straight through to a PR.
-				pollerDeps.ExecutionSaver = storeExecutionSaver{store: deps.Store, cfg: deps.Cfg, controller: controller, runner: deps.Runner}
-			}
+	if judge := newPreFlightJudge(deps.Cfg, target.repoFullName, controller, deps.AlertsEngine, repoLog); judge != nil {
+		pollerDeps.PreFlightJudge = judge
+		if deps.Store != nil {
+			// GH-4842: wire the per-repo controller (may be nil) so a
+			// preflight decline of a Pilot-spawned fix issue can react
+			// via the owner-death path.
+			// GH-5400: also wire the in-process Runner (may be nil) so a
+			// decline that fires against a task_id with a live execution
+			// (stale-label/rearm race) cancels it instead of letting it
+			// run straight through to a PR.
+			pollerDeps.ExecutionSaver = storeExecutionSaver{store: deps.Store, cfg: deps.Cfg, controller: controller, runner: deps.Runner}
 		}
 	}
 

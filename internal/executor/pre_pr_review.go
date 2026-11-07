@@ -18,8 +18,8 @@ import (
 // TASK-620 L1: pre-PR review. After the quality gates and before the push, the
 // post-merge reviewer's checklist runs over the full diff inside a read-only
 // checkout of the worktree HEAD. In shadow mode it records a verdict and acts
-// on nothing; when its mode is not off it already replaces the self-review
-// phase and the in-run intent judge.
+// on nothing. It replaced the self-review phase and the in-run intent judge,
+// which GH-6157 removed.
 
 // prePRMinWindow is the least finalize time a review needs to be worth starting.
 const prePRMinWindow = 2 * time.Minute

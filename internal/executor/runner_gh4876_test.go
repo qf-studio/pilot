@@ -39,7 +39,7 @@ func TestQualityGatesRespectSkipQualityGates(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			projectDir := t.TempDir()
 
-			backend := &mockSelfReviewBackend{output: "done"}
+			backend := &mockDoneBackend{output: "done"}
 			runner := NewRunnerWithBackend(backend)
 			runner.config = &BackendConfig{}
 			runner.SetRecordingEnabled(false)
@@ -91,7 +91,7 @@ func TestQuestionTaskDoesNotAutoEnableQualityGates(t *testing.T) {
 		t.Fatalf("WriteFile go.mod: %v", err)
 	}
 
-	backend := &mockSelfReviewBackend{output: "the answer is 42"}
+	backend := &mockDoneBackend{output: "the answer is 42"}
 	runner := NewRunnerWithBackend(backend)
 	runner.config = &BackendConfig{}
 	runner.SetRecordingEnabled(false)
