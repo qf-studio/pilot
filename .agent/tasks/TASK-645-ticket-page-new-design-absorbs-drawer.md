@@ -1,6 +1,6 @@
 # TASK-645: Ticket page in the new design — a Board row opens the page, the page absorbs the drawer's settings, the drawer retires
 
-**Status**: 🚀 **A2 DISPATCHED 11-07 ~11:35Z → [ui#407](https://github.com/qf-studio/pilot-console-ui/issues/407)** (`pilot` + `no-decompose`, pre-check 0; scope carries the A1 review notes + the live-found root fix). **A1 ✅ LIVE**: PR#405 merged 11:13Z, deployed 11:19Z, tenant check passed (1072 @ 208, four context cards, no band); ui#406 (post-merge minors) closed as folded into A2. B1 after A2's post-merge round. **Status**: 🟡 **A1 PR#405 reviewed APPROVE-w-notes 11-07 ~11:20Z (+310 −175: `KeyValueCard`, `TicketSideCards` rendered twice, title row, `issue` out of `UNTITLED_ROUTES`, timeline on ds tokens; 1142 tests green, CI test pending). Notes folded into A2: status chip variant via `STATUS_CHIP` (moot: becomes a select), mobile cards straight after the body, share input without `bg-surface`, class guard with the share enabled.** Earlier: 🚀 A1 dispatched → [ui#404](https://github.com/qf-studio/pilot-console-ui/issues/404).
+**Status**: 🟡 **A2 PR#408 reviewed APPROVE-w-notes 11-07 ~12:05Z (+1036 −153: `useCardMove` + `DispatchModal`, editing on the page, drawer specs ported, root fix + A1 notes in; 1174 tests green, CI pending).** **Status**: 🚀 **A2 DISPATCHED 11-07 ~11:35Z → [ui#407](https://github.com/qf-studio/pilot-console-ui/issues/407)** (`pilot` + `no-decompose`, pre-check 0; scope carries the A1 review notes + the live-found root fix). **A1 ✅ LIVE**: PR#405 merged 11:13Z, deployed 11:19Z, tenant check passed (1072 @ 208, four context cards, no band); ui#406 (post-merge minors) closed as folded into A2. B1 after A2's post-merge round. **Status**: 🟡 **A1 PR#405 reviewed APPROVE-w-notes 11-07 ~11:20Z (+310 −175: `KeyValueCard`, `TicketSideCards` rendered twice, title row, `issue` out of `UNTITLED_ROUTES`, timeline on ds tokens; 1142 tests green, CI test pending). Notes folded into A2: status chip variant via `STATUS_CHIP` (moot: becomes a select), mobile cards straight after the body, share input without `bg-surface`, class guard with the share enabled.** Earlier: 🚀 A1 dispatched → [ui#404](https://github.com/qf-studio/pilot-console-ui/issues/404).
 **Created**: 2026-11-07
 **Assignee**: Pilot (ui legs) · Navigator (reviews, live checks)
 
@@ -123,6 +123,9 @@ Deleting the drawer and changing the Board row click (leg B1). `RunStoryCard`, `
 
 ## Refs
 - Navigator TASK-645 § Design 5–6, 8 · TASK-639 B2 (`attemptMove` / `confirmDispatch`, drawer Status select) · GH-86 (drawer restyle) · memory `disabled-gate-whose-only-clearing-path-is-the-disabled-action-locks-out`
+
+### A2 review — PR#408 (Navigator, 11-07 ~12:05Z, comment) — APPROVE-WITH-NOTES
+Scope met incl. the A1 notes and the live-found root fix. Notes (pre-PR minors, agreed, later ticket-page leg): two mounted copies of the editable cards (one hidden) → one copy off a breakpoint ref later; comments/ops/run load once per mount (`linkedRequested` latch) → `watch(cardId)` reload later; `resetDrafts()` resets every draft after any save (drawer-inherited); "read-only" → "edits sync back" copy accepted; `aria-label` on `TextInput` lands on the label; the class guard strips `<label>` blocks (primitives out of scope). Mock check + live check after the deploy.
 
 ### LEG B1 — repo: qf-studio/pilot-console-ui — title: feat(board): a desktop Board row opens the ticket page — BoardCardDrawer deleted, BoardView drawer wiring removed, specs and the surface table follow
 
