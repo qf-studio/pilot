@@ -670,3 +670,66 @@ func TestGithubPollerMetricsAdapter_OtherReasonsDoNotLog(t *testing.T) {
 		t.Errorf("RecordUnsourcedLabeledIssues not bridged to SetUnsourcedLabeledIssues correctly, got %d", metrics.UnsourcedLabeledIssues["owner/repo"])
 	}
 }
+
+// --- GH-6182: autopilot-fix footer bypass ---
+
+const preflightFixFooter = "<!-- autopilot-meta branch:pilot/GH-6150 pr:6165 iteration:0 source:6150 sha:0123456789abcdef0123456789abcdef01234567 -->"
+
+// TestPreFlight_AutopilotFixFooterSkipsJudge pins GH-6182: a body ending with
+// a well-formed autopilot-meta footer is accepted with no judge call. The
+// judge is a nonexistent binary, so any invocation would return an error.
+func TestPreFlight_AutopilotFixFooterSkipsJudge(t *testing.T) {
+	metrics := autopilot.NewMetrics()
+	sp := &sdkPreFlightJudge{
+		judge:   executor.NewIntentJudge("/nonexistent/gh-6182-claude-binary"),
+		metrics: metrics,
+	}
+	body := "# Autopilot: Auto-Generated Fix Request\n\n## Task\n\nFix it.\n\nCloses #6150\n\n---\n*auto-generated*\n\n" + preflightFixFooter + "\n"
+
+	v, err := sp.JudgeIssue(context.Background(), "fix(autopilot): resolve issue from PR #6165", body, "")
+	if err != nil {
+		t.Fatalf("judge was invoked (or errored) for a footer-bearing issue: %v", err)
+	}
+	if !v.Accepted || v.Decision != "accept" || v.Reason != "autopilot-fix footer" {
+		t.Errorf("verdict = %+v, want accepted/accept/autopilot-fix footer", v)
+	}
+	if got := metrics.Snapshot().IntentJudgeFailures; len(got) != 0 {
+		t.Errorf("no judge failures expected, got %+v", got)
+	}
+}
+
+// TestPreFlight_NoFooterStillGoesToJudge: without the footer the issue is
+// judged as before (here the nonexistent binary proves the call happened).
+func TestPreFlight_NoFooterStillGoesToJudge(t *testing.T) {
+	sp := &sdkPreFlightJudge{judge: executor.NewIntentJudge("/nonexistent/gh-6182-claude-binary")}
+	body := "# Autopilot: Auto-Generated Fix Request\n\n## Task\n\nFix it.\n"
+	if _, err := sp.JudgeIssue(context.Background(), "fix(autopilot): resolve issue from PR #6165", body, ""); err == nil {
+		t.Fatal("expected the judge to be invoked for a body without a footer")
+	}
+}
+
+func TestPreFlight_MalformedFooterStillGoesToJudge(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"missing sha", "x\n\n<!-- autopilot-meta branch:pilot/GH-1 pr:2 iteration:0 source:3 -->\n"},
+		{"missing source", "x\n\n<!-- autopilot-meta branch:pilot/GH-1 pr:2 iteration:0 sha:0123456789abcdef -->\n"},
+		{"missing pr", "x\n\n<!-- autopilot-meta branch:pilot/GH-1 iteration:0 source:3 sha:0123456789abcdef -->\n"},
+		{"missing branch", "x\n\n<!-- autopilot-meta pr:2 iteration:0 source:3 sha:0123456789abcdef -->\n"},
+		{"post-merge footer", "x\n\n<!-- autopilot-meta iteration:0 source:3 -->\n"},
+		{"non-pilot branch", "x\n\n<!-- autopilot-meta branch:main pr:2 iteration:0 source:3 sha:0123456789abcdef -->\n"},
+		{"placeholder sha", "x\n\n<!-- autopilot-meta branch:pilot/GH-1 pr:2 iteration:0 source:3 sha:<sha> -->\n"},
+		{"footer not last line", preflightFixFooter + "\n\nmore text after the footer\n"},
+		{"footer quoted in code span", "see `" + preflightFixFooter + "`\n"},
+		{"footer quoted in fence", "```\n" + preflightFixFooter + "\n```\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sp := &sdkPreFlightJudge{judge: executor.NewIntentJudge("/nonexistent/gh-6182-claude-binary")}
+			if _, err := sp.JudgeIssue(context.Background(), "title", tt.body, ""); err == nil {
+				t.Error("expected the judge to be invoked (error from nonexistent binary)")
+			}
+		})
+	}
+}

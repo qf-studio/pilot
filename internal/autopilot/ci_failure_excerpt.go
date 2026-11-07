@@ -199,3 +199,86 @@ func AssembleFailureExcerptsBody(excerpts []FailingStepExcerpt, maxTotalChars in
 
 	return sb.String()
 }
+
+// failingTestLineRe matches a Go test failure line, with or without the GH
+// Actions timestamp prefix and with any subtest indentation:
+// "--- FAIL: TestName/sub (0.01s)".
+var failingTestLineRe = regexp.MustCompile(`--- FAIL: (\S+)`)
+
+// goAssertionLineRe matches a Go test assertion/log line such as
+// "    quality_test.go:88: expected 2 attempts, got 1".
+var goAssertionLineRe = regexp.MustCompile(`^\s*\S+\.go:\d+:`)
+
+// failingTest is one failed test found in a CI log, with the assertion line
+// that accompanied it when one was found.
+type failingTest struct {
+	Name      string
+	Assertion string
+}
+
+// extractFailingTests returns every distinct "--- FAIL: <Name>" in logs, in
+// log order, each paired with the assertion line printed immediately before
+// it (go test -v order) or, failing that, immediately after it (default
+// order). It scans the FULL log, not the char-capped excerpt, so a failure
+// the excerpt cut off still reaches the fix issue (GH-6182: the third
+// failing test of PR#6165 was missing from the body, and the pre-flight
+// judge rejected the issue as vague).
+func extractFailingTests(logs string) []failingTest {
+	lines := strings.Split(logs, "\n")
+	strip := func(s string) string {
+		s = strings.TrimRight(s, "\r")
+		if loc := jobLogLineTimestampRe.FindStringIndex(s); loc != nil {
+			s = s[loc[1]:]
+		}
+		return s
+	}
+	assertionAt := func(i int) string {
+		if i < 0 || i >= len(lines) {
+			return ""
+		}
+		if l := strip(lines[i]); goAssertionLineRe.MatchString(l) {
+			return strings.TrimSpace(l)
+		}
+		return ""
+	}
+
+	var out []failingTest
+	seen := map[string]int{}
+	for i, raw := range lines {
+		m := failingTestLineRe.FindStringSubmatch(strip(raw))
+		if m == nil {
+			continue
+		}
+		assertion := assertionAt(i - 1)
+		if assertion == "" {
+			assertion = assertionAt(i + 1)
+		}
+		if idx, ok := seen[m[1]]; ok {
+			if out[idx].Assertion == "" {
+				out[idx].Assertion = assertion
+			}
+			continue
+		}
+		seen[m[1]] = len(out)
+		out = append(out, failingTest{Name: m[1], Assertion: assertion})
+	}
+	return out
+}
+
+// writeFailingTestsSection renders the "## Failing tests" list for a fix
+// issue body; it writes nothing when logs hold no "--- FAIL:" line.
+func writeFailingTestsSection(sb *strings.Builder, logs string) {
+	tests := extractFailingTests(strings.TrimPrefix(logs, ciExcerptSentinel))
+	if len(tests) == 0 {
+		return
+	}
+	sb.WriteString("## Failing tests\n\n")
+	for _, t := range tests {
+		if t.Assertion != "" {
+			fmt.Fprintf(sb, "- `%s` — %s\n", t.Name, t.Assertion)
+		} else {
+			fmt.Fprintf(sb, "- `%s`\n", t.Name)
+		}
+	}
+	sb.WriteString("\n")
+}

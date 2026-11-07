@@ -124,7 +124,7 @@ func TestFeedbackLoop_CreateFailureIssue_CIFailed(t *testing.T) {
 	if !strings.Contains(capturedBody, "</details>") {
 		t.Error("body should close </details> tag")
 	}
-	if !strings.Contains(capturedBody, "Fix the CI failures") {
+	if !strings.Contains(capturedBody, "First decide per failing test") {
 		t.Error("body should contain task instructions")
 	}
 	// GH-5336: a fix issue body must never contain a "Depends on:" line
@@ -1974,5 +1974,96 @@ func TestFindExistingFixIssue_MatchesByRunPermalink(t *testing.T) {
 	}
 	if created != 1 || num != 6108 {
 		t.Errorf("pre-merge: created=%d num=%d, want a new issue 6108", created, num)
+	}
+}
+
+// ciLogWithThreeFailures builds a raw job log with three FAIL blocks, two of
+// which sit before enough marker output that the 4000-char excerpt cannot
+// reach them (the PR#6165 shape behind GH-6182). Assertion lines
+// precede the FAIL line, as in `go test -v`.
+func ciLogWithThreeFailures() string {
+	var sb strings.Builder
+	block := func(name, assertion string) {
+		sb.WriteString("2026-11-06T16:40:00.1234567Z === RUN   " + name + "\n")
+		sb.WriteString("2026-11-06T16:40:00.1234567Z     " + assertion + "\n")
+		sb.WriteString("2026-11-06T16:40:00.1234567Z --- FAIL: " + name + " (0.00s)\n")
+	}
+	panics := func(n int) {
+		for i := 0; i < n; i++ {
+			sb.WriteString("2026-11-06T16:40:01.0000000Z panic: " + strings.Repeat("x", 600) + "\n")
+		}
+	}
+	// truncateKeepingTail keeps the head 70% and the tail; the two blocks
+	// between the filler runs land in the cut middle.
+	panics(8)
+	block("TestQualityGatesHappyPath", "quality_test.go:88: expected 1 attempt, got 0")
+	block("TestQualityGatesRetrySuccess", "quality_test.go:140: retry never ran")
+	panics(4)
+	block("TestQualityGatesRetryFeedbackPropagation", "quality_test.go:201: feedback missing")
+	sb.WriteString("2026-11-06T16:40:02.0000000Z FAIL\tgithub.com/qf-studio/pilot/internal/quality\t1.2s\n")
+	return sb.String()
+}
+
+func TestGenerateBody_FailingTestsListed(t *testing.T) {
+	fl := NewFeedbackLoop(github.NewClient(testutil.FakeGitHubToken), "owner", "repo", DefaultConfig())
+	prState := &PRState{PRNumber: 6165, IssueNumber: 6150, HeadSHA: "abc1234567890", BranchName: "pilot/GH-6150"}
+	logs := ciLogWithThreeFailures()
+
+	// Precondition: the capped excerpt alone really misses the two middle tests.
+	ex := extractFailureExcerpt(logs, maxCIErrorExcerptChars)
+	for _, name := range []string{"TestQualityGatesHappyPath", "TestQualityGatesRetrySuccess"} {
+		if strings.Contains(ex, name) {
+			t.Fatalf("test setup: excerpt already contains %s; it must not", name)
+		}
+	}
+
+	for _, typ := range []FailureType{FailureCIPreMerge, FailureCIPostMerge} {
+		t.Run(string(typ), func(t *testing.T) {
+			body := fl.generateBody(prState, typ, []string{"test"}, logs, 0, nil)
+			idx := strings.Index(body, "## Failing tests")
+			if idx < 0 {
+				t.Fatalf("body missing '## Failing tests':\n%s", body)
+			}
+			if det := strings.Index(body, "<details>"); det < idx {
+				t.Errorf("failing-tests list must precede the excerpt (list at %d, details at %d)", idx, det)
+			}
+			section := body[idx:strings.Index(body, "<details>")]
+			for _, name := range []string{"TestQualityGatesHappyPath", "TestQualityGatesRetrySuccess", "TestQualityGatesRetryFeedbackPropagation"} {
+				if strings.Count(section, "`"+name+"`") != 1 {
+					t.Errorf("%s should appear exactly once in the list:\n%s", name, section)
+				}
+			}
+			if !strings.Contains(section, "quality_test.go:88: expected 1 attempt, got 0") {
+				t.Errorf("assertion line missing from list:\n%s", section)
+			}
+			if !strings.Contains(body, "First decide per failing test whether the test is stale (asserts behaviour the PR removed) or the change is wrong; port stale tests, fix wrong code; say which in the PR body.") {
+				t.Errorf("Task text missing the decision sentence:\n%s", body)
+			}
+			if strings.Contains(body, "Depends on") {
+				t.Errorf("body must not carry a Depends on line:\n%s", body)
+			}
+		})
+	}
+}
+
+func TestGenerateBody_FailingTestsDedupAndNoFailures(t *testing.T) {
+	fl := NewFeedbackLoop(github.NewClient(testutil.FakeGitHubToken), "owner", "repo", DefaultConfig())
+	prState := &PRState{PRNumber: 1, IssueNumber: 2, HeadSHA: "abc1234567890", BranchName: "pilot/GH-2"}
+
+	logs := "--- FAIL: TestA (0.00s)\n    a_test.go:5: boom\n--- FAIL: TestA/sub (0.00s)\n--- FAIL: TestA (0.00s)\nFAIL\n"
+	body := fl.generateBody(prState, FailureCIPreMerge, nil, logs, 0, nil)
+	if got := strings.Count(body, "- `TestA`"); got != 1 {
+		t.Errorf("TestA listed %d times, want 1:\n%s", got, body)
+	}
+	if !strings.Contains(body, "- `TestA/sub`") {
+		t.Errorf("subtest missing:\n%s", body)
+	}
+	if !strings.Contains(body, "a_test.go:5: boom") {
+		t.Errorf("following assertion line should be used when none precedes:\n%s", body)
+	}
+
+	body = fl.generateBody(prState, FailureCIPreMerge, nil, "error: lint failed", 0, nil)
+	if strings.Contains(body, "## Failing tests") {
+		t.Errorf("no FAIL lines: section must be omitted:\n%s", body)
 	}
 }

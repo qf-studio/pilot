@@ -773,6 +773,12 @@ func (f *FeedbackLoop) generateTitle(prState *PRState, failureType FailureType) 
 	}
 }
 
+// ciFixDecisionTask is the Task text of a CI-fix issue. GH-6182: the old
+// one-liner ("Fix the CI failures listed above...") left the pre-flight judge
+// asking whether the tests or the implementation should change; the answer is
+// stated here so neither a judge nor the executor has to guess.
+const ciFixDecisionTask = "The PR's change is the intended one. First decide per failing test whether the test is stale (asserts behaviour the PR removed) or the change is wrong; port stale tests, fix wrong code; say which in the PR body. Run tests locally before committing.\n"
+
 // generateBody creates a detailed issue body with context for Pilot.
 func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, failedChecks []string, logs string, iteration int, knownPatterns []*memory.CrossPattern) string {
 	var sb strings.Builder
@@ -801,6 +807,13 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 			fmt.Fprintf(&sb, "- [ ] %s\n", check)
 		}
 		sb.WriteString("\n")
+	}
+
+	// GH-6182: name every failing test from the full log, above the
+	// (capped) excerpt, so the failures the excerpt cut off still reach the
+	// issue. Post-merge CI gets the same list.
+	if failureType == FailureCIPreMerge || failureType == FailureCIPostMerge {
+		writeFailingTestsSection(&sb, logs)
 	}
 
 	// Error logs section in collapsible details block (GH-1567)
@@ -848,9 +861,10 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 	sb.WriteString("## Task\n\n")
 	switch failureType {
 	case FailureCIPreMerge:
-		sb.WriteString("Fix the CI failures listed above. Run tests locally before committing.\n")
+		sb.WriteString(ciFixDecisionTask)
 	case FailureCIPostMerge:
-		sb.WriteString("The PR was merged but CI failed afterward. Investigate and fix.\n")
+		sb.WriteString("The PR was merged but CI failed afterward. Investigate and fix.\n\n")
+		sb.WriteString(ciFixDecisionTask)
 	case FailureMerge:
 		sb.WriteString("Resolve the merge conflicts and ensure the changes integrate properly.\n")
 	case FailureDeployment:

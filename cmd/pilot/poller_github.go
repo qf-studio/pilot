@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -285,7 +286,68 @@ type sdkPreFlightJudge struct {
 	tracker     *alerts.DeadManTracker
 }
 
+// autopilotFixFooterDecision / autopilotFixFooterReason are the verdict an
+// autopilot-generated fix issue gets from the deterministic pre-flight bypass.
+const (
+	autopilotFixFooterDecision = "accept"
+	autopilotFixFooterReason   = "autopilot-fix footer"
+)
+
+var (
+	autopilotSourceFieldRe = regexp.MustCompile(`\bsource:(\d+)`)
+	autopilotSHAHexRe      = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+)
+
+// autopilotFixFooter reports whether body ends with the well-formed
+// autopilot-meta footer FeedbackLoop.generateBody stamps on a pre-merge fix
+// issue: branch (valid pilot/ ref), pr, source and sha all present. Returns
+// the branch and PR number for logging. Post-merge fix issues carry no
+// branch/pr/sha and so never qualify. Quoted footers (code spans/fences) and
+// footers that are not the last non-empty line are rejected by
+// extractAutopilotMetaFooter (GH-5390).
+func autopilotFixFooter(body string) (branch, pr string, ok bool) {
+	footer := extractAutopilotMetaFooter(body)
+	if footer == "" {
+		return "", "", false
+	}
+	bm := autopilotBranchFieldRe.FindStringSubmatch(footer)
+	pm := autopilotPRFieldRe.FindStringSubmatch(footer)
+	sm := autopilotSourceFieldRe.FindStringSubmatch(footer)
+	hm := autopilotSHAFieldRe.FindStringSubmatch(footer)
+	if bm == nil || pm == nil || sm == nil || hm == nil {
+		return "", "", false
+	}
+	if !isValidAutopilotBranch(bm[1]) || !autopilotSHAHexRe.MatchString(hm[1]) {
+		return "", "", false
+	}
+	return bm[1], pm[1], true
+}
+
+// JudgeIssue implements sdkcore.PreFlightJudger.
+//
+// GH-6182: autopilot-generated CI-fix issues were rejected reject_vague on
+// 2026-11-06 (#6155, #6167) because the judge reads only the body and has no
+// clause for machine-generated fix requests. A body that ends with a
+// well-formed autopilot-meta footer (branch, pr, source, sha) is accepted
+// without a model call. Decision: studio-sdk's PreFlightJudger passes
+// title/body only — no labels and no issue number — so the `autopilot-fix`
+// label cannot be required here; the footer (which the epic sanitizers strip
+// from model output) is the discriminator. A label-only issue with no footer
+// still goes to the judge.
 func (s *sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoContext string) (sdkcore.Verdict, error) {
+	if branch, pr, ok := autopilotFixFooter(body); ok {
+		logging.WithComponent("github-sdk-poller").Info("pre-flight: accepted autopilot-fix issue without a judge call",
+			slog.String("repo", s.repoFullName),
+			slog.String("branch", branch),
+			slog.String("pr", pr),
+		)
+		return sdkcore.Verdict{
+			Accepted:   true,
+			Decision:   autopilotFixFooterDecision,
+			Reason:     autopilotFixFooterReason,
+			Confidence: 1,
+		}, nil
+	}
 	v, err := s.judge.JudgeIssue(ctx, title, body, repoContext)
 	if err != nil {
 		if s.metrics != nil {
