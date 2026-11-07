@@ -1,0 +1,10 @@
+2026-11-06T16:30:38.5461463Z time=2026-11-06T16:28:12.855Z level=WARN msg="Task ended without success" component=dispatcher project=/tmp/TestDispatcher_AdoptedPreservedRun_NoBackoffNoBlockedLabelgates2187391622/003 task_id=GH-5709 status=failed error="worktree had uncommitted work before no-commit retry — auto-preserved as 2a29023 on branch pilot/GH-5709-dispatch; needs manual review, not a genuin
+2026-11-06T16:30:38.8445255Z time=2026-11-06T16:24:45.561Z level=INFO msg="Task progress" component=executor task_id=TEST-001 phase=Completed progress=100 message="Task completed successfully"
+2026-11-06T16:30:38.8445591Z     quality_integration_test.go:182: Expected backend to be called 2 times (initial + self-review), got 1
+2026-11-06T16:30:38.8445701Z --- FAIL: TestQualityGatesHappyPath (0.03s)
+2026-11-06T16:30:38.8456369Z time=2026-11-06T16:24:45.593Z level=INFO msg="Task progress" component=executor task_id=TEST-002 phase=Completed progress=100 message="Task completed successfully"
+2026-11-06T16:30:38.8456718Z     quality_integration_test.go:266: Expected backend to be called 3 times (initial + retry + self-review), got 2
+2026-11-06T16:30:38.8456833Z --- FAIL: TestQualityGatesRetrySuccess (0.03s)
+2026-11-06T16:30:38.8496608Z time=2026-11-06T16:24:45.737Z level=INFO msg="Task progress" component=executor task_id=TEST-006 phase=Completed progress=100 message="Task completed successfully"
+2026-11-06T16:30:38.8496955Z     quality_integration_test.go:567: Expected 3 prompts (initial + retry + self-review), got 2
+2026-11-06T16:30:38.8497101Z --- FAIL: TestQualityGatesRetryFeedbackPropagation (0.03s)

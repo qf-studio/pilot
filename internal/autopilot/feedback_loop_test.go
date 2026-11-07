@@ -124,7 +124,7 @@ func TestFeedbackLoop_CreateFailureIssue_CIFailed(t *testing.T) {
 	if !strings.Contains(capturedBody, "</details>") {
 		t.Error("body should close </details> tag")
 	}
-	if !strings.Contains(capturedBody, "Fix the CI failures") {
+	if !strings.Contains(capturedBody, "First decide per failing test whether the test is stale") {
 		t.Error("body should contain task instructions")
 	}
 	// GH-5336: a fix issue body must never contain a "Depends on:" line

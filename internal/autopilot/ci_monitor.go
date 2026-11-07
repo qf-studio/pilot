@@ -1164,7 +1164,7 @@ func (m *CIMonitor) GetFailedCheckExcerpts(ctx context.Context, sha string) stri
 	if body == "" {
 		return ""
 	}
-	return ciExcerptSentinel + body
+	return ciExcerptSentinel + encodeFailingTestsBlock(mergeFailingTests(excerpts)) + body
 }
 
 // buildFailingStepExcerpt resolves one failed check run down to its actual
@@ -1188,6 +1188,7 @@ func (m *CIMonitor) buildFailingStepExcerpt(ctx context.Context, run github.Chec
 			m.log.Debug("jobs API lookup failed, falling back", "check", run.Name, "id", run.ID, "error", jobErr)
 		} else if step, found := resolveFailingStep(job.Steps); found {
 			if jobLog, logErr := m.ghClient.GetJobLogs(ctx, m.owner, m.repo, run.ID); logErr == nil {
+				excerpt.FailingTests = extractFailingTests(jobLog)
 				if window, ok := sliceLogByStepWindow(jobLog, step); ok {
 					excerpt.StepName = step.Name
 					// GH-4825: match-anchored extraction, not a plain tail
@@ -1229,6 +1230,7 @@ func (m *CIMonitor) buildFailingStepExcerpt(ctx context.Context, run github.Chec
 		return excerpt
 	}
 	excerpt.Tail = extractFailureExcerpt(jobLog, failedCheckExcerptBudgetChars)
+	excerpt.FailingTests = extractFailingTests(jobLog)
 	excerpt.Source = "job"
 	return excerpt
 }

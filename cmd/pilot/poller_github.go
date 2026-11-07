@@ -285,7 +285,43 @@ type sdkPreFlightJudge struct {
 	tracker     *alerts.DeadManTracker
 }
 
+// autopilotFixFooterVerdict is the deterministic pre-flight bypass for
+// autopilot-generated CI-fix issues (GH-6182). ok is true when body ends with a
+// well-formed autopilot-meta footer carrying branch, pr, source and sha — the
+// fields only FeedbackLoop.generateBody writes — so no model call is needed.
+//
+// Decision: the footer alone gates the bypass, not the `autopilot-fix` label.
+// sdkcore.PreFlightJudger (studio-sdk v0.38.7) hands the judge only title,
+// body and repoContext; the labels never reach this shim. The footer is
+// already the trust anchor for branch reuse (extractAutopilotMetaFooter:
+// last non-empty line, outside code fences/spans), and a label-but-no-footer
+// issue still goes to the judge.
+func autopilotFixFooterVerdict(body string) (branch string, pr int, ok bool) {
+	footer := extractAutopilotMetaFooter(body)
+	if footer == "" {
+		return "", 0, false
+	}
+	branch = parseAutopilotBranch(body)
+	pr = parseAutopilotPR(body)
+	if branch == "" || pr <= 0 || parseAutopilotSHA(body) == "" || !autopilotSourceFieldRe.MatchString(footer) {
+		return "", 0, false
+	}
+	return branch, pr, true
+}
+
 func (s *sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoContext string) (sdkcore.Verdict, error) {
+	if branch, pr, ok := autopilotFixFooterVerdict(body); ok {
+		logging.WithComponent("github-sdk-poller").Info("pre-flight: accepted autopilot-fix issue without a judge call",
+			slog.String("title", title),
+			slog.String("branch", branch),
+			slog.Int("pr", pr))
+		return sdkcore.Verdict{
+			Accepted:   true,
+			Decision:   string(executor.PreFlightAccept),
+			Reason:     "autopilot-fix footer",
+			Confidence: 1,
+		}, nil
+	}
 	v, err := s.judge.JudgeIssue(ctx, title, body, repoContext)
 	if err != nil {
 		if s.metrics != nil {
