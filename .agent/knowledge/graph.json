@@ -3887,7 +3887,7 @@
       "TASK-645": {
         "path": ".agent/tasks/TASK-645-ticket-page-new-design-absorbs-drawer.md",
         "title": "Ticket page in the new design — a Board row opens the page, the page absorbs the drawer's settings, the drawer retires",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "frontend",
           "testing",
