@@ -664,7 +664,8 @@ func rearmCommentFooter(carry rearmCarry, source int) string {
 // retry being queued. When the branch is the source's own pilot/GH-N (the usual
 // case) the entry carries fromPR=0: the dispatcher deliberately skips such
 // self-entries (handlers.go: branchName != pilot/taskID) and every routing gate
-// that sends a PR through the fix-issue path requires fromPR > 0, so the entry
+// that sends a PR through the fix-issue path requires fromPR > 0 (and the
+// pre-PR hold bypass ignores an entry on the task's own branch), so the entry
 // protects the branch without re-homing the retry's PR.
 func (c *Controller) applyRearmCarry(sourceNum int, carry rearmCarry) string {
 	if c.borrowedBranchLookup != nil && sourceNum > 0 {
