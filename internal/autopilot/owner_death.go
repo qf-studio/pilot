@@ -550,32 +550,60 @@ type rearmCarry struct {
 }
 
 var (
-	fixMetaBlockRe     = regexp.MustCompile(`<!--\s*autopilot-meta\b(.*?)-->`)
-	fixMetaBranchRe    = regexp.MustCompile(`\bbranch:(\S+)`)
-	fixMetaSHARe       = regexp.MustCompile(`\bsha:([0-9a-fA-F]{7,40})\b`)
-	fixMetaIterationRe = regexp.MustCompile(`\biteration:(\d+)`)
+	// fixMetaFooterLineRe matches the autopilot-meta comment only when it is the
+	// entire content of a (trimmed) line; mirrors cmd/pilot's
+	// autopilotMetaFooterLineRe.
+	fixMetaFooterLineRe = regexp.MustCompile(`^<!--\s*autopilot-meta\b(.*)-->$`)
+	fixMetaFenceRe      = regexp.MustCompile("(?s)```.*?```")
+	fixMetaCodeSpanRe   = regexp.MustCompile("`[^`\n]*`")
+	fixMetaPRRe         = regexp.MustCompile(`\bpr:(\d+)`)
+	fixMetaBranchRe     = regexp.MustCompile(`\bbranch:(\S+)`)
+	fixMetaSHARe        = regexp.MustCompile(`\bsha:([0-9a-fA-F]{7,40})\b`)
+	fixMetaIterationRe  = regexp.MustCompile(`\biteration:(\d+)`)
 	// fixMetaBranchOKRe mirrors cmd/pilot's isValidAutopilotBranch: only a
 	// ref-safe pilot/ branch is ever handed on to a dispatcher.
 	fixMetaBranchOKRe = regexp.MustCompile(`^pilot/[A-Za-z0-9._/-]+$`)
 )
 
+// fixMetaFooter returns the field text of the autopilot-meta footer, but only
+// when it is the last non-empty line of body outside any fenced block or inline
+// code span — the placement the dispatcher trusts (GH-5390). A fix issue's body
+// embeds attacker-controllable content (CI logs, review comments); a footer
+// quoted there must never be carried onto the source's retry.
+func fixMetaFooter(body string) (string, bool) {
+	stripped := fixMetaFenceRe.ReplaceAllString(body, "")
+	stripped = fixMetaCodeSpanRe.ReplaceAllString(stripped, "")
+	lines := strings.Split(stripped, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		m := fixMetaFooterLineRe.FindStringSubmatch(line)
+		if len(m) < 2 {
+			return "", false
+		}
+		return m[1], true
+	}
+	return "", false
+}
+
 // parseRearmCarry reads branch, pr, sha and iteration from a dead fix issue's
 // autopilot-meta footer. ok is false when the footer carries no usable branch,
 // in which case the re-arm degrades to the pre-GH-6183 reason-only comment.
 func parseRearmCarry(body string) (rearmCarry, bool) {
-	m := fixMetaBlockRe.FindStringSubmatch(body)
-	if len(m) < 2 {
+	meta, found := fixMetaFooter(body)
+	if !found {
 		return rearmCarry{}, false
 	}
-	meta := m[1]
 	bm := fixMetaBranchRe.FindStringSubmatch(meta)
 	if len(bm) < 2 || !fixMetaBranchOKRe.MatchString(bm[1]) ||
 		strings.Contains(bm[1], "..") || strings.HasSuffix(bm[1], "/") || strings.HasSuffix(bm[1], ".lock") {
 		return rearmCarry{}, false
 	}
 	carry := rearmCarry{branch: bm[1]}
-	if n, ok := parseFixIssuePR(body); ok {
-		carry.pr = n
+	if pm := fixMetaPRRe.FindStringSubmatch(meta); len(pm) >= 2 {
+		carry.pr, _ = strconv.Atoi(pm[1])
 	}
 	if sm := fixMetaSHARe.FindStringSubmatch(meta); len(sm) >= 2 {
 		carry.sha = sm[1]
@@ -584,6 +612,18 @@ func parseRearmCarry(body string) (rearmCarry, bool) {
 		carry.iteration, _ = strconv.Atoi(im[1])
 	}
 	return carry, true
+}
+
+// RearmCommentMarker is the bold heading the owner-death re-arm comment carries.
+// cmd/pilot trusts only comments containing it as a source of a continuation
+// branch (GH-6183), so producer and consumer share this one constant.
+const RearmCommentMarker = "Owner-death recovery"
+
+// RenderRearmCommentFooter is rearmCommentFooter for the dispatcher-side
+// consumer's tests, so they exercise the producer's real format instead of a
+// hand-written copy (GH-6191). iteration is the dead fix issue's own.
+func RenderRearmCommentFooter(branch string, pr int, sha string, iteration, source int) string {
+	return rearmCommentFooter(rearmCarry{branch: branch, pr: pr, sha: sha, iteration: iteration}, source)
 }
 
 // rearmCommentFooter renders the human line plus the machine-readable footer
@@ -614,6 +654,19 @@ func rearmCommentFooter(carry rearmCarry, source int) string {
 		meta += " sha:" + carry.sha
 	}
 	return fmt.Sprintf("\n\n%s\n\n<!-- autopilot-meta %s -->", human.String(), meta)
+}
+
+// applyRearmCarry hands a dead fix issue's branch to its source and returns the
+// footer to append to the re-arm comment. The borrowed-branch registry entry is
+// recorded only when the branch differs from the source's own pilot/GH-N: the
+// fix-issue footer usually names the source PR's own branch, and the dispatcher
+// deliberately skips such self-entries (handlers.go: branchName != pilot/taskID),
+// so recording one would only route the retry's PR through the fix-issue path.
+func (c *Controller) applyRearmCarry(sourceNum int, carry rearmCarry) string {
+	if c.borrowedBranchLookup != nil && sourceNum > 0 && carry.branch != fmt.Sprintf("pilot/GH-%d", sourceNum) {
+		c.borrowedBranchLookup.RecordBorrowedBranch(fmt.Sprintf("GH-%d", sourceNum), carry.branch, carry.pr)
+	}
+	return rearmCommentFooter(carry, sourceNum)
 }
 
 // rearmDeadOwnerSource restores pilot-retry-ready on the source issue so it
@@ -659,14 +712,11 @@ func (c *Controller) rearmDeadOwnerSource(ctx context.Context, source *github.Is
 		}
 	}
 	comment := fmt.Sprintf(
-		"\U0001F501 **Owner-death recovery**: %s. Re-armed for automatic retry (`%s` restored). `%s` removed so the poller's retry rung sees the issue.",
-		reasonMsg, github.LabelRetryReady, github.LabelInProgress,
+		"\U0001F501 **%s**: %s. Re-armed for automatic retry (`%s` restored). `%s` removed so the poller's retry rung sees the issue.",
+		RearmCommentMarker, reasonMsg, github.LabelRetryReady, github.LabelInProgress,
 	)
 	if carry != nil {
-		if c.borrowedBranchLookup != nil && source.Number > 0 {
-			c.borrowedBranchLookup.RecordBorrowedBranch(fmt.Sprintf("GH-%d", source.Number), carry.branch, carry.pr)
-		}
-		comment += rearmCommentFooter(*carry, source.Number)
+		comment += c.applyRearmCarry(source.Number, *carry)
 	}
 	if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, source.Number, comment); err != nil {
 		c.log.Warn("owner-death: failed to post re-arm comment", "issue", source.Number, "error", err)

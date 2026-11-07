@@ -104,3 +104,29 @@ func TestReuseBranchFromRearmComment(t *testing.T) {
 		}
 	})
 }
+
+// mutation pin: a RemoteBranchExists error counts as "branch gone" -> this test fails
+func TestRearmBranchAvailable_ProbeErrorKeepsBranch(t *testing.T) {
+	_, localDir, cleanup := newRemoteAndLocalRepo(t)
+	defer cleanup()
+	// Point origin at a path that does not exist: ls-remote fails (exit 128)
+	// instead of returning an empty listing, the shape of a network/auth outage.
+	if out, err := exec.Command("git", "-C", localDir, "remote", "set-url", "origin", filepath.Join(localDir, "no-such-remote")).CombinedOutput(); err != nil {
+		t.Fatalf("set-url: %v\n%s", err, out)
+	}
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	if !NewGitOperations(localDir).RearmBranchAvailable(context.Background(), "pilot/GH-6168") {
+		t.Error("an unreachable remote must not read as a missing branch")
+	}
+	if strings.Contains(buf.String(), "re-arm branch missing") {
+		t.Errorf("probe failure logged as a missing branch: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "re-arm branch probe failed") {
+		t.Errorf("probe failure not logged, got %q", buf.String())
+	}
+}

@@ -1821,16 +1821,27 @@ func (g *GitOperations) FileExistsAtRef(ctx context.Context, ref, path string) b
 
 // RemoteBranchExists checks if a branch exists on the remote (origin).
 // GH-1389: Used to verify if push actually succeeded despite worktree chdir errors.
+// Any probe error reports false; callers that must tell "branch is gone" from
+// "the remote could not be queried" use ProbeRemoteBranch.
 func (g *GitOperations) RemoteBranchExists(ctx context.Context, branchName string) bool {
+	exists, err := g.ProbeRemoteBranch(ctx, branchName)
+	return err == nil && exists
+}
+
+// ProbeRemoteBranch reports whether branchName exists on origin and, unlike
+// RemoteBranchExists, returns the git error when the remote cannot be queried
+// (network, auth), so that failure is never mistaken for an absent branch
+// (GH-6191).
+func (g *GitOperations) ProbeRemoteBranch(ctx context.Context, branchName string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--heads", "origin", branchName)
 	cmd.Dir = g.projectPath
 	withGitCredentials(ctx, cmd)
 	output, err := cmd.Output()
 	if err != nil {
-		return false
+		return false, err
 	}
 	// ls-remote returns non-empty output if branch exists
-	return len(strings.TrimSpace(string(output))) > 0
+	return len(strings.TrimSpace(string(output))) > 0, nil
 }
 
 // RemoteBranchHead returns the commit SHA origin's branch points at (GH-5729).
