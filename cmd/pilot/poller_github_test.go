@@ -931,3 +931,23 @@ func TestNewPreFlightJudge_WarnsWhenAutopilotFixLabelNotConfigured(t *testing.T)
 		})
 	}
 }
+
+// mutation pin: a listing cached by an earlier poll cycle hides an unlabelled copy filed since, so the copy skips the judge -> this test fails
+func TestPreFlight_AutopilotFixStaleListingNotReusedAcrossCycles(t *testing.T) {
+	body := autopilotFixTestBody + autopilotFixTestFooter + "\n"
+	original := autopilotFixIssue(autopilotFixTestTitle, body, "pilot", "autopilot-fix")
+	sp, calls := autopilotFixLabelServer(t, []map[string]any{
+		original,
+		autopilotFixIssue(autopilotFixTestTitle, body),
+	}, http.StatusOK)
+	// Listing from a previous cycle: it holds only the original.
+	sp.listed = []*githubSDK.Issue{{Number: 1, Title: autopilotFixTestTitle, Body: body, Labels: []githubSDK.Label{{Name: "autopilot-fix"}}}}
+	sp.listedAt = time.Now().Add(-15 * time.Second)
+
+	if _, err := sp.JudgeIssue(context.Background(), autopilotFixTestTitle, body, ""); err == nil {
+		t.Error("expected the judge to be invoked: the copy filed after the old listing was bypassed")
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("listings = %d, want 1 (stale listing refetched)", n)
+	}
+}

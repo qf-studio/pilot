@@ -326,8 +326,11 @@ func autopilotFixFooterVerdict(body string) (branch string, pr int, ok bool) {
 // autopilotFixListTTL bounds how long one open-issue listing is reused across
 // JudgeIssue calls. The SDK lists every open issue (paged, labels filtered in
 // code), so a poll cycle with several CI-fix candidates would otherwise pay
-// one full listing each.
-const autopilotFixListTTL = 30 * time.Second
+// one full listing each. It is kept well under the 30s poll interval so a
+// listing never carries over into the next cycle: a copy filed, or a label
+// removed, after the listing is only missed by candidates judged in the same
+// burst, and a missed copy fails open only for that burst.
+const autopilotFixListTTL = 5 * time.Second
 
 // openIssues returns the repo's open issues, reusing a listing younger than
 // autopilotFixListTTL unless fresh is set. cached reports whether the result
