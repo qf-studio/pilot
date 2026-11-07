@@ -3881,6 +3881,17 @@
           "https://github.com/qf-studio/pilot-console-ui/issues/390",
           "https://github.com/qf-studio/pilot-console-ui/issues/397"
         ]
+      },
+      "TASK-645": {
+        "path": ".agent/tasks/TASK-645-ticket-page-new-design-absorbs-drawer.md",
+        "title": "Ticket page in the new design — a Board row opens the page, the page absorbs the drawer's settings, the drawer retires",
+        "status": "planned",
+        "concepts": [
+          "frontend",
+          "testing",
+          "design-system",
+          "mobile"
+        ]
       }
     },
     "memories": {
@@ -15849,6 +15860,16 @@
       "from": "mem-298",
       "to": "testing",
       "type": "relates_to"
+    },
+    {
+      "from": "TASK-645",
+      "to": "frontend",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-645",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -16093,7 +16114,8 @@
       "TASK-640",
       "TASK-641",
       "TASK-642",
-      "TASK-643"
+      "TASK-643",
+      "TASK-645"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -16229,7 +16251,8 @@
       "TASK-585",
       "TASK-631",
       "TASK-633",
-      "TASK-640"
+      "TASK-640",
+      "TASK-645"
     ],
     "auto-merge": [
       "mem-103"
@@ -16631,7 +16654,8 @@
       "TASK-637",
       "TASK-639",
       "TASK-640",
-      "TASK-643"
+      "TASK-643",
+      "TASK-645"
     ],
     "conversational-bot": [
       "mem-036",
@@ -17052,7 +17076,8 @@
       "TASK-637",
       "TASK-639",
       "TASK-640",
-      "TASK-643"
+      "TASK-643",
+      "TASK-645"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -17359,7 +17384,8 @@
       "TASK-637",
       "TASK-639",
       "TASK-640",
-      "TASK-643"
+      "TASK-643",
+      "TASK-645"
     ],
     "gateway": [
       "TASK-01",
@@ -17652,7 +17678,8 @@
       "TASK-633",
       "TASK-635",
       "TASK-639",
-      "TASK-643"
+      "TASK-643",
+      "TASK-645"
     ],
     "labels": [
       "mem-100",
@@ -17734,7 +17761,8 @@
       "TASK-632",
       "TASK-634",
       "TASK-640",
-      "TASK-643"
+      "TASK-643",
+      "TASK-645"
     ],
     "memory": [
       "TASK-358",
@@ -18339,7 +18367,8 @@
       "TASK-640",
       "mem-286",
       "mem-287",
-      "TASK-643"
+      "TASK-643",
+      "TASK-645"
     ],
     "testing-quality": [
       "TASK-384",
@@ -19121,11 +19150,11 @@
       "mem-291"
     ]
   },
-  "last_updated": "2026-11-06T17:06:39.855903+00:00",
+  "last_updated": "2026-11-07T09:41:08.509494+00:00",
   "stats": {
-    "total_nodes": 883,
-    "total_edges": 1048,
-    "memory_count": 481
+    "total_nodes": 889,
+    "total_edges": 1072,
+    "memory_count": 485
   },
   "metadata": {
     "last_updated": null
