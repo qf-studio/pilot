@@ -68,9 +68,10 @@ const (
 // DispatcherQueueView is the optional queue-side companion of
 // DispatcherLiveness: the task IDs the dispatcher holds as queued or pending
 // (not yet running) for one project — task IDs collide across repos. The Dispatcher passed to SetDispatcherLiveness satisfies
-// it, so the sweep picks it up without extra wiring.
+// it, so the sweep picks it up without extra wiring. An error means the queue
+// is unknown (not empty); the sweep must skip rather than delete.
 type DispatcherQueueView interface {
-	GetQueuedTaskIDs(projectPath string) []string
+	GetQueuedTaskIDs(projectPath string) ([]string, error)
 }
 
 // BorrowedBranchLister is the non-destructive listing side of the
@@ -108,8 +109,10 @@ func autopilotMetaBranches(body string) []string {
 // staleBranchLiveTasks returns the task IDs an executor is working on right now
 // (same sources as the orphan-running sweep) and, separately, the IDs the
 // dispatcher still holds as queued/pending (GH-6181): a queued task has no
-// worker yet, but its branch must survive until it runs.
-func (c *Controller) staleBranchLiveTasks() (running, queued map[string]bool) {
+// worker yet, but its branch must survive until it runs. A queue read error is
+// returned so the caller can skip the sweep (fail-closed) instead of treating
+// an unreadable queue as an empty one.
+func (c *Controller) staleBranchLiveTasks() (running, queued map[string]bool, err error) {
 	running = make(map[string]bool)
 	queued = make(map[string]bool)
 	if c.monitor != nil {
@@ -122,12 +125,16 @@ func (c *Controller) staleBranchLiveTasks() (running, queued map[string]bool) {
 			running[id] = true
 		}
 		if qv, ok := c.dispatcherLive.(DispatcherQueueView); ok {
-			for _, id := range qv.GetQueuedTaskIDs(c.projectPath) {
+			ids, qerr := qv.GetQueuedTaskIDs(c.projectPath)
+			if qerr != nil {
+				return nil, nil, qerr
+			}
+			for _, id := range ids {
 				queued[id] = true
 			}
 		}
 	}
-	return running, queued
+	return running, queued, nil
 }
 
 // staleBranchReferencedByFixIssues returns the branches an open autopilot-fix
@@ -257,7 +264,11 @@ func (c *Controller) sweepStaleBranches(ctx context.Context) {
 		}
 	}
 	tracked := c.staleBranchTracked()
-	live, queued := c.staleBranchLiveTasks()
+	live, queued, err := c.staleBranchLiveTasks()
+	if err != nil {
+		c.log.Warn("stale branch sweep: failed to read the dispatcher queue, skipping sweep", "repo", c.repoKey(), "error", err)
+		return
+	}
 	fixRefs, err := c.staleBranchReferencedByFixIssues(ctx)
 	if err != nil {
 		c.log.Warn("stale branch sweep: failed to list open autopilot-fix issues, skipping sweep", "repo", c.repoKey(), "error", err)

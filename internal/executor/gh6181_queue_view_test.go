@@ -24,10 +24,28 @@ func TestDispatcher_GetQueuedTaskIDs(t *testing.T) {
 	if err := store.SaveExecution(&memory.Execution{ID: "exec-other", TaskID: "GH-9", ProjectPath: "/other", Status: "queued", CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("save other: %v", err)
 	}
-	got := d.GetQueuedTaskIDs("/proj")
+	got, err := d.GetQueuedTaskIDs("/proj")
+	if err != nil {
+		t.Fatalf("GetQueuedTaskIDs: %v", err)
+	}
 	sort.Strings(got)
 	if fmt.Sprint(got) != "[GH-1 GH-2]" {
 		t.Errorf("GetQueuedTaskIDs = %v, want [GH-1 GH-2]", got)
+	}
+}
+
+// TestDispatcher_GetQueuedTaskIDs_StoreError pins GH-6185: an unreadable store
+// is an error, not an empty queue.
+func TestDispatcher_GetQueuedTaskIDs_StoreError(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	d := NewDispatcher(store, NewRunner(), nil)
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	got, err := d.GetQueuedTaskIDs("/proj")
+	if err == nil {
+		t.Fatalf("GetQueuedTaskIDs = %v, nil error; want a store error", got)
 	}
 }
 

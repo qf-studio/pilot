@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	ghadapter "github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/testutil"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
@@ -173,11 +176,11 @@ type queueLiveness struct {
 	project string // when set, only this project path sees the queue
 }
 
-func (q *queueLiveness) GetQueuedTaskIDs(projectPath string) []string {
+func (q *queueLiveness) GetQueuedTaskIDs(projectPath string) ([]string, error) {
 	if q.project != "" && q.project != projectPath {
-		return nil
+		return nil, nil
 	}
-	return q.queued
+	return q.queued, nil
 }
 
 // borrowedLister is a BorrowedBranchLookup whose registry lists branches.
@@ -656,4 +659,55 @@ func TestSweepStaleBranches_GH6181QueueScopedToProject(t *testing.T) {
 	if got := strings.Join(f.deletedSorted(), ","); got != "pilot/GH-555" {
 		t.Errorf("deleted = %q, want pilot/GH-555", got)
 	}
+}
+
+// TestSweepStaleBranches_GH6185UnreadableQueueSkipsSweep: with the real
+// Dispatcher over a store that cannot be read, "queue unknown" must skip the
+// sweep — it must not read as "nothing queued" and delete a queued task's
+// branch. Control: the same setup over a healthy store deletes the orphan.
+func TestSweepStaleBranches_GH6185UnreadableQueueSkipsSweep(t *testing.T) {
+	newDispatcher := func(t *testing.T) (*executor.Dispatcher, *memory.Store) {
+		t.Helper()
+		dir, err := os.MkdirTemp("", "pilot-sweep-queue")
+		if err != nil {
+			t.Fatalf("temp dir: %v", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		store, err := memory.NewStore(dir)
+		if err != nil {
+			t.Fatalf("store: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		return executor.NewDispatcher(store, executor.NewRunner(), nil), store
+	}
+
+	t.Run("store error skips the sweep", func(t *testing.T) {
+		d, store := newDispatcher(t)
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+		f := &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, closed: []*github.PullRequest{closedPR(7, "pilot/GH-100")}}
+		c := newSweepController(t, f, true)
+		c.projectPath = "/repo-a"
+		c.SetDispatcherLiveness(d)
+		log := sweepLog(t, c)
+		if got := f.deletedSorted(); len(got) != 0 {
+			t.Fatalf("deleted %v with an unreadable queue\n%s", got, log)
+		}
+		if !strings.Contains(log, "failed to read the dispatcher queue") {
+			t.Errorf("expected skip warning in log:\n%s", log)
+		}
+	})
+
+	t.Run("healthy empty queue still sweeps", func(t *testing.T) {
+		d, _ := newDispatcher(t)
+		f := &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, closed: []*github.PullRequest{closedPR(7, "pilot/GH-100")}}
+		c := newSweepController(t, f, true)
+		c.projectPath = "/repo-a"
+		c.SetDispatcherLiveness(d)
+		c.sweepStaleBranches(context.Background())
+		if got := strings.Join(f.deletedSorted(), ","); got != "pilot/GH-100" {
+			t.Errorf("deleted = %q, want pilot/GH-100", got)
+		}
+	})
 }
