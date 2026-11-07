@@ -7961,6 +7961,22 @@ func (r *Runner) BorrowedBranch(taskID string) (branch string, fromPR int, ok bo
 	return rec.branch, rec.fromPR, true
 }
 
+// BorrowedBranches returns every unexpired branch in the borrowed-branch
+// registry — GH-6181. A non-destructive listing (unlike FixIssueForBranch) for
+// the autopilot stale-branch sweep, which must not delete a branch a fix issue
+// is still recorded as continuing.
+func (r *Runner) BorrowedBranches() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, 0, len(r.borrowedBranch))
+	for _, rec := range r.borrowedBranch {
+		if time.Since(rec.recordedAt) <= borrowedBranchTTL {
+			out = append(out, rec.branch)
+		}
+	}
+	return out
+}
+
 // FixIssueForBranch returns the fix-issue number of the task currently
 // recorded (via RecordBorrowedBranch) as running on branch, if any —
 // GH-5421. Used by the autopilot reconciler (Controller.reconcileOrphanPRs)

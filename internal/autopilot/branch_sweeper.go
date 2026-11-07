@@ -3,10 +3,13 @@ package autopilot
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	ghadapter "github.com/qf-studio/pilot/internal/adapters/github"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // staleBranchPrefix is the only ref namespace the sweep ever lists or deletes.
@@ -54,21 +57,148 @@ func (c *Controller) staleBranchTracked() map[string]bool {
 	return tracked
 }
 
+// Reasons a swept branch is held (GH-6181), logged as reason= on the
+// "stale branch sweep: kept branch" line.
+const (
+	staleKeepFixIssue    = "fix_issue"
+	staleKeepPendingTask = "pending_task"
+	staleKeepYoung       = "young"
+)
+
+// DispatcherQueueView is the optional queue-side companion of
+// DispatcherLiveness: the task IDs the dispatcher holds as queued or pending
+// (not yet running) for one project — task IDs collide across repos. The Dispatcher passed to SetDispatcherLiveness satisfies
+// it, so the sweep picks it up without extra wiring.
+type DispatcherQueueView interface {
+	GetQueuedTaskIDs(projectPath string) []string
+}
+
+// BorrowedBranchLister is the non-destructive listing side of the
+// borrowed-branch registry (*executor.Runner): every branch a fix issue is
+// currently recorded as continuing. Optional on BorrowedBranchLookup.
+type BorrowedBranchLister interface {
+	BorrowedBranches() []string
+}
+
+// staleAutopilotMetaRe finds every autopilot-meta comment in an issue body and
+// staleMetaBranchRe the branch field inside one.
+//
+// Decision: deliberately more permissive than the dispatcher's footer parser
+// (cmd/pilot/handlers.go extractAutopilotMetaFooter, last-line only, outside
+// code spans): that parser decides where work RUNS and must reject quoted
+// examples; this one decides what is KEPT, where a false positive only delays a
+// delete by a tick and a false negative loses a fix issue's branch.
+var (
+	staleAutopilotMetaRe = regexp.MustCompile(`(?s)<!--\s*autopilot-meta\b(.*?)-->`)
+	staleMetaBranchRe    = regexp.MustCompile(`\bbranch:(\S+)`)
+)
+
+// autopilotMetaBranches returns every pilot/* branch named by an
+// autopilot-meta comment in body.
+func autopilotMetaBranches(body string) []string {
+	var out []string
+	for _, m := range staleAutopilotMetaRe.FindAllStringSubmatch(body, -1) {
+		if b := staleMetaBranchRe.FindStringSubmatch(m[1]); len(b) == 2 && strings.HasPrefix(b[1], staleBranchPrefix) {
+			out = append(out, b[1])
+		}
+	}
+	return out
+}
+
 // staleBranchLiveTasks returns the task IDs an executor is working on right now
-// (same sources as the orphan-running sweep).
-func (c *Controller) staleBranchLiveTasks() map[string]bool {
-	live := make(map[string]bool)
+// (same sources as the orphan-running sweep) and, separately, the IDs the
+// dispatcher still holds as queued/pending (GH-6181): a queued task has no
+// worker yet, but its branch must survive until it runs.
+func (c *Controller) staleBranchLiveTasks() (running, queued map[string]bool) {
+	running = make(map[string]bool)
+	queued = make(map[string]bool)
 	if c.monitor != nil {
 		for _, id := range c.monitor.GetRunningTaskIDs() {
-			live[id] = true
+			running[id] = true
 		}
 	}
 	if c.dispatcherLive != nil {
 		for _, id := range c.dispatcherLive.GetRunningTaskIDs() {
-			live[id] = true
+			running[id] = true
+		}
+		if qv, ok := c.dispatcherLive.(DispatcherQueueView); ok {
+			for _, id := range qv.GetQueuedTaskIDs(c.projectPath) {
+				queued[id] = true
+			}
 		}
 	}
-	return live
+	return running, queued
+}
+
+// staleBranchReferencedByFixIssues returns the branches an open autopilot-fix
+// issue still points at via its autopilot-meta footer, plus every branch in the
+// borrowed-branch registry (GH-6181). A fix issue continues the failed PR's
+// branch after autopilot closed that PR, so the branch must outlive the closed
+// PR for as long as the fix issue is open. An error means the set is unknown;
+// the caller must skip the sweep (fail-closed).
+func (c *Controller) staleBranchReferencedByFixIssues(ctx context.Context) (map[string]bool, error) {
+	issues, err := c.ghClient.ListIssues(ctx, c.owner, c.repo, &github.ListIssuesOptions{
+		Labels: []string{"autopilot-fix"},
+		State:  github.StateOpen,
+	})
+	if err != nil {
+		return nil, err
+	}
+	held := make(map[string]bool)
+	for _, issue := range issues {
+		for _, b := range autopilotMetaBranches(issue.Body) {
+			held[b] = true
+		}
+	}
+	// The registry entry is dropped when the fix issue closes (GH-5927), so
+	// what is left belongs to issues that are still open.
+	if lister, ok := c.borrowedBranchLookup.(BorrowedBranchLister); ok {
+		for _, b := range lister.BorrowedBranches() {
+			held[b] = true
+		}
+	}
+	return held, nil
+}
+
+// staleBranchReferencedByPending returns the branches of queued/pending tasks:
+// each task's own pilot/<id> branch plus any branch named by the autopilot-meta
+// footer of its issue (a hand-filed revision issue carries the footer without
+// the autopilot-fix label, GH-5379). An error means the set is unknown.
+func (c *Controller) staleBranchReferencedByPending(ctx context.Context, queued map[string]bool) (map[string]bool, error) {
+	held := make(map[string]bool, len(queued))
+	for id := range queued {
+		held[staleBranchPrefix+id] = true
+		num, ok := strings.CutPrefix(id, "GH-")
+		if !ok {
+			continue
+		}
+		n, convErr := strconv.Atoi(num)
+		if convErr != nil || n <= 0 {
+			continue
+		}
+		issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, n)
+		if err != nil {
+			return nil, fmt.Errorf("get issue %d: %w", n, err)
+		}
+		for _, b := range autopilotMetaBranches(issue.Body) {
+			held[b] = true
+		}
+	}
+	return held, nil
+}
+
+// closedPRTime is when a closed PR last changed state. The SDK's PullRequest
+// carries no closed_at, so this is the later of updated_at and merged_at: any
+// activity after the close only makes the PR look younger, which is the safe
+// direction. Zero means unknown.
+func closedPRTime(pr *github.PullRequest) time.Time {
+	var t time.Time
+	for _, raw := range []string{pr.UpdatedAt, pr.MergedAt} {
+		if ts, err := time.Parse(time.RFC3339, raw); err == nil && ts.After(t) {
+			t = ts
+		}
+	}
+	return t
 }
 
 // sweepStaleBranches deletes orphaned pilot/* remote branches that no open PR
@@ -78,10 +208,14 @@ func (c *Controller) staleBranchLiveTasks() map[string]bool {
 // was down leave branches nobody deletes — and a stale pilot/GH-N makes the
 // next executor re-pick of that issue fail non-fast-forward.
 //
-// Decision: PR-backed branches are judged by PR state alone (open => keep,
-// closed/merged => delete); only branches with no PR at all are age-gated on
-// their tip commit, fetched lazily via GetBranch so the common path costs no
-// extra calls. Every failure is a WARN and the loop continues. Opt-in via
+// Decision: an open PR keeps its branch; so does an open autopilot-fix issue or
+// a queued/pending task that still references it (GH-6181: autopilot closes a
+// failed PR and the fix issue continues the same branch, so a closed PR alone
+// is not proof the branch is dead). Both age gates then apply: a closed-PR
+// branch is held until its PR has been closed for minAge, a no-PR branch until
+// its tip commit is minAge old (fetched lazily via GetBranch so the common path
+// costs no extra calls). Failing to build any protection set skips the whole
+// sweep. Other failures are a WARN and the loop continues. Opt-in via
 // Config.StaleBranchSweep; overlapping sweeps are dropped.
 func (c *Controller) sweepStaleBranches(ctx context.Context) {
 	if !c.config.StaleBranchSweep || c.ghClient == nil || c.branchSweepClient == nil {
@@ -116,20 +250,30 @@ func (c *Controller) sweepStaleBranches(ctx context.Context) {
 	for _, pr := range openPRs {
 		openHeads[pr.Head.Ref] = true
 	}
-	closedByHead := make(map[string]int, len(closedPRs)) // head ref -> newest PR number
+	closedByHead := make(map[string]*github.PullRequest, len(closedPRs)) // head ref -> newest closed PR
 	for _, pr := range closedPRs {
-		if pr.Number > closedByHead[pr.Head.Ref] {
-			closedByHead[pr.Head.Ref] = pr.Number
+		if cur := closedByHead[pr.Head.Ref]; cur == nil || pr.Number > cur.Number {
+			closedByHead[pr.Head.Ref] = pr
 		}
 	}
 	tracked := c.staleBranchTracked()
-	live := c.staleBranchLiveTasks()
+	live, queued := c.staleBranchLiveTasks()
+	fixRefs, err := c.staleBranchReferencedByFixIssues(ctx)
+	if err != nil {
+		c.log.Warn("stale branch sweep: failed to list open autopilot-fix issues, skipping sweep", "repo", c.repoKey(), "error", err)
+		return
+	}
+	pendingRefs, err := c.staleBranchReferencedByPending(ctx, queued)
+	if err != nil {
+		c.log.Warn("stale branch sweep: failed to read queued task issues, skipping sweep", "repo", c.repoKey(), "error", err)
+		return
+	}
 	minAge := c.config.StaleBranchMinAge
 	if minAge <= 0 {
 		minAge = DefaultStaleBranchMinAge
 	}
 
-	var scanned, deleted, skippedOpen, skippedYoung, errs int
+	var scanned, deleted, skippedOpen, skippedYoung, skippedFixIssue, skippedPending, errs int
 	for _, b := range branches {
 		if ctx.Err() != nil {
 			break
@@ -145,8 +289,32 @@ func (c *Controller) sweepStaleBranches(ctx context.Context) {
 			continue
 		}
 
-		prNumber, hasPR := closedByHead[b.Name]
-		if !hasPR {
+		lastClosed, hasPR := closedByHead[b.Name]
+		prNumber := 0
+		if hasPR {
+			prNumber = lastClosed.Number
+		}
+		keep := func(reason string) {
+			c.log.Info("stale branch sweep: kept branch", "repo", c.repoKey(), "branch", b.Name, "pr", prNumber, "reason", reason)
+		}
+		if fixRefs[b.Name] {
+			skippedFixIssue++
+			keep(staleKeepFixIssue)
+			continue
+		}
+		if pendingRefs[b.Name] {
+			skippedPending++
+			keep(staleKeepPendingTask)
+			continue
+		}
+		if hasPR {
+			// A missing close time is unknown age — treat as young (fail-closed).
+			if t := closedPRTime(lastClosed); t.IsZero() || time.Since(t) < minAge {
+				skippedYoung++
+				keep(staleKeepYoung)
+				continue
+			}
+		} else {
 			br, gerr := c.branchSweepClient.GetBranch(ctx, c.owner, c.repo, b.Name)
 			if gerr != nil {
 				c.log.Warn("stale branch sweep: failed to read branch tip, skipping", "repo", c.repoKey(), "branch", b.Name, "error", gerr)
@@ -175,6 +343,6 @@ func (c *Controller) sweepStaleBranches(ctx context.Context) {
 	}
 
 	c.metrics.RecordStaleBranchesDeleted(deleted)
-	c.log.Info(fmt.Sprintf("stale branch sweep: scanned=%d deleted=%d skipped_open=%d skipped_young=%d errors=%d",
-		scanned, deleted, skippedOpen, skippedYoung, errs), "repo", c.repoKey())
+	c.log.Info(fmt.Sprintf("stale branch sweep: scanned=%d deleted=%d skipped_open=%d skipped_young=%d skipped_fix_issue=%d skipped_pending_task=%d errors=%d",
+		scanned, deleted, skippedOpen, skippedYoung, skippedFixIssue, skippedPending, errs), "repo", c.repoKey())
 }
