@@ -3383,21 +3383,22 @@ const queuedTaskIDsLimit = 1000
 // (GetQueuedTasksForProject) — so it also covers a project whose worker has not
 // been re-created yet after a restart. Scoped because task IDs (GH-N) are not
 // unique across the repos one dispatcher serves. GH-6181: the autopilot stale-branch sweep
-// keeps the branch of a task that has not started running. A store error
-// yields nil.
-func (d *Dispatcher) GetQueuedTaskIDs(projectPath string) []string {
+// keeps the branch of a task that has not started running. A store error is
+// returned, not collapsed to an empty list: the caller must tell "queue
+// unreadable" from "nothing queued" (GH-6185).
+func (d *Dispatcher) GetQueuedTaskIDs(projectPath string) ([]string, error) {
 	if d.store == nil {
-		return nil
+		return nil, nil
 	}
 	tasks, err := d.store.GetQueuedTasksForProject(projectPath, queuedTaskIDsLimit)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("read queued tasks for %s: %w", projectPath, err)
 	}
 	ids := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		ids = append(ids, t.TaskID)
 	}
-	return ids
+	return ids, nil
 }
 
 // QueuedOrRunningCount returns the number of tasks currently queued or being
