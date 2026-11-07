@@ -4063,7 +4063,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// which upgradeNotify skips when program is nil.
 	upgradeCfg := cfg.Upgrade
 	if upgradeCfg == nil {
-		upgradeCfg = &config.UpgradeConfig{AutoHotUpgrade: true, StaleReleaseThreshold: 3}
+		upgradeCfg = &config.UpgradeConfig{AutoHotUpgrade: true, StaleReleaseThreshold: 3, MaxWait: upgrade.DefaultMaxWait}
 	}
 	versionChecker := upgrade.NewVersionChecker(version, upgrade.DefaultCheckInterval)
 	versionChecker.OnUpdate(func(info *upgrade.VersionInfo) {
@@ -4134,17 +4134,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					continue
 				}
 
-				// GH-4683: pause admission before draining — the dispatcher
-				// stops starting any NEW execution (queued rows stay
-				// queued; pollers may keep enqueueing), so the drain below
-				// only has to wait out tasks already running. Resumed on
-				// every path out of this attempt except a successful Unix
-				// exec-restart, where the whole process is replaced and
-				// nothing after PerformHotUpgrade runs anyway.
-				if dispatcher != nil {
-					dispatcher.PauseAdmissionFor(selfUpgradeAdmissionPauseOwner)
-				}
-				upgradeNotifyLog(program, "◌ pausing task admission — queued work waits, running tasks finish normally")
+				// GH-4683: PerformHotUpgrade pauses admission before draining
+				// (via the hooks below) — the dispatcher stops starting any
+				// NEW execution (queued rows stay queued; pollers may keep
+				// enqueueing), so the drain only has to wait out tasks already
+				// running. GH-6187: after a drain timeout it reopens admission
+				// and waits passively for a gap instead of re-pausing every
+				// cooldown. Resumed on every path out of this attempt except a
+				// successful Unix exec-restart, where the whole process is
+				// replaced and nothing after PerformHotUpgrade runs anyway.
 
 				// Perform hot upgrade with a running-only TaskChecker
 				// (GH-4683): the drain waits solely for tasks the Monitor
@@ -4163,6 +4161,22 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				upgradeCfg := &upgrade.HotUpgradeConfig{
 					WaitForTasks: true,
 					TaskTimeout:  30 * time.Minute,
+					MaxWait:      upgradeCfg.MaxWait,
+					PauseAdmission: func() {
+						if dispatcher != nil {
+							dispatcher.PauseAdmissionFor(selfUpgradeAdmissionPauseOwner)
+						}
+						upgradeNotifyLog(program, "◌ pausing task admission — queued work waits, running tasks finish normally")
+					},
+					ResumeAdmission: func() {
+						if dispatcher != nil {
+							dispatcher.ResumeAdmissionFor(selfUpgradeAdmissionPauseOwner)
+						}
+						upgradeNotifyLog(program, "◌ drain timed out — admission reopened, waiting for the running task to end")
+					},
+					OnMaxWait: func(waited time.Duration, blockedBy []string) {
+						reportUpgradeMaxWait(alertsEngine, version, info.Latest, waited, blockedBy)
+					},
 					OnProgress: func(pct int, msg string) {
 						upgradeNotify(program, dashboard.NotifyUpgradeProgress(pct, msg)(), fmt.Sprintf("upgrade progress %d%%: %s", pct, msg))
 					},
