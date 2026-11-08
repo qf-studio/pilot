@@ -1,6 +1,6 @@
 # TASK-643: Autopilot CI-fix chain loses finished work — sweep deletes the fix branch, pre-flight rejects the fix issue, re-arm restarts from scratch, the upgrade drain pauses admission behind a long task
 
-**Status**: ✅ **B1 RELEASED IN v2.315.2 (11-08 15:04Z; PR#6202 + PR#6204/#6206). All four legs released. Open: E1 candidate (retry after a pre-PR hold continues the held branch) — not filed 11-08.** Was: ✅ **A1 + C1 + D1 SHIPPED IN v2.315.1 (tag 11-07 14:14Z, published 15:19Z) — A1 [PR#6184](https://github.com/qf-studio/pilot/pull/6184) 08:50Z (post-merge RC → #6185 fail-open on a store error → PR#6192 10:40Z) · C1 [PR#6188](https://github.com/qf-studio/pilot/pull/6188) 09:50Z (minors #6191 → PR#6197, its RC → #6198 → PR#6199) · D1 [PR#6194](https://github.com/qf-studio/pilot/pull/6194) 11:06Z (passive wait).** 🔁 **B1 [#6182](https://github.com/qf-studio/pilot/issues/6182) re-armed twice:** 09:12Z pre-PR hold (3 blocking: failing-test list read the capped excerpt; test fed a raw log; bypass skipped the label check) → re-armed with the three fixes as instructions; 10:12Z the retry started from origin/main and could not fast-forward the held branch (`non-fast-forward against task branch pilot/GH-6182`) → `pilot-blocked` + `needs-human`; 15:35Z held branch moved to `pilot-hold/GH-6182-e1a27dc`, re-armed `pilot-retry-ready`. **Follow-up candidate E1 (not filed):** a retry after a pre-PR hold must continue the held branch (same mechanism as C1's footer) instead of starting from main and failing the push — the hold comment carries `branch=… sha=…` but no `autopilot-meta` footer, so the dispatcher's branch reuse never fires. Was: 🚀 **A1/B1/C1 DISPATCHED 2026-11-07 → [#6181](https://github.com/qf-studio/pilot/issues/6181) · [#6182](https://github.com/qf-studio/pilot/issues/6182) · [#6183](https://github.com/qf-studio/pilot/issues/6183)** (`pilot` + `no-decompose`; serial pilot queue runs them in that order; C1 rebases after #6163). **D1 DISPATCHED 2026-11-07 → [#6187](https://github.com/qf-studio/pilot/issues/6187) (passive-wait design, founder call).** Was: 📋 PLANNED 2026-11-06 17:20Z — four legs drafted (A sweep guard · B pre-flight for autopilot-fix · C re-arm keeps the branch · D drain does not re-pause admission). Founder review before dispatch; D is a founder call.** Incident salvage done the same evening: branch `pilot/GH-6157` restored from `refs/pull/6165/head`, hand-filed fix [#6168](https://github.com/qf-studio/pilot/issues/6168) (autopilot-fix shape, three tests named) picked up by Pilot; #6167 closed; #6157 unlabelled so its from-scratch re-run drops at admission.
+**Status**: 🚀 **E1 DISPATCHED 11-08 → [pilot#6233](https://github.com/qf-studio/pilot/issues/6233)** (`pilot` + `no-decompose`; founder: research + file; navigator-research confirmed a retry after a pre-PR hold rebuilds from main, and the GH-5864 lease push can replace the held head). Was: ✅ **B1 RELEASED IN v2.315.2 (11-08 15:04Z; PR#6202 + PR#6204/#6206). All four legs released. Open: E1 candidate (retry after a pre-PR hold continues the held branch) — not filed 11-08.** Was: ✅ **A1 + C1 + D1 SHIPPED IN v2.315.1 (tag 11-07 14:14Z, published 15:19Z) — A1 [PR#6184](https://github.com/qf-studio/pilot/pull/6184) 08:50Z (post-merge RC → #6185 fail-open on a store error → PR#6192 10:40Z) · C1 [PR#6188](https://github.com/qf-studio/pilot/pull/6188) 09:50Z (minors #6191 → PR#6197, its RC → #6198 → PR#6199) · D1 [PR#6194](https://github.com/qf-studio/pilot/pull/6194) 11:06Z (passive wait).** 🔁 **B1 [#6182](https://github.com/qf-studio/pilot/issues/6182) re-armed twice:** 09:12Z pre-PR hold (3 blocking: failing-test list read the capped excerpt; test fed a raw log; bypass skipped the label check) → re-armed with the three fixes as instructions; 10:12Z the retry started from origin/main and could not fast-forward the held branch (`non-fast-forward against task branch pilot/GH-6182`) → `pilot-blocked` + `needs-human`; 15:35Z held branch moved to `pilot-hold/GH-6182-e1a27dc`, re-armed `pilot-retry-ready`. **Follow-up candidate E1 (not filed):** a retry after a pre-PR hold must continue the held branch (same mechanism as C1's footer) instead of starting from main and failing the push — the hold comment carries `branch=… sha=…` but no `autopilot-meta` footer, so the dispatcher's branch reuse never fires. Was: 🚀 **A1/B1/C1 DISPATCHED 2026-11-07 → [#6181](https://github.com/qf-studio/pilot/issues/6181) · [#6182](https://github.com/qf-studio/pilot/issues/6182) · [#6183](https://github.com/qf-studio/pilot/issues/6183)** (`pilot` + `no-decompose`; serial pilot queue runs them in that order; C1 rebases after #6163). **D1 DISPATCHED 2026-11-07 → [#6187](https://github.com/qf-studio/pilot/issues/6187) (passive-wait design, founder call).** Was: 📋 PLANNED 2026-11-06 17:20Z — four legs drafted (A sweep guard · B pre-flight for autopilot-fix · C re-arm keeps the branch · D drain does not re-pause admission). Founder review before dispatch; D is a founder call.** Incident salvage done the same evening: branch `pilot/GH-6157` restored from `refs/pull/6165/head`, hand-filed fix [#6168](https://github.com/qf-studio/pilot/issues/6168) (autopilot-fix shape, three tests named) picked up by Pilot; #6167 closed; #6157 unlabelled so its from-scratch re-run drops at admission.
 **Created**: 2026-11-06 · **Owner**: Navigator plans, Pilot executes · **Related**: TASK-508 (CI-fix attribution), TASK-641/TASK-642 (owner-death family; #6163 in flight fixes the `pilot-in-progress` strip in the same re-arm path), TASK-620 (L4 is the run that was lost)
 
 ---
@@ -171,6 +171,43 @@ probe: present qf-studio/pilot func \(d \*Dispatcher\) PauseAdmission\(
 - Log 2026-11-06 15:15:57Z → 16:44:55Z (`self-upgrade`, `dispatcher admission paused`, `upgrade failed: timeout waiting for tasks`, `drain timeout … [GH-6157]`)
 - `internal/upgrade/hot.go` 109–140 · `internal/upgrade/drain.go` · `internal/executor/dispatcher.go` 3345–3360 · `internal/config/config.go` 808/852 (30-min cooldown)
 
+### LEG E1 — repo: qf-studio/pilot — title: fix(executor): a retry after a pre-PR hold continues the held branch — the hold comment carries the branch and sha, the dispatcher resumes it without the borrowed-branch path, and the second run can hold again
+probe: present qf-studio/pilot func[[:space:]]continueRearmBranch\(
+probe: present qf-studio/pilot func[[:space:]]\(r[[:space:]]\*Runner\)[[:space:]]holdPrePRReview\(
+probe: present qf-studio/pilot func[[:space:]]\(g[[:space:]]\*GitOperations\)[[:space:]]RearmBranchAvailable\(
+probe: absent  qf-studio/pilot func[[:space:]]continueHeldBranc[h]\(
+
+## Context
+
+When the pre-PR review in enforce mode holds a run, `holdPrePRReview` (`internal/executor/pre_pr_hold.go` line 72) calls `holdPushedBranch` (`internal/executor/runner.go` line 3265). The branch `pilot/GH-<n>` is pushed, the issue gets `pilot-needs-human`, and the row finishes `needs_human` with the commit sha. No PR exists and no machine-readable footer is written. When the operator re-arms the issue, the dispatcher (`cmd/pilot/handlers.go` near line 1111) keeps the default branch name, and `continueRearmBranch` (`cmd/pilot/rearm_branch.go` line 127) does not fire: it needs the `rearmCommentMarker` comment and a PR number, which only the owner-death re-arm writes. The worktree is then built from `origin/<default>` with `git worktree add -B`, and the retry redoes the work. On a generation above 0 the GH-5864 inherited-head lease push (`internal/executor/dispatcher.go` line 3229, `recordInheritedHead`) can also replace the held head on the remote. TASK-643 B1 (#6182) hit this on 2026-11-08.
+
+## Implementation
+
+1. Hold side: when `holdPushedBranch` pushed the branch for a pre-PR hold, append a footer to the hold comment: `<!-- pilot-hold-meta branch:<branch> sha:<sha> source:<issue> -->`. Use a new marker constant. Do not reuse `rearmCommentMarker`, because its parser requires `pr > 0`.
+2. Dispatch side: add `continueHeldBranch` beside `continueRearmBranch` in `cmd/pilot/rearm_branch.go`. It reads the latest hold-meta comment. It applies the same supersession rule as `rearmSuperseded` (a later task-started comment cancels it). It checks the remote with `RearmBranchAvailable`. On a match it sets the task branch and a new `Task.ContinueBranchSHA`. It does not set `FromPR`. Call it in `cmd/pilot/handlers.go` after `continueRearmBranch` when that one did not match.
+3. Runner side: when `ContinueBranchSHA` is set, build the worktree from `ResolveFixContinuationBaseRef(branch, sha)` (`internal/executor/git.go` line 1899) instead of the default branch. Skip `recordInheritedHead` for this task, so no lease push replaces the held head. `onBorrowedBranch` (`internal/executor/pre_pr_hold.go` line 49) stays false, so the second run can hold again.
+4. Missing remote branch or no hold-meta comment: fall back to today's fresh branch from the default branch, with one Info log line that names the reason.
+5. Sweep: check that `internal/autopilot/branch_sweeper.go` keeps a branch whose issue still carries `pilot-needs-human` with a hold-meta comment. If it does not, add that case to the referenced set. Pin the result with a test either way.
+6. Tests: `cmd/pilot/rearm_branch_test.go` gains table cases for `continueHeldBranch` (footer present and branch on remote → match; superseded by a later start → no match; branch gone → no match). `internal/executor/runner_retry_worktree_test.go` gains a case: a task with `ContinueBranchSHA` → worktree HEAD equals the hold sha, `recordInheritedHead` writes nothing, and `onBorrowedBranch` is false. `internal/executor/pre_pr_hold_test.go` asserts the footer in the hold comment.
+
+## Acceptance
+
+- [ ] `go test -race ./cmd/pilot/ -run 'TestContinueHeldBranch'` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/executor/ -run 'TestPrePRHold|TestRetryWorktree'` passes; paste the output into the PR body.
+- [ ] `go test -race ./internal/autopilot/ -run 'TestStaleBranch'` passes; paste the output into the PR body.
+- [ ] Remove the footer write in the hold path -> the worktree HEAD-equals-hold-sha assertion fails
+- [ ] Set `FromPR` on the continuation -> the onBorrowedBranch-false assertion fails
+
+## Out of scope
+
+- Opening a PR for the held branch, or any change to the hold decision itself.
+- The owner-death re-arm path (C1) and its footer.
+- An operator command to resume a hold.
+
+## Refs
+
+- Navigator TASK-643 E1 · research 2026-11-08 (navigator-research, main bf0bc40ce) · #6182 (B1 retry after a hold) · TASK-641 (hold on unfixed) · TASK-643 C1 (re-arm footer idiom)
+
 ---
 
 ## Out of Scope (task)
@@ -224,3 +261,4 @@ go test -race ./internal/upgrade/ -run 'TestPerformHotUpgrade'
 - B1 → https://github.com/qf-studio/pilot/issues/6182
 - C1 → https://github.com/qf-studio/pilot/issues/6183
 - D1 → https://github.com/qf-studio/pilot/issues/6187
+- E1 → https://github.com/qf-studio/pilot/issues/6233

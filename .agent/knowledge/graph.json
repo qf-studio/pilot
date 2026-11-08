@@ -2937,7 +2937,8 @@
           "https://github.com/qf-studio/pilot/issues/6037",
           "https://github.com/qf-studio/pilot/issues/6157",
           "https://github.com/qf-studio/pilot/issues/6168",
-          "https://github.com/qf-studio/pilot/issues/6189"
+          "https://github.com/qf-studio/pilot/issues/6189",
+          "https://github.com/qf-studio/pilot/issues/6232"
         ]
       },
       "TASK-630": {
@@ -3085,7 +3086,7 @@
       "TASK-643": {
         "path": ".agent/tasks/TASK-643-ci-fix-chain-loses-finished-work.md",
         "title": "Autopilot CI-fix chain loses finished work — sweep deletes the fix branch, pre-flight rejects the fix issue, re-arm restarts from scratch, the upgrade drain pauses admission behind a long task",
-        "status": "active",
+        "status": "dispatched",
         "concepts": [
           "deployment",
           "frontend",
@@ -3100,7 +3101,8 @@
           "https://github.com/qf-studio/pilot/issues/6181",
           "https://github.com/qf-studio/pilot/issues/6182",
           "https://github.com/qf-studio/pilot/issues/6183",
-          "https://github.com/qf-studio/pilot/issues/6187"
+          "https://github.com/qf-studio/pilot/issues/6187",
+          "https://github.com/qf-studio/pilot/issues/6233"
         ]
       },
       "TASK-646": {
@@ -3147,7 +3149,7 @@
       "TASK-649": {
         "path": ".agent/tasks/TASK-649-git-graph-per-project-selection.md",
         "title": "Git graph per-project selection — the gateway and the desktop app serve any configured project's graph, and the GIT GRAPH panel gets a project tab row (pilot#6207)",
-        "status": "dispatched",
+        "status": "merged",
         "concepts": [
           "knowledge",
           "authentication",
