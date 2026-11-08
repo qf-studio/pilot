@@ -4776,8 +4776,9 @@ func buildTaskFromExecution(exec *memory.Execution) *Task {
 		Labels:        exec.TaskLabels,
 		IsCanary:      exec.IsCanary,
 
-		inheritedHeadSHA: exec.InheritedHead,
-		billingMode:      exec.BillingMode, // GH-6016
+		inheritedHeadSHA:  exec.InheritedHead,
+		ContinueBranchSHA: exec.ContinueBranchSHA, // GH-6233
+		billingMode:       exec.BillingMode,       // GH-6016
 
 		AcceptanceCriteria: acceptance.Extract(exec.TaskDescription),
 	}

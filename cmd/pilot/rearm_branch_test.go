@@ -293,6 +293,18 @@ func TestContinueHeldBranch(t *testing.T) {
 		}
 	})
 
+	t.Run("no hold comment logs one Info line naming the reason", func(t *testing.T) {
+		read := captureLogs(t)
+		b, sha := continueHeldBranch(ctx, fakeCommentLister{bodies: []string{"just a comment"}}, "o", "r", 100, local, "GH-100", own, 0)
+		if b != own || sha != "" {
+			t.Errorf("got (%q, %q), want the unchanged branch and no sha", b, sha)
+		}
+		got := read()
+		if !strings.Contains(got, "no hold comment on the issue") || strings.Count(got, "pre-PR hold continuation") != 1 {
+			t.Errorf("want exactly one reason line, got %q", got)
+		}
+	})
+
 	t.Run("handler routes through continueHeldBranch after continueRearmBranch and sets no FromPR", func(t *testing.T) {
 		body := githubFuncBody(t, "handlers.go", "func handleGithubIssueEventSDK(")
 		rearmIdx := strings.Index(body, "continueRearmBranch(ctx, specClient")

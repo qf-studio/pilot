@@ -212,6 +212,10 @@ func (s *Store) migrate() error {
 		// GH-5864: SHA of a stale pilot/GH-N head a previous run of the same task
 		// left on origin with no PR; the re-pick may lease-push over exactly it.
 		`ALTER TABLE executions ADD COLUMN inherited_head TEXT`,
+		// GH-6233: head a pre-PR hold pushed to the task branch; the retry's
+		// worktree is cut from it. The worker rebuilds its Task from this row, so
+		// the dispatcher-set Task.ContinueBranchSHA has to ride on it.
+		`ALTER TABLE executions ADD COLUMN continue_branch_sha TEXT`,
 		`CREATE INDEX IF NOT EXISTS idx_executions_status ON executions(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_patterns_project ON patterns(project_path)`,
 		// Cross-project pattern indexes
@@ -766,10 +770,14 @@ type Execution struct {
 	// final push may lease on exactly that SHA. Empty when there was none.
 	// GH-5864.
 	InheritedHead string
-	FilesChanged  int
-	LinesAdded    int
-	LinesRemoved  int
-	ModelName     string
+	// ContinueBranchSHA is the head a pre-PR hold pushed to TaskBranch, set when
+	// the dispatcher admits the re-armed issue so the worker's rebuilt task
+	// continues that branch. Empty for every other task. GH-6233.
+	ContinueBranchSHA string
+	FilesChanged      int
+	LinesAdded        int
+	LinesRemoved      int
+	ModelName         string
 	// GH-2807: effort and complexity for cost-by-tier observability
 	EffortLevel     string `json:"effort_level,omitempty"`
 	ComplexityLevel string `json:"complexity_level,omitempty"`
@@ -841,15 +849,15 @@ func (s *Store) SaveExecution(exec *Execution) error {
 				task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose,
 				task_source_adapter, task_source_issue_id, task_labels,
 				approval_request_id, effort_level, complexity_level, is_canary,
-				key_source, reported_cost_usd, billing_mode)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				key_source, reported_cost_usd, billing_mode, continue_branch_sha)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, createdAt, completedAt,
 			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.TokensCacheRead, exec.TokensCacheWrite,
 			exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
 			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose,
 			exec.TaskSourceAdapter, exec.TaskSourceIssueID, labelsJSON,
 			exec.ApprovalRequestID, exec.EffortLevel, exec.ComplexityLevel, exec.IsCanary,
-			NormalizeKeySource(exec.KeySource), exec.ReportedCostUSD, NormalizeBillingMode(exec.BillingMode))
+			NormalizeKeySource(exec.KeySource), exec.ReportedCostUSD, NormalizeBillingMode(exec.BillingMode), exec.ContinueBranchSHA)
 		return err
 	})
 }
@@ -899,7 +907,8 @@ const executionDetailColumns = `
 	COALESCE(effort_level, ''), COALESCE(complexity_level, ''),
 	COALESCE(is_canary, 0),
 	COALESCE(NULLIF(key_source, ''), 'unknown'), reported_cost_usd, branch_pushed,
-	COALESCE(inherited_head, ''), COALESCE(NULLIF(billing_mode, ''), 'unknown')`
+	COALESCE(inherited_head, ''), COALESCE(NULLIF(billing_mode, ''), 'unknown'),
+	COALESCE(continue_branch_sha, '')`
 
 // rowScanner abstracts *sql.Row and *sql.Rows so scanExecutionDetail serves both
 // a single QueryRow result and a Query loop (used by ListExecutionsForTask).
@@ -923,7 +932,7 @@ func scanExecutionDetail(row rowScanner) (*Execution, error) {
 		&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON,
 		&exec.ApprovalRequestID, &exec.ApprovalDecision, &approvalDecisionAt, &exec.ApprovalDecisionBy,
 		&exec.EffortLevel, &exec.ComplexityLevel, &exec.IsCanary,
-		&exec.KeySource, &reportedCost, &branchPushed, &exec.InheritedHead, &exec.BillingMode)
+		&exec.KeySource, &reportedCost, &branchPushed, &exec.InheritedHead, &exec.BillingMode, &exec.ContinueBranchSHA)
 	if err != nil {
 		return nil, err
 	}

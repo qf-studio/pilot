@@ -218,11 +218,12 @@ func continueHeldBranch(ctx context.Context, lister issueCommentLister, owner, r
 	}
 	branch, sha, ok := parseHoldMetaFromComments(bodies, issueNum)
 	if !ok {
-		// Quiet on the common path: most dispatches have no hold comment at all.
+		reason := "no hold comment on the issue"
 		if hasHoldMetaMarker(bodies) {
-			log.Info("pre-PR hold continuation: hold comment superseded or invalid, starting from the default branch",
-				slog.String("task_id", taskID))
+			reason = "hold comment superseded or invalid"
 		}
+		log.Info("pre-PR hold continuation: "+reason+", starting from the default branch",
+			slog.String("task_id", taskID))
 		return branchName, ""
 	}
 	if !executor.NewGitOperations(projectPath).RearmBranchAvailable(ctx, branch) {

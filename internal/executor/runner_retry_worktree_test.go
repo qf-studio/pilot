@@ -261,14 +261,14 @@ func TestRetryWorktree_ContinuesHeldBranch(t *testing.T) {
 		t.Fatalf("the hold comment carries no hold-meta footer:\n%s", comment)
 	}
 
+	// run queues the task the way the daemon does: the dispatcher saves it on the
+	// execution row and the worker runs buildTaskFromExecution's rebuild, not the
+	// task the handler built. A field that is not persisted never reaches the runner.
 	run := func(t *testing.T, continueSHA string) (head string, runner *Runner, task *Task) {
 		t.Helper()
-		backend := &headRecordingBackend{}
-		runner = NewRunnerWithBackend(backend)
-		runner.config = &BackendConfig{UseWorktree: boolPtr(true)}
-		runner.SetSkipPreflightChecks(true)
-		runner.SetRecordingEnabled(false)
-		task = &Task{
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+		queued := &Task{
 			ID:                "GH-6233",
 			Title:             "retry after a pre-PR hold",
 			Description:       "continue the held branch",
@@ -277,6 +277,21 @@ func TestRetryWorktree_ContinuesHeldBranch(t *testing.T) {
 			CreatePR:          true,
 			ContinueBranchSHA: continueSHA,
 		}
+		execID, err := NewExecutionLifecycle(store).Begin(queued, ExecStatusQueued, 0)
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		row, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("GetExecution: %v", err)
+		}
+		task = buildTaskFromExecution(row)
+
+		backend := &headRecordingBackend{}
+		runner = NewRunnerWithBackend(backend)
+		runner.config = &BackendConfig{UseWorktree: boolPtr(true)}
+		runner.SetSkipPreflightChecks(true)
+		runner.SetRecordingEnabled(false)
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		_, _ = runner.Execute(ctx, task)
@@ -287,6 +302,9 @@ func TestRetryWorktree_ContinuesHeldBranch(t *testing.T) {
 
 	t.Run("continuation starts at the hold sha, not a borrow", func(t *testing.T) {
 		head, runner, task := run(t, m[2])
+		if task.ContinueBranchSHA != m[2] {
+			t.Fatalf("the task rebuilt from the execution row carries ContinueBranchSHA %q, want %q", task.ContinueBranchSHA, m[2])
+		}
 		if head != holdSHA {
 			t.Errorf("worktree HEAD = %q, want the hold sha %q", head, holdSHA)
 		}
@@ -354,6 +372,12 @@ func TestRetryWorktree_ContinuationRecordsNoInheritedHead(t *testing.T) {
 			}
 			if exec.InheritedHead != tt.want {
 				t.Errorf("InheritedHead = %q, want %q", exec.InheritedHead, tt.want)
+			}
+			// What the worker runs is the rebuild, so neither field may be lost to it.
+			rebuilt := buildTaskFromExecution(exec)
+			if rebuilt.ContinueBranchSHA != tt.continueSHA || rebuilt.inheritedHeadSHA != tt.want {
+				t.Errorf("rebuilt task (ContinueBranchSHA %q, inheritedHeadSHA %q), want (%q, %q)",
+					rebuilt.ContinueBranchSHA, rebuilt.inheritedHeadSHA, tt.continueSHA, tt.want)
 			}
 		})
 	}
