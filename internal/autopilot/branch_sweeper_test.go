@@ -33,11 +33,13 @@ type fakeBranchGitHub struct {
 	deleteStatus map[string]int // branch -> forced status for DELETE
 	deleted      []string
 	requests     int
-	branchGets   map[string]int  // branch -> GET /branches/{name} count
-	deleteCalls  map[string]int  // branch -> DELETE attempts
-	matchingReqs int             // GET git/matching-refs requests
-	issues       []*github.Issue // open issues served by GET /issues and /issues/{n}
-	issuesStatus int             // forced status for GET /issues (0 = serve)
+	branchGets   map[string]int   // branch -> GET /branches/{name} count
+	deleteCalls  map[string]int   // branch -> DELETE attempts
+	matchingReqs int              // GET git/matching-refs requests
+	issues       []*github.Issue  // open issues served by GET /issues and /issues/{n}
+	issuesStatus int              // forced status for GET /issues (0 = serve)
+	comments     map[int][]string // issue number -> comment bodies, oldest first
+	commentsErr  int              // forced status for GET /issues/{n}/comments (0 = serve)
 }
 
 func (f *fakeBranchGitHub) page(r *http.Request, n int) (int, int) {
@@ -91,8 +93,26 @@ func (f *fakeBranchGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(f.issuesStatus)
 			return
 		}
-		s, e := f.page(r, len(f.issues))
-		_ = writeJSON(w, f.issues[s:e])
+		// Like the real endpoint, every requested label must be on the issue.
+		var matched []*github.Issue
+		for _, is := range f.issues {
+			if issueHasLabels(is, r.URL.Query().Get("labels")) {
+				matched = append(matched, is)
+			}
+		}
+		s, e := f.page(r, len(matched))
+		_ = writeJSON(w, matched[s:e])
+	case r.Method == http.MethodGet && strings.HasPrefix(p, base+"/issues/") && strings.HasSuffix(p, "/comments"):
+		if f.commentsErr != 0 {
+			w.WriteHeader(f.commentsErr)
+			return
+		}
+		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(p, base+"/issues/"), "/comments"))
+		out := []map[string]any{}
+		for i, body := range f.comments[n] {
+			out = append(out, map[string]any{"id": i + 1, "body": body})
+		}
+		_ = writeJSON(w, out)
 	case r.Method == http.MethodGet && strings.HasPrefix(p, base+"/issues/"):
 		n, _ := strconv.Atoi(strings.TrimPrefix(p, base+"/issues/"))
 		for _, is := range f.issues {
@@ -129,6 +149,25 @@ func (f *fakeBranchGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// issueHasLabels reports whether is carries every label in the comma-separated list.
+func issueHasLabels(is *github.Issue, list string) bool {
+	if list == "" {
+		return true
+	}
+	for _, want := range strings.Split(list, ",") {
+		found := false
+		for _, l := range is.Labels {
+			if l.Name == want {
+				found = true
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func (f *fakeBranchGitHub) deletedSorted() []string {
@@ -710,4 +749,97 @@ func TestSweepStaleBranches_GH6185UnreadableQueueSkipsSweep(t *testing.T) {
 			t.Errorf("deleted = %q, want pilot/GH-100", got)
 		}
 	})
+}
+
+// heldIssue is an open issue a pre-PR hold parked under pilot-needs-human, with
+// the hold comment the runner writes (footer last) on it.
+func heldIssue(n int) *github.Issue {
+	return &github.Issue{Number: n, State: "open", Labels: []github.Label{{Name: "pilot"}, {Name: "pilot-needs-human"}}, Body: "task"}
+}
+
+func holdComment(branch string, n int) string {
+	return "Pilot held this task before opening a PR.\n" + executor.PrePRHoldMetaFooter(branch, "b57d141c0ffee0123456789abcdef0123456789a", strconv.Itoa(n))
+}
+
+// TestStaleBranchSweep_KeepsPrePRHoldBranch pins GH-6233: a branch a pre-PR hold
+// pushed has no PR and, once its tip is a day old, nothing else references it,
+// so only the hold guard keeps it until the operator re-arms the issue.
+func TestStaleBranchSweep_KeepsPrePRHoldBranch(t *testing.T) {
+	old := map[string]time.Time{"pilot/GH-100": time.Now().Add(-72 * time.Hour)}
+	tests := []struct {
+		name        string
+		fake        *fakeBranchGitHub
+		wantDeleted []string
+		wantKept    bool
+		wantNoSweep bool
+	}{
+		{
+			name: "needs-human issue with a hold comment keeps its old no-PR branch",
+			fake: &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, tipDate: old,
+				issues: []*github.Issue{heldIssue(100)}, comments: map[int][]string{100: {"started", holdComment("pilot/GH-100", 100)}}},
+			wantKept: true,
+		},
+		{
+			name: "re-armed issue (label cleared) no longer holds the branch",
+			fake: &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, tipDate: old,
+				issues: []*github.Issue{{Number: 100, State: "open", Labels: []github.Label{{Name: "pilot"}}}}, comments: map[int][]string{100: {holdComment("pilot/GH-100", 100)}}},
+			wantDeleted: []string{"pilot/GH-100"},
+		},
+		{
+			name: "needs-human issue without a hold comment does not hold the branch",
+			fake: &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, tipDate: old,
+				issues: []*github.Issue{heldIssue(100)}, comments: map[int][]string{100: {"Pilot parked this task under `pilot-needs-human`: timeout"}}},
+			wantDeleted: []string{"pilot/GH-100"},
+		},
+		{
+			name: "hold footer for another branch does not hold this one",
+			fake: &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, tipDate: old,
+				issues: []*github.Issue{heldIssue(101)}, comments: map[int][]string{101: {holdComment("pilot/GH-101", 101)}}},
+			wantDeleted: []string{"pilot/GH-100"},
+		},
+		{
+			name: "unreadable hold comments skip the sweep",
+			fake: &fakeBranchGitHub{branches: []string{"pilot/GH-100"}, tipDate: old,
+				issues: []*github.Issue{heldIssue(100)}, commentsErr: http.StatusInternalServerError},
+			wantNoSweep: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newSweepController(t, tt.fake, true)
+			log := sweepLog(t, c)
+			if got := strings.Join(tt.fake.deletedSorted(), ","); got != strings.Join(tt.wantDeleted, ",") {
+				t.Errorf("deleted = %q, want %q\n%s", got, tt.wantDeleted, log)
+			}
+			if got := keptLine(log, "pilot/GH-100", "needs_human_hold"); got != tt.wantKept {
+				t.Errorf("needs_human_hold kept line present = %v, want %v\n%s", got, tt.wantKept, log)
+			}
+			if tt.wantKept && !strings.Contains(log, "skipped_hold=1") {
+				t.Errorf("summary lacks skipped_hold=1:\n%s", log)
+			}
+			if tt.wantNoSweep && !strings.Contains(log, "failed to read pre-PR hold comments") {
+				t.Errorf("expected the skip warning in the log:\n%s", log)
+			}
+		})
+	}
+}
+
+func TestHoldMetaBranches(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"footer", "text\n<!-- pilot-hold-meta branch:pilot/GH-5 sha:b57d141 source:5 -->\n", "pilot/GH-5"},
+		{"no footer", "branch:pilot/GH-5", ""},
+		{"non-pilot branch ignored", "<!-- pilot-hold-meta branch:main sha:b57d141 source:5 -->", ""},
+		{"autopilot-meta is not a hold footer", "<!-- autopilot-meta branch:pilot/GH-5 pr:1 -->", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := strings.Join(holdMetaBranches(tt.body), ","); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
 }

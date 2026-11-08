@@ -175,6 +175,21 @@ func parseAutopilotIteration(body string) int {
 	return n
 }
 
+// isPlausibleGitSHA reports whether sha is 7-40 hex characters, the range a
+// real (abbreviated or full) commit hash falls in.
+func isPlausibleGitSHA(sha string) bool {
+	if len(sha) < 7 || len(sha) > 40 {
+		return false
+	}
+	for _, c := range sha {
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return false
+		}
+	}
+	return true
+}
+
 // parseAutopilotSHA extracts the original PR's full head commit SHA from an
 // autopilot-fix issue's metadata comment. Returns "" if no sha metadata is
 // found (older fix issues created before GH-5348, or issues with no resolved
@@ -203,14 +218,8 @@ func parseAutopilotSHA(body string) string {
 		return ""
 	}
 	sha := m[1]
-	if len(sha) < 7 || len(sha) > 40 {
+	if !isPlausibleGitSHA(sha) {
 		return ""
-	}
-	for _, c := range sha {
-		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-		if !isHex {
-			return ""
-		}
 	}
 	return sha
 }
@@ -1133,6 +1142,13 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	if specClient != nil {
 		branchName, fromPR, fixFromSHA = continueRearmBranch(ctx, specClient, repoOwner, repoName, issueNum, projectPath, taskID, liveLabels, branchName, fromPR, fixFromSHA)
 	}
+	// GH-6233: a pre-PR hold leaves its pushed branch and sha in a hold-meta
+	// comment footer, with no PR. When neither footer above resolved a branch,
+	// continue the held branch instead of redoing the work from the default branch.
+	var continueBranchSHA string
+	if specClient != nil {
+		branchName, continueBranchSHA = continueHeldBranch(ctx, specClient, repoOwner, repoName, issueNum, projectPath, taskID, branchName, fromPR)
+	}
 	// GH-5421: record the borrowed branch/origin-PR before dispatch so the
 	// primary SDK OnPRCreated hook (githubOnPRCreatedHandler in
 	// poller_github.go) can route this task's resulting PR to
@@ -1247,6 +1263,7 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		AcceptanceCriteria: github.ExtractAcceptanceCriteria(ev.Body),  // GH-920: acceptance criteria in prompts
 		FromPR:             fromPR,                                     // GH-1267: session resumption from PR context
 		FixFromSHA:         fixFromSHA,                                 // GH-5348: recreate a deleted fix branch from the original commit
+		ContinueBranchSHA:  continueBranchSHA,                          // GH-6233: continue the branch a pre-PR hold pushed
 		// Propagate parent state so isParentDone() can refuse sub-issue creation
 		// when the daemon re-dispatches a closed/merged parent (GH-201 gate parity).
 		State: issueState,

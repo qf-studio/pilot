@@ -9,6 +9,7 @@ import (
 	"time"
 
 	ghadapter "github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/executor"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
@@ -63,6 +64,7 @@ const (
 	staleKeepFixIssue    = "fix_issue"
 	staleKeepPendingTask = "pending_task"
 	staleKeepYoung       = "young"
+	staleKeepHold        = "needs_human_hold"
 )
 
 // DispatcherQueueView is the optional queue-side companion of
@@ -93,6 +95,22 @@ var (
 	staleAutopilotMetaRe = regexp.MustCompile(`(?s)<!--\s*autopilot-meta\b(.*?)-->`)
 	staleMetaBranchRe    = regexp.MustCompile(`\bbranch:(\S+)`)
 )
+
+// staleHoldMetaRe finds every pre-PR hold footer in a comment
+// (executor.PrePRHoldMetaMarker, GH-6233), as permissive as staleAutopilotMetaRe
+// for the same reason: a false positive only delays a delete by a tick.
+var staleHoldMetaRe = regexp.MustCompile(`(?s)<!--\s*` + regexp.QuoteMeta(executor.PrePRHoldMetaMarker) + `\b(.*?)-->`)
+
+// holdMetaBranches returns every pilot/* branch named by a hold footer in body.
+func holdMetaBranches(body string) []string {
+	var out []string
+	for _, m := range staleHoldMetaRe.FindAllStringSubmatch(body, -1) {
+		if b := staleMetaBranchRe.FindStringSubmatch(m[1]); len(b) == 2 && strings.HasPrefix(b[1], staleBranchPrefix) {
+			out = append(out, b[1])
+		}
+	}
+	return out
+}
 
 // autopilotMetaBranches returns every pilot/* branch named by an
 // autopilot-meta comment in body.
@@ -162,6 +180,38 @@ func (c *Controller) staleBranchReferencedByFixIssues(ctx context.Context) (map[
 	if lister, ok := c.borrowedBranchLookup.(BorrowedBranchLister); ok {
 		for _, b := range lister.BorrowedBranches() {
 			held[b] = true
+		}
+	}
+	return held, nil
+}
+
+// staleBranchReferencedByHolds returns the branches a pre-PR hold pushed for an
+// issue that still carries pilot-needs-human (GH-6233). The hold opened no PR, so
+// nothing else names the branch, and the re-arm continues it: a tip-age sweep
+// would delete the held work a day after the hold. The branch is named by the
+// hold comment's footer; clearing the label (the re-arm) releases it. An error
+// means the set is unknown; the caller must skip the sweep (fail-closed).
+func (c *Controller) staleBranchReferencedByHolds(ctx context.Context) (map[string]bool, error) {
+	issues, err := c.ghClient.ListIssues(ctx, c.owner, c.repo, &github.ListIssuesOptions{
+		Labels: []string{labelNeedsHuman},
+		State:  github.StateOpen,
+	})
+	if err != nil {
+		return nil, err
+	}
+	held := make(map[string]bool)
+	for _, issue := range issues {
+		comments, err := c.ghClient.ListIssueComments(ctx, c.owner, c.repo, issue.Number)
+		if err != nil {
+			return nil, fmt.Errorf("list comments of issue %d: %w", issue.Number, err)
+		}
+		for _, cm := range comments {
+			if cm == nil {
+				continue
+			}
+			for _, b := range holdMetaBranches(cm.Body) {
+				held[b] = true
+			}
 		}
 	}
 	return held, nil
@@ -274,6 +324,11 @@ func (c *Controller) sweepStaleBranches(ctx context.Context) {
 		c.log.Warn("stale branch sweep: failed to list open autopilot-fix issues, skipping sweep", "repo", c.repoKey(), "error", err)
 		return
 	}
+	holdRefs, err := c.staleBranchReferencedByHolds(ctx)
+	if err != nil {
+		c.log.Warn("stale branch sweep: failed to read pre-PR hold comments, skipping sweep", "repo", c.repoKey(), "error", err)
+		return
+	}
 	pendingRefs, err := c.staleBranchReferencedByPending(ctx, queued)
 	if err != nil {
 		c.log.Warn("stale branch sweep: failed to read queued task issues, skipping sweep", "repo", c.repoKey(), "error", err)
@@ -284,7 +339,7 @@ func (c *Controller) sweepStaleBranches(ctx context.Context) {
 		minAge = DefaultStaleBranchMinAge
 	}
 
-	var scanned, deleted, skippedOpen, skippedYoung, skippedFixIssue, skippedPending, errs int
+	var scanned, deleted, skippedOpen, skippedYoung, skippedFixIssue, skippedPending, skippedHold, errs int
 	for _, b := range branches {
 		if ctx.Err() != nil {
 			break
@@ -311,6 +366,11 @@ func (c *Controller) sweepStaleBranches(ctx context.Context) {
 		if fixRefs[b.Name] {
 			skippedFixIssue++
 			keep(staleKeepFixIssue)
+			continue
+		}
+		if holdRefs[b.Name] {
+			skippedHold++
+			keep(staleKeepHold)
 			continue
 		}
 		if pendingRefs[b.Name] {
@@ -354,6 +414,6 @@ func (c *Controller) sweepStaleBranches(ctx context.Context) {
 	}
 
 	c.metrics.RecordStaleBranchesDeleted(deleted)
-	c.log.Info(fmt.Sprintf("stale branch sweep: scanned=%d deleted=%d skipped_open=%d skipped_young=%d skipped_fix_issue=%d skipped_pending_task=%d errors=%d",
-		scanned, deleted, skippedOpen, skippedYoung, skippedFixIssue, skippedPending, errs), "repo", c.repoKey())
+	c.log.Info(fmt.Sprintf("stale branch sweep: scanned=%d deleted=%d skipped_open=%d skipped_young=%d skipped_fix_issue=%d skipped_pending_task=%d skipped_hold=%d errors=%d",
+		scanned, deleted, skippedOpen, skippedYoung, skippedFixIssue, skippedPending, skippedHold, errs), "repo", c.repoKey())
 }

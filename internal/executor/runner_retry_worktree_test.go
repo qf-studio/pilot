@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -185,5 +186,199 @@ func TestRunner_QualityRetry_RunsInWorktree(t *testing.T) {
 		if !strings.Contains(p, "pilot-worktree-") {
 			t.Errorf("backend call %d ProjectPath %q should be the isolated worktree (contain 'pilot-worktree-')", i, p)
 		}
+	}
+}
+
+// headRecordingBackend records the worktree HEAD at the first Execute call, which
+// is the base ref the worktree was cut from before any task commit exists.
+type headRecordingBackend struct {
+	retryPathRecordingBackend
+	head string
+}
+
+func (b *headRecordingBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.projectPaths = append(b.projectPaths, opts.ProjectPath)
+	if b.head == "" {
+		out, err := exec.CommandContext(ctx, "git", "-C", opts.ProjectPath, "rev-parse", "HEAD").Output()
+		if err != nil {
+			return nil, err
+		}
+		b.head = strings.TrimSpace(string(out))
+	}
+	return &BackendResult{Success: true, Output: "no changes made"}, nil
+}
+
+// holdFooterRe reads the hold-meta footer the way the dispatcher does.
+var holdFooterRe = regexp.MustCompile(`<!-- ` + PrePRHoldMetaMarker + ` branch:(\S+) sha:(\S+) source:(\d+) -->`)
+
+// TestRetryWorktree_ContinuesHeldBranch pins GH-6233: a retry after a pre-PR hold
+// builds its worktree from the branch the hold pushed. The branch and sha come
+// out of a real hold comment's footer, so a hold that stops writing the footer
+// fails here too.
+func TestRetryWorktree_ContinuesHeldBranch(t *testing.T) {
+	localRepo, remoteRepo := setupTestRepoWithRemote(t)
+	defer func() { _ = os.RemoveAll(localRepo) }()
+	defer func() { _ = os.RemoveAll(remoteRepo) }()
+
+	git := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", localRepo}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	// The held branch: one commit past main, on origin only.
+	mainSHA := git("rev-parse", "HEAD")
+	git("checkout", "-b", "held-tmp")
+	if err := os.WriteFile(filepath.Join(localRepo, "held.txt"), []byte("held work"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-m", "held work")
+	holdSHA := git("rev-parse", "HEAD")
+	git("push", "origin", "held-tmp:refs/heads/pilot/GH-6233")
+	git("checkout", "main")
+	git("branch", "-D", "held-tmp")
+	if holdSHA == mainSHA {
+		t.Fatal("test setup: the held commit equals main")
+	}
+
+	// What the hold wrote on the issue, and what the dispatcher reads back.
+	pushed := true
+	review := &PrePRReviewOutcome{
+		Mode:    PrePRReviewModeEnforce,
+		Verdict: PostMergeRequestChanges,
+		Review:  &PostMergeReview{Verdict: PostMergeRequestChanges, Defects: holdDefects},
+	}
+	holdTask := &Task{ID: "GH-6233", Branch: "pilot/GH-6233"}
+	comment := renderPrePRHoldComment(holdTask, review, &ExecutionResult{BranchPushed: &pushed}, holdSHA, "")
+	m := holdFooterRe.FindStringSubmatch(comment)
+	if m == nil {
+		t.Fatalf("the hold comment carries no hold-meta footer:\n%s", comment)
+	}
+
+	// run queues the task the way the daemon does: the dispatcher saves it on the
+	// execution row and the worker runs buildTaskFromExecution's rebuild, not the
+	// task the handler built. A field that is not persisted never reaches the runner.
+	run := func(t *testing.T, continueSHA string) (head string, runner *Runner, task *Task) {
+		t.Helper()
+		store, cleanup := setupTestStore(t)
+		defer cleanup()
+		queued := &Task{
+			ID:                "GH-6233",
+			Title:             "retry after a pre-PR hold",
+			Description:       "continue the held branch",
+			ProjectPath:       localRepo,
+			Branch:            m[1],
+			CreatePR:          true,
+			ContinueBranchSHA: continueSHA,
+		}
+		execID, err := NewExecutionLifecycle(store).Begin(queued, ExecStatusQueued, 0)
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		row, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("GetExecution: %v", err)
+		}
+		task = buildTaskFromExecution(row)
+
+		backend := &headRecordingBackend{}
+		runner = NewRunnerWithBackend(backend)
+		runner.config = &BackendConfig{UseWorktree: boolPtr(true)}
+		runner.SetSkipPreflightChecks(true)
+		runner.SetRecordingEnabled(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		_, _ = runner.Execute(ctx, task)
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		return backend.head, runner, task
+	}
+
+	t.Run("continuation starts at the hold sha, not a borrow", func(t *testing.T) {
+		head, runner, task := run(t, m[2])
+		if task.ContinueBranchSHA != m[2] {
+			t.Fatalf("the task rebuilt from the execution row carries ContinueBranchSHA %q, want %q", task.ContinueBranchSHA, m[2])
+		}
+		if head != holdSHA {
+			t.Errorf("worktree HEAD = %q, want the hold sha %q", head, holdSHA)
+		}
+		if runner.onBorrowedBranch(task) {
+			t.Error("a hold continuation must not read as a borrowed branch: the retry has to be able to hold again")
+		}
+	})
+
+	t.Run("without the continuation the worktree is cut from the default branch", func(t *testing.T) {
+		_ = exec.Command("git", "-C", localRepo, "branch", "-D", "pilot/GH-6233").Run()
+		head, _, _ := run(t, "")
+		if head != mainSHA {
+			t.Errorf("worktree HEAD = %q, want main %q", head, mainSHA)
+		}
+	})
+}
+
+// TestRetryWorktree_ContinuationRecordsNoInheritedHead pins GH-6233: a hold
+// continuation re-picked at generation > 0 must not stamp the held head as an
+// inherited head, since the lease push on it would replace the held work.
+func TestRetryWorktree_ContinuationRecordsNoInheritedHead(t *testing.T) {
+	tests := []struct {
+		name        string
+		continueSHA string
+		want        string
+	}{
+		{"fresh re-pick inherits the stale head", "", "deadbeefcafe"},
+		{"hold continuation records nothing", "b57d141c0ffee0123456789abcdef0123456789a", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			const taskID, projectPath = "GH-6233", "/project-gh-6233"
+			priorID, err := NewExecutionLifecycle(store).Begin(&Task{ID: taskID, ProjectPath: projectPath}, ExecStatusRunning, 0)
+			if err != nil {
+				t.Fatalf("setup: generation 0 Begin failed: %v", err)
+			}
+			// "failed" rather than needs_human: the latter is a terminal completion
+			// the dispatcher refuses to re-admit, and the re-arm that clears it is
+			// not what this test exercises — only the generation > 0 re-pick is.
+			if err := store.UpdateExecutionStatus(priorID, "failed", "earlier run"); err != nil {
+				t.Fatalf("setup: mark failed: %v", err)
+			}
+
+			prev := staleBranchHeadProbe
+			staleBranchHeadProbe = func(context.Context, string, string) string { return "deadbeefcafe" }
+			defer func() { staleBranchHeadProbe = prev }()
+
+			dispatcher := NewDispatcher(store, NewRunner(), nil)
+			if err := dispatcher.Start(context.Background()); err != nil {
+				t.Fatalf("failed to start dispatcher: %v", err)
+			}
+			defer dispatcher.Stop()
+
+			task := &Task{ID: taskID, ProjectPath: projectPath, Branch: "pilot/" + taskID, ContinueBranchSHA: tt.continueSHA}
+			execID, err := dispatcher.queueSingleTask(context.Background(), task)
+			if err != nil || execID == "" {
+				t.Fatalf("queueSingleTask = %q, %v, want a queued execution", execID, err)
+			}
+			exec, err := store.GetExecution(execID)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if exec.InheritedHead != tt.want {
+				t.Errorf("InheritedHead = %q, want %q", exec.InheritedHead, tt.want)
+			}
+			// What the worker runs is the rebuild, so neither field may be lost to it.
+			rebuilt := buildTaskFromExecution(exec)
+			if rebuilt.ContinueBranchSHA != tt.continueSHA || rebuilt.inheritedHeadSHA != tt.want {
+				t.Errorf("rebuilt task (ContinueBranchSHA %q, inheritedHeadSHA %q), want (%q, %q)",
+					rebuilt.ContinueBranchSHA, rebuilt.inheritedHeadSHA, tt.continueSHA, tt.want)
+			}
+		})
 	}
 }

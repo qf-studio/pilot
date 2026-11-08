@@ -22,6 +22,13 @@ import (
 // it. The fix status goes into the issue comment.
 const prePRHoldReasonText = "pre-PR review: blocking defects not fixed"
 
+// PrePRHoldMetaMarker names the machine-readable footer of a pre-PR hold
+// comment: `<!-- pilot-hold-meta branch:<branch> sha:<sha> source:<issue> -->`.
+// The dispatcher reads it on the re-arm so the retry continues the held branch
+// (GH-6233). It is not rearmCommentMarker's footer: that parser requires pr > 0
+// and a hold has no PR.
+const PrePRHoldMetaMarker = "pilot-hold-meta"
+
 // prePRHoldCommentMax keeps the issue comment under GitHub's 65536 character limit.
 const prePRHoldCommentMax = 60000
 
@@ -153,7 +160,27 @@ func renderPrePRHoldComment(task *Task, review *PrePRReviewOutcome, result *Exec
 		fmt.Fprintf(&sb, " (HEAD `%s`)", sha)
 	}
 	sb.WriteString(".\n\nTo re-run: edit the issue or the branch as needed, then remove the `pilot-needs-human` label; Pilot picks the task up again.\n")
-	return cutAtBoundary(sb.String(), prePRHoldCommentMax)
+	footer := prePRHoldMetaFooter(task, result, sha)
+	// The footer is the last line, so it is appended after the cut: truncating
+	// the body must never drop it.
+	return cutAtBoundary(sb.String(), prePRHoldCommentMax-len(footer)-1) + footer
+}
+
+// prePRHoldMetaFooter renders the hold-meta footer line (with its leading
+// newline), or "" when there is no pushed branch for a retry to continue.
+func prePRHoldMetaFooter(task *Task, result *ExecutionResult, sha string) string {
+	issue := task.GHIssueRef()
+	if sha == "" || task.Branch == "" || issue == "" || result.BranchPushed == nil || !*result.BranchPushed {
+		return ""
+	}
+	return PrePRHoldMetaFooter(task.Branch, sha, issue)
+}
+
+// PrePRHoldMetaFooter renders the footer line, with its leading and trailing
+// newline. Exported so the dispatcher's tests can round-trip the producer's
+// format (GH-6233).
+func PrePRHoldMetaFooter(branch, sha, issue string) string {
+	return fmt.Sprintf("\n<!-- %s branch:%s sha:%s source:%s -->\n", PrePRHoldMetaMarker, branch, sha, issue)
 }
 
 // prePRHoldFixNote says in plain words what became of the fix round.

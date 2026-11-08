@@ -3224,10 +3224,12 @@ var staleBranchHeadProbe = func(ctx context.Context, projectPath, branch string)
 // origin's task branch with no PR onto the execution row, so the re-pick's
 // final push may lease on exactly that SHA (GH-5864). It only acts on a re-pick
 // (claimed generation > 0) of a non-continuation task, and runs before the
-// worktree exists. Best-effort: any failure leaves the row untouched and the
+// worktree exists. A pre-PR hold continuation (ContinueBranchSHA, GH-6233) is
+// skipped too: the held head is the work the retry builds on, and a lease push
+// must never replace it. Best-effort: any failure leaves the row untouched and the
 // push escalates as before.
 func (d *Dispatcher) recordInheritedHead(ctx context.Context, task *Task, execID string) {
-	if task.Branch == "" || task.FromPR > 0 || task.FixFromSHA != "" {
+	if task.Branch == "" || task.FromPR > 0 || task.FixFromSHA != "" || task.ContinueBranchSHA != "" {
 		return
 	}
 	if gen, err := d.ExecutionGeneration(task.ID, task.ProjectPath); err != nil || gen == 0 {
@@ -4774,8 +4776,9 @@ func buildTaskFromExecution(exec *memory.Execution) *Task {
 		Labels:        exec.TaskLabels,
 		IsCanary:      exec.IsCanary,
 
-		inheritedHeadSHA: exec.InheritedHead,
-		billingMode:      exec.BillingMode, // GH-6016
+		inheritedHeadSHA:  exec.InheritedHead,
+		ContinueBranchSHA: exec.ContinueBranchSHA, // GH-6233
+		billingMode:       exec.BillingMode,       // GH-6016
 
 		AcceptanceCriteria: acceptance.Extract(exec.TaskDescription),
 	}
