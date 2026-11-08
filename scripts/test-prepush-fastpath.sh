@@ -4,7 +4,7 @@
 # Exercises the docs-only fast-path classifier against a disposable fixture
 # git repo — never touches the real repo's history or hooks. Covers:
 # docs-only, code-only, mixed (docs+code across two pushed refs), null-OID
-# remote (new branch), and ref-deletion pushes, plus the "no stdin" edge case.
+# remote (new branch: docs-only, code, and no origin/main), and ref-deletion pushes, plus the "no stdin" edge case.
 #
 # Usage: ./scripts/test-prepush-fastpath.sh
 
@@ -60,6 +60,8 @@ setup_fixture() {
         git commit -qm "initial"
         BASE_SHA="$(git rev-parse HEAD)"
         echo "$BASE_SHA" > .base_sha
+        # new-branch pushes are diffed against the merge base with origin/main
+        git update-ref refs/remotes/origin/main "$BASE_SHA"
 
         echo "more docs" >> README.md
         git add README.md
@@ -111,9 +113,21 @@ assert_classification "union across refs stays docs-only when neither ref has co
     "refs/heads/docs-branch-a $DOCS_SHA refs/heads/docs-branch-a $BASE_SHA" \
     "refs/heads/docs-branch-b $DOCS_SHA refs/heads/docs-branch-b $BASE_SHA"
 
-echo "=== test: null-OID remote (new branch push) -> full ==="
-assert_classification "new branch (null remote OID) classifies as full" "full" "$FIXTURE" \
+echo "=== test: new branch, docs-only commits -> docs-only ==="
+assert_classification "new branch with docs-only commits classifies as docs-only" "docs-only" "$FIXTURE" \
     "refs/heads/new-branch $DOCS_SHA refs/heads/new-branch $NULL_SHA"
+
+echo "=== test: new branch with a .go change -> full ==="
+assert_classification "new branch with a .go change classifies as full" "full" "$FIXTURE" \
+    "refs/heads/new-branch $CODE_SHA refs/heads/new-branch $NULL_SHA"
+
+echo "=== test: new branch, no refs/remotes/origin/main -> full ==="
+NO_ORIGIN="$(mktemp -d)"
+cp -R "$FIXTURE/." "$NO_ORIGIN"
+(cd "$NO_ORIGIN" && git update-ref -d refs/remotes/origin/main)
+assert_classification "new branch without origin/main classifies as full" "full" "$NO_ORIGIN" \
+    "refs/heads/new-branch $DOCS_SHA refs/heads/new-branch $NULL_SHA"
+rm -rf "$NO_ORIGIN"
 
 echo "=== test: ref deletion (null-OID local) -> full ==="
 assert_classification "ref deletion (null local OID) classifies as full" "full" "$FIXTURE" \

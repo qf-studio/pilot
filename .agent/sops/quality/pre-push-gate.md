@@ -38,7 +38,7 @@ exactly one word to stdout — `docs-only` or `full` — and always exits 0
 (classification never fails; ambiguity biases toward `full`).
 
 **Forced to `full` on any of:**
-- Null-OID remote (`remote_sha` is all zeros) — new branch, nothing to diff against.
+- Null-OID remote (`remote_sha` is all zeros) — new branch: diffed as `git merge-base <local_sha> refs/remotes/origin/main`..`<local_sha>` and judged by the rules below; forced to `full` only when `refs/remotes/origin/main` is missing or has no merge base.
 - Null-OID local (`local_sha` is all zeros) — ref deletion.
 - `git diff` errors or returns an empty path list.
 - No ref-update lines read from stdin at all.
@@ -85,7 +85,7 @@ change) will keep running the full gate unconditionally until reinstalled.
 `scripts/test-prepush-fastpath.sh` builds a disposable fixture git repo and
 exercises the classifier via fake stdin: docs-only, code-only (`.go` and
 `go.sum` diffs), mixed pushes across two refs (one docs, one code), null-OID
-remote (new branch), ref deletion, and empty stdin. Run directly:
+remote (new branch: docs-only, `.go` change, no `origin/main`), ref deletion, and empty stdin. Run directly:
 
 ```bash
 ./scripts/test-prepush-fastpath.sh
