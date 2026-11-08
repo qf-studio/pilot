@@ -338,6 +338,10 @@ type PostMergeReviewConfig struct {
 	// MinorIssueDailyCap is the maximum number of minors issues per project
 	// per UTC day. Zero uses 1; negative is rejected by validation.
 	MinorIssueDailyCap int `yaml:"minor_issue_daily_cap"`
+	// SampleRate reviews one merged PR in N, by PR number modulo N (GH-6232).
+	// 0 or 1 reviews every PR; negative is rejected by validation. A PR whose
+	// pre-PR review did not clear it is always reviewed.
+	SampleRate int `yaml:"sample_rate"`
 }
 
 // PostMergeReviewEnabled reports whether the post-merge reviewer is on.
@@ -351,6 +355,14 @@ func (p *PostMergeReviewConfig) EffectiveDailyCap() int {
 		return DefaultPostMergeReviewDailyCap
 	}
 	return p.DailyCap
+}
+
+// EffectiveSampleRate returns SampleRate, or 1 (review every PR) when unset.
+func (p *PostMergeReviewConfig) EffectiveSampleRate() int {
+	if p == nil || p.SampleRate <= 1 {
+		return 1
+	}
+	return p.SampleRate
 }
 
 // DefaultPostMergeMinorIssueDailyCap is the minors-issue budget per project per

@@ -649,6 +649,12 @@ orchestrator:
       file_minors: false
       # One minors issue per project per UTC day. 0 = 1.
       minor_issue_daily_cap: 1
+      # GH-6232: review one merged PR in N (PR number modulo N; restart-safe).
+      # 0 or 1 = every PR. A PR whose pre-PR review was not an enforce-mode
+      # approve (section missing, mode not enforce, verdict not an approve, fix
+      # outcome not clean, or PR body unfetchable) is always reviewed. Skipped
+      # PRs use no daily_cap budget and count as verdict "sampled_out".
+      sample_rate: 0
 
     # Cross-PR platform-outage breaker (GH-4791, TASK-458 part 1). The
     # per-PR circuit breaker above is deliberately scoped to one PR at a

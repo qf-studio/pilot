@@ -96,3 +96,33 @@ func TestConfig_PostMergeReviewMinorFields(t *testing.T) {
 		t.Errorf("post_merge_review = %+v", cfg.PostMergeReview)
 	}
 }
+
+// GH-6232: sample_rate is validated beside daily_cap; 0 and 1 review every PR.
+func TestConfig_PostMergeReviewSampleRate(t *testing.T) {
+	validate := func(pmr *autopilot.PostMergeReviewConfig) error {
+		cfg := baseValidConfig()
+		cfg.Orchestrator = &OrchestratorConfig{MaxConcurrent: 1, Autopilot: &autopilot.Config{PostMergeReview: pmr}}
+		return cfg.Validate()
+	}
+	if err := validate(&autopilot.PostMergeReviewConfig{SampleRate: -1}); err == nil ||
+		!strings.Contains(err.Error(), "post_merge_review.sample_rate must be >= 0") {
+		t.Fatalf("negative sample_rate: error = %v, want a validation error", err)
+	}
+	for _, rate := range []int{0, 1, 5} {
+		if err := validate(&autopilot.PostMergeReviewConfig{SampleRate: rate}); err != nil {
+			t.Fatalf("sample_rate %d rejected: %v", rate, err)
+		}
+	}
+	for rate, want := range map[int]int{0: 1, 1: 1, 5: 5} {
+		if got := (&autopilot.PostMergeReviewConfig{SampleRate: rate}).EffectiveSampleRate(); got != want {
+			t.Errorf("EffectiveSampleRate(%d) = %d, want %d", rate, got, want)
+		}
+	}
+	var cfg autopilot.Config
+	if err := yaml.Unmarshal([]byte("post_merge_review:\n  sample_rate: 5\n"), &cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cfg.PostMergeReview.SampleRate != 5 {
+		t.Errorf("sample_rate = %d, want 5", cfg.PostMergeReview.SampleRate)
+	}
+}

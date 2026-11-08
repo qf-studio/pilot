@@ -1499,6 +1499,9 @@ func (c *Config) Validate() error {
 				if pmr.MinorIssueDailyCap < 0 {
 					return fmt.Errorf("orchestrator.autopilot.post_merge_review.minor_issue_daily_cap must be >= 0 (0 uses the default of %d), got %d", autopilot.DefaultPostMergeMinorIssueDailyCap, pmr.MinorIssueDailyCap)
 				}
+				if pmr.SampleRate < 0 {
+					return fmt.Errorf("orchestrator.autopilot.post_merge_review.sample_rate must be >= 0 (0 or 1 reviews every PR), got %d", pmr.SampleRate)
+				}
 				if pmr.Passes < 0 || pmr.Passes > 2 {
 					return fmt.Errorf("orchestrator.autopilot.post_merge_review.passes must be 1 or 2 (0 uses the default of 1), got %d", pmr.Passes)
 				}

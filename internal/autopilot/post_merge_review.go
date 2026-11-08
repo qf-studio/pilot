@@ -53,6 +53,9 @@ const (
 	// Verdict label for reviews that never produced a verdict because the
 	// subprocess or an input fetch failed.
 	postMergeReviewError = "error"
+	// Verdict label for merged PRs skipped by post_merge_review.sample_rate
+	// (GH-6232); no review ran.
+	postMergeReviewSampledOut = "sampled_out"
 	// These bounds keep a runaway model answer from producing a megabyte
 	// comment or issue body.
 	maxPostMergeDefects    = 30
@@ -213,6 +216,15 @@ func (c *Controller) maybeStartPostMergeReview(ctx context.Context, prState *PRS
 		return
 	}
 
+	// GH-6232: sample before the budget is acquired, so a PR that is sampled
+	// out never consumes a review.
+	if review, reason := c.postMergeSampleDecision(ctx, prState.PRNumber); !review {
+		c.metrics.RecordPostMergeReview(postMergeReviewSampledOut)
+		c.log.Info("post-merge review sampled out",
+			"pr", prState.PRNumber, "sample_rate", c.config.PostMergeReview.EffectiveSampleRate(), "reason", reason)
+		return
+	}
+
 	budget := c.postMergeBudget()
 	ok, firstDenial, day, used := budget.acquire()
 	if !ok {
@@ -247,6 +259,58 @@ func (c *Controller) maybeStartPostMergeReview(ctx context.Context, prState *PRS
 		}()
 		c.runPostMergeReview(reviewCtx, reviewer, in)
 	}()
+}
+
+// postMergeSampleDecision decides whether a merged PR gets a post-merge review
+// under post_merge_review.sample_rate (GH-6232). It returns true when the PR is
+// forced — its pre-PR review did not clear it — or when its number is a
+// multiple of the rate; otherwise false with the sampled-out reason. A rate of
+// 1 reviews every PR without fetching the body.
+//
+// Decision: sampling is by PR number modulo N, not a counter, so a daemon
+// restart neither skews the sample nor re-rolls a PR. A forced PR does not
+// count against the sample: the audit measures the pre-PR reviewer on the PRs
+// it approved.
+func (c *Controller) postMergeSampleDecision(ctx context.Context, prNumber int) (review bool, reason string) {
+	rate := c.config.PostMergeReview.EffectiveSampleRate()
+	if rate <= 1 {
+		return true, ""
+	}
+	if forced := c.postMergeForcedReason(ctx, prNumber); forced != "" {
+		c.log.Debug("post-merge review forced", "pr", prNumber, "reason", forced)
+		return true, forced
+	}
+	if prNumber%rate == 0 {
+		return true, ""
+	}
+	return false, "not_in_sample"
+}
+
+// postMergeForcedReason returns why a PR must be reviewed whatever the sample
+// rate says, or "" when its pre-PR review cleared it: an enforce-mode approve
+// with no fix round or a fixed one. Every other shape forces — the section is
+// missing, the mode is not enforce, the verdict is not an approve, the fix
+// outcome is not clean, or the PR body could not be fetched.
+func (c *Controller) postMergeForcedReason(ctx context.Context, prNumber int) string {
+	fetchCtx, cancel := context.WithTimeout(ctx, postMergeReviewGatherTimeout)
+	defer cancel()
+	pr, err := c.ghClient.GetPullRequest(fetchCtx, c.owner, c.repo, prNumber)
+	if err != nil || pr == nil {
+		return "pr_body_unavailable"
+	}
+	mode, verdict, fix, ok := executor.ParsePrePRReviewSection(pr.Body)
+	switch {
+	case !ok:
+		return "no_pre_pr_section"
+	case mode != executor.PrePRReviewModeEnforce:
+		return "pre_pr_mode_" + mode
+	case verdict != executor.PostMergeApprove && verdict != executor.PostMergeApproveWithNotes:
+		return "pre_pr_verdict_" + string(verdict)
+	}
+	if f := strings.Fields(strings.ToLower(fix)); fix != executor.PrePRFixNone && (len(f) == 0 || f[0] != "fixed") {
+		return "pre_pr_fix_not_clean"
+	}
+	return ""
 }
 
 // postMergeBudget returns the controller's review budget: the one installed by
