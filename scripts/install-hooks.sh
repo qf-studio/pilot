@@ -8,7 +8,9 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-HOOKS_DIR="$PROJECT_ROOT/.git/hooks"
+# Worktrees share one hooks dir under the common git dir; `.git` is a file there.
+GIT_COMMON_DIR="$(cd "$PROJECT_ROOT" && cd "$(git rev-parse --git-common-dir)" && pwd)"
+HOOKS_DIR="$GIT_COMMON_DIR/hooks"
 
 echo "Installing git hooks..."
 
@@ -90,8 +92,13 @@ echo "✓ No realistic secret patterns found"
 STAGED_KNOWLEDGE=$(git diff --cached --name-only --diff-filter=ACMR | grep '^\.agent/knowledge/' || true)
 
 if [ -n "$STAGED_KNOWLEDGE" ]; then
+    # Validate the worktree that commits, not the main checkout that owns the
+    # shared hooks dir. Git runs hooks from the working tree top-level.
     HOOK_DIR="$(dirname "$0")"
-    PROJECT_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
+    PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+    if [ -z "$PROJECT_ROOT" ]; then
+        PROJECT_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
+    fi
 
     echo ""
     echo "Checking knowledge-graph drift (staged .agent/knowledge/ changes)..."
@@ -138,9 +145,13 @@ cat > "$HOOKS_DIR/pre-push" << 'EOF'
 
 set -e
 
-# Find the project root (where .git is)
+# Find the project root: the worktree that pushes (git runs hooks from the
+# working tree top-level), not the main checkout that owns the shared hooks dir.
 HOOK_DIR="$(dirname "$0")"
-PROJECT_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
+PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$PROJECT_ROOT" ]; then
+    PROJECT_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
+fi
 GATE_SCRIPT="$PROJECT_ROOT/scripts/pre-push-gate.sh"
 CLASSIFY_SCRIPT="$PROJECT_ROOT/scripts/pre-push-classify.sh"
 
