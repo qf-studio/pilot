@@ -1,6 +1,6 @@
 # TASK-647: Research page `subagent` + `context` chat events — the daemon reports sub-agent start/done with durations and the turn's Navigator read counts (pilot#5810, roadmap P17 / U9)
 
-**Status**: 🚀 **A1 DISPATCHED 2026-11-08 → [pilot#6210](https://github.com/qf-studio/pilot/issues/6210) (`pilot` + `no-decompose`); B1 held until A1 merges (`Depends on: #{{A1}}`, same repo, file with `--only B1`).** Founder picked this as the console session's next build leg (11-08). The doc answers the three "decision needed" questions of [pilot#5810](https://github.com/qf-studio/pilot/issues/5810) (comment posted 11-08).
+**Status**: 🚀 **A1 MERGED 2026-11-08 15:07Z → [PR#6212](https://github.com/qf-studio/pilot/pull/6212) (second run after a 14:02Z pre-PR hold: fan-out recorded a stream line N times; body amended, branch parked `pilot-hold/GH-6210-b16ff1c`, retry 12m24s to merge). B1 DISPATCHED 15:2xZ → [pilot#6214](https://github.com/qf-studio/pilot/issues/6214) (`pilot` + `no-decompose`).** Next: B1 pre-PR verdict → post-merge reviews of PR#6212 and B1's PR → next daemon tag on the tenant → live check on the console Research page.
 **Created**: 2026-11-08
 **Assignee**: Navigator (plan, reviews, live check) → Pilot (legs)
 **Parent**: console program wave 1, roadmap row P17 (daemon side) → unblocks U9 (`ui#244 → PR#246`, live). The console task docs and the roadmap live in the private `qf-studio/pilot-console` repo under `.agent/` since 2026-11-08 (TASK-646); this doc stays here because the change is daemon code.
@@ -88,9 +88,9 @@ After A1 (#{{A1}}) `executor.ChatTurn` has `OnSubagent func(SubagentEvent)` and 
 
 probe: present qf-studio/pilot type DraftsSender interface
 probe: present qf-studio/pilot EventDrafts[[:space:]]+EventType
-probe: absent qf-studio/pilot EventSubagent[[:space:]]+EventType
-probe: absent qf-studio/pilot SubagentSender[[:space:]]+interface
-probe: absent qf-studio/pilot SendContext\(ctx
+probe: absent qf-studio/pilot ^\tEventSubagent[[:space:]]
+probe: absent qf-studio/pilot ^type SubagentSender interface
+probe: absent qf-studio/pilot ^func \(m \*WebMessenger\) SendContext\(
 
 ## Scope
 - `internal/comms/types.go`: `SubagentUpdate struct { TaskID, Text, Phase string; DurationMs int64 }`, `ContextCounts struct { DocsRead, MemoriesRead, MemoriesCreated int }`; optional interfaces `SubagentSender { SendSubagent(ctx, contextID, threadID string, u SubagentUpdate) error }` and `ContextSender { SendContext(ctx, contextID, threadID string, c ContextCounts) error }`, documented like `DraftsSender`.
@@ -143,7 +143,7 @@ Live (after the next daemon tag reaches the tenant, `~/bin/pilot-board` for the 
 
 ## Done
 
-- [ ] A1 merged · post-merge review read
+- [x] A1 merged (PR#6212, 15:07Z) · [ ] post-merge review read
 - [ ] B1 merged · post-merge review read
 - [ ] Daemon tag on the tenant; live check recorded here
 - [ ] Roadmap row P17 → ✅ and TASK-583 status line (both in the private `pilot-console/.agent`); pilot#5810 closed with a pointer to the legs
@@ -156,6 +156,7 @@ Live (after the next daemon tag reaches the tenant, `~/bin/pilot-board` for the 
 - `.agent/system/side-chat-navigator.md` (wire) · marker `2026-11-08_am-console-loose-ends-inventory-ticket-page-landed-5810-next.md`
 - Dispatched legs:
 - A1 → https://github.com/qf-studio/pilot/issues/6210
+- B1 → https://github.com/qf-studio/pilot/issues/6214
 
 ---
 
