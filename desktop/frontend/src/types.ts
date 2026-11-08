@@ -74,6 +74,11 @@ export interface GitGraphLine {
   sha?: string
 }
 
+export interface GitGraphProject {
+  name: string
+  default: boolean
+}
+
 export interface GitGraphData {
   lines: GitGraphLine[]
   total_count: number
