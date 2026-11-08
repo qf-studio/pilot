@@ -406,6 +406,15 @@ func issueURL(taskID string) string {
 // GetGitGraph returns the git commit graph for the configured project.
 // limit controls how many commits to fetch; defaults to 100 when 0 is passed.
 func (a *App) GetGitGraph(limit int) GitGraphData {
+	return a.GetGitGraphForProject("", limit)
+}
+
+// GetGitGraphForProject returns the git commit graph for a configured project
+// looked up by name (case-insensitive). An empty project keeps the
+// GetGitGraph behaviour (first configured project); an unknown name is
+// reported in GitGraphData.Error. The name is only a config lookup key and
+// never becomes a path.
+func (a *App) GetGitGraphForProject(project string, limit int) GitGraphData {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -413,7 +422,16 @@ func (a *App) GetGitGraph(limit int) GitGraphData {
 	// Resolve project path from config (same pattern as startup()).
 	projectPath := "."
 	cfg, err := config.Load(config.DefaultConfigPath())
-	if err == nil && len(cfg.Projects) > 0 {
+	if project != "" {
+		if err != nil {
+			return GitGraphData{Error: "unknown project: " + project}
+		}
+		info := config.NewProjectSource(cfg).GetProjectByName(project)
+		if info == nil {
+			return GitGraphData{Error: "unknown project: " + project}
+		}
+		projectPath = info.Path
+	} else if err == nil && len(cfg.Projects) > 0 {
 		projectPath = cfg.Projects[0].Path
 	}
 
@@ -439,6 +457,24 @@ func (a *App) GetGitGraph(limit int) GitGraphData {
 		Error:       state.Error,
 		LastRefresh: state.LastRefresh,
 	}
+}
+
+// ListGitGraphProjects returns the configured projects selectable for the git
+// graph, in config order. The first entry is the default, matching the
+// Projects[0] choice of GetGitGraph.
+func (a *App) ListGitGraphProjects() []GitGraphProject {
+	out := []GitGraphProject{}
+	cfg, err := config.Load(config.DefaultConfigPath())
+	if err != nil {
+		return out
+	}
+	for _, p := range config.NewProjectSource(cfg).ListProjects() {
+		if p == nil || p.Name == "" {
+			continue
+		}
+		out = append(out, GitGraphProject{Name: p.Name, Default: len(out) == 0})
+	}
+	return out
 }
 
 // queueStatusPriority returns a numeric priority for queue task statuses.

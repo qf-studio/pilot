@@ -6,9 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -608,6 +613,24 @@ type mockGitGraphResult struct {
 	TotalCount int           `json:"total_count"`
 }
 
+// fakeGitGraphProjects is a static comms.ProjectSource for gitgraph tests.
+// GetProjectByName is case-insensitive like the config-backed adapter.
+type fakeGitGraphProjects struct {
+	projects []*comms.ProjectInfo
+}
+
+func (f *fakeGitGraphProjects) GetProjectByName(name string) *comms.ProjectInfo {
+	for _, p := range f.projects {
+		if strings.EqualFold(p.Name, name) {
+			return p
+		}
+	}
+	return nil
+}
+func (f *fakeGitGraphProjects) GetProjectByPath(string) *comms.ProjectInfo { return nil }
+func (f *fakeGitGraphProjects) GetDefaultProject() *comms.ProjectInfo      { return nil }
+func (f *fakeGitGraphProjects) ListProjects() []*comms.ProjectInfo         { return f.projects }
+
 func TestHandleGitGraph(t *testing.T) {
 	// Fake fetcher that records calls and returns a stub result.
 	var capturedPath string
@@ -618,12 +641,25 @@ func TestHandleGitGraph(t *testing.T) {
 		return &mockGitGraphResult{Lines: []interface{}{}, TotalCount: 0}
 	})
 
+	var fetcherCalls int
+	countingFetcher := GitGraphFetcher(func(path string, limit int) interface{} {
+		fetcherCalls++
+		capturedPath = path
+		capturedLimit = limit
+		return &mockGitGraphResult{Lines: []interface{}{}, TotalCount: 0}
+	})
+	registry := &fakeGitGraphProjects{projects: []*comms.ProjectInfo{
+		{Name: "known", Path: "/configured/known"},
+		{Name: "other", Path: "/configured/other"},
+	}}
+
 	tests := []struct {
 		name           string
 		method         string
 		url            string
 		fetcher        GitGraphFetcher
 		projectPath    string
+		projects       comms.ProjectSource
 		expectedStatus int
 		checkBody      func(t *testing.T, body []byte)
 		checkCaptures  func(t *testing.T)
@@ -705,12 +741,108 @@ func TestHandleGitGraph(t *testing.T) {
 			},
 			expectedStatus: http.StatusOK,
 		},
+		{
+			name:        "project=known resolves the configured path",
+			method:      http.MethodGet,
+			url:         "/api/v1/gitgraph?project=known&limit=7",
+			fetcher:     countingFetcher,
+			projectPath: "/some/repo",
+			projects:    registry,
+			checkCaptures: func(t *testing.T) {
+				if fetcherCalls != 1 || capturedPath != "/configured/known" {
+					t.Errorf("fetcher calls=%d path=%q, want 1 call with /configured/known", fetcherCalls, capturedPath)
+				}
+				if capturedLimit != 7 {
+					t.Errorf("limit = %d, want 7", capturedLimit)
+				}
+			},
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:        "project=KNOWN is case-insensitive",
+			method:      http.MethodGet,
+			url:         "/api/v1/gitgraph?project=KNOWN",
+			fetcher:     countingFetcher,
+			projectPath: "/some/repo",
+			projects:    registry,
+			checkCaptures: func(t *testing.T) {
+				if capturedPath != "/configured/known" {
+					t.Errorf("path = %q, want /configured/known", capturedPath)
+				}
+			},
+			expectedStatus: http.StatusOK,
+		},
+		// mutation pin: an unknown ?project= never reaches the fetcher -> this test fails
+		{
+			name:     "project=unknown returns 404 and skips the fetcher",
+			method:   http.MethodGet,
+			url:      "/api/v1/gitgraph?project=unknown",
+			fetcher:  countingFetcher,
+			projects: registry,
+			checkBody: func(t *testing.T, body []byte) {
+				var resp map[string]string
+				if err := json.Unmarshal(body, &resp); err != nil {
+					t.Fatalf("404 body is not JSON: %v (%s)", err, body)
+				}
+				if resp["error"] != "unknown project: unknown" {
+					t.Errorf("error = %q", resp["error"])
+				}
+			},
+			checkCaptures: func(t *testing.T) {
+				if fetcherCalls != 0 {
+					t.Errorf("fetcher called %d times for an unknown project", fetcherCalls)
+				}
+			},
+			expectedStatus: http.StatusNotFound,
+		},
+		// mutation pin: an unknown ?project= never reaches the fetcher -> this test fails
+		{
+			name:        "project=/tmp is a name, never a path: 404 and skips the fetcher",
+			method:      http.MethodGet,
+			url:         "/api/v1/gitgraph?project=%2Ftmp",
+			fetcher:     countingFetcher,
+			projectPath: "/some/repo",
+			projects:    registry,
+			checkCaptures: func(t *testing.T) {
+				if fetcherCalls != 0 {
+					t.Errorf("fetcher called %d times for a path-shaped project (path %q)", fetcherCalls, capturedPath)
+				}
+			},
+			expectedStatus: http.StatusNotFound,
+		},
+		{
+			name:        "empty project with nil source keeps today's path",
+			method:      http.MethodGet,
+			url:         "/api/v1/gitgraph?project=",
+			fetcher:     countingFetcher,
+			projectPath: "/some/repo",
+			checkCaptures: func(t *testing.T) {
+				if fetcherCalls != 1 || capturedPath != "/some/repo" {
+					t.Errorf("fetcher calls=%d path=%q, want 1 call with /some/repo", fetcherCalls, capturedPath)
+				}
+			},
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:        "project=x with nil source returns 404",
+			method:      http.MethodGet,
+			url:         "/api/v1/gitgraph?project=x",
+			fetcher:     countingFetcher,
+			projectPath: "/some/repo",
+			checkCaptures: func(t *testing.T) {
+				if fetcherCalls != 0 {
+					t.Errorf("fetcher called %d times with no project source", fetcherCalls)
+				}
+			},
+			expectedStatus: http.StatusNotFound,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			capturedPath = ""
 			capturedLimit = 0
+			fetcherCalls = 0
 
 			s := NewServer(&Config{Host: "127.0.0.1", Port: 9090})
 			if tt.fetcher != nil {
@@ -718,6 +850,9 @@ func TestHandleGitGraph(t *testing.T) {
 			}
 			if tt.projectPath != "" {
 				s.SetGitGraphPath(tt.projectPath)
+			}
+			if tt.projects != nil {
+				s.SetGitGraphProjects(tt.projects)
 			}
 			req := httptest.NewRequest(tt.method, tt.url, nil)
 			w := httptest.NewRecorder()
@@ -732,6 +867,74 @@ func TestHandleGitGraph(t *testing.T) {
 			}
 			if tt.checkCaptures != nil {
 				tt.checkCaptures(t)
+			}
+		})
+	}
+}
+
+func TestHandleGitGraphProjects(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first")
+	second := filepath.Join(dir, "second")
+	for _, d := range []string{first, second} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src := &fakeGitGraphProjects{projects: []*comms.ProjectInfo{
+		{Name: "first", Path: first},
+		{Name: "", Path: filepath.Join(dir, "unnamed")},
+		{Name: "second", Path: second},
+	}}
+
+	tests := []struct {
+		name       string
+		method     string
+		source     comms.ProjectSource
+		graphPath  string
+		wantStatus int
+		want       []gitGraphProjectEntry
+	}{
+		{"order and default flag", http.MethodGet, src, second, http.StatusOK,
+			[]gitGraphProjectEntry{{Name: "first"}, {Name: "second", Default: true}}},
+		{"default matches via non-canonical path", http.MethodGet, src, second + "/../second/", http.StatusOK,
+			[]gitGraphProjectEntry{{Name: "first"}, {Name: "second", Default: true}}},
+		{"no default when path matches nothing", http.MethodGet, src, filepath.Join(dir, "elsewhere"), http.StatusOK,
+			[]gitGraphProjectEntry{{Name: "first"}, {Name: "second"}}},
+		{"nil source returns empty list", http.MethodGet, nil, second, http.StatusOK, []gitGraphProjectEntry{}},
+		{"POST is 405", http.MethodPost, src, second, http.StatusMethodNotAllowed, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewServer(&Config{Host: "127.0.0.1", Port: 9090})
+			s.SetGitGraphPath(tt.graphPath)
+			if tt.source != nil {
+				s.SetGitGraphProjects(tt.source)
+			}
+			w := httptest.NewRecorder()
+			s.handleGitGraphProjects(w, httptest.NewRequest(tt.method, "/api/v1/gitgraph/projects", nil))
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+			if tt.wantStatus != http.StatusOK {
+				return
+			}
+			if strings.Contains(w.Body.String(), dir) {
+				t.Errorf("response leaks a path: %s", w.Body.String())
+			}
+			var resp struct {
+				Projects []gitGraphProjectEntry `json:"projects"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Projects == nil {
+				t.Fatal(`"projects" must be an array, not null`)
+			}
+			if !reflect.DeepEqual(resp.Projects, tt.want) {
+				t.Errorf("projects = %+v, want %+v", resp.Projects, tt.want)
 			}
 		})
 	}

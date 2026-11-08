@@ -42,3 +42,24 @@ func TestDocsProjectPathWiredAtBothDaemonConstructionSites(t *testing.T) {
 		t.Error("polling mode must call gwServer.SetDocsProjectPath(projectPath)")
 	}
 }
+
+// TestGitGraphProjectsWiredAtBothDaemonConstructionSites pins the GH-6219
+// contract: SetGitGraphProjects sits next to each SetGitGraphPath call, or
+// /api/v1/gitgraph?project=<name> answers 404 in the mode that lacks it.
+func TestGitGraphProjectsWiredAtBothDaemonConstructionSites(t *testing.T) {
+	content, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	src := string(content)
+
+	if n := strings.Count(src, "SetGitGraphProjects("); n != 2 {
+		t.Errorf("SetGitGraphProjects( occurs %d times in main.go, want 2 (gateway mode + polling mode)", n)
+	}
+	if !strings.Contains(src, "p.Gateway().SetGitGraphProjects(") {
+		t.Error("gateway mode must call p.Gateway().SetGitGraphProjects(config.NewProjectSource(cfg))")
+	}
+	if !strings.Contains(src, "gwServer.SetGitGraphProjects(") {
+		t.Error("polling mode must call gwServer.SetGitGraphProjects(config.NewProjectSource(cfg))")
+	}
+}

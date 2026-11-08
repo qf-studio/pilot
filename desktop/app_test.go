@@ -315,3 +315,71 @@ func TestGetServerStatus_HealthOK_StatusUnauthorized(t *testing.T) {
 		t.Fatalf("expected empty version when status is unauthorized, got %q", status.Version)
 	}
 }
+
+// TestGetGitGraphForProject_SecondProject verifies a named project resolves
+// to its own repo, an unknown name is reported in Error (never treated as a
+// path), and ListGitGraphProjects returns config order with the first as default.
+func TestGetGitGraphForProject_SecondProject(t *testing.T) {
+	first := newGitGraphFixtureRepo(t)
+	second := newGitGraphFixtureRepo(t)
+	configureFixtureProject(t, first)
+
+	// Make the second repo distinguishable by one extra commit.
+	cmd := exec.Command("git", "-C", second, "-c", "user.name=t", "-c", "user.email=t@example.com",
+		"commit", "--allow-empty", "-q", "-m", "second-only commit")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("git not available in test environment: %v (%s)", err, out)
+	}
+
+	cfgPath := filepath.Join(os.Getenv("HOME"), ".pilot", "config.yaml")
+	yamlContent := fmt.Sprintf("projects:\n  - name: fixture\n    path: %q\n  - name: second\n    path: %q\n  - name: \"\"\n    path: %q\n", first, second, first)
+	if err := os.WriteFile(cfgPath, []byte(yamlContent), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	wantFirst := dashboard.FetchGitGraph(first, 100)
+	wantSecond := dashboard.FetchGitGraph(second, 100)
+	if wantFirst == nil || wantSecond == nil {
+		t.Skip("git not available in test environment")
+	}
+	if wantSecond.TotalCount == wantFirst.TotalCount {
+		t.Fatalf("fixture repos are not distinguishable (both %d commits)", wantFirst.TotalCount)
+	}
+
+	app := &App{}
+	tests := []struct {
+		name      string
+		project   string
+		wantCount int
+		wantError string
+	}{
+		{"empty project is the first project", "", wantFirst.TotalCount, ""},
+		{"named first project", "fixture", wantFirst.TotalCount, ""},
+		{"second project reads the second repo", "second", wantSecond.TotalCount, ""},
+		{"lookup is case-insensitive", "SECOND", wantSecond.TotalCount, ""},
+		{"unknown name sets Error", "nope", 0, "unknown project: nope"},
+		{"path is not a project", second, 0, "unknown project: " + second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := app.GetGitGraphForProject(tt.project, 100)
+			if got.Error != tt.wantError {
+				t.Fatalf("Error = %q, want %q", got.Error, tt.wantError)
+			}
+			if got.TotalCount != tt.wantCount {
+				t.Errorf("TotalCount = %d, want %d", got.TotalCount, tt.wantCount)
+			}
+		})
+	}
+
+	listed := app.ListGitGraphProjects()
+	want := []GitGraphProject{{Name: "fixture", Default: true}, {Name: "second"}}
+	if len(listed) != len(want) {
+		t.Fatalf("ListGitGraphProjects() = %+v, want %+v", listed, want)
+	}
+	for i := range want {
+		if listed[i] != want[i] {
+			t.Errorf("projects[%d] = %+v, want %+v", i, listed[i], want[i])
+		}
+	}
+}

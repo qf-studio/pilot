@@ -99,3 +99,9 @@ type GitGraphData struct {
 	Error       string         `json:"error,omitempty"`
 	LastRefresh time.Time      `json:"last_refresh"`
 }
+
+// GitGraphProject is one configured project selectable in the git graph panel.
+type GitGraphProject struct {
+	Name    string `json:"name"`
+	Default bool   `json:"default"`
+}
