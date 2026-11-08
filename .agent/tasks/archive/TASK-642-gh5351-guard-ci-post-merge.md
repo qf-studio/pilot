@@ -1,6 +1,6 @@
 # TASK-642: GH-5351 delivery-mismatch guard skips post-merge CI fixes and already-merged originals
 
-**Status**: ✅ **RELEASED in v2.314.0 (11-06).** Was: ✅ **A1 MERGED 11-05 21:35Z → [PR#6128](https://github.com/qf-studio/pilot/pull/6128) (12 min; pre-PR APPROVE-WITH-NOTES). Unreleased → 11-06 16:00 Berlin tick.** Was: 🚀 A1 DISPATCHED 2026-11-05 → [pilot#6123](https://github.com/qf-studio/pilot/issues/6123) (`pilot` + `no-decompose`). Nothing held.
+**Status**: 📦 **ARCHIVED 11-08 — PR#6128 released in v2.314.0.** ✅ **RELEASED in v2.314.0 (11-06).** Was: ✅ **A1 MERGED 11-05 21:35Z → [PR#6128](https://github.com/qf-studio/pilot/pull/6128) (12 min; pre-PR APPROVE-WITH-NOTES). Unreleased → 11-06 16:00 Berlin tick.** Was: 🚀 A1 DISPATCHED 2026-11-05 → [pilot#6123](https://github.com/qf-studio/pilot/issues/6123) (`pilot` + `no-decompose`). Nothing held.
 **Created**: 2026-11-05
 **Assignee**: Pilot
 

@@ -2319,9 +2319,9 @@
         ]
       },
       "TASK-485": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-485-hosted-retry-path-failed-executions.md",
+        "path": ".agent/tasks/archive/TASK-485-hosted-retry-path-failed-executions.md",
         "title": "Hosted retry path for failed executions (#5008)",
-        "status": "blocked",
+        "status": "completed",
         "concepts": [
           "database",
           "deployment",
@@ -2453,9 +2453,9 @@
         ]
       },
       "TASK-508": {
-        "path": ".agent/tasks/TASK-508-post-merge-fix-borrowed-branch.md",
+        "path": ".agent/tasks/archive/TASK-508-post-merge-fix-borrowed-branch.md",
         "title": "Post-merge CI fix issues borrow the merged PR branch and short-circuit as delivered",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "workflow",
           "testing",
@@ -2937,13 +2937,14 @@
           "https://github.com/qf-studio/pilot/issues/6037",
           "https://github.com/qf-studio/pilot/issues/6157",
           "https://github.com/qf-studio/pilot/issues/6168",
-          "https://github.com/qf-studio/pilot/issues/6189"
+          "https://github.com/qf-studio/pilot/issues/6189",
+          "https://github.com/qf-studio/pilot/issues/6232"
         ]
       },
       "TASK-630": {
-        "path": ".agent/tasks/TASK-630-monitor-register-epic-subissues-project.md",
+        "path": ".agent/tasks/archive/TASK-630-monitor-register-epic-subissues-project.md",
         "title": "Dashboard shows epic sub-issues as \"(no project)\" with the id as title — register children with the Monitor",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "context",
           "knowledge",
@@ -2951,9 +2952,9 @@
         ]
       },
       "TASK-631": {
-        "path": ".agent/tasks/TASK-631-switchable-claude-billing-mode.md",
+        "path": ".agent/tasks/archive/TASK-631-switchable-claude-billing-mode.md",
         "title": "Switchable Claude billing mode (subscription | api_key) without a restart, with per-execution attribution",
-        "status": "merged",
+        "status": "completed",
         "concepts": [
           "billing",
           "key-source",
@@ -2966,9 +2967,9 @@
         ]
       },
       "TASK-633": {
-        "path": ".agent/tasks/TASK-633-billing-mode-post-merge-fast-follow.md",
+        "path": ".agent/tasks/archive/TASK-633-billing-mode-post-merge-fast-follow.md",
         "title": "Billing mode fast-follow — PR#6017 post-merge review notes verified on main, two fix legs",
-        "status": "merged",
+        "status": "completed",
         "concepts": [
           "authentication",
           "deployment",
@@ -2987,9 +2988,9 @@
         ]
       },
       "TASK-632": {
-        "path": ".agent/tasks/TASK-632-restart-repick-failed-with-open-pr.md",
+        "path": ".agent/tasks/archive/TASK-632-restart-repick-failed-with-open-pr.md",
         "title": "A failed issue with an open PR is re-picked after autopilot's hold redrive strips `pilot-needs-human` — admission must refuse an issue whose pilot branch has an open PR",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "deployment",
           "testing",
@@ -3000,9 +3001,9 @@
         ]
       },
       "TASK-634": {
-        "path": ".agent/tasks/TASK-634-declined-run-repick-and-evidence-fail-false-fix-issue.md",
+        "path": ".agent/tasks/archive/TASK-634-declined-run-repick-and-evidence-fail-false-fix-issue.md",
         "title": "A declined run is re-picked, its reason is lost, and a FAIL in pasted evidence files a fix issue that green CI already refutes",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "autopilot",
           "review",
@@ -3016,9 +3017,9 @@
         ]
       },
       "TASK-635": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-635-autopilot-ci-poll-api-outage-hold-not-terminal-failed.md",
+        "path": ".agent/tasks/archive/TASK-635-autopilot-ci-poll-api-outage-hold-not-terminal-failed.md",
         "title": "An API outage during the CI poll is a hold with a redrive, not a terminal `failed` stage",
-        "status": "merged",
+        "status": "completed",
         "concepts": [
           "deployment",
           "context",
@@ -3028,8 +3029,9 @@
         ]
       },
       "TASK-636": {
+        "path": ".agent/tasks/archive/TASK-636-quality-gate-timeout-fail-closed-process-group.md",
         "title": "TASK-636: Quality gate timeouts — fail closed on the last attempt, kill the whole process group",
-        "status": "merged",
+        "status": "completed",
         "concepts": [
           "quality-gates",
           "executor",
@@ -3037,8 +3039,9 @@
         ]
       },
       "TASK-638": {
+        "path": ".agent/tasks/archive/TASK-638-pre-push-gate-failure-output.md",
         "title": "TASK-638: Pre-push gate prints the failing lines, not the first 20 lines of output",
-        "status": "merged",
+        "status": "completed",
         "concepts": [
           "quality-gates",
           "ci",
@@ -3066,9 +3069,9 @@
         ]
       },
       "TASK-642": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-642-gh5351-guard-ci-post-merge.md",
+        "path": ".agent/tasks/archive/TASK-642-gh5351-guard-ci-post-merge.md",
         "title": "GH-5351 delivery-mismatch guard skips post-merge CI fixes and already-merged originals",
-        "status": "merged",
+        "status": "completed",
         "concepts": [
           "testing",
           "deployment",
@@ -3083,7 +3086,7 @@
       "TASK-643": {
         "path": ".agent/tasks/TASK-643-ci-fix-chain-loses-finished-work.md",
         "title": "Autopilot CI-fix chain loses finished work — sweep deletes the fix branch, pre-flight rejects the fix issue, re-arm restarts from scratch, the upgrade drain pauses admission behind a long task",
-        "status": "active",
+        "status": "dispatched",
         "concepts": [
           "deployment",
           "frontend",
@@ -3098,7 +3101,8 @@
           "https://github.com/qf-studio/pilot/issues/6181",
           "https://github.com/qf-studio/pilot/issues/6182",
           "https://github.com/qf-studio/pilot/issues/6183",
-          "https://github.com/qf-studio/pilot/issues/6187"
+          "https://github.com/qf-studio/pilot/issues/6187",
+          "https://github.com/qf-studio/pilot/issues/6233"
         ]
       },
       "TASK-646": {
@@ -3145,7 +3149,7 @@
       "TASK-649": {
         "path": ".agent/tasks/TASK-649-git-graph-per-project-selection.md",
         "title": "Git graph per-project selection — the gateway and the desktop app serve any configured project's graph, and the GIT GRAPH panel gets a project tab row (pilot#6207)",
-        "status": "dispatched",
+        "status": "merged",
         "concepts": [
           "knowledge",
           "authentication",

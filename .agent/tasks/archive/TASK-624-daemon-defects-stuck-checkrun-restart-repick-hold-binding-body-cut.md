@@ -194,6 +194,6 @@ When the post-merge reviewer returns REQUEST-CHANGES, the feedback loop files a 
 - .agent/.context-markers/2026-10-29_reviewer-opus-calibration-runs-1-3-gates-fast-5946-5947-queued-compact.md (defect list, "Four daemon defects seen 10-28 evening")
 - .agent/tasks/TASK-620-pre-pr-reviewer-replaces-self-review-and-judge.md (enforce read needs 20 two-pass runs — these legs feed the sample)
 - .agent/tasks/TASK-623-reviewer-two-pass-hunk-and-adjacent-union.md
-- .agent/tasks/TASK-508-post-merge-fix-borrowed-branch.md (adjacent unfiled autopilot follow-ups)
+- .agent/tasks/archive/TASK-508-post-merge-fix-borrowed-branch.md (adjacent unfiled autopilot follow-ups)
 
 **Last Updated**: 2026-10-31

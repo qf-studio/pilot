@@ -1,6 +1,6 @@
 # TASK-616: box quality gates from 23 min to under 5 — executor test hygiene, a changed-package test gate, and a box config step
 
-**Status**: ✅ SCOPE LIVE 2026-10-29 15:46Z — first scoped run GH-5956 (executor diff): `package_count=27 full=false reason="affected 27 of 61 packages"`, gates 3m08 (executor diffs cannot beat the full -short suite by much: executor is the wall-bound package; leaf diffs are where the win is — sample one). Remaining: leaf-diff measurement, Go-cache disk watch (step 4). **Lint gap found 10-29 19:10Z:** GH-5961's box lint gate passed but CI `lint` failed (`pre_pr_fix_test.go:34:2: field started is unused`) → PR#5964 closed, a fix run + a founder approval later. Box lint gate = `make lint`, `required: false`, timeout 2m, golangci-lint **2.14.0** on the box vs **v2.8.0** in CI (ci.yml:119). The box cannot predict CI lint. **Operator step 5 DONE 10-29 20:09Z (founder "pin to v2.8.0"):** `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0` as ec2-user → `/home/ec2-user/go/bin/golangci-lint` reports 2.8.0 (backup `golangci-lint-2.14.0.bak` beside it); the daemon PATH lists `~/go/bin` first, no restart needed (the gate execs `make lint` per run). Still open: `required: true` for the lint gate once a few runs show it finishes inside the 2 m timeout; bump both sides together when CI moves. History: 🟡 G1 #5924 + G2 #5926 MERGED (v2.298.0); box on `make test-changed` since 10-29 11:49Z — but every scoped run computed `full`: `listPackages` trims the whole `go list` output before splitting lines, so the last package (tests/pentest/cmd/pentest, no tests, no test imports) loses its empty trailing columns and the parser rejects it. G3 #5952 → PR#5953 merged 10-29 14:47Z (Opus APPROVE-w-notes), in v2.299.0 on the box since 15:08Z; **re-measure the next run's scope line** (must be `full=false package_count>0`). Measured 10-29 (full suite under -short, -trimpath): GH-5946 3m08 · GH-5947 5m17 (failed, retried) → 4m21. Scoped timings still unmeasured.
+**Status**: 📦 **ARCHIVED 11-08 — scope gate live since 10-29; the leaf-diff sample and the Go-cache disk watch stay as operator checks, not filed.** ✅ SCOPE LIVE 2026-10-29 15:46Z — first scoped run GH-5956 (executor diff): `package_count=27 full=false reason="affected 27 of 61 packages"`, gates 3m08 (executor diffs cannot beat the full -short suite by much: executor is the wall-bound package; leaf diffs are where the win is — sample one). Remaining: leaf-diff measurement, Go-cache disk watch (step 4). **Lint gap found 10-29 19:10Z:** GH-5961's box lint gate passed but CI `lint` failed (`pre_pr_fix_test.go:34:2: field started is unused`) → PR#5964 closed, a fix run + a founder approval later. Box lint gate = `make lint`, `required: false`, timeout 2m, golangci-lint **2.14.0** on the box vs **v2.8.0** in CI (ci.yml:119). The box cannot predict CI lint. **Operator step 5 DONE 10-29 20:09Z (founder "pin to v2.8.0"):** `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0` as ec2-user → `/home/ec2-user/go/bin/golangci-lint` reports 2.8.0 (backup `golangci-lint-2.14.0.bak` beside it); the daemon PATH lists `~/go/bin` first, no restart needed (the gate execs `make lint` per run). Still open: `required: true` for the lint gate once a few runs show it finishes inside the 2 m timeout; bump both sides together when CI moves. History: 🟡 G1 #5924 + G2 #5926 MERGED (v2.298.0); box on `make test-changed` since 10-29 11:49Z — but every scoped run computed `full`: `listPackages` trims the whole `go list` output before splitting lines, so the last package (tests/pentest/cmd/pentest, no tests, no test imports) loses its empty trailing columns and the parser rejects it. G3 #5952 → PR#5953 merged 10-29 14:47Z (Opus APPROVE-w-notes), in v2.299.0 on the box since 15:08Z; **re-measure the next run's scope line** (must be `full=false package_count>0`). Measured 10-29 (full suite under -short, -trimpath): GH-5946 3m08 · GH-5947 5m17 (failed, retried) → 4m21. Scoped timings still unmeasured.
 **Spec refs**: `internal/quality/runner.go` (executeCommand ~293, RunAll retries ~147), `internal/quality/types.go` (ResolveConfig, IsParallel), `Makefile` (test, test-short), `internal/executor/git.go` (resolveMergeBaseSHA ~1579, ChangedFilesAgainstOrigin ~1764), `internal/executor/acceptance_evidence_run.go` (evidence reuse keyed by argv ~794), `scripts/pre-push-classify.sh` (docs-only classifier), TASK-393 Phase 2 "affected-tests-only" (never built).
 **Origin**: founder 2026-10-28 "where is our 15 min per issue": GH-5915/5916/5917 took 47–48 min each; Claude 1–9 min, box gates 22–23 min, CI 12 min, merge 2 min.
 
@@ -49,7 +49,7 @@ The internal/executor test suite takes 343 s locally without the race detector a
 
 ## Refs
 
-- .agent/tasks/TASK-616-box-quality-gate-speed.md
+- .agent/tasks/archive/TASK-616-box-quality-gate-speed.md
 
 ### LEG G2 — repo: qf-studio/pilot — title: feat(quality): changed-package test gate — the gate runner computes the Go packages a diff affects and exports them, make test-changed runs only those, full suite on any blind spot
 probe: present qf-studio/pilot cmd.Dir = r.projectDir
@@ -94,7 +94,7 @@ Depends on #5924 (it lands the -short guards the scoped run relies on). The qual
 
 ## Refs
 
-- .agent/tasks/TASK-616-box-quality-gate-speed.md
+- .agent/tasks/archive/TASK-616-box-quality-gate-speed.md
 - .agent/tasks/archive/TASK-393-throughput-acceleration.md
 
 ### LEG G3 — repo: qf-studio/pilot — title: fix(quality): changed-package scope accepts the last go list line — whole-output TrimSpace drops the trailing empty test columns and every box run falls back to the full suite
@@ -133,7 +133,7 @@ The cause is in listPackages in `internal/quality/scope.go`. The go list templat
 
 ## Refs
 
-- .agent/tasks/TASK-616-box-quality-gate-speed.md
+- .agent/tasks/archive/TASK-616-box-quality-gate-speed.md
 - G2 → https://github.com/qf-studio/pilot/issues/5926
 
 ## Operator steps (box, after the legs merge and the release lands)

@@ -1,6 +1,6 @@
 # TASK-632: A failed issue with an open PR is re-picked after autopilot's hold redrive strips `pilot-needs-human` — admission must refuse an issue whose pilot branch has an open PR
 
-**Status**: 🚀 A1 DISPATCHED 2026-11-03 → [pilot#6020](https://github.com/qf-studio/pilot/issues/6020) (`pilot` + `no-decompose`).
+**Status**: 📦 **ARCHIVED 11-08 — A1 #6020 → PR#6023 released in v2.310.0.** 🚀 A1 DISPATCHED 2026-11-03 → [pilot#6020](https://github.com/qf-studio/pilot/issues/6020) (`pilot` + `no-decompose`).
 **Created**: 2026-11-03
 **Assignee**: Pilot
 
