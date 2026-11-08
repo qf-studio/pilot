@@ -219,6 +219,12 @@ func TestPrePRHold_NoPRWhenBlockingUnfixed(t *testing.T) {
 		t.Errorf("issue comment lacks HEAD %s:\n%s", head, comments)
 	}
 
+	// GH-6233: the comment ends in the footer the dispatcher reads on the re-arm.
+	wantFooter := "<!-- " + PrePRHoldMetaMarker + " branch:" + e.branch + " sha:" + head + " source:6138 -->"
+	if !strings.Contains(comments, wantFooter) {
+		t.Errorf("issue comment lacks the hold footer %q:\n%s", wantFooter, comments)
+	}
+
 	edits := readOrEmpty(t, e.edits)
 	if !strings.Contains(edits, "--add-label "+labelPilotNeedsHuman) {
 		t.Errorf("labels not added: want %s in\n%s", labelPilotNeedsHuman, edits)
@@ -453,5 +459,58 @@ func TestOnBorrowedBranch_SelfEntryIsNotABorrow(t *testing.T) {
 	r.RecordBorrowedBranch("GH-100", "pilot/GH-150", 0)
 	if !r.onBorrowedBranch(task) {
 		t.Error("an entry on another branch is a borrow")
+	}
+}
+
+// holdFooterLine returns the last non-empty line of comment.
+func holdFooterLine(comment string) string {
+	lines := strings.Split(strings.TrimSpace(comment), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+func TestPrePRHold_CommentFooter(t *testing.T) {
+	review := &PrePRReviewOutcome{
+		Mode:    PrePRReviewModeEnforce,
+		Verdict: PostMergeRequestChanges,
+		Review:  &PostMergeReview{Verdict: PostMergeRequestChanges, Defects: holdDefects},
+	}
+	pushed, notPushed := true, false
+	const sha = "b57d141c0ffee0123456789abcdef0123456789a"
+	task := &Task{ID: "GH-6233", Branch: "pilot/GH-6233"}
+	wantFooter := "<!-- pilot-hold-meta branch:pilot/GH-6233 sha:" + sha + " source:6233 -->"
+
+	tests := []struct {
+		name      string
+		result    *ExecutionResult
+		sha       string
+		wantFoot  bool
+		evidence  string
+		taskBytes int // pad the evidence so the comment hits the length cap
+	}{
+		{name: "pushed branch carries the footer as the last line", result: &ExecutionResult{BranchPushed: &pushed}, sha: sha, wantFoot: true},
+		{name: "footer survives truncation of an oversized comment", result: &ExecutionResult{BranchPushed: &pushed}, sha: sha, wantFoot: true, taskBytes: prePRHoldCommentMax + 5000},
+		{name: "push failed: nothing to continue", result: &ExecutionResult{BranchPushed: &notPushed}, sha: sha},
+		{name: "push state unknown: nothing to continue", result: &ExecutionResult{}, sha: sha},
+		{name: "no sha: nothing to continue", result: &ExecutionResult{BranchPushed: &pushed}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evidence := tt.evidence
+			if tt.taskBytes > 0 {
+				evidence = strings.Repeat("evidence line. ", tt.taskBytes/15)
+			}
+			comment := renderPrePRHoldComment(task, review, tt.result, tt.sha, evidence)
+			// cutAtBoundary's truncation marker comes on top of the cap.
+			if limit := prePRHoldCommentMax + len(PostMergeTruncatedMarker); len(comment) > limit {
+				t.Errorf("comment is %d bytes, over the %d cap", len(comment), limit)
+			}
+			if tt.wantFoot {
+				if got := holdFooterLine(comment); got != wantFooter {
+					t.Errorf("last line = %q, want %q", got, wantFooter)
+				}
+			} else if strings.Contains(comment, PrePRHoldMetaMarker) {
+				t.Errorf("comment carries a hold footer, want none:\n%s", comment)
+			}
+		})
 	}
 }

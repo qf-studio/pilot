@@ -139,3 +139,108 @@ func continueRearmBranch(ctx context.Context, lister issueCommentLister, owner, 
 	)
 	return rb, rp, rs
 }
+
+// holdMetaFooterLineRe matches the pre-PR hold footer only when it is the whole
+// of a line, like autopilotMetaFooterLineRe.
+var holdMetaFooterLineRe = regexp.MustCompile(`^<!-- ` + regexp.QuoteMeta(executor.PrePRHoldMetaMarker) + `(.*)-->$`)
+
+// extractHoldMetaFooter returns the hold-meta footer of body: the last non-empty
+// line outside code spans, the placement renderPrePRHoldComment writes. "" otherwise.
+func extractHoldMetaFooter(body string) string {
+	stripped := fencedCodeBlockRe.ReplaceAllString(body, "")
+	stripped = inlineCodeSpanRe.ReplaceAllString(stripped, "")
+	lines := strings.Split(stripped, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if holdMetaFooterLineRe.MatchString(line) {
+			return line
+		}
+		return ""
+	}
+	return ""
+}
+
+// parseHoldMetaFromComments returns the branch and sha of the latest pre-PR
+// hold comment for issueNum, oldest-to-newest bodies in (GH-6233). A comment
+// counts when its footer parses, its source: field names issueNum, the branch is
+// that issue's own pilot/GH-<n> branch and the sha is plausible; a later
+// task-started comment cancels it (rearmSuperseded), since that run has already
+// built on the branch or another path re-armed the issue.
+func parseHoldMetaFromComments(bodies []string, issueNum int) (branch, sha string, ok bool) {
+	for i := len(bodies) - 1; i >= 0; i-- {
+		footer := extractHoldMetaFooter(bodies[i])
+		if footer == "" {
+			continue
+		}
+		if m := autopilotSourceFieldRe.FindStringSubmatch(footer); len(m) < 2 || m[1] != strconv.Itoa(issueNum) {
+			continue
+		}
+		b := autopilotBranchFieldRe.FindStringSubmatch(footer)
+		s := autopilotSHAFieldRe.FindStringSubmatch(footer)
+		if len(b) < 2 || len(s) < 2 || b[1] != "pilot/GH-"+strconv.Itoa(issueNum) || !isValidAutopilotBranch(b[1]) || !isPlausibleGitSHA(s[1]) {
+			continue
+		}
+		if rearmSuperseded(bodies[i+1:]) {
+			return "", "", false
+		}
+		return b[1], s[1], true
+	}
+	return "", "", false
+}
+
+// continueHeldBranch is the dispatch-time wiring for a retry after a pre-PR hold
+// (GH-6233): when no footer already chose a branch (branchName is still the
+// task's own pilot/<id>, fromPR == 0), the latest hold-meta comment hands the
+// retry the pushed branch and its sha, provided the branch is still on origin.
+// It never sets a PR number, so the run is not treated as borrowing a PR's
+// branch and can hold again. Any miss — no hold comment, comment-list error,
+// superseded, branch gone — returns the inputs and "" with one Info line naming
+// the reason, and the task starts fresh from the default branch.
+func continueHeldBranch(ctx context.Context, lister issueCommentLister, owner, repo string, issueNum int, projectPath, taskID, branchName string, fromPR int) (string, string) {
+	if fromPR != 0 || owner == "" || repo == "" || branchName != "pilot/"+taskID {
+		return branchName, ""
+	}
+	log := logging.WithComponent("github")
+	comments, err := lister.ListIssueComments(ctx, owner, repo, issueNum)
+	if err != nil {
+		log.Info("pre-PR hold continuation: comment list failed, starting from the default branch",
+			slog.String("task_id", taskID), slog.Any("error", err))
+		return branchName, ""
+	}
+	bodies := make([]string, 0, len(comments))
+	for _, c := range comments {
+		if c != nil {
+			bodies = append(bodies, c.Body)
+		}
+	}
+	branch, sha, ok := parseHoldMetaFromComments(bodies, issueNum)
+	if !ok {
+		// Quiet on the common path: most dispatches have no hold comment at all.
+		if hasHoldMetaMarker(bodies) {
+			log.Info("pre-PR hold continuation: hold comment superseded or invalid, starting from the default branch",
+				slog.String("task_id", taskID))
+		}
+		return branchName, ""
+	}
+	if !executor.NewGitOperations(projectPath).RearmBranchAvailable(ctx, branch) {
+		log.Info("pre-PR hold continuation: held branch gone from origin, starting from the default branch",
+			slog.String("task_id", taskID), slog.String("branch", branch))
+		return branchName, ""
+	}
+	log.Info("Continuing the branch a pre-PR hold pushed",
+		slog.String("task_id", taskID), slog.String("branch", branch), slog.String("sha", sha))
+	return branch, sha
+}
+
+// hasHoldMetaMarker reports whether any body carries a hold-meta footer line.
+func hasHoldMetaMarker(bodies []string) bool {
+	for _, b := range bodies {
+		if extractHoldMetaFooter(b) != "" {
+			return true
+		}
+	}
+	return false
+}

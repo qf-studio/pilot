@@ -804,6 +804,13 @@ type Task struct {
 	// fix branch silently rebuilt from main, discarding the original diff
 	// (pilot-console #275 incident).
 	FixFromSHA string
+	// ContinueBranchSHA is the head a pre-PR hold pushed to origin/<Branch>
+	// (GH-6233). The dispatcher sets it, with Branch, when the re-armed issue's
+	// latest hold comment names a branch that still exists on the remote; the
+	// worktree is then cut from that branch instead of the default branch, so the
+	// retry continues the held work. Unlike FromPR it marks no borrowed PR
+	// branch: the run may hold again, and no inherited-head lease is recorded.
+	ContinueBranchSHA string
 	// pushedWIPSHA is the commit SHA this run itself pushed to origin/<Branch>
 	// through the GH-4517 auto-preserve backstop (GH-5762). Later steps
 	// (adoption, self-review, co-author strip) may rewrite the branch, so the
@@ -4049,6 +4056,26 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				r.log.Warn("autopilot-fix: no recorded SHA and branch no longer exists on origin, falling back to default worktree base",
 					slog.String("task_id", task.ID),
 					slog.String("branch", task.Branch),
+				)
+			}
+		}
+
+		// GH-6233: a retry after a pre-PR hold continues the held branch. No PR
+		// backs it (task.FromPR stays 0), so a miss here is not an error: the
+		// worktree falls back to the default base like any fresh task.
+		if task.ContinueBranchSHA != "" && worktreeBaseRef == "" {
+			worktreeBaseRef = NewGitOperations(task.ProjectPath).ResolveFixContinuationBaseRef(ctx, task.Branch, task.ContinueBranchSHA)
+			if worktreeBaseRef == "" {
+				r.log.Info("pre-PR hold continuation: held branch not resolvable on origin, starting from the default branch",
+					slog.String("task_id", task.ID),
+					slog.String("branch", task.Branch),
+					slog.String("sha", task.ContinueBranchSHA),
+				)
+			} else {
+				r.log.Info("Resolved pre-PR hold continuation worktree base",
+					slog.String("task_id", task.ID),
+					slog.String("branch", task.Branch),
+					slog.String("base_ref", worktreeBaseRef),
 				)
 			}
 		}
