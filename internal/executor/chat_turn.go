@@ -27,6 +27,7 @@ var ChatReadOnlyTools = []string{
 	"Glob",
 	"LS",
 	"Task",
+	"Agent",
 	"Bash(git log:*)",
 	"Bash(git show:*)",
 	"Bash(git diff:*)",
@@ -51,6 +52,39 @@ type ChatTurn struct {
 	MaxTurns int
 	// Timeout bounds the whole turn; 5 minutes when zero.
 	Timeout time.Duration
+	// OnSubagent, when non-nil, is called when a sub-agent (Task/Agent tool)
+	// starts and when it finishes; it is not subject to the progress throttle
+	// and is called from the backend event goroutine, so it must not block.
+	OnSubagent func(SubagentEvent)
+}
+
+// Sub-agent phases carried by SubagentEvent.Phase.
+const (
+	SubagentPhaseRunning = "running"
+	SubagentPhaseDone    = "done"
+)
+
+// SubagentEvent reports one sub-agent of a chat turn. TaskID is the Task/Agent
+// tool_use id; Text is a short label; Phase is SubagentPhaseRunning or
+// SubagentPhaseDone; DurationMs is set on done only.
+type SubagentEvent struct {
+	TaskID     string
+	Text       string
+	Phase      string
+	DurationMs int64
+}
+
+// Navigator paths counted by the chat turn's read statistics.
+const (
+	chatMemoriesDir = ".agent/knowledge/memories/"
+	chatAgentDir    = ".agent/"
+)
+
+// openSubagent is a sub-agent the chat turn has seen start and not yet finish.
+type openSubagent struct {
+	text        string
+	started     time.Time
+	runningSent bool
 }
 
 // ChatTurnResult is the outcome of ExecuteChatTurn.
@@ -63,6 +97,12 @@ type ChatTurnResult struct {
 	// turn ran without resume.
 	SessionReset bool
 	ToolCalls    int
+	// DocsRead and MemoriesRead count the distinct .agent docs and
+	// .agent/knowledge/memories files the model read (Read tool_use, main
+	// agent or sub-agent) during this turn. A resumed session counts this
+	// turn only, not the earlier turns of the session.
+	DocsRead     int
+	MemoriesRead int
 
 	// Usage of the backend run (GH-5677). Zero when the backend returned no
 	// result (timeout, spawn failure).
@@ -123,13 +163,55 @@ func (r *Runner) executeChatTurn(ctx context.Context, turn ChatTurn, onProgress 
 		eventSession string
 		toolCalls    int
 		maxTurnsHit  bool
+		// Sub-agent and read tracking; all guarded by mu.
+		openAgents  = map[string]*openSubagent{}
+		agentOrder  []string
+		docsRead    = map[string]struct{}{}
+		memsRead    = map[string]struct{}{}
+		turnClosed  bool
+		projectBase = strings.TrimRight(turn.ProjectPath, "/")
 	)
+	emitSubagent := func(e SubagentEvent) {
+		if turn.OnSubagent != nil {
+			turn.OnSubagent(e)
+		}
+	}
+	// finishAgents reports done for every still-open sub-agent so no row stays
+	// spinning; mu must be held. A row whose running was never delivered gets
+	// it first, so done never precedes running.
+	finishAgents := func() {
+		for _, id := range agentOrder {
+			ag, ok := openAgents[id]
+			if !ok {
+				continue
+			}
+			if !ag.runningSent {
+				emitSubagent(SubagentEvent{TaskID: id, Text: ag.text, Phase: SubagentPhaseRunning})
+			}
+			emitSubagent(SubagentEvent{TaskID: id, Text: ag.text, Phase: SubagentPhaseDone, DurationMs: time.Since(ag.started).Milliseconds()})
+		}
+		openAgents = map[string]*openSubagent{}
+		agentOrder = nil
+	}
+	recordRead := func(input map[string]interface{}) {
+		path, _ := input["file_path"].(string)
+		path = strings.TrimPrefix(path, projectBase+"/")
+		switch {
+		case strings.Contains(path, chatMemoriesDir):
+			memsRead[path] = struct{}{}
+		case strings.HasPrefix(path, chatAgentDir) || strings.Contains(path, "/"+chatAgentDir):
+			docsRead[path] = struct{}{}
+		}
+	}
 	progress := newChatProgressThrottle(onProgress, chatProgressInterval)
 	defer progress.Close()
 
 	handler := func(ev BackendEvent) {
 		mu.Lock()
 		defer mu.Unlock()
+		if turnClosed {
+			return // a backend that outlived the turn must not reopen rows
+		}
 		if ev.SessionID != "" {
 			eventSession = ev.SessionID
 		}
@@ -141,6 +223,24 @@ func (r *Runner) executeChatTurn(ctx context.Context, turn ChatTurn, onProgress 
 		case EventTypeToolUse:
 			toolCalls++
 			progress.Offer(chatProgressLine(ev))
+			switch ev.ToolName {
+			case "Task", "Agent":
+				if ev.ParentToolUseID != "" || ev.ToolUseID == "" || openAgents[ev.ToolUseID] != nil {
+					break
+				}
+				ag := &openSubagent{text: subagentText(ev), started: time.Now()}
+				openAgents[ev.ToolUseID] = ag
+				agentOrder = append(agentOrder, ev.ToolUseID)
+				emitSubagent(SubagentEvent{TaskID: ev.ToolUseID, Text: ag.text, Phase: SubagentPhaseRunning})
+				ag.runningSent = true
+			case "Read":
+				recordRead(ev.ToolInput)
+			}
+		case EventTypeToolResult:
+			if ag := openAgents[ev.ToolUseID]; ag != nil {
+				emitSubagent(SubagentEvent{TaskID: ev.ToolUseID, Text: ag.text, Phase: SubagentPhaseDone, DurationMs: time.Since(ag.started).Milliseconds()})
+				delete(openAgents, ev.ToolUseID)
+			}
 		case EventTypeResult:
 			if strings.Contains(ev.Raw, "error_max_turns") {
 				maxTurnsHit = true
@@ -186,15 +286,26 @@ func (r *Runner) executeChatTurn(ctx context.Context, turn ChatTurn, onProgress 
 	res, err := run(turn.ResumeSessionID)
 	if err != nil && turn.ResumeSessionID != "" && isSessionNotFound(err, res) {
 		sessionReset = true
+		// Counts cover one attempt: close the failed attempt's rows and reset.
+		mu.Lock()
+		finishAgents()
+		docsRead = map[string]struct{}{}
+		memsRead = map[string]struct{}{}
+		toolCalls = 0
+		mu.Unlock()
 		res, err = run("")
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
+	finishAgents()
+	turnClosed = true
 	out := ChatTurnResult{
 		SessionID:    eventSession,
 		SessionReset: sessionReset,
 		ToolCalls:    toolCalls,
+		DocsRead:     len(docsRead),
+		MemoriesRead: len(memsRead),
 	}
 	if res != nil {
 		if res.SessionID != "" {
@@ -251,6 +362,22 @@ func isSessionNotFound(err error, res *BackendResult) bool {
 	return res != nil && res.ErrorType == string(ErrorTypeSessionNotFound)
 }
 
+// subagentText labels a sub-agent row: the tool input description, else the
+// first chatProgressArgMax runes of its prompt, else the tool name.
+func subagentText(ev BackendEvent) string {
+	if d, _ := ev.ToolInput["description"].(string); strings.TrimSpace(d) != "" {
+		return strings.TrimSpace(d)
+	}
+	if p, _ := ev.ToolInput["prompt"].(string); strings.TrimSpace(p) != "" {
+		rs := []rune(strings.TrimSpace(strings.ReplaceAll(p, "\n", " ")))
+		if len(rs) > chatProgressArgMax {
+			rs = rs[:chatProgressArgMax]
+		}
+		return string(rs)
+	}
+	return ev.ToolName
+}
+
 // chatProgressLine renders a tool_use event as "<tool> <first argument>".
 func chatProgressLine(ev BackendEvent) string {
 	key := ""
@@ -261,7 +388,7 @@ func chatProgressLine(ev BackendEvent) string {
 		key = "pattern"
 	case "Bash":
 		key = "command"
-	case "Task":
+	case "Task", "Agent":
 		key = "description"
 	case "LS":
 		key = "path"

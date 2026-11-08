@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/replay"
 )
 
 func TestNewClaudeCodeBackend(t *testing.T) {
@@ -2437,5 +2439,122 @@ exit 0
 	args, _ = os.ReadFile(filepath.Join(captured, "args"))
 	if strings.Contains(string(args), "--settings") {
 		t.Errorf("args %q carry --settings without a WriteBoundary", args)
+	}
+}
+
+func TestParseStream_OneEventPerToolUseBlock(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+	line := `{"type":"assistant","message":{"content":[{"type":"text","text":"checking"},{"type":"tool_use","id":"toolu_a","name":"Read","input":{"file_path":"a.go"}},{"type":"tool_use","id":"toolu_b","name":"Grep","input":{"pattern":"x"}}]},"usage":{"input_tokens":7,"output_tokens":3},"model":"m"}`
+	events := backend.parseStreamEvents(line)
+	if len(events) != 3 {
+		t.Fatalf("got %d events, want 3 (text + two tool_use): %+v", len(events), events)
+	}
+	if events[0].Type != EventTypeText || events[0].Message != "checking" {
+		t.Errorf("events[0] = %+v, want the text block first", events[0])
+	}
+	for i, want := range []struct{ id, name string }{{"toolu_a", "Read"}, {"toolu_b", "Grep"}} {
+		ev := events[i+1]
+		if ev.Type != EventTypeToolUse || ev.ToolUseID != want.id || ev.ToolName != want.name {
+			t.Errorf("events[%d] = %+v, want tool_use %s %s", i+1, ev, want.name, want.id)
+		}
+	}
+	// Raw, usage and model ride on the first event only.
+	if events[0].Raw != line || events[1].Raw != "" || events[2].Raw != "" {
+		t.Errorf("Raw must be on the first event only: %q %q %q", events[0].Raw, events[1].Raw, events[2].Raw)
+	}
+	if events[0].TokensInput != 7 || events[0].Model != "m" || events[1].TokensInput != 0 || events[2].Model != "" {
+		t.Errorf("usage/model must be on the first event only: %+v", events)
+	}
+}
+
+func TestParseStream_ToolResultCarriesToolUseID(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+
+	t.Run("block", func(t *testing.T) {
+		events := backend.parseStreamEvents(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_a","content":"ok"},{"type":"tool_result","tool_use_id":"toolu_b","content":"bad","is_error":true}]}}`)
+		if len(events) != 2 {
+			t.Fatalf("got %d events, want 2", len(events))
+		}
+		if events[0].Type != EventTypeToolResult || events[0].ToolUseID != "toolu_a" || events[0].IsError {
+			t.Errorf("events[0] = %+v", events[0])
+		}
+		if events[1].ToolUseID != "toolu_b" || !events[1].IsError {
+			t.Errorf("events[1] = %+v", events[1])
+		}
+	})
+
+	t.Run("array content still yields the id", func(t *testing.T) {
+		events := backend.parseStreamEvents(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_a","content":[{"type":"text","text":"sub-agent answer"}]}]}}`)
+		if len(events) != 1 || events[0].Type != EventTypeToolResult || events[0].ToolUseID != "toolu_a" {
+			t.Fatalf("events = %+v, want one tool_result for toolu_a", events)
+		}
+	})
+
+	t.Run("flat tool_use_result fills the first event", func(t *testing.T) {
+		events := backend.parseStreamEvents(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_a"}]},"tool_use_result":{"content":"flat out","is_error":true}}`)
+		if len(events) != 1 || events[0].ToolUseID != "toolu_a" || events[0].ToolResult != "flat out" || !events[0].IsError {
+			t.Fatalf("events = %+v", events)
+		}
+	})
+
+	t.Run("flat only", func(t *testing.T) {
+		events := backend.parseStreamEvents(`{"type":"user","tool_use_result":{"content":"flat out"}}`)
+		if len(events) != 1 || events[0].Type != EventTypeToolResult || events[0].ToolResult != "flat out" {
+			t.Fatalf("events = %+v", events)
+		}
+	})
+}
+
+func TestParseStream_ParentToolUseID(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+	events := backend.parseStreamEvents(`{"type":"assistant","parent_tool_use_id":"toolu_parent","message":{"content":[{"type":"tool_use","id":"toolu_c","name":"Read","input":{}},{"type":"text","text":"hi"}]}}`)
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2", len(events))
+	}
+	for _, ev := range events {
+		if ev.ParentToolUseID != "toolu_parent" {
+			t.Errorf("ParentToolUseID = %q, want toolu_parent on %+v", ev.ParentToolUseID, ev)
+		}
+	}
+	if got := backend.parseStreamEvent(`{"type":"result","result":"x"}`).ParentToolUseID; got != "" {
+		t.Errorf("main-agent ParentToolUseID = %q, want empty", got)
+	}
+}
+
+func TestParseStream_NoBlocksStillOneEvent(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+	for _, line := range []string{
+		`{"type":"assistant","message":{"content":[{"type":"thinking"}]},"usage":{"input_tokens":4,"output_tokens":1}}`,
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+	} {
+		events := backend.parseStreamEvents(line)
+		if len(events) != 1 || events[0].Raw != line {
+			t.Errorf("%s -> %+v, want one event carrying Raw", line, events)
+		}
+	}
+}
+
+// TestParseStream_RecordsLineOnce pins that a multi-block assistant line lands
+// in the replay recording once (EventCount and its tool entries), not once per
+// content block.
+func TestParseStream_RecordsLineOnce(t *testing.T) {
+	rec, err := replay.NewRecorder("GH-6210", t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+	defer func() { _ = rec.Finish("completed") }()
+	line := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_a","name":"Read","input":{}},{"type":"tool_use","id":"toolu_b","name":"Grep","input":{}}]},"usage":{"input_tokens":10,"output_tokens":5}}`
+	events := NewClaudeCodeBackend(nil).parseStreamEvents(line)
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2", len(events))
+	}
+	for _, ev := range events {
+		if err := recordBackendEvent(rec, ev); err != nil {
+			t.Fatalf("recordBackendEvent: %v", err)
+		}
+	}
+	got := rec.GetRecording()
+	if got.EventCount != 1 {
+		t.Errorf("EventCount = %d, want 1 (line recorded once)", got.EventCount)
 	}
 }

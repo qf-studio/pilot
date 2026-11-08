@@ -1014,67 +1014,68 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 				// through.
 				if !truncated || json.Valid(lineBytes) {
 					// Parse and convert to BackendEvent
-					event := b.parseStreamEvent(line)
-					if opts.EventHandler != nil {
-						opts.EventHandler(event)
-					}
-
-					// GH-2328: track the last assistant text block so refusals (Claude
-					// exits 0 after politely declining) can be surfaced to the user.
-					if event.Type == EventTypeText && event.Message != "" {
-						result.LastAssistantText = event.Message
-					}
-
-					// Track final result
-					if event.Type == EventTypeResult {
-						// GH-2103: Cancel heartbeat on result event.
-						// On slow I/O flush, the heartbeat timer could fire and kill
-						// the process after it had already produced output.
-						cancelHeartbeat()
-
-						if event.IsError {
-							result.Error = event.Message
-						} else {
-							result.Output = event.Message
-							result.SawSuccessResult = true // GH-2107: track successful result for timeout recovery
-							armResultExitGrace()           // GH-5530
+					for _, event := range b.parseStreamEvents(line) {
+						if opts.EventHandler != nil {
+							opts.EventHandler(event)
 						}
-						// Cancel heartbeat — process is finishing, don't kill it
-						cancelHeartbeat()
-					}
 
-					// Capture session ID from init event (GH-1265)
-					if event.Type == EventTypeInit && event.SessionID != "" {
-						result.SessionID = event.SessionID
-					}
-
-					// Accumulate token usage
-					result.TokensInput += event.TokensInput
-					result.TokensOutput += event.TokensOutput
-					result.CacheCreationInputTokens += event.CacheCreationInputTokens
-					result.CacheReadInputTokens += event.CacheReadInputTokens
-					if event.ReportedCostUSD != nil {
-						sum := *event.ReportedCostUSD
-						if result.ReportedCostUSD != nil {
-							sum += *result.ReportedCostUSD
+						// GH-2328: track the last assistant text block so refusals (Claude
+						// exits 0 after politely declining) can be surfaced to the user.
+						if event.Type == EventTypeText && event.Message != "" {
+							result.LastAssistantText = event.Message
 						}
-						result.ReportedCostUSD = &sum
-					}
-					if event.Model != "" {
-						result.Model = event.Model
-					}
 
-					// GH-5232: a message_delta carrying stop_reason "refusal"
-					// is a deliberate model decline, not a subprocess/API
-					// failure — it otherwise exits with empty stderr and a
-					// generic exit code, surfacing as an undiagnosable
-					// "unknown: exit status 1". Latch the first occurrence;
-					// don't let a later non-refusal delta on the same stream
-					// clear it.
-					if event.IsRefusal && !result.Refused {
-						result.Refused = true
-						result.RefusalCategory = event.RefusalCategory
-						result.RefusalExplanation = event.RefusalExplanation
+						// Track final result
+						if event.Type == EventTypeResult {
+							// GH-2103: Cancel heartbeat on result event.
+							// On slow I/O flush, the heartbeat timer could fire and kill
+							// the process after it had already produced output.
+							cancelHeartbeat()
+
+							if event.IsError {
+								result.Error = event.Message
+							} else {
+								result.Output = event.Message
+								result.SawSuccessResult = true // GH-2107: track successful result for timeout recovery
+								armResultExitGrace()           // GH-5530
+							}
+							// Cancel heartbeat — process is finishing, don't kill it
+							cancelHeartbeat()
+						}
+
+						// Capture session ID from init event (GH-1265)
+						if event.Type == EventTypeInit && event.SessionID != "" {
+							result.SessionID = event.SessionID
+						}
+
+						// Accumulate token usage
+						result.TokensInput += event.TokensInput
+						result.TokensOutput += event.TokensOutput
+						result.CacheCreationInputTokens += event.CacheCreationInputTokens
+						result.CacheReadInputTokens += event.CacheReadInputTokens
+						if event.ReportedCostUSD != nil {
+							sum := *event.ReportedCostUSD
+							if result.ReportedCostUSD != nil {
+								sum += *result.ReportedCostUSD
+							}
+							result.ReportedCostUSD = &sum
+						}
+						if event.Model != "" {
+							result.Model = event.Model
+						}
+
+						// GH-5232: a message_delta carrying stop_reason "refusal"
+						// is a deliberate model decline, not a subprocess/API
+						// failure — it otherwise exits with empty stderr and a
+						// generic exit code, surfacing as an undiagnosable
+						// "unknown: exit status 1". Latch the first occurrence;
+						// don't let a later non-refusal delta on the same stream
+						// clear it.
+						if event.IsRefusal && !result.Refused {
+							result.Refused = true
+							result.RefusalCategory = event.RefusalCategory
+							result.RefusalExplanation = event.RefusalExplanation
+						}
 					}
 				}
 			}
@@ -1381,19 +1382,66 @@ func readBoundedLine(r *bufio.Reader, maxBytes int, onBytes func(n int)) (line [
 	}
 }
 
-// parseStreamEvent converts Claude Code stream-json to BackendEvent.
+// parseStreamEvent converts one Claude Code stream-json line to its first
+// BackendEvent. It is for lines that map to a single event (result, system,
+// init, a single-block message) and tests; the Execute stdout loop uses
+// parseStreamEvents so multi-block messages are not collapsed.
 func (b *ClaudeCodeBackend) parseStreamEvent(line string) BackendEvent {
-	event := BackendEvent{
-		Raw: line,
-	}
+	return b.parseStreamEvents(line)[0]
+}
+
+// userToolResultFallback decodes just the tool_result ids of a "user" line
+// whose strict decode failed because a block's content is an array (a
+// sub-agent result is a list of text blocks), not a string. GH-6210.
+type userToolResultFallback struct {
+	Type            string `json:"type"`
+	ParentToolUseID string `json:"parent_tool_use_id"`
+	Message         struct {
+		Content []struct {
+			Type      string `json:"type"`
+			ToolUseID string `json:"tool_use_id"`
+			IsError   bool   `json:"is_error"`
+		} `json:"content"`
+	} `json:"message"`
+}
+
+// parseStreamEvents converts one Claude Code stream-json line to BackendEvents
+// in message order, one per content block (GH-6210): an assistant message with
+// text and two tool_use blocks yields three events, a user message with N
+// tool_result blocks yields N. It never returns an empty slice. Raw, usage and
+// model ride on the first event only so the line is recorded and summed once.
+func (b *ClaudeCodeBackend) parseStreamEvents(line string) []BackendEvent {
+	event := BackendEvent{}
 
 	var streamEvent StreamEvent
 	if err := json.Unmarshal([]byte(line), &streamEvent); err != nil {
+		var fb userToolResultFallback
+		if json.Unmarshal([]byte(line), &fb) == nil && fb.Type == "user" {
+			var results []BackendEvent
+			for _, blk := range fb.Message.Content {
+				if blk.Type == "tool_result" {
+					results = append(results, BackendEvent{
+						Type:            EventTypeToolResult,
+						ToolUseID:       blk.ToolUseID,
+						ParentToolUseID: fb.ParentToolUseID,
+						IsError:         blk.IsError,
+					})
+				}
+			}
+			if len(results) > 0 {
+				results[0].Raw = line
+				return results
+			}
+		}
 		// Not valid JSON, return as-is
+		event.Raw = line
 		event.Type = EventTypeText
 		event.Message = line
-		return event
+		return []BackendEvent{event}
 	}
+	event.ParentToolUseID = streamEvent.ParentToolUseID
+	// blocks holds the per-content-block events of an assistant or user line.
+	var blocks []BackendEvent
 
 	// Map stream event type to backend event type
 	switch streamEvent.Type {
@@ -1454,25 +1502,50 @@ func (b *ClaudeCodeBackend) parseStreamEvent(line string) BackendEvent {
 			for _, block := range streamEvent.Message.Content {
 				switch block.Type {
 				case "tool_use":
-					event.Type = EventTypeToolUse
-					event.ToolName = block.Name
-					event.ToolInput = block.Input
-					event.Message = fmt.Sprintf("Using %s", block.Name)
+					blocks = append(blocks, BackendEvent{
+						Type:            EventTypeToolUse,
+						ToolName:        block.Name,
+						ToolInput:       block.Input,
+						ToolUseID:       block.ID,
+						ParentToolUseID: streamEvent.ParentToolUseID,
+						Message:         fmt.Sprintf("Using %s", block.Name),
+					})
 				case "text":
-					event.Type = EventTypeText
-					event.Message = block.Text
+					blocks = append(blocks, BackendEvent{
+						Type:            EventTypeText,
+						Message:         block.Text,
+						ParentToolUseID: streamEvent.ParentToolUseID,
+					})
 				}
 			}
 		}
 
 	case "user":
-		// Tool results
+		// Tool results: one event per tool_result block (GH-6210).
+		if streamEvent.Message != nil {
+			for _, block := range streamEvent.Message.Content {
+				if block.Type == "tool_result" {
+					blocks = append(blocks, BackendEvent{
+						Type:            EventTypeToolResult,
+						ToolUseID:       block.ToolUseID,
+						ParentToolUseID: streamEvent.ParentToolUseID,
+						IsError:         block.IsError,
+					})
+				}
+			}
+		}
+		// The flat tool_use_result fills the first event, or a single event
+		// when the line carries no tool_result blocks.
 		if streamEvent.ToolUseResult != nil {
-			event.Type = EventTypeToolResult
+			target := &event
+			if len(blocks) > 0 {
+				target = &blocks[0]
+			}
+			target.Type = EventTypeToolResult
 			var toolResult ToolResultContent
 			if err := json.Unmarshal(streamEvent.ToolUseResult, &toolResult); err == nil {
-				event.ToolResult = toolResult.Content
-				event.IsError = toolResult.IsError
+				target.ToolResult = toolResult.Content
+				target.IsError = toolResult.IsError
 			}
 		}
 
@@ -1483,18 +1556,24 @@ func (b *ClaudeCodeBackend) parseStreamEvent(line string) BackendEvent {
 		event.ReportedCostUSD = streamEvent.TotalCostUSD // GH-5676
 	}
 
-	// Capture usage info
+	events := blocks
+	if len(events) == 0 {
+		events = []BackendEvent{event}
+	}
+	// Raw, usage and model ride on the first event only (see BackendEvent.Raw).
+	first := &events[0]
+	first.Raw = line
 	if streamEvent.Usage != nil {
-		event.TokensInput = streamEvent.Usage.InputTokens
-		event.TokensOutput = streamEvent.Usage.OutputTokens
-		event.CacheCreationInputTokens = streamEvent.Usage.CacheCreationInputTokens
-		event.CacheReadInputTokens = streamEvent.Usage.CacheReadInputTokens
+		first.TokensInput = streamEvent.Usage.InputTokens
+		first.TokensOutput = streamEvent.Usage.OutputTokens
+		first.CacheCreationInputTokens = streamEvent.Usage.CacheCreationInputTokens
+		first.CacheReadInputTokens = streamEvent.Usage.CacheReadInputTokens
 	}
 	if streamEvent.Model != "" {
-		event.Model = streamEvent.Model
+		first.Model = streamEvent.Model
 	}
 
-	return event
+	return events
 }
 
 // warnGhGuardDenials emits the per-run gh-guard WARN. Denials stamped
