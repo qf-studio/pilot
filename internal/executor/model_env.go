@@ -288,3 +288,11 @@ func modelEnvCallerComponent() string {
 func ModelSubprocessEnvForTest(base []string) []string {
 	return modelSubprocessEnv(base)
 }
+
+// ProcessBillingModeForTest exposes processBillingMode to tests in other
+// packages that build a Runner (which publishes the configured billing mode
+// process-wide) and must prove they put the previous mode back. Production
+// code reads processBillingMode directly.
+func ProcessBillingModeForTest() BillingMode {
+	return processBillingMode()
+}
