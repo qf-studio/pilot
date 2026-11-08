@@ -113,9 +113,17 @@ func (h *Handler) handleChatTurn(ctx context.Context, contextID, threadID, text 
 
 	taskID := "chat-" + strings.TrimPrefix(contextID, "web:")
 	startedAt := time.Now()
-	result, err := h.runner.ExecuteChatTurn(ctx, executor.ChatTurn{
+	turn := executor.ChatTurn{
 		ConversationID: contextID, ProjectPath: projectPath, Text: text, ResumeSessionID: resume,
-	}, func(line string) {
+	}
+	if ss, ok := h.messenger.(SubagentSender); ok {
+		turn.OnSubagent = func(e executor.SubagentEvent) {
+			_ = ss.SendSubagent(ctx, contextID, threadID, SubagentUpdate{
+				TaskID: e.TaskID, Text: e.Text, Phase: e.Phase, DurationMs: e.DurationMs,
+			})
+		}
+	}
+	result, err := h.runner.ExecuteChatTurn(ctx, turn, func(line string) {
 		_, _ = h.messenger.SendProgress(ctx, contextID, "", taskID, "research", 0, line)
 	})
 
@@ -132,6 +140,13 @@ func (h *Handler) handleChatTurn(ctx context.Context, contextID, threadID, text 
 	if err != nil {
 		send("Chat turn failed: " + err.Error())
 		return
+	}
+	// The context event goes out before the reply so the UI has the counts
+	// when the text lands. Read-only turns create no memories.
+	if cs, ok := h.messenger.(ContextSender); ok {
+		_ = cs.SendContext(ctx, contextID, threadID, ContextCounts{
+			DocsRead: result.DocsRead, MemoriesRead: result.MemoriesRead, MemoriesCreated: 0,
+		})
 	}
 
 	reply, draft, found, blockErr := extractPilotIssueBlock(result.Text)

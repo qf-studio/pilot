@@ -31,6 +31,34 @@ type DraftsSender interface {
 	SendDrafts(ctx context.Context, contextID, threadID string, drafts []TicketDraft) error
 }
 
+// SubagentUpdate reports one sub-agent of a chat turn. TaskID is the Task/Agent
+// tool_use id, Phase is "running" or "done", DurationMs is set on done only.
+type SubagentUpdate struct {
+	TaskID     string
+	Text       string
+	Phase      string
+	DurationMs int64
+}
+
+// SubagentSender is implemented by messengers that can show a chat turn's
+// sub-agents as structured events (the web console). Others never see them.
+type SubagentSender interface {
+	SendSubagent(ctx context.Context, contextID, threadID string, u SubagentUpdate) error
+}
+
+// ContextCounts is what one chat turn read from and wrote to Navigator.
+type ContextCounts struct {
+	DocsRead        int
+	MemoriesRead    int
+	MemoriesCreated int
+}
+
+// ContextSender is implemented by messengers that can deliver a turn's
+// Navigator read/write counts as one structured event (the web console).
+type ContextSender interface {
+	SendContext(ctx context.Context, contextID, threadID string, c ContextCounts) error
+}
+
 // Messenger is the interface every chat adapter must implement for outbound messaging.
 type Messenger interface {
 	// SendText sends a plain text message to the given context (channel/chat).

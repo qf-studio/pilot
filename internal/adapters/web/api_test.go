@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -433,5 +434,54 @@ func TestMessenger_SendDraftsAppendsOneDraftsEvent(t *testing.T) {
 	events, _ := m.Events("web:c1", 0)
 	if len(events) != 1 || events[0].Type != EventDrafts || len(events[0].Drafts) != 1 || events[0].Drafts[0].ID != "d1" {
 		t.Fatalf("events = %+v, want one drafts event", events)
+	}
+}
+
+func TestMessenger_SendSubagentDurationOnlyOnDone(t *testing.T) {
+	m := NewMessenger()
+	ctx := context.Background()
+	if err := m.SendSubagent(ctx, "web:c1", "", comms.SubagentUpdate{TaskID: "toolu_1", Text: "map", Phase: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SendSubagent(ctx, "web:c1", "", comms.SubagentUpdate{TaskID: "toolu_1", Text: "map", Phase: "done", DurationMs: 1234}); err != nil {
+		t.Fatal(err)
+	}
+	events, _ := m.Events("web:c1", 0)
+	if len(events) != 2 || events[0].Type != EventSubagent || events[1].Type != EventSubagent {
+		t.Fatalf("events = %+v, want two subagent events", events)
+	}
+	running, err := json.Marshal(events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(running), "durationMs") || !strings.Contains(string(running), `"taskId":"toolu_1"`) {
+		t.Errorf("running JSON = %s, want taskId and no durationMs", running)
+	}
+	done, err := json.Marshal(events[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(done), `"durationMs":1234`) {
+		t.Errorf("done JSON = %s, want durationMs 1234", done)
+	}
+}
+
+func TestMessenger_SendContextSerializesZeroCounts(t *testing.T) {
+	m := NewMessenger()
+	if err := m.SendContext(context.Background(), "web:conv-1", "", comms.ContextCounts{}); err != nil {
+		t.Fatal(err)
+	}
+	events, _ := m.Events("web:conv-1", 0)
+	if len(events) != 1 || events[0].Type != EventContext || events[0].TaskID != "chat-conv-1" {
+		t.Fatalf("events = %+v, want one context event with taskId chat-conv-1", events)
+	}
+	b, err := json.Marshal(events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"docsRead":0`, `"memoriesRead":0`, `"memoriesCreated":0`} {
+		if !strings.Contains(string(b), key) {
+			t.Errorf("JSON = %s, want %s", b, key)
+		}
 	}
 }

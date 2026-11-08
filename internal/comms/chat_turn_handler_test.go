@@ -3,6 +3,7 @@ package comms
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -58,6 +59,27 @@ type webChatMessenger struct {
 	progress      []string
 	confirmIDs    []string
 	confirmDescs  []string
+	// timeline records subagent and context updates and reply chunks in
+	// arrival order: "subagent <phase> <id>", "context <docs>/<mems>/<created>"
+	// and "text <body>".
+	timeline  []string
+	durations []int64
+}
+
+func (m *webChatMessenger) SendSubagent(_ context.Context, _, _ string, u SubagentUpdate) error {
+	m.timeline = append(m.timeline, "subagent "+u.Phase+" "+u.TaskID)
+	m.durations = append(m.durations, u.DurationMs)
+	return nil
+}
+
+func (m *webChatMessenger) SendContext(_ context.Context, _, _ string, c ContextCounts) error {
+	m.timeline = append(m.timeline, fmt.Sprintf("context %d/%d/%d", c.DocsRead, c.MemoriesRead, c.MemoriesCreated))
+	return nil
+}
+
+func (m *webChatMessenger) SendChunked(ctx context.Context, c, t, s, p string) error {
+	m.timeline = append(m.timeline, "text "+s)
+	return m.mockMessenger.SendChunked(ctx, c, t, s, p)
 }
 
 func (m *webChatMessenger) SendProgress(_ context.Context, _, _, _, _ string, _ int, detail string) (string, error) {
@@ -188,6 +210,53 @@ func TestWebChat_ProgressForwarded(t *testing.T) {
 	send(h, "web", "look")
 	if len(msgr.progress) != 1 || !strings.HasPrefix(msgr.progress[0], "Read ") {
 		t.Fatalf("progress = %q, want one line starting with \"Read \"", msgr.progress)
+	}
+}
+
+func subagentTurnEvents() []executor.BackendEvent {
+	return []executor.BackendEvent{
+		{Type: executor.EventTypeToolUse, ToolName: "Task", ToolUseID: "toolu_1", ToolInput: map[string]interface{}{"description": "map the executor"}},
+		{Type: executor.EventTypeToolUse, ToolName: "Read", ToolInput: map[string]interface{}{"file_path": ".agent/DEVELOPMENT-README.md"}},
+		{Type: executor.EventTypeToolResult, ToolUseID: "toolu_1"},
+	}
+}
+
+func TestWebChat_SubagentAndContextBeforeReply(t *testing.T) {
+	b := &webChatBackend{events: subagentTurnEvents(), outputs: []string{"the executor lives in internal/executor"}}
+	h, msgr := newWebChat(b, nil)
+	send(h, "web", "map it")
+	want := []string{
+		"subagent running toolu_1",
+		"subagent done toolu_1",
+		"context 1/0/0",
+		"text the executor lives in internal/executor",
+	}
+	if !reflect.DeepEqual(msgr.timeline, want) {
+		t.Fatalf("timeline = %q, want %q", msgr.timeline, want)
+	}
+	if got := msgr.durations[1]; got < 0 {
+		t.Errorf("done DurationMs = %d, want >= 0", got)
+	}
+}
+
+func TestWebChat_NoContextEventWhenTurnFails(t *testing.T) {
+	b := &webChatBackend{err: errors.New("boom")}
+	h, msgr := newWebChat(b, nil)
+	send(h, "web", "map it")
+	for _, e := range msgr.timeline {
+		if strings.HasPrefix(e, "context ") {
+			t.Fatalf("timeline = %q, want no context event on a failed turn", msgr.timeline)
+		}
+	}
+}
+
+func TestWebChat_PlainMessengerGetsOnlyReplyText(t *testing.T) {
+	b := &webChatBackend{events: subagentTurnEvents(), outputs: []string{"the answer"}}
+	msgr := &mockMessenger{}
+	h := NewHandler(&HandlerConfig{Messenger: msgr, Runner: executor.NewRunnerWithBackend(b), ProjectPath: "/work/proj"})
+	send(h, "web", "map it")
+	if !reflect.DeepEqual(msgr.messages, []string{"the answer"}) {
+		t.Fatalf("messages = %q, want only the reply", msgr.messages)
 	}
 }
 
