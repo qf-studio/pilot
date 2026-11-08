@@ -239,14 +239,49 @@ func TestWebChat_SubagentAndContextBeforeReply(t *testing.T) {
 	}
 }
 
-func TestWebChat_NoContextEventWhenTurnFails(t *testing.T) {
-	b := &webChatBackend{err: errors.New("boom")}
+// A turn whose backend ran and then failed still closes with one context
+// event, counted from the reads and sub-agent rows that went out before the
+// failure, and the failure notice follows it.
+func TestWebChat_ContextEventWhenBackendRanThenFailed(t *testing.T) {
+	b := &webChatBackend{events: subagentTurnEvents(), err: errors.New("boom")}
 	h, msgr := newWebChat(b, nil)
+	send(h, "web", "map it")
+	want := []string{
+		"subagent running toolu_1",
+		"subagent done toolu_1",
+		"context 1/0/0",
+	}
+	if !reflect.DeepEqual(msgr.timeline, want) {
+		t.Fatalf("timeline = %q, want %q", msgr.timeline, want)
+	}
+	if got := msgr.last(); !strings.HasPrefix(got, "Chat turn failed: ") || !strings.Contains(got, "boom") {
+		t.Errorf("last message = %q, want the failure notice", got)
+	}
+}
+
+// A turn that ended at the billing preflight never ran the backend and gets
+// no context event.
+func TestWebChat_NoContextEventWhenBackendDidNotRun(t *testing.T) {
+	t.Setenv("PILOT_TEST_CHAT_UNSET_BILLING_KEY", "")
+	runner, err := executor.NewRunnerWithConfig(&executor.BackendConfig{
+		Type: executor.BackendTypeClaudeCode,
+		ClaudeCode: &executor.ClaudeCodeConfig{
+			Billing: &executor.BillingConfig{Mode: executor.BillingModeAPIKey, APIKeyEnv: "PILOT_TEST_CHAT_UNSET_BILLING_KEY"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRunnerWithConfig: %v", err)
+	}
+	msgr := &webChatMessenger{}
+	h := NewHandler(&HandlerConfig{Messenger: msgr, Runner: runner, ProjectPath: "/work/proj"})
 	send(h, "web", "map it")
 	for _, e := range msgr.timeline {
 		if strings.HasPrefix(e, "context ") {
-			t.Fatalf("timeline = %q, want no context event on a failed turn", msgr.timeline)
+			t.Fatalf("timeline = %q, want no context event when the backend did not run", msgr.timeline)
 		}
+	}
+	if len(msgr.messages) != 1 || !strings.HasPrefix(msgr.messages[0], "Chat turn failed: ") {
+		t.Errorf("messages = %q, want one failure notice", msgr.messages)
 	}
 }
 

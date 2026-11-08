@@ -137,16 +137,18 @@ func (h *Handler) handleChatTurn(ctx context.Context, contextID, threadID, text 
 		h.chatSessions[contextID] = result.SessionID
 		h.mu.Unlock()
 	}
-	if err != nil {
-		send("Chat turn failed: " + err.Error())
-		return
-	}
-	// The context event goes out before the reply so the UI has the counts
-	// when the text lands. Read-only turns create no memories.
-	if cs, ok := h.messenger.(ContextSender); ok {
+	// The context event goes out before the reply or the failure notice so the
+	// UI has the counts when the text lands. Every turn that ran the backend
+	// gets one, including a failed turn; a turn that ended before it (billing
+	// preflight) gets none. Read-only turns create no memories.
+	if cs, ok := h.messenger.(ContextSender); ok && result.BackendRan {
 		_ = cs.SendContext(ctx, contextID, threadID, ContextCounts{
 			DocsRead: result.DocsRead, MemoriesRead: result.MemoriesRead, MemoriesCreated: 0,
 		})
+	}
+	if err != nil {
+		send("Chat turn failed: " + err.Error())
+		return
 	}
 
 	reply, draft, found, blockErr := extractPilotIssueBlock(result.Text)

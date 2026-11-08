@@ -103,6 +103,10 @@ type ChatTurnResult struct {
 	// turn only, not the earlier turns of the session.
 	DocsRead     int
 	MemoriesRead int
+	// BackendRan is true once the backend was invoked, whether the turn then
+	// succeeded or failed. False when the turn ended before it (billing
+	// preflight, no backend), so DocsRead and MemoriesRead are not a count.
+	BackendRan bool
 
 	// Usage of the backend run (GH-5677). Zero when the backend returned no
 	// result (timeout, spawn failure).
@@ -303,6 +307,7 @@ func (r *Runner) executeChatTurn(ctx context.Context, turn ChatTurn, onProgress 
 	out := ChatTurnResult{
 		SessionID:    eventSession,
 		SessionReset: sessionReset,
+		BackendRan:   true,
 		ToolCalls:    toolCalls,
 		DocsRead:     len(docsRead),
 		MemoriesRead: len(memsRead),
