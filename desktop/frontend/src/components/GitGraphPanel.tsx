@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react'
 import { Card } from './ui/Card'
-import type { GitGraphData, GitGraphLine } from '../types'
+import type { GitGraphData, GitGraphLine, GitGraphProject } from '../types'
 
 // Track colors matching TUI gitgraph.go palette
 const TRACK_COLORS = ['#7eb8da', '#7ec699', '#d4a054', '#d48a8a', '#8b949e']
@@ -15,6 +15,9 @@ const GRAPH_CHARS = new Set(['*', '●', '|', '│', '\\', '/', '╮', '╯', '�
 
 interface GitGraphPanelProps {
   data: GitGraphData
+  projects: GitGraphProject[]
+  selected: string | null
+  onSelect: (name: string) => void
 }
 
 function trackColorAt(col: number): string {
@@ -103,7 +106,40 @@ function GraphLine({ line }: { line: GitGraphLine }) {
   )
 }
 
-export function GitGraphPanel({ data }: GitGraphPanelProps) {
+function ProjectTabs({
+  projects,
+  selected,
+  onSelect,
+}: {
+  projects: GitGraphProject[]
+  selected: string | null
+  onSelect: (name: string) => void
+}) {
+  return (
+    <div className="shrink-0 flex flex-wrap gap-1 mb-1 text-[10px]">
+      {projects.map((p) => {
+        const active = p.name === selected
+        return (
+          <button
+            key={p.name}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onSelect(p.name)}
+            className={`px-1.5 py-0.5 rounded border cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-steel ${
+              active
+                ? 'border-steel text-steel bg-slate'
+                : 'border-border text-midgray hover:text-lightgray'
+            }`}
+          >
+            {p.name}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+export function GitGraphPanel({ data, projects, selected, onSelect }: GitGraphPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [visibleEnd, setVisibleEnd] = useState(0)
 
@@ -129,6 +165,9 @@ export function GitGraphPanel({ data }: GitGraphPanelProps) {
   return (
     <Card title="GIT GRAPH" className="flex-1 min-h-0">
       <div className="flex flex-col h-full min-h-0">
+        {projects.length >= 2 && (
+          <ProjectTabs projects={projects} selected={selected} onSelect={onSelect} />
+        )}
         <div ref={scrollRef} className="flex-1 overflow-y-auto log-scroll text-[11px] min-h-0">
           {data.lines.length === 0 ? (
             <div className="text-gray text-[10px]">

@@ -8,10 +8,12 @@ import { LogsPanel } from './components/LogsPanel'
 import { GitGraphPanel } from './components/GitGraphPanel'
 import { useDashboard } from './hooks/useDashboard'
 import { useGitGraph } from './hooks/useGitGraph'
+import { useGitGraphProject } from './hooks/useGitGraphProject'
 
 function App() {
   const { metrics, queueTasks, history, autopilot, server, logs } = useDashboard()
-  const gitGraph = useGitGraph()
+  const { projects, selected, select } = useGitGraphProject()
+  const gitGraph = useGitGraph(selected)
   const isWails = !!(window as any).go?.main?.App
 
   return (
@@ -31,7 +33,7 @@ function App() {
 
         {/* Right column */}
         <div className="flex flex-1 min-w-0 min-h-0">
-          <GitGraphPanel data={gitGraph} />
+          <GitGraphPanel data={gitGraph} projects={projects} selected={selected} onSelect={select} />
         </div>
       </div>
     </div>
