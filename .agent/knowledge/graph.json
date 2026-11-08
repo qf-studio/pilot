@@ -3137,6 +3137,25 @@
           "https://github.com/qf-studio/pilot/issues/6214",
           "https://github.com/qf-studio/pilot/issues/5810"
         ]
+      },
+      "TASK-649": {
+        "path": ".agent/tasks/TASK-649-git-graph-per-project-selection.md",
+        "title": "Git graph per-project selection — the gateway and the desktop app serve any configured project's graph, and the GIT GRAPH panel gets a project tab row (pilot#6207)",
+        "status": "dispatched",
+        "concepts": [
+          "knowledge",
+          "authentication",
+          "testing",
+          "deployment",
+          "frontend",
+          "api",
+          "context"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6219",
+          "https://github.com/qf-studio/pilot/issues/6220",
+          "https://github.com/qf-studio/pilot/issues/6207"
+        ]
       }
     },
     "memories": {
@@ -8851,6 +8870,19 @@
         ],
         "created": "2026-11-08",
         "last_validated": "2026-11-08"
+      },
+      "mem-299": {
+        "type": "pitfall",
+        "summary": "Git hooks that find the repo root as $HOOK_DIR/../.. validate the main checkout, not the worktree: worktrees share .git/hooks, so the pre-push gate and the pre-commit graph check ran against root files and blocked two TASK-646 pushes for files the pushed commit deletes. Resolve the root with git rev-parse --show-toplevel. Never pipe git push through tail: the failing gate step scrolls off; log to a file. Fix filed as #6218.",
+        "path": "memories/pitfalls/mem-299.md",
+        "confidence": 0.95,
+        "concepts": [
+          "git",
+          "worktree",
+          "ci"
+        ],
+        "created": "2026-11-08",
+        "last_validated": "2026-11-08"
       }
     }
   },
@@ -12829,6 +12861,41 @@
       "from": "readme-cites-a-marker-that-was-never-written-console-sessions-unrecoverable",
       "to": "console-ui",
       "type": "relates_to"
+    },
+    {
+      "from": "TASK-649",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-649",
+      "to": "frontend",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-649",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-649",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-649",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-649",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-649",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -13010,7 +13077,8 @@
       "TASK-642",
       "TASK-643",
       "TASK-646",
-      "TASK-647"
+      "TASK-647",
+      "TASK-649"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -13093,7 +13161,8 @@
       "TASK-599",
       "TASK-628",
       "TASK-631",
-      "TASK-633"
+      "TASK-633",
+      "TASK-649"
     ],
     "auto-merge": [
       "mem-103"
@@ -13227,7 +13296,8 @@
       "test-db-migrations-race-on-cluster-wide-roles-need-base-db-advisory-lock",
       "post-merge-fix-blames-merged-pr-for-preexisting-flake",
       "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal",
-      "mem-282"
+      "mem-282",
+      "mem-299"
     ],
     "ci-gates": [
       "hand-file-the-ci-fix-issue-in-autopilot-fix-shape-when-the-size-guard-declines"
@@ -13411,7 +13481,8 @@
       "TASK-635",
       "TASK-643",
       "TASK-646",
-      "TASK-647"
+      "TASK-647",
+      "TASK-649"
     ],
     "conversational-bot": [
       "mem-036",
@@ -13706,7 +13777,8 @@
       "TASK-635",
       "TASK-643",
       "TASK-646",
-      "TASK-647"
+      "TASK-647",
+      "TASK-649"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -13955,7 +14027,8 @@
       "TASK-594",
       "TASK-596",
       "TASK-643",
-      "TASK-647"
+      "TASK-647",
+      "TASK-649"
     ],
     "gateway": [
       "TASK-01",
@@ -13974,7 +14047,8 @@
       "rev-list-without-topo-order-breaks-oldest-first-reparent",
       "runselfreview-runs-in-repo-root-phantom-reimplementation",
       "test-asserts-on-pre-rewrite-sha-is-vacuous",
-      "tag-push-runs-full-pre-push-gate"
+      "tag-push-runs-full-pre-push-gate",
+      "mem-299"
     ],
     "git-operations": [
       "mem-011",
@@ -14210,7 +14284,8 @@
       "TASK-635",
       "TASK-643",
       "TASK-646",
-      "TASK-647"
+      "TASK-647",
+      "TASK-649"
     ],
     "labels": [
       "mem-100",
@@ -14761,7 +14836,8 @@
       "mem-287",
       "TASK-643",
       "TASK-646",
-      "TASK-647"
+      "TASK-647",
+      "TASK-649"
     ],
     "testing-quality": [
       "TASK-384",
@@ -14973,7 +15049,8 @@
       "executor-session-ends-turn-awaiting-background-test-no-commit",
       "process-guard-keyed-on-execution-path-is-per-task-under-worktree-isolation",
       "TASK-572",
-      "TASK-574"
+      "TASK-574",
+      "mem-299"
     ],
     "yaml": [
       "mem-160"
@@ -15402,11 +15479,11 @@
       "mem-291"
     ]
   },
-  "last_updated": "2026-11-08T14:31:53.824228+00:00",
+  "last_updated": "2026-11-08T16:07:31.573251+00:00",
   "stats": {
-    "total_nodes": 769,
-    "total_edges": 787,
-    "memory_count": 421
+    "total_nodes": 773,
+    "total_edges": 802,
+    "memory_count": 424
   },
   "metadata": {
     "last_updated": null
