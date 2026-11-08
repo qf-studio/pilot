@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -438,11 +439,29 @@ func (s *Server) handleGitGraph(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	fetcher := s.gitGraphFetcher
 	projectPath := s.gitGraphPath
+	projects := s.gitGraphProjects
 	s.mu.RUnlock()
 
 	if fetcher == nil {
 		http.Error(w, "git graph not configured", http.StatusServiceUnavailable)
 		return
+	}
+
+	// Decision: ?project= is only ever a config lookup key. The fetcher runs
+	// `git fetch` and `git log` in the path it is given, so the request value
+	// must never become a path; an unknown name is a 404, never a fallback.
+	if project := r.URL.Query().Get("project"); project != "" {
+		var info *comms.ProjectInfo
+		if projects != nil {
+			info = projects.GetProjectByName(project)
+		}
+		if info == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unknown project: " + project})
+			return
+		}
+		projectPath = info.Path
 	}
 
 	limit := 100
@@ -458,6 +477,46 @@ func (s *Server) handleGitGraph(w http.ResponseWriter, r *http.Request) {
 
 	state := fetcher(projectPath, limit)
 	writeJSON(w, state)
+}
+
+// gitGraphProjectEntry is one selectable project in GET /api/v1/gitgraph/projects.
+// Paths are deliberately not exposed.
+type gitGraphProjectEntry struct {
+	Name    string `json:"name"`
+	Default bool   `json:"default"`
+}
+
+func (s *Server) handleGitGraphProjects(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.RLock()
+	projects := s.gitGraphProjects
+	graphPath := s.gitGraphPath
+	s.mu.RUnlock()
+
+	entries := []gitGraphProjectEntry{}
+	if projects != nil {
+		canonGraph := ""
+		if graphPath != "" {
+			canonGraph = memory.CanonicalizeProjectPath(graphPath)
+		}
+		defaultSet := false
+		for _, p := range projects.ListProjects() {
+			if p == nil || p.Name == "" {
+				continue
+			}
+			isDefault := !defaultSet && canonGraph != "" && memory.CanonicalizeProjectPath(p.Path) == canonGraph
+			if isDefault {
+				defaultSet = true
+			}
+			entries = append(entries, gitGraphProjectEntry{Name: p.Name, Default: isDefault})
+		}
+	}
+
+	writeJSON(w, map[string]interface{}{"projects": entries})
 }
 
 func (s *Server) handleDashboardLogs(w http.ResponseWriter, r *http.Request) {

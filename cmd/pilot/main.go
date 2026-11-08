@@ -1518,6 +1518,7 @@ Examples:
 				return dashboard.FetchGitGraph(path, limit)
 			})
 			p.Gateway().SetGitGraphPath(projectPath)
+			p.Gateway().SetGitGraphProjects(config.NewProjectSource(cfg))
 
 			// GH-5003 / TASK-466 read leg: wire the project path backing
 			// GET /api/v1/docs/tree and /docs/file (gateway mode). Must
@@ -3015,6 +3016,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			return dashboard.FetchGitGraph(path, limit)
 		})
 		gwServer.SetGitGraphPath(projectPath)
+		gwServer.SetGitGraphProjects(config.NewProjectSource(cfg))
 
 		// GH-5003 / TASK-466 read leg: wire the project path backing
 		// GET /api/v1/docs/tree and /docs/file (polling mode). Must mirror

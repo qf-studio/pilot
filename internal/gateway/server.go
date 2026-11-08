@@ -140,6 +140,7 @@ type Server struct {
 	logStreamStore           LogStreamStore
 	gitGraphPath             string                    // Project path for git graph API (defaults to ".")
 	gitGraphFetcher          GitGraphFetcher           // Injected to avoid import cycle with internal/dashboard
+	gitGraphProjects         comms.ProjectSource       // Resolves ?project=<name> to a configured path; nil = no per-project graph
 	docsProjectPath          string                    // GH-5003: project worktree path backing /api/v1/docs/{tree,file}; "" until SetDocsProjectPath is called
 	decisionRecorder         approval.DecisionRecorder // GH-4748: backs POST /api/v1/approvals/{requestId}/decision
 	learningStore            LearningStore             // GH-6011: backs POST /api/v1/learnings and reject reasons on approval decisions
@@ -288,6 +289,7 @@ func (s *Server) Start(ctx context.Context) error {
 	apiMux.HandleFunc("/api/v1/history", s.handleDashboardHistory)
 	apiMux.HandleFunc("/api/v1/logs", s.handleDashboardLogs)
 	apiMux.HandleFunc("/api/v1/gitgraph", s.handleGitGraph)
+	apiMux.HandleFunc("/api/v1/gitgraph/projects", s.handleGitGraphProjects)
 	apiMux.HandleFunc("GET /api/v1/approvals", s.handleApprovals)
 	apiMux.HandleFunc("POST /api/v1/approvals/{requestId}/decision", s.handleApprovalDecision)
 	apiMux.HandleFunc("POST /api/v1/learnings", s.handleLearnings)             // GH-6011
@@ -513,6 +515,16 @@ func (s *Server) SetGitGraphPath(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gitGraphPath = path
+}
+
+// SetGitGraphProjects sets the project registry that resolves the
+// /api/v1/gitgraph?project=<name> query and backs /api/v1/gitgraph/projects.
+// With a nil source any ?project= value is answered 404. Must be called at
+// BOTH daemon construction sites next to SetGitGraphPath.
+func (s *Server) SetGitGraphProjects(src comms.ProjectSource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gitGraphProjects = src
 }
 
 // SetGitGraphFetcher sets the function used to fetch git graph data.
