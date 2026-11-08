@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-mocks check-destructive check-graph test-bench bench-bootstrap-report pentest gate check-integration test-prepush-fastpath test-prepush-gate-output auto-fix test-short test-changed test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard watch-git-config
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-mocks check-destructive check-graph test-bench bench-bootstrap-report pentest gate check-integration test-prepush-fastpath test-prepush-gate-output test-install-hooks-worktree auto-fix test-short test-changed test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard watch-git-config
 
 # Variables
 BINARY_NAME=pilot
@@ -212,6 +212,9 @@ test-prepush-fastpath:
 test-prepush-gate-output:
 	@./scripts/test-prepush-gate-output.sh
 
+test-install-hooks-worktree:
+	@./scripts/test-install-hooks-worktree.sh
+
 # Auto-fix common issues (formatting, imports, lint)
 auto-fix:
 	@./scripts/auto-fix.sh
@@ -339,6 +342,7 @@ help:
 	@echo "  make check-integration  Check for orphan code"
 	@echo "  make test-prepush-fastpath  Test the pre-push docs-only fast-path classifier"
 	@echo "  make test-prepush-gate-output  Test the pre-push gate failure summary + log"
+	@echo "  make test-install-hooks-worktree  Test hooks resolve the pushing worktree, installer works from a worktree"
 	@echo "  make gate           Run pre-push validation gate"
 	@echo "  make auto-fix       Auto-fix common issues"
 	@echo "  make test-short     Run tests in short mode"
