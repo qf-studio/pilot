@@ -1,6 +1,6 @@
 # TASK-647: Research page `subagent` + `context` chat events — the daemon reports sub-agent start/done with durations and the turn's Navigator read counts (pilot#5810, roadmap P17 / U9)
 
-**Status**: 🚀 **A1 MERGED 2026-11-08 15:07Z → [PR#6212](https://github.com/qf-studio/pilot/pull/6212) (second run after a 14:02Z pre-PR hold: fan-out recorded a stream line N times; body amended, branch parked `pilot-hold/GH-6210-b16ff1c`, retry 12m24s to merge). B1 DISPATCHED 15:2xZ → [pilot#6214](https://github.com/qf-studio/pilot/issues/6214) (`pilot` + `no-decompose`).** Next: B1 pre-PR verdict → post-merge reviews of PR#6212 and B1's PR → next daemon tag on the tenant → live check on the console Research page.
+**Status**: 🚀 **BOTH LEGS MERGED 2026-11-08 — A1 [PR#6212](https://github.com/qf-studio/pilot/pull/6212) 15:07Z · B1 [PR#6216](https://github.com/qf-studio/pilot/pull/6216) 15:57Z; live check pending.** B1 post-merge review: REQUEST-CHANGES (blocking: a turn that failed after the backend ran sent no `context` event, and `TestWebChat_NoContextEventWhenTurnFails` pinned that; minors: doc wording, mutation pins not run) → autopilot fix [pilot#6217](https://github.com/qf-studio/pilot/issues/6217) → [PR#6221](https://github.com/qf-studio/pilot/pull/6221) merged 16:25Z → its minors (billing-preflight test leaks process state) in [pilot#6223](https://github.com/qf-studio/pilot/issues/6223), in progress. PR#6212 has no post-merge review comment (daemon-session hand-over). **Not in a daemon tag yet**: latest v2.315.2 was cut 15:04Z, before B1. Next: next daemon tag → tenant → live check on the console Research page (last Acceptance box) → roadmap P17 ✅ → TASK-583 U9 unblocked. [pilot#5810](https://github.com/qf-studio/pilot/issues/5810) closed 11-08 with the PR pointers.
 **Created**: 2026-11-08
 **Assignee**: Navigator (plan, reviews, live check) → Pilot (legs)
 **Parent**: console program wave 1, roadmap row P17 (daemon side) → unblocks U9 (`ui#244 → PR#246`, live). The console task docs and the roadmap live in the private `qf-studio/pilot-console` repo under `.agent/` since 2026-11-08 (TASK-646); this doc stays here because the change is daemon code.
@@ -36,11 +36,11 @@
 
 ## Acceptance Criteria
 
-- [ ] A web chat turn whose stream holds a `Task`/`Agent` tool_use and its tool_result produces, on `GET /api/v1/chat/conversations/{id}/events`, a `subagent` event with `phase:"running"` and then one with `phase:"done"` and a `durationMs` ≥ 0, both with the same `taskId` (the tool_use id) and `text` = the sub-agent `description`.
-- [ ] Two `Task` tool_use blocks in one assistant message → two `running` events with two different `taskId`s.
-- [ ] Every chat turn ends with exactly one `context` event carrying `docsRead`, `memoriesRead` and `memoriesCreated:0` as JSON numbers (a turn that read nothing serializes `"docsRead":0`), emitted before the final `text` event.
-- [ ] Non-web messengers receive no extra text for these events.
-- [ ] `.agent/system/side-chat-navigator.md` lists the six event types with their fields.
+- [x] A web chat turn whose stream holds a `Task`/`Agent` tool_use and its tool_result produces, on `GET /api/v1/chat/conversations/{id}/events`, a `subagent` event with `phase:"running"` and then one with `phase:"done"` and a `durationMs` ≥ 0, both with the same `taskId` (the tool_use id) and `text` = the sub-agent `description`.
+- [x] Two `Task` tool_use blocks in one assistant message → two `running` events with two different `taskId`s.
+- [x] Every chat turn ends with exactly one `context` event carrying `docsRead`, `memoriesRead` and `memoriesCreated:0` as JSON numbers (a turn that read nothing serializes `"docsRead":0`), emitted before the final `text` event.
+- [x] Non-web messengers receive no extra text for these events.
+- [x] `.agent/system/side-chat-navigator.md` lists the seven event types with their fields.
 - [ ] Live: after the daemon tag reaches the tenant, a research question on the console Research page shows sub-agent rows with DONE badges and durations, and the run line reads `Read N docs · M memories · Created 0` with N, M ≥ 0 (not `—`).
 
 ---
