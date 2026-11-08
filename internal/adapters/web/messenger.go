@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +36,8 @@ const (
 	EventProgress     EventType = "progress"
 	EventResult       EventType = "result"
 	EventDrafts       EventType = "drafts"
+	EventSubagent     EventType = "subagent"
+	EventContext      EventType = "context"
 )
 
 // Event is one entry in a conversation's outbound timeline, served verbatim
@@ -62,8 +65,15 @@ type Event struct {
 	Success    *bool     `json:"success,omitempty"`
 	MessageRef string    `json:"messageRef,omitempty"`
 	// Drafts carries the tickets drafted from a research report (type "drafts").
-	Drafts     []comms.TicketDraft `json:"drafts,omitempty"`
-	OccurredAt time.Time           `json:"occurredAt"`
+	Drafts []comms.TicketDraft `json:"drafts,omitempty"`
+	// DurationMs is set on a subagent event in phase "done". The context
+	// counts are set on every context event. All four are pointers so a real
+	// 0 serializes: the UI shows a dash for a missing field.
+	DurationMs      *int64    `json:"durationMs,omitempty"`
+	DocsRead        *int      `json:"docsRead,omitempty"`
+	MemoriesRead    *int      `json:"memoriesRead,omitempty"`
+	MemoriesCreated *int      `json:"memoriesCreated,omitempty"`
+	OccurredAt      time.Time `json:"occurredAt"`
 }
 
 type conversation struct {
@@ -87,8 +97,10 @@ type WebMessenger struct {
 }
 
 var (
-	_ comms.Messenger    = (*WebMessenger)(nil)
-	_ comms.DraftsSender = (*WebMessenger)(nil)
+	_ comms.Messenger      = (*WebMessenger)(nil)
+	_ comms.DraftsSender   = (*WebMessenger)(nil)
+	_ comms.SubagentSender = (*WebMessenger)(nil)
+	_ comms.ContextSender  = (*WebMessenger)(nil)
 )
 
 // NewMessenger creates an empty WebMessenger.
@@ -218,6 +230,38 @@ func (m *WebMessenger) SendDrafts(_ context.Context, contextID, _threadID string
 	defer m.mu.Unlock()
 	m.pruneLocked()
 	m.appendLocked(contextID, Event{Type: EventDrafts, Drafts: drafts})
+	return nil
+}
+
+// SendSubagent appends one subagent event. DurationMs is set only on done. It
+// satisfies comms.SubagentSender.
+func (m *WebMessenger) SendSubagent(_ context.Context, contextID, _threadID string, u comms.SubagentUpdate) error {
+	ev := Event{Type: EventSubagent, TaskID: u.TaskID, Text: u.Text, Phase: u.Phase}
+	if u.Phase == "done" {
+		d := u.DurationMs
+		ev.DurationMs = &d
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneLocked()
+	m.appendLocked(contextID, ev)
+	return nil
+}
+
+// SendContext appends one context event with the turn's Navigator counts. Its
+// taskId is the chat turn's progress taskId. It satisfies comms.ContextSender.
+func (m *WebMessenger) SendContext(_ context.Context, contextID, _threadID string, c comms.ContextCounts) error {
+	docs, mems, created := c.DocsRead, c.MemoriesRead, c.MemoriesCreated
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneLocked()
+	m.appendLocked(contextID, Event{
+		Type:            EventContext,
+		TaskID:          "chat-" + strings.TrimPrefix(contextID, "web:"),
+		DocsRead:        &docs,
+		MemoriesRead:    &mems,
+		MemoriesCreated: &created,
+	})
 	return nil
 }
 

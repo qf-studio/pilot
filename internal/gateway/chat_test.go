@@ -273,6 +273,25 @@ func TestHandleChatEvents_Success_200(t *testing.T) {
 	}
 }
 
+func TestChatEvents_ContextZeroCountsSerialize(t *testing.T) {
+	zero := 0
+	api := &mockChatAPI{
+		eventsFunc: func(string, int64) ([]web.Event, int64) {
+			return []web.Event{{Seq: 1, Type: web.EventContext, TaskID: "chat-c1", DocsRead: &zero, MemoriesRead: &zero, MemoriesCreated: &zero}}, 1
+		},
+	}
+	s := newTestServerWithChat(api)
+	req := httpTestRequestWithPathValue(t, http.MethodGet, "/api/v1/chat/conversations/c1/events", nil, "id", "c1")
+	w := newTestResponseRecorder()
+	s.handleChatEvents(w, req)
+	if w.status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.status)
+	}
+	if !bytes.Contains(w.body.Bytes(), []byte(`"memoriesCreated":0`)) {
+		t.Errorf("body = %s, want \"memoriesCreated\":0 present", w.body.String())
+	}
+}
+
 // TestHandleChatEvents_UnknownConversation_EventsIsEmptyArrayNotNull covers
 // GH-4843 D3: the wire body for an unknown/expired conversation must contain
 // `"events": []`, not `"events": null` — a nil slice serializes to null,
@@ -867,9 +886,13 @@ func TestChatAPI_Composed(t *testing.T) {
 	if err := json.NewDecoder(taskResp.Body).Decode(&taskAccept); err != nil {
 		t.Fatalf("decode task accept body: %v", err)
 	}
-	textEvents := pollEvents(t, taskConv, taskAccept.Seq, func(evs []web.Event) bool { return len(evs) > 0 })
-	if textEvents[0].Type != web.EventText || textEvents[0].Text != chatBackendOutput {
-		t.Fatalf("first event = %+v, want text event %q", textEvents[0], chatBackendOutput)
+	// The turn's context event (zero counts here) precedes the reply text.
+	textEvents := pollEvents(t, taskConv, taskAccept.Seq, func(evs []web.Event) bool { return len(evs) > 1 })
+	if textEvents[0].Type != web.EventContext || textEvents[0].DocsRead == nil || *textEvents[0].DocsRead != 0 {
+		t.Fatalf("first event = %+v, want context event with docsRead 0", textEvents[0])
+	}
+	if textEvents[1].Type != web.EventText || textEvents[1].Text != chatBackendOutput {
+		t.Fatalf("second event = %+v, want text event %q", textEvents[1], chatBackendOutput)
 	}
 
 	// 3b. Project selection on the wire: an unknown projectId is a 400 whose
