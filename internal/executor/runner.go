@@ -590,6 +590,9 @@ type StreamEvent struct {
 	DurationMS    int             `json:"duration_ms,omitempty"`
 	NumTurns      int             `json:"num_turns,omitempty"`
 	ToolUseResult json.RawMessage `json:"tool_use_result,omitempty"`
+	// ParentToolUseID is set when the event comes from a sub-agent (the id of
+	// the Task/Agent tool_use that spawned it); empty for the main agent.
+	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
 	// Token usage (TASK-13)
 	Usage *UsageInfo `json:"usage,omitempty"`
 	Model string     `json:"model,omitempty"`
@@ -672,6 +675,48 @@ type ContentBlock struct {
 	Name    string                 `json:"name,omitempty"`
 	Input   map[string]interface{} `json:"input,omitempty"`
 	IsError bool                   `json:"is_error,omitempty"` // For tool_result blocks
+	// ID is the tool_use block id ("toolu_..."); empty on other block types.
+	ID string `json:"id,omitempty"`
+	// ToolUseID is set on tool_result blocks and references the tool_use
+	// block id the result answers.
+	ToolUseID string `json:"tool_use_id,omitempty"`
+}
+
+// UnmarshalJSON accepts tool_result content given either as a string or as an
+// array of {type:"text",text:...} parts (sub-agent results use the array
+// form); the parts are joined into Content. Without this a single array-form
+// result would fail the whole stream line.
+func (c *ContentBlock) UnmarshalJSON(data []byte) error {
+	type plain ContentBlock
+	aux := struct {
+		*plain
+		Content json.RawMessage `json:"content,omitempty"`
+	}{plain: (*plain)(c)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	c.Content = ""
+	if len(aux.Content) == 0 {
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(aux.Content, &str); err == nil {
+		c.Content = str
+		return nil
+	}
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(aux.Content, &parts); err == nil {
+		texts := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if p.Text != "" {
+				texts = append(texts, p.Text)
+			}
+		}
+		c.Content = strings.Join(texts, "\n")
+	}
+	return nil
 }
 
 // ToolResultContent represents tool result in user events

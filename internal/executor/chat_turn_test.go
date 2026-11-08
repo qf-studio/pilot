@@ -94,8 +94,8 @@ func TestChatTurn_AllowlistExcludesWriteTools(t *testing.T) {
 			t.Errorf("allowlist contains forbidden tool %q", tool)
 		}
 	}
-	if len(ChatReadOnlyTools) != 12 {
-		t.Errorf("len(ChatReadOnlyTools) = %d, want 12", len(ChatReadOnlyTools))
+	if len(ChatReadOnlyTools) != 13 {
+		t.Errorf("len(ChatReadOnlyTools) = %d, want 13", len(ChatReadOnlyTools))
 	}
 }
 
@@ -413,5 +413,124 @@ func TestClaudeCodeParseResultEvent_CarriesReportedCost(t *testing.T) {
 	ev = backend.parseStreamEvent(`{"type":"result","subtype":"success","result":"done"}`)
 	if ev.ReportedCostUSD != nil {
 		t.Fatalf("absent total_cost_usd gave %v, want nil", *ev.ReportedCostUSD)
+	}
+}
+
+func toolUseID(id, name string, input map[string]interface{}) BackendEvent {
+	ev := toolUse(name, input)
+	ev.ToolUseID = id
+	return ev
+}
+
+func toolResultFor(id string) BackendEvent {
+	return BackendEvent{Type: EventTypeToolResult, ToolUseID: id}
+}
+
+func collectSubagents(t *testing.T, events []BackendEvent) ([]SubagentEvent, ChatTurnResult) {
+	t.Helper()
+	disableChatProgressThrottle(t)
+	var got []SubagentEvent
+	res, err := newChatRunner(&chatFakeBackend{output: "done", events: events}).ExecuteChatTurn(
+		context.Background(),
+		ChatTurn{ProjectPath: "/repo", Text: "q", OnSubagent: func(e SubagentEvent) { got = append(got, e) }},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("ExecuteChatTurn: %v", err)
+	}
+	return got, res
+}
+
+func TestChatTurn_SubagentRunningThenDone(t *testing.T) {
+	for _, tool := range []string{"Task", "Agent"} {
+		t.Run(tool, func(t *testing.T) {
+			got, _ := collectSubagents(t, []BackendEvent{
+				toolUseID("toolu_1", tool, map[string]interface{}{"description": "map the executor"}),
+				toolResultFor("toolu_1"),
+			})
+			if len(got) != 2 {
+				t.Fatalf("got %d sub-agent events, want 2: %+v", len(got), got)
+			}
+			if got[0].Phase != "running" || got[1].Phase != "done" {
+				t.Errorf("phases = %q, %q, want running, done", got[0].Phase, got[1].Phase)
+			}
+			for _, e := range got {
+				if e.TaskID != "toolu_1" || e.Text != "map the executor" {
+					t.Errorf("event = %+v, want TaskID toolu_1 text 'map the executor'", e)
+				}
+			}
+			if got[1].DurationMs < 0 {
+				t.Errorf("DurationMs = %d, want >= 0", got[1].DurationMs)
+			}
+		})
+	}
+}
+
+func TestChatTurn_SubagentWithoutResultClosedAtEnd(t *testing.T) {
+	got, _ := collectSubagents(t, []BackendEvent{
+		toolUseID("toolu_1", "Task", map[string]interface{}{"description": "never answered"}),
+	})
+	if len(got) != 2 || got[0].Phase != "running" || got[1].Phase != "done" || got[1].TaskID != "toolu_1" {
+		t.Fatalf("events = %+v, want running then one done", got)
+	}
+}
+
+func TestChatTurn_SubagentTextFallbacks(t *testing.T) {
+	long := strings.Repeat("é", 100)
+	got, _ := collectSubagents(t, []BackendEvent{
+		toolUseID("t1", "Agent", map[string]interface{}{"prompt": long}),
+		toolUseID("t2", "Agent", nil),
+	})
+	byID := map[string]string{}
+	for _, e := range got {
+		if e.Phase == "running" {
+			byID[e.TaskID] = e.Text
+		}
+	}
+	if byID["t1"] != strings.Repeat("é", 80) {
+		t.Errorf("prompt fallback = %q, want first 80 runes", byID["t1"])
+	}
+	if byID["t2"] != "Agent" {
+		t.Errorf("tool name fallback = %q, want Agent", byID["t2"])
+	}
+}
+
+func TestChatTurn_SubagentOwnToolUseOpensNoRow(t *testing.T) {
+	inner := toolUseID("toolu_inner", "Task", map[string]interface{}{"description": "nested"})
+	inner.ParentToolUseID = "toolu_1"
+	got, _ := collectSubagents(t, []BackendEvent{
+		toolUseID("toolu_1", "Task", map[string]interface{}{"description": "outer"}),
+		inner,
+		toolResultFor("toolu_1"),
+	})
+	for _, e := range got {
+		if e.TaskID != "toolu_1" {
+			t.Errorf("unexpected row %+v", e)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d events, want 2: %+v", len(got), got)
+	}
+}
+
+func TestChatTurn_CountsDistinctNavigatorReads(t *testing.T) {
+	read := func(p string) BackendEvent { return toolUse("Read", map[string]interface{}{"file_path": p}) }
+	_, res := collectSubagents(t, []BackendEvent{
+		read("/repo/.agent/DEVELOPMENT-README.md"),
+		read(".agent/tasks/TASK-1.md"),
+		read("/repo/.agent/knowledge/memories/pitfalls/x.md"),
+		read(".agent/knowledge/memories/pitfalls/x.md"),
+		read("src/main.go"),
+		toolUse("Grep", map[string]interface{}{"pattern": "x", "path": ".agent/"}),
+	})
+	if res.DocsRead != 2 || res.MemoriesRead != 1 {
+		t.Errorf("DocsRead = %d, MemoriesRead = %d, want 2 and 1", res.DocsRead, res.MemoriesRead)
+	}
+}
+
+func TestChatTurn_ProgressLineAgent(t *testing.T) {
+	got := chatProgressLine(toolUse("Agent", map[string]interface{}{"description": "scan docs"}))
+	if got != "Agent scan docs" {
+		t.Errorf("chatProgressLine = %q", got)
 	}
 }

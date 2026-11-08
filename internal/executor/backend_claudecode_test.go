@@ -2439,3 +2439,77 @@ exit 0
 		t.Errorf("args %q carry --settings without a WriteBoundary", args)
 	}
 }
+
+func TestParseStreamEvents_OneEventPerToolUseBlock(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+	line := `{"type":"assistant","message":{"content":[` +
+		`{"type":"text","text":"looking"},` +
+		`{"type":"tool_use","id":"toolu_a","name":"Read","input":{"file_path":"a.go"}},` +
+		`{"type":"tool_use","id":"toolu_b","name":"Grep","input":{"pattern":"x"}}]},` +
+		`"usage":{"input_tokens":7,"output_tokens":3}}`
+	events := backend.parseStreamEvents(line)
+	if len(events) != 3 {
+		t.Fatalf("got %d events, want 3: %+v", len(events), events)
+	}
+	if events[0].Type != EventTypeText || events[0].Message != "looking" {
+		t.Errorf("events[0] = %+v, want text 'looking'", events[0])
+	}
+	for i, want := range []struct{ id, name string }{{"toolu_a", "Read"}, {"toolu_b", "Grep"}} {
+		ev := events[i+1]
+		if ev.Type != EventTypeToolUse || ev.ToolUseID != want.id || ev.ToolName != want.name {
+			t.Errorf("events[%d] = %+v, want tool_use %s %s", i+1, ev, want.id, want.name)
+		}
+	}
+	// Usage rides on the first event only so it is not double-counted.
+	var in int64
+	for _, ev := range events {
+		in += ev.TokensInput
+	}
+	if in != 7 {
+		t.Errorf("summed TokensInput = %d, want 7", in)
+	}
+}
+
+func TestParseStreamEvents_ToolResultBlockCarriesToolUseID(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+	line := `{"type":"user","message":{"content":[` +
+		`{"type":"tool_result","tool_use_id":"toolu_a","content":"ok"},` +
+		`{"type":"tool_result","tool_use_id":"toolu_b","content":[{"type":"text","text":"sub-agent done"}],"is_error":true}]}}`
+	events := backend.parseStreamEvents(line)
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2: %+v", len(events), events)
+	}
+	if events[0].Type != EventTypeToolResult || events[0].ToolUseID != "toolu_a" || events[0].IsError {
+		t.Errorf("events[0] = %+v", events[0])
+	}
+	if events[1].Type != EventTypeToolResult || events[1].ToolUseID != "toolu_b" || !events[1].IsError {
+		t.Errorf("events[1] = %+v", events[1])
+	}
+}
+
+func TestParseStreamEvents_FlatToolUseResultKeepsWorking(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+	line := `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_a"}]},"tool_use_result":{"content":"file body","is_error":false}}`
+	events := backend.parseStreamEvents(line)
+	if len(events) != 1 || events[0].ToolUseID != "toolu_a" || events[0].ToolResult != "file body" {
+		t.Fatalf("events = %+v", events)
+	}
+	// No blocks: single event from the flat field, as before.
+	ev := backend.parseStreamEvent(`{"type":"user","tool_use_result":{"content":"x","is_error":true}}`)
+	if ev.Type != EventTypeToolResult || ev.ToolResult != "x" || !ev.IsError {
+		t.Errorf("flat-only event = %+v", ev)
+	}
+}
+
+func TestParseStreamEvents_ParentToolUseID(t *testing.T) {
+	backend := NewClaudeCodeBackend(nil)
+	line := `{"type":"assistant","parent_tool_use_id":"toolu_parent","message":{"content":[{"type":"tool_use","id":"toolu_c","name":"Read","input":{}}]}}`
+	events := backend.parseStreamEvents(line)
+	if len(events) != 1 || events[0].ParentToolUseID != "toolu_parent" {
+		t.Fatalf("events = %+v, want ParentToolUseID toolu_parent", events)
+	}
+	main := backend.parseStreamEvents(`{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"text","text":"hi"}]}}`)
+	if main[0].ParentToolUseID != "" {
+		t.Errorf("main agent ParentToolUseID = %q, want empty", main[0].ParentToolUseID)
+	}
+}

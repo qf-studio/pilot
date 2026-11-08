@@ -163,6 +163,14 @@ type BackendEvent struct {
 	// IsError indicates if this is an error event
 	IsError bool
 
+	// ToolUseID is the tool_use block id on tool_use events and the
+	// referenced tool_use id on tool_result events.
+	ToolUseID string
+
+	// ParentToolUseID is the id of the Task/Agent tool_use whose sub-agent
+	// produced this event; empty for the main agent.
+	ParentToolUseID string
+
 	// TokensInput is the input token count (if available)
 	TokensInput int64
 
