@@ -259,9 +259,14 @@ func TestWebChat_ContextEventWhenBackendRanThenFailed(t *testing.T) {
 	}
 }
 
-// A turn that ended at the billing preflight never ran the backend and gets
-// no context event.
-func TestWebChat_NoContextEventWhenBackendDidNotRun(t *testing.T) {
+// newAPIKeyPreflightRunner builds a Runner whose api_key billing mode has no
+// key, so a chat turn fails at the billing preflight. Building it publishes
+// api_key as the process-wide billing mode; the previous mode is put back on
+// cleanup so later tests in the package do not inherit it.
+func newAPIKeyPreflightRunner(t *testing.T) *executor.Runner {
+	t.Helper()
+	prev := executor.ProcessBillingModeForTest()
+	t.Cleanup(func() { executor.SetProcessBillingMode(prev) })
 	t.Setenv("PILOT_TEST_CHAT_UNSET_BILLING_KEY", "")
 	runner, err := executor.NewRunnerWithConfig(&executor.BackendConfig{
 		Type: executor.BackendTypeClaudeCode,
@@ -272,6 +277,13 @@ func TestWebChat_NoContextEventWhenBackendDidNotRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunnerWithConfig: %v", err)
 	}
+	return runner
+}
+
+// A turn that ended at the billing preflight never ran the backend and gets
+// no context event.
+func TestWebChat_NoContextEventWhenBackendDidNotRun(t *testing.T) {
+	runner := newAPIKeyPreflightRunner(t)
 	msgr := &webChatMessenger{}
 	h := NewHandler(&HandlerConfig{Messenger: msgr, Runner: runner, ProjectPath: "/work/proj"})
 	send(h, "web", "map it")
@@ -282,6 +294,23 @@ func TestWebChat_NoContextEventWhenBackendDidNotRun(t *testing.T) {
 	}
 	if len(msgr.messages) != 1 || !strings.HasPrefix(msgr.messages[0], "Chat turn failed: ") {
 		t.Errorf("messages = %q, want one failure notice", msgr.messages)
+	}
+}
+
+// mutation pin: the billing-preflight runner helper drops its t.Cleanup that restores the process billing mode -> this test fails
+func TestWebChat_PreflightRunnerRestoresProcessBillingMode(t *testing.T) {
+	prev := executor.ProcessBillingModeForTest()
+	executor.SetProcessBillingMode(executor.BillingModeSubscription)
+	t.Cleanup(func() { executor.SetProcessBillingMode(prev) })
+
+	t.Run("preflight", func(t *testing.T) {
+		newAPIKeyPreflightRunner(t)
+		if got := executor.ProcessBillingModeForTest(); got != executor.BillingModeAPIKey {
+			t.Fatalf("process billing mode inside the test = %q, want %q", got, executor.BillingModeAPIKey)
+		}
+	})
+	if got := executor.ProcessBillingModeForTest(); got != executor.BillingModeSubscription {
+		t.Errorf("process billing mode after the test = %q, want %q restored", got, executor.BillingModeSubscription)
 	}
 }
 

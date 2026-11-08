@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -284,6 +285,33 @@ func TestChatTurn_NoTaskSideEffects(t *testing.T) {
 	}
 	if after := snapshot(); !reflect.DeepEqual(before, after) {
 		t.Errorf("project dir changed: before=%v after=%v", before, after)
+	}
+}
+
+// mutation pin: BackendRan is set outside the backend-invoked path (true on the no-backend return, or dropped from the finished turn) -> this test fails
+func TestChatTurn_BackendRanReflectsWhetherBackendWasInvoked(t *testing.T) {
+	noBackend := newChatRunner(&chatFakeBackend{})
+	noBackend.SetBackend(nil)
+	tests := []struct {
+		name    string
+		runner  *Runner
+		wantErr bool
+		want    bool
+	}{
+		{"no backend configured", noBackend, true, false},
+		{"backend ran and succeeded", newChatRunner(&chatFakeBackend{output: "ok"}), false, true},
+		{"backend ran and failed", newChatRunner(&chatFakeBackend{errs: []error{errors.New("boom")}}), true, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := tt.runner.ExecuteChatTurn(context.Background(), ChatTurn{ProjectPath: t.TempDir(), Text: "q"}, nil)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if res.BackendRan != tt.want {
+				t.Errorf("BackendRan = %v, want %v", res.BackendRan, tt.want)
+			}
+		})
 	}
 }
 
