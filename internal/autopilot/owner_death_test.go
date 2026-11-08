@@ -643,6 +643,33 @@ func TestController_RearmDeadOwnerSource_StripsInProgress(t *testing.T) {
 	}
 }
 
+// mutation pin: owner-death re-arm removes pilot-needs-human -> this test fails
+func TestController_RearmDeadOwnerSource_RemovesNeedsHuman(t *testing.T) {
+	source := &github.Issue{
+		Number: 100,
+		State:  github.StateOpen,
+		Labels: []github.Label{{Name: github.LabelPilot}, {Name: labelNeedsHuman}, {Name: github.LabelFailed}},
+	}
+	srv := newOwnerDeathGHServer()
+	srv.issues[100] = source
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, ts.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+	c.SetAlertsEngine(&fakeAlertSink{})
+
+	c.rearmDeadOwnerSource(context.Background(), source, "its designated fix issue #200 died (declined)", nil)
+
+	got := srv.resultingLabels(100, source.Labels)
+	if !got[github.LabelRetryReady] {
+		t.Errorf("re-armed source missing %s: %v", github.LabelRetryReady, got)
+	}
+	if got[labelNeedsHuman] {
+		t.Errorf("re-armed source still carries %s alongside %s: %v", labelNeedsHuman, github.LabelRetryReady, got)
+	}
+}
+
 // TestController_EscalateDeadOwnerSource_StripsInProgressAndRetryLabels pins
 // that an escalated source neither looks in-flight nor retry-able.
 func TestController_EscalateDeadOwnerSource_StripsInProgressAndRetryLabels(t *testing.T) {

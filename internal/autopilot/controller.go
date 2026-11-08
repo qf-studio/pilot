@@ -8708,7 +8708,8 @@ func (c *Controller) mutateIssueLabels(ctx context.Context, issueNumber int, add
 // escalation applied here always supersedes any retry-ready arming still
 // standing, so the retry-ready label is removed in the same mutation. The
 // reverse direction (retry-ready superseding an escalation hold) is
-// enforced at the retry-arming site in notifyExternalClose.
+// enforced at both retry-arming sites: notifyExternalClose and
+// rearmDeadOwnerSource (GH-6172).
 //
 // GH-5643: redrivable marks a hold a new branch head can legitimately fix (the
 // four CI-side holds). When true the hold triple (HoldActive/HoldHeadSHA/

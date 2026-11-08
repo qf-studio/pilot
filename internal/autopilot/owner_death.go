@@ -699,7 +699,9 @@ func (c *Controller) rearmDeadOwnerSource(ctx context.Context, source *github.Is
 	// source with the stale label is never re-picked (same poller skip as the
 	// GH-5375 path in verifyFixPRDeliversSourceScope). All removals and the add
 	// land in one mutation.
-	labelsRemoved := []string{github.LabelFailed, github.LabelSuperseded, github.LabelInProgress}
+	// GH-6172: pilot-needs-human is stripped too — it and pilot-retry-ready
+	// must never coexist (GH-5042), same as the notifyExternalClose arming site.
+	labelsRemoved := []string{github.LabelFailed, github.LabelSuperseded, github.LabelInProgress, labelNeedsHuman}
 	c.mutateIssueLabels(ctx, source.Number, []string{github.LabelRetryReady}, labelsRemoved)
 	// GH-5252: the label strip above is cosmetic only — HasTerminalCompletion
 	// reads the ledger, not labels. If this source's latest terminal evidence
