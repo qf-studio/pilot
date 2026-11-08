@@ -3115,6 +3115,26 @@
           "markers",
           "testing"
         ]
+      },
+      "TASK-647": {
+        "path": ".agent/tasks/TASK-647-research-page-subagent-context-chat-events.md",
+        "title": "Research page `subagent` + `context` chat events — the daemon reports sub-agent start/done with durations and the turn's Navigator read counts (pilot#5810, roadmap P17 / U9)",
+        "status": "dispatched",
+        "concepts": [
+          "frontend",
+          "markers",
+          "database",
+          "context",
+          "api",
+          "deployment",
+          "testing",
+          "workflow",
+          "knowledge"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6210",
+          "https://github.com/qf-studio/pilot/issues/5810"
+        ]
       }
     },
     "memories": {
@@ -8801,6 +8821,34 @@
         ],
         "confidence": 0.95,
         "created": "2026-11-08"
+      },
+      "task-doc-status-line-accretes-stacked-segments-hides-state": {
+        "type": "pitfall",
+        "summary": "Status lines are prepended, never replaced: TASK-645 opened with seven **Status**: segments, TASK-583's line was ~6 KB of chronology, TASK-497/584 led with stale dates and unticked Acceptance boxes although every leg had merged. Replace the status line (one state, one date, one next step); move chronology to a dated section or the archive.",
+        "path": "memories/pitfalls/task-doc-status-line-accretes-stacked-segments-hides-state.md",
+        "confidence": 0.85,
+        "concepts": [
+          "workflow-discipline",
+          "process",
+          "navigator",
+          "markers"
+        ],
+        "created": "2026-11-08",
+        "last_validated": "2026-11-08"
+      },
+      "readme-cites-a-marker-that-was-never-written-console-sessions-unrecoverable": {
+        "type": "pitfall",
+        "summary": "README line 170 cited a 11-06 console marker that was never written; the 11-05→11-07 console sessions had no recoverable checkpoint. Run nav-marker before leaving any session that dispatched or merged; verify a cited marker file exists in the same commit.",
+        "path": "memories/pitfalls/readme-cites-a-marker-that-was-never-written-console-sessions-unrecoverable.md",
+        "confidence": 0.9,
+        "concepts": [
+          "markers",
+          "workflow-discipline",
+          "multi-session",
+          "console-ui"
+        ],
+        "created": "2026-11-08",
+        "last_validated": "2026-11-08"
       }
     }
   },
@@ -12694,6 +12742,91 @@
       "from": "public-repo-agent-tree-holds-public-product-docs-only",
       "to": "ops-discipline",
       "type": "relates_to"
+    },
+    {
+      "from": "TASK-647",
+      "to": "frontend",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-647",
+      "to": "markers",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-647",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-647",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-647",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-647",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-647",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-647",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-647",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "task-doc-status-line-accretes-stacked-segments-hides-state",
+      "to": "workflow-discipline",
+      "type": "relates_to"
+    },
+    {
+      "from": "task-doc-status-line-accretes-stacked-segments-hides-state",
+      "to": "process",
+      "type": "relates_to"
+    },
+    {
+      "from": "task-doc-status-line-accretes-stacked-segments-hides-state",
+      "to": "navigator",
+      "type": "relates_to"
+    },
+    {
+      "from": "task-doc-status-line-accretes-stacked-segments-hides-state",
+      "to": "markers",
+      "type": "relates_to"
+    },
+    {
+      "from": "readme-cites-a-marker-that-was-never-written-console-sessions-unrecoverable",
+      "to": "markers",
+      "type": "relates_to"
+    },
+    {
+      "from": "readme-cites-a-marker-that-was-never-written-console-sessions-unrecoverable",
+      "to": "workflow-discipline",
+      "type": "relates_to"
+    },
+    {
+      "from": "readme-cites-a-marker-that-was-never-written-console-sessions-unrecoverable",
+      "to": "multi-session",
+      "type": "relates_to"
+    },
+    {
+      "from": "readme-cites-a-marker-that-was-never-written-console-sessions-unrecoverable",
+      "to": "console-ui",
+      "type": "relates_to"
     }
   ],
   "concept_index": {
@@ -12874,7 +13007,8 @@
       "TASK-641",
       "TASK-642",
       "TASK-643",
-      "TASK-646"
+      "TASK-646",
+      "TASK-647"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -13274,7 +13408,8 @@
       "TASK-634",
       "TASK-635",
       "TASK-643",
-      "TASK-646"
+      "TASK-646",
+      "TASK-647"
     ],
     "conversational-bot": [
       "mem-036",
@@ -13376,7 +13511,8 @@
       "mem-260",
       "TASK-589",
       "TASK-631",
-      "TASK-633"
+      "TASK-633",
+      "TASK-647"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -13567,7 +13703,8 @@
       "TASK-634",
       "TASK-635",
       "TASK-643",
-      "TASK-646"
+      "TASK-646",
+      "TASK-647"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -13815,7 +13952,8 @@
       "TASK-593",
       "TASK-594",
       "TASK-596",
-      "TASK-643"
+      "TASK-643",
+      "TASK-647"
     ],
     "gateway": [
       "TASK-01",
@@ -14069,7 +14207,8 @@
       "TASK-633",
       "TASK-635",
       "TASK-643",
-      "TASK-646"
+      "TASK-646",
+      "TASK-647"
     ],
     "labels": [
       "mem-100",
@@ -14140,7 +14279,8 @@
       "TASK-632",
       "TASK-634",
       "TASK-643",
-      "TASK-646"
+      "TASK-646",
+      "TASK-647"
     ],
     "memory": [
       "TASK-358",
@@ -14618,7 +14758,8 @@
       "mem-286",
       "mem-287",
       "TASK-643",
-      "TASK-646"
+      "TASK-646",
+      "TASK-647"
     ],
     "testing-quality": [
       "TASK-384",
@@ -14771,7 +14912,8 @@
       "TASK-643",
       "mem-292",
       "mem-293",
-      "mem-294"
+      "mem-294",
+      "TASK-647"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -15258,11 +15400,11 @@
       "mem-291"
     ]
   },
-  "last_updated": "2026-11-08T14:01:34.610316+00:00",
+  "last_updated": "2026-11-08T14:31:53.824228+00:00",
   "stats": {
-    "total_nodes": 767,
-    "total_edges": 772,
-    "memory_count": 420
+    "total_nodes": 769,
+    "total_edges": 787,
+    "memory_count": 421
   },
   "metadata": {
     "last_updated": null
