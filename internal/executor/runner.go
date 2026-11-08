@@ -612,6 +612,9 @@ type StreamEvent struct {
 	// turns; the complete "assistant" event still arrives separately afterward,
 	// so only Type is captured here for classification, not full delta content.
 	Event *StreamEventInner `json:"event,omitempty"`
+	// ParentToolUseID is the id of the Task/Agent tool_use that spawned this
+	// line's sub-agent; empty for the main agent (GH-6210).
+	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
 }
 
 // StreamEventInner captures just the inner event type for a "stream_event"
@@ -666,12 +669,16 @@ type AssistantMsg struct {
 // Also used for tool_result blocks in user messages (Qwen Code sends these
 // in message.content[] instead of Claude Code's flat tool_use_result field).
 type ContentBlock struct {
-	Type    string                 `json:"type"`
-	Text    string                 `json:"text,omitempty"`
-	Content string                 `json:"content,omitempty"` // For tool_result blocks
-	Name    string                 `json:"name,omitempty"`
-	Input   map[string]interface{} `json:"input,omitempty"`
-	IsError bool                   `json:"is_error,omitempty"` // For tool_result blocks
+	Type string `json:"type"`
+	// ID is the tool_use id on tool_use blocks (GH-6210).
+	ID string `json:"id,omitempty"`
+	// ToolUseID references the tool_use a tool_result block answers (GH-6210).
+	ToolUseID string                 `json:"tool_use_id,omitempty"`
+	Text      string                 `json:"text,omitempty"`
+	Content   string                 `json:"content,omitempty"` // For tool_result blocks
+	Name      string                 `json:"name,omitempty"`
+	Input     map[string]interface{} `json:"input,omitempty"`
+	IsError   bool                   `json:"is_error,omitempty"` // For tool_result blocks
 }
 
 // ToolResultContent represents tool result in user events
@@ -5074,7 +5081,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 			// Record the event
 			if recorder != nil {
-				if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
+				if recErr := recordBackendEvent(recorder, event); recErr != nil {
 					log.Warn("Failed to record event", slog.Any("error", recErr))
 				}
 			}
@@ -5431,7 +5438,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 							HeartbeatCallback: r.heartbeatTimeoutCallback(task), // GH-5498
 							EventHandler: func(event BackendEvent) {
 								if recorder != nil {
-									_ = recorder.RecordEvent(event.Raw)
+									_ = recordBackendEvent(recorder, event)
 								}
 								r.processBackendEvent(task.ID, event, state)
 							},
@@ -5932,7 +5939,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 							extractCommitSHA(event.ToolResult, state)
 						}
 						if recorder != nil {
-							if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
+							if recErr := recordBackendEvent(recorder, event); recErr != nil {
 								log.Warn("Failed to record retry event", slog.Any("error", recErr))
 							}
 						}
@@ -6401,7 +6408,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 							HeartbeatCallback: r.heartbeatTimeoutCallback(task), // GH-5498
 							EventHandler: func(event BackendEvent) {
 								if recorder != nil {
-									if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
+									if recErr := recordBackendEvent(recorder, event); recErr != nil {
 										log.Warn("Failed to record retry event", slog.Any("error", recErr))
 									}
 								}
@@ -7933,6 +7940,17 @@ func (r *Runner) IsRunning(taskID string) bool {
 	}
 	_, ok := r.running[taskID]
 	return ok
+}
+
+// recordBackendEvent writes an event's raw stream line to the replay
+// recording. A stream line that fans out into several BackendEvents carries
+// Raw on the first one only, so an empty Raw is skipped: recording per event
+// would duplicate the line and sum its usage once per content block (GH-6210).
+func recordBackendEvent(recorder *replay.Recorder, event BackendEvent) error {
+	if recorder == nil || event.Raw == "" {
+		return nil
+	}
+	return recorder.RecordEvent(event.Raw)
 }
 
 // parseStreamEvent parses a stream-json event and reports progress

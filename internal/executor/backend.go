@@ -142,7 +142,10 @@ type BackendEvent struct {
 	// Type identifies the event category
 	Type BackendEventType
 
-	// Raw contains the original event data (JSON string)
+	// Raw contains the original event data (JSON string). When one stream
+	// line yields several events (one per content block), only the first
+	// carries Raw (and usage/model); the rest have it empty so the line is
+	// recorded and counted once (GH-6210).
 	Raw string
 
 	// Phase indicates the current execution phase (if detectable)
@@ -156,6 +159,14 @@ type BackendEvent struct {
 
 	// ToolInput contains tool parameters for tool_use events
 	ToolInput map[string]interface{}
+
+	// ToolUseID is the block id on tool_use events and the referenced
+	// tool_use id on tool_result events (GH-6210).
+	ToolUseID string
+
+	// ParentToolUseID is the Task/Agent tool_use id this event ran under;
+	// empty for the main agent (GH-6210). Copied onto every event of a line.
+	ParentToolUseID string
 
 	// ToolResult contains the output for tool_result events
 	ToolResult string

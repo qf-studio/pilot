@@ -23,6 +23,9 @@ type chatFakeBackend struct {
 	output string
 	// usage, when set, is copied into the BackendResult (tokens, cost, model).
 	usage *BackendResult
+	// callEvents, when set, replaces events for the call with the same index
+	// and is emitted even when that call then returns an error.
+	callEvents [][]BackendEvent
 }
 
 func (b *chatFakeBackend) Name() string      { return "chat-fake" }
@@ -42,10 +45,20 @@ func (b *chatFakeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Ba
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
+	events := b.events
+	if idx < len(b.callEvents) {
+		events = b.callEvents[idx]
+		for _, ev := range events {
+			if opts.EventHandler != nil {
+				opts.EventHandler(ev)
+			}
+		}
+		events = nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	for _, ev := range b.events {
+	for _, ev := range events {
 		if opts.EventHandler != nil {
 			opts.EventHandler(ev)
 		}
@@ -94,8 +107,8 @@ func TestChatTurn_AllowlistExcludesWriteTools(t *testing.T) {
 			t.Errorf("allowlist contains forbidden tool %q", tool)
 		}
 	}
-	if len(ChatReadOnlyTools) != 12 {
-		t.Errorf("len(ChatReadOnlyTools) = %d, want 12", len(ChatReadOnlyTools))
+	if len(ChatReadOnlyTools) != 13 {
+		t.Errorf("len(ChatReadOnlyTools) = %d, want 13", len(ChatReadOnlyTools))
 	}
 }
 
@@ -413,5 +426,228 @@ func TestClaudeCodeParseResultEvent_CarriesReportedCost(t *testing.T) {
 	ev = backend.parseStreamEvent(`{"type":"result","subtype":"success","result":"done"}`)
 	if ev.ReportedCostUSD != nil {
 		t.Fatalf("absent total_cost_usd gave %v, want nil", *ev.ReportedCostUSD)
+	}
+}
+
+// agentToolUse builds an Agent/Task tool_use event carrying a tool_use id.
+func agentToolUse(name, id string, input map[string]interface{}) BackendEvent {
+	ev := toolUse(name, input)
+	ev.ToolUseID = id
+	return ev
+}
+
+func toolResultFor(id string) BackendEvent {
+	return BackendEvent{Type: EventTypeToolResult, ToolUseID: id}
+}
+
+func runSubagentTurn(t *testing.T, events []BackendEvent) []SubagentEvent {
+	t.Helper()
+	disableChatProgressThrottle(t)
+	b := &chatFakeBackend{output: "ok", events: events}
+	var got []SubagentEvent
+	_, err := newChatRunner(b).ExecuteChatTurn(context.Background(), ChatTurn{
+		ProjectPath: t.TempDir(),
+		Text:        "q",
+		OnSubagent:  func(e SubagentEvent) { got = append(got, e) },
+	}, nil)
+	if err != nil {
+		t.Fatalf("ExecuteChatTurn: %v", err)
+	}
+	return got
+}
+
+func TestChatTurn_SubagentRunningThenDone(t *testing.T) {
+	for _, tool := range []string{"Task", "Agent"} {
+		t.Run(tool, func(t *testing.T) {
+			got := runSubagentTurn(t, []BackendEvent{
+				agentToolUse(tool, "toolu_1", map[string]interface{}{"description": "map the executor"}),
+				toolResultFor("toolu_1"),
+			})
+			if len(got) != 2 {
+				t.Fatalf("got %d subagent events, want 2: %+v", len(got), got)
+			}
+			if got[0].Phase != SubagentPhaseRunning || got[1].Phase != SubagentPhaseDone {
+				t.Errorf("phases = %q,%q, want running,done", got[0].Phase, got[1].Phase)
+			}
+			for _, e := range got {
+				if e.TaskID != "toolu_1" || e.Text != "map the executor" {
+					t.Errorf("event = %+v, want TaskID toolu_1 Text %q", e, "map the executor")
+				}
+			}
+			if got[1].DurationMs < 0 {
+				t.Errorf("DurationMs = %d, want >= 0", got[1].DurationMs)
+			}
+		})
+	}
+}
+
+func TestChatTurn_SubagentTextFallback(t *testing.T) {
+	long := strings.Repeat("x", 120)
+	got := runSubagentTurn(t, []BackendEvent{
+		agentToolUse("Agent", "toolu_p", map[string]interface{}{"prompt": long}),
+		agentToolUse("Task", "toolu_n", nil),
+	})
+	byID := map[string]string{}
+	for _, e := range got {
+		if e.Phase == SubagentPhaseRunning {
+			byID[e.TaskID] = e.Text
+		}
+	}
+	if byID["toolu_p"] != strings.Repeat("x", 80) {
+		t.Errorf("prompt fallback = %q, want first 80 runes", byID["toolu_p"])
+	}
+	if byID["toolu_n"] != "Task" {
+		t.Errorf("name fallback = %q, want Task", byID["toolu_n"])
+	}
+}
+
+func TestChatTurn_SubagentWithoutResultClosesAtTurnEnd(t *testing.T) {
+	got := runSubagentTurn(t, []BackendEvent{
+		agentToolUse("Task", "toolu_1", map[string]interface{}{"description": "never finishes"}),
+	})
+	if len(got) != 2 || got[0].Phase != SubagentPhaseRunning || got[1].Phase != SubagentPhaseDone {
+		t.Fatalf("events = %+v, want running then one done", got)
+	}
+}
+
+func TestChatTurn_SubagentOwnToolUseOpensNoRow(t *testing.T) {
+	nested := agentToolUse("Task", "toolu_child", map[string]interface{}{"description": "nested"})
+	nested.ParentToolUseID = "toolu_1"
+	got := runSubagentTurn(t, []BackendEvent{
+		agentToolUse("Task", "toolu_1", map[string]interface{}{"description": "outer"}),
+		nested,
+		toolResultFor("toolu_1"),
+	})
+	for _, e := range got {
+		if e.TaskID == "toolu_child" {
+			t.Errorf("nested tool_use opened a row: %+v", e)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d events, want 2: %+v", len(got), got)
+	}
+}
+
+func TestChatTurn_SubagentTimeoutClosesRows(t *testing.T) {
+	disableChatProgressThrottle(t)
+	var mu sync.Mutex
+	var got []SubagentEvent
+	waiting := &chatWaitBackend{events: []BackendEvent{
+		agentToolUse("Task", "toolu_1", map[string]interface{}{"description": "slow"}),
+	}}
+	res, err := newChatRunner(waiting).ExecuteChatTurn(context.Background(), ChatTurn{
+		ProjectPath: t.TempDir(),
+		Text:        "slow",
+		Timeout:     100 * time.Millisecond,
+		OnSubagent: func(e SubagentEvent) {
+			mu.Lock()
+			got = append(got, e)
+			mu.Unlock()
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if !res.Partial {
+		t.Error("Partial = false, want true")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 || got[0].Phase != SubagentPhaseRunning || got[1].Phase != SubagentPhaseDone {
+		t.Fatalf("events = %+v, want running then done", got)
+	}
+}
+
+// chatWaitBackend emits events then blocks until the context ends.
+type chatWaitBackend struct {
+	events []BackendEvent
+}
+
+func (b *chatWaitBackend) Name() string      { return "chat-wait" }
+func (b *chatWaitBackend) IsAvailable() bool { return true }
+func (b *chatWaitBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	for _, ev := range b.events {
+		opts.EventHandler(ev)
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestChatTurn_ReadCountsDistinctDocsAndMemories(t *testing.T) {
+	disableChatProgressThrottle(t)
+	read := func(p string) BackendEvent { return toolUse("Read", map[string]interface{}{"file_path": p}) }
+	b := &chatFakeBackend{output: "ok", events: []BackendEvent{
+		read("/repo/.agent/DEVELOPMENT-README.md"),
+		read(".agent/tasks/TASK-1.md"),
+		read(".agent/knowledge/memories/pitfalls/x.md"),
+		read("/repo/.agent/knowledge/memories/pitfalls/x.md"),
+		read(".agent/knowledge/memories/pitfalls/x.md"),
+		read("src/main.go"),
+		toolUse("Grep", map[string]interface{}{"pattern": "x", "path": ".agent/"}),
+	}}
+	res, err := newChatRunner(b).ExecuteChatTurn(context.Background(), ChatTurn{ProjectPath: "/repo", Text: "q"}, nil)
+	if err != nil {
+		t.Fatalf("ExecuteChatTurn: %v", err)
+	}
+	if res.DocsRead != 2 || res.MemoriesRead != 1 {
+		t.Errorf("DocsRead=%d MemoriesRead=%d, want 2 and 1", res.DocsRead, res.MemoriesRead)
+	}
+}
+
+func TestChatTurn_SessionResetRestartsCounts(t *testing.T) {
+	disableChatProgressThrottle(t)
+	read := func(p string) BackendEvent { return toolUse("Read", map[string]interface{}{"file_path": p}) }
+	b := &chatFakeBackend{
+		output: "ok",
+		errs:   []error{&ClaudeCodeError{Type: ErrorTypeSessionNotFound, Message: "gone"}},
+		callEvents: [][]BackendEvent{
+			{read(".agent/a.md"), read(".agent/b.md"), agentToolUse("Task", "toolu_old", nil)},
+			{read(".agent/c.md")},
+		},
+	}
+	var got []SubagentEvent
+	res, err := newChatRunner(b).ExecuteChatTurn(context.Background(), ChatTurn{
+		ProjectPath: t.TempDir(), Text: "q", ResumeSessionID: "stale",
+		OnSubagent: func(e SubagentEvent) { got = append(got, e) },
+	}, nil)
+	if err != nil {
+		t.Fatalf("ExecuteChatTurn: %v", err)
+	}
+	if res.DocsRead != 1 || res.ToolCalls != 1 {
+		t.Errorf("DocsRead=%d ToolCalls=%d, want counts of the retry only (1, 1)", res.DocsRead, res.ToolCalls)
+	}
+	if len(got) != 2 || got[1].Phase != SubagentPhaseDone {
+		t.Errorf("failed attempt's row not closed: %+v", got)
+	}
+}
+
+// TestChatTurn_StreamLinesDriveSubagentAndReads feeds real stream-json lines
+// through parseStreamEvents into the chat handler (parser-to-handler wiring).
+func TestChatTurn_StreamLinesDriveSubagentAndReads(t *testing.T) {
+	disableChatProgressThrottle(t)
+	lines := []string{
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Task","input":{"description":"survey docs"}},{"type":"tool_use","id":"toolu_2","name":"Read","input":{"file_path":".agent/DEVELOPMENT-README.md"}}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"readme"}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"done"}]}]}}`,
+	}
+	parser := NewClaudeCodeBackend(nil)
+	var events []BackendEvent
+	for _, l := range lines {
+		events = append(events, parser.parseStreamEvents(l)...)
+	}
+	b := &chatFakeBackend{output: "ok", events: events}
+	var got []SubagentEvent
+	res, err := newChatRunner(b).ExecuteChatTurn(context.Background(), ChatTurn{
+		ProjectPath: t.TempDir(), Text: "q",
+		OnSubagent: func(e SubagentEvent) { got = append(got, e) },
+	}, nil)
+	if err != nil {
+		t.Fatalf("ExecuteChatTurn: %v", err)
+	}
+	if len(got) != 2 || got[0].Phase != SubagentPhaseRunning || got[1].Phase != SubagentPhaseDone || got[1].TaskID != "toolu_1" {
+		t.Errorf("subagent events = %+v, want running/done for toolu_1", got)
+	}
+	if res.DocsRead != 1 || res.ToolCalls != 2 {
+		t.Errorf("DocsRead=%d ToolCalls=%d, want 1 and 2", res.DocsRead, res.ToolCalls)
 	}
 }
