@@ -1,6 +1,6 @@
 # AWS Infra Updates for Bench Runner
 
-**For:** Nelya
+**For:** the infra contractor
 **Repo:** `qf-studio/aws-infrastructure-pilot`
 **Why:** Enable Terminal Bench 2.0 execution on warm pool instances
 

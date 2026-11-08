@@ -3,7 +3,7 @@
 **Status**: 🚀 HARNESS DISPATCHED 2026-10-21 → [#5788](https://github.com/qf-studio/pilot/issues/5788); the live 4-repo run is an operator step on the founder box (spends real Opus tokens); caps below are provisional until the run lands.
 **Created**: 2026-10-21
 **Assignee**: Navigator plans · Pilot builds the harness · founder runs the matrix and decides D1–D5
-**Parent**: [TASK-549](TASK-549-legacy-repo-navigator-bootstrap.md) (legacy-repo bootstrap) · **Sibling**: [TASK-546](TASK-546-pricing-v3-honest-allowance-overage-packs.md) (pricing v3, D11) · [TASK-405](TASK-405-pilot-saas-platform.md)
+**Parent**: [TASK-549](TASK-549-legacy-repo-navigator-bootstrap.md) (legacy-repo bootstrap) · **Sibling**: [TASK-546](archive/PILOT-CLOUD-TASKS-MOVED.md) (pricing v3, D11) · [TASK-405](archive/PILOT-CLOUD-TASKS-MOVED.md)
 **Decision source**: .agent/system/project/project_pilot_cloud_positioning.md (plain text: not on main yet) § 2, item "OPEN — bootstrap unit economics"
 
 ---
@@ -215,7 +215,7 @@ make bench-bootstrap-report
 ## Refs
 
 - Decision source: .agent/system/project/project_pilot_cloud_positioning.md (plain text: not on main yet) § 2 (D1 free bootstrap, OPEN item), § 3 (no-dollars rule), § 4 (offer)
-- [TASK-549](TASK-549-legacy-repo-navigator-bootstrap.md) phases 1–2, D3 (10-ticket price) · [TASK-546](TASK-546-pricing-v3-honest-allowance-overage-packs.md) D10/D11 · TASK-518 (archived; chat as Navigator, issue contract)
+- [TASK-549](TASK-549-legacy-repo-navigator-bootstrap.md) phases 1–2, D3 (10-ticket price) · [TASK-546](archive/PILOT-CLOUD-TASKS-MOVED.md) D10/D11 · TASK-518 (archived; chat as Navigator, issue contract)
 - Code: `internal/executor/navigator_bootstrap.go`, `internal/executor/navigator_bootstrap_prompt.go`, `cmd/pilot/navigator.go`, `internal/executor/chat_turn.go`, `internal/executor/chat_prompt.go`, `internal/executor/runner.go` (`modelPricing`, `estimateCostWithCache`)
 - Bench shape: `scripts/canary-report.py`, `scripts/canary_report_test.py`, `.agent/system/bench/bench_cost_model.md`, `.agent/system/bench/sonnet-5-5-first-cut-2026-09-28.md`
 - Pilot issue (harness): https://github.com/qf-studio/pilot/issues/5788

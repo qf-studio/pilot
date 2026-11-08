@@ -1,6 +1,6 @@
 # TASK-494: Docs sync post-AWS-cutover — GitHub-only leg, pilot-docs owns its workflows, GitLab files removed, /getting-started 404
 
-**Status**: ✅ DONE 2026-09-06 — all four children landed: sync rewrite PR#5320 (proven e2e with Nelya's deploy 12:10) · deletions via fix #5322 → **PR#5339 merged 16:08** (stale CI step + checker script removed; post-merge sync green; pilot-docs root clean, both workflow files preserved) · getting-started index PR#5323 (**live 200**) · verification child superseded. Post-merge review APPROVE (verdict on PR#5340 thread). Pitfalls recorded: decomposition ignores one-PR prose · fix-issue Depends-on deadlock (#5336 dispatched) · base-presence backtick check for operator bodies.
+**Status**: ✅ DONE 2026-09-06 — all four children landed: sync rewrite PR#5320 (proven e2e with the infra contractor's deploy 12:10) · deletions via fix #5322 → **PR#5339 merged 16:08** (stale CI step + checker script removed; post-merge sync green; pilot-docs root clean, both workflow files preserved) · getting-started index PR#5323 (**live 200**) · verification child superseded. Post-merge review APPROVE (verdict on PR#5340 thread). Pitfalls recorded: decomposition ignores one-PR prose · fix-issue Depends-on deadlock (#5336 dispatched) · base-presence backtick check for operator bodies.
 **Created**: 2026-09-06
 **Assignee**: Pilot
 
@@ -9,15 +9,15 @@
 ## Context
 
 **Problem**:
-`pilot.quantflow.studio` is served from AWS since 2026-09-05 (Nelya's handover, 09-06: ECS behind an ALB, image mirrored GHCR → ECR by a `workflow_run` job in `qf-studio/pilot-docs` that fires when our "Build image" workflow succeeds on a `prod-*` tag). GitLab and the VPS no longer receive deploys. Our sync workflow `.github/workflows/sync-docs.yml` still assumes the transition state and is now actively dangerous:
+`pilot.quantflow.studio` is served from AWS since 2026-09-05 (the infra contractor's handover, 09-06: ECS behind an ALB, image mirrored GHCR → ECR by a `workflow_run` job in `qf-studio/pilot-docs` that fires when our "Build image" workflow succeeds on a `prod-*` tag). GitLab and the VPS no longer receive deploys. Our sync workflow `.github/workflows/sync-docs.yml` still assumes the transition state and is now actively dangerous:
 
-1. **It wipes the target tree.** Both legs do `find "$WORK" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +` and restore only `docker/` from a backup. `qf-studio/pilot-docs` now carries a workflow Nelya authored (file deploy-quantflow-aws.yml under its workflows dir, commits d231634…053d14d) that does not exist in our `docs/` tree. The next sync run **deletes it**, and the AWS deploy silently stops. The sync fires on any push to `main` touching `docs/**`.
-2. **It restores files Nelya removed.** She deleted the GitLab pipeline from pilot-docs (commit cea8b9b); our `docs/.gitlab-ci.yml` and `docs/docker-compose.prod.yml` would put them back.
+1. **It wipes the target tree.** Both legs do `find "$WORK" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +` and restore only `docker/` from a backup. `qf-studio/pilot-docs` now carries a workflow the infra contractor authored (file deploy-quantflow-aws.yml under its workflows dir, commits d231634…053d14d) that does not exist in our `docs/` tree. The next sync run **deletes it**, and the AWS deploy silently stops. The sync fires on any push to `main` touching `docs/**`.
+2. **It restores files the infra contractor removed.** She deleted the GitLab pipeline from pilot-docs (commit cea8b9b); our `docs/.gitlab-ci.yml` and `docs/docker-compose.prod.yml` would put them back.
 3. **The GitHub tag depends on the GitLab leg.** `DEPLOY_TAG` is computed inside the "Sync docs/ to GitLab" step and passed as an output; if that leg fails (runner gone, repo archived) the GitHub leg pushes content but no tag, so no image build and no deploy.
-4. **Homepage link 404.** `docs/content/index.mdx` line 53 links to `/getting-started/prerequisites` (200), but the sidebar folder entry `/getting-started` has no index page and returns 404. Nelya flagged it; it was 404 on the VPS too.
+4. **Homepage link 404.** `docs/content/index.mdx` line 53 links to `/getting-started/prerequisites` (200), but the sidebar folder entry `/getting-started` has no index page and returns 404. the infra contractor flagged it; it was 404 on the VPS too.
 
 **Goal**:
-Sync becomes GitHub-only, content-only: pilot owns `docs/` content, `qf-studio/pilot-docs` owns everything under its `.github/` and `docker/`. Nothing Nelya committed is deleted or overwritten. Tag derivation lives in the GitHub leg. GitLab artifacts leave `docs/`. `/getting-started` resolves.
+Sync becomes GitHub-only, content-only: pilot owns `docs/` content, `qf-studio/pilot-docs` owns everything under its `.github/` and `docker/`. Nothing the infra contractor committed is deleted or overwritten. Tag derivation lives in the GitHub leg. GitLab artifacts leave `docs/`. `/getting-started` resolves.
 
 ---
 
@@ -26,7 +26,7 @@ Sync becomes GitHub-only, content-only: pilot owns `docs/` content, `qf-studio/p
 - **PITFALL** (memory `sync-wipes-target-tree`, TASK-492): the sync's whole-tree wipe is the mechanism that nests/removes target files. Phase 1 changes the preserve list rather than the wipe idiom, so every other behaviour (stale-tag prune, no-op commit skip) stays identical.
 - **LEARNING** (`qf-studio-org-deploy-keys-disabled-use-pat-or-app`): pushes to pilot-docs go through `PILOT_DOCS_PAT` (founder's gh OAuth token, **no `workflow` scope**). A push that creates or modifies any file under the target's `.github/workflows/` is rejected. Phase 1 must therefore make the sync never write to `.github/` at all — preserving the target's copy sidesteps the scope problem permanently.
 - **PITFALL** (TASK-492 gotcha): `secrets.*` is illegal in step-level `if:`; keep the `env: HAS_PAT` pattern.
-- **PITFALL** (TASK-492 gotcha): the sync's `cp -a "$BACKUP/docker" "$WORK/docker"` nested copies in the past (Nelya cleaned five nested `docker/docker/…` copies on 09-05, commit 01878a7). Preserve-and-restore must `rm -rf` the destination before `cp -a`, as the current code does; apply the same to `.github/`.
+- **PITFALL** (TASK-492 gotcha): the sync's `cp -a "$BACKUP/docker" "$WORK/docker"` nested copies in the past (the infra contractor cleaned five nested `docker/docker/…` copies on 09-05, commit 01878a7). Preserve-and-restore must `rm -rf` the destination before `cp -a`, as the current code does; apply the same to `.github/`.
 - **PITFALL** (SOP Rule 3b): the workflow edit and the content deletions ship in ONE PR so the first post-merge sync already runs the new definition (push-event workflows execute from the pushed ref).
 
 ---
@@ -87,8 +87,8 @@ Sync becomes GitHub-only, content-only: pilot owns `docs/` content, `qf-studio/p
 
 ## Out of Scope
 
-- Stopping the sync entirely and editing pilot-docs directly (Nelya's preference). Deferred: docs source stays in `docs/` because `docs-version-sync.yml` bumps the docs version on every pilot release. Revisit as its own task once the AWS chain has run a few releases.
-- Compression / Content-Security-Policy on the AWS ALB path (Traefik used to gzip + send CSP-RO; the AWS response today carries only HSTS, nosniff, X-Frame-Options). That is infra-side — raised with Nelya on Slack, not this repo.
+- Stopping the sync entirely and editing pilot-docs directly (the infra contractor's preference). Deferred: docs source stays in `docs/` because `docs-version-sync.yml` bumps the docs version on every pilot release. Revisit as its own task once the AWS chain has run a few releases.
+- Compression / Content-Security-Policy on the AWS ALB path (Traefik used to gzip + send CSP-RO; the AWS response today carries only HSTS, nosniff, X-Frame-Options). That is infra-side — raised with the infra contractor on Slack, not this repo.
 - Deleting `GITLAB_SSH_KEY` secret and the dead `gitlab:` block in the hosted daemon config, archiving `quant-flow/pilot-docs` — TASK-492 step 4 (operator).
 - qf-website headers (`poweredByHeader`, Referrer-Policy, Permissions-Policy, deploymentId) — separate issue in `qf-studio/qf-website`.
 - auth-service per-app audience / TLS_ENABLED no-op — later, separate repo.
@@ -99,7 +99,7 @@ Sync becomes GitHub-only, content-only: pilot owns `docs/` content, `qf-studio/p
 
 | Decision | Options Considered | Chosen | Reasoning |
 |----------|-------------------|--------|-----------|
-| Who owns pilot-docs `.github/` | pilot `docs/.github/` sourced by sync · pilot-docs owns it | pilot-docs owns it | Nelya's deploy workflow lives only there; preserving the dir means the sync never needs `workflow` scope and can never delete her work |
+| Who owns pilot-docs `.github/` | pilot `docs/.github/` sourced by sync · pilot-docs owns it | pilot-docs owns it | the infra contractor's deploy workflow lives only there; preserving the dir means the sync never needs `workflow` scope and can never delete her work |
 | Tag derivation | keep in a separate step with output · inline in GitHub leg | inline | Only one leg remains; no cross-step output to break |
 | Sync model | keep sync GitHub-only · stop sync | keep sync | Release version bump chain (`docs-version-sync.yml`) writes into `docs/`; moving the source is a bigger migration |
 | /getting-started | index page · redirect | follow existing `docs/content` pattern | Consistency over preference |
@@ -131,8 +131,8 @@ cd docs && npm run build   # Nextra build must pass with the new index page
 
 - Pilot issue: https://github.com/qf-studio/pilot/issues/5315
 - qf-website sibling: https://github.com/qf-studio/qf-website/issues/18 (headers + deploymentId + Vercel SOP superseded)
-- Nelya's handover, 2026-09-06, Slack `#infrastructure` C0BV37L87C1 msg `1788692051.363079` (artifact "QuantFlow AWS Handover")
-- TASK-492 (Navigator task doc, same tasks folder) — parent track; steps 2–3 done by Nelya 09-05
+- the infra contractor's handover, 2026-09-06, Slack `#infrastructure` C0BV37L87C1 msg `1788692051.363079` (artifact "QuantFlow AWS Handover")
+- TASK-492 (Navigator task doc, same tasks folder) — parent track; steps 2–3 done by the infra contractor 09-05
 - pilot-docs commits cea8b9b (GitLab files removed), d231634 → 053d14d (deploy workflow), 01878a7 (nested docker cleanup)
 - Prior sync PR: [#5312](https://github.com/qf-studio/pilot/issues/5312) → PR#5313 (dual-push, now superseded)
 

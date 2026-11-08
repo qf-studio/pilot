@@ -3,7 +3,7 @@
 **Status**: 🚀 **PHASES 2+3 DISPATCHED 2026-10-14** — [#5679](https://github.com/qf-studio/pilot/issues/5679) bootstrap session (trigger config `navigator.bootstrap` default **manual** until D1 is answered) · [#5680](https://github.com/qf-studio/pilot/issues/5680) copy-back of worktree learnings. Phase 1 (cold-start bench) is a Navigator-session job, not filed. Phase 4 waits on console#401; phase 5 waits on D3.
 **Created**: 2026-10-13
 **Assignee**: Navigator plans · Pilot executes (pilot repo first, console second)
-**Parent**: [TASK-405](TASK-405-pilot-saas-platform.md) · **Sibling**: [TASK-546](TASK-546-pricing-v3-honest-allowance-overage-packs.md) (pricing v3; D11 there points here) · [TASK-531](TASK-531-chat-issue-untracked-path-rewrite.md) (chat cites untracked `.agent/`)
+**Parent**: [TASK-405](archive/PILOT-CLOUD-TASKS-MOVED.md) · **Sibling**: [TASK-546](archive/PILOT-CLOUD-TASKS-MOVED.md) (pricing v3; D11 there points here) · [TASK-531](TASK-531-chat-issue-untracked-path-rewrite.md) (chat cites untracked `.agent/`)
 
 ---
 

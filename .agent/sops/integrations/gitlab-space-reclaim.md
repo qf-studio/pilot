@@ -1,7 +1,7 @@
 # SOP: GitLab namespace space reclaim (`quant-flow` on gitlab.com)
 
 > **Sunset pending (2026-09-04):** `pilot-docs` is migrating to GitHub
-> `qf-studio/pilot-docs` + AWS deploy (Nelya). This SOP stays valid only while
+> `qf-studio/pilot-docs` + AWS deploy (the infra contractor). This SOP stays valid only while
 > GitLab still deploys `pilot.quantflow.studio`; archive it after cutover.
 
 **Trigger**: storage-quota warnings/blocks on the `quant-flow` namespace

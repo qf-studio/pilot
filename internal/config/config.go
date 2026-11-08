@@ -1095,7 +1095,7 @@ func applyLedgerStalenessThreshold(config *Config) {
 // hostedEnvVar gates hosted mode (SaaS S0.7, GH-4274): a control-plane-
 // managed instance where config.yaml is rendered externally (secrets are
 // ${VAR} references resolved from a tmpfs env file) and must never be
-// overwritten by this binary. See .agent/system/saas-fleet-design.md §4.
+// overwritten by this binary. See pilot-console .agent/system/saas-fleet-design.md §4.
 const hostedEnvVar = "PILOT_HOSTED"
 
 // IsHosted reports whether Pilot is running in hosted mode (PILOT_HOSTED=1).
@@ -1130,7 +1130,7 @@ func (c *Config) AssertHostedInvariants() error {
 // rendered by a control plane, where secrets are ${VAR} references resolved
 // from a tmpfs env file at Load time. Round-tripping the expanded in-memory
 // Config back to config.yaml would write live secrets onto the mounted
-// volume — see .agent/system/saas-fleet-design.md §4. In hosted mode Save
+// volume — see pilot-console .agent/system/saas-fleet-design.md §4. In hosted mode Save
 // becomes a no-op, logged at WARN with the calling file:line so any flow
 // that still attempts a write is visible.
 //

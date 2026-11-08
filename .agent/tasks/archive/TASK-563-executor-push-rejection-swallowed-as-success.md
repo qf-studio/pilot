@@ -43,5 +43,5 @@ The push step in `internal/executor/runner.go` (the retry loop around `git.Push`
 
 - `internal/executor/runner.go` (push retry loop, "Push reported error but branch exists on remote"), `internal/executor/git.go` (Push, RemoteBranchExists, ResolveFixContinuationBaseRef), `cmd/pilot/handlers.go` (resolveAutopilotFixBranch, FixFromSHA), `internal/executor/runner_gh5715_test.go`, `internal/executor/git_test.go`
 - Incident: console GH-415 / PR #408, 2026-10-16 09:34Z; precedent pilot #5661 / PR #5660 (10-13, session force-pushed itself)
-- Plan: [TASK-562](TASK-562-console-403-rebase-daily-caps-onto-402.md)
+- Plan: [TASK-562](PILOT-CLOUD-TASKS-MOVED.md)
 - Pilot issue: https://github.com/qf-studio/pilot/issues/5729

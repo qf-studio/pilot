@@ -18,7 +18,7 @@ change needs a restart; see `.claude/skills/pilot-aws/SKILL.md` § Stop/start/re
 | Founder bot DM | `D09HGS3BR4J` | **merge-approval asks** + decisions (buttons work: `socket_mode: false` → HTTP interactivity) | `adapters.slack.approval.channel` |
 | `#pointer` | `C0BHQ9FGFPY` | chat replies, task-lifecycle notifier (`TaskStarted/Completed/Failed`), anything with no more specific key | `adapters.slack.channel` |
 | `#engineering` | `C09HCNM09GV` | nothing from Pilot since 2026-07-16 (not referenced by any key) | — |
-| `#infrastructure` | `C0BV37L87C1` | humans only (Nelya / AWS consolidation) | — |
+| `#infrastructure` | `C0BV37L87C1` | humans only (the infra contractor / AWS consolidation) | — |
 | Telegram `283716179` | — | daily brief 08:00 NY · receipts digest 18:00 Berlin · prod-env approvals · ~~PR merged/released/CI-fix notices~~ **not sent: the autopilot Notifier has no production caller (found 10-19, TASK-576 leg D / #5759, opt-in key)** | `orchestrator.daily_brief` / `receipts_digest` / `autopilot.environments.prod.approval_source` |
 
 **History:** before 09-06 all three Slack keys pointed at `#pointer` (the alert channel was

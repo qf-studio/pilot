@@ -6,7 +6,7 @@ type: learning
 
 # Slack connector = text only; "attached" files need a PR, not a download
 
-**What happened (2026-10-19, TASK-515):** Nelya posted "Deploy workflow for
+**What happened (2026-10-19, TASK-515):** the infra contractor posted "Deploy workflow for
 pilotcloud-site is ready, attached as .github/workflows/deploy-quantflow-aws.yml"
 in `#infrastructure` (thread `1791555910.941859`, reply `1792435192.787699`).
 `slack_read_thread` returned the text and no file; `slack_search_public_and_private`
@@ -14,7 +14,7 @@ with `content_types: files` / `has:file` from her returned nothing since 10-15;
 the built-in browser pane opened the permalink to a Slack sign-in page.
 GitHub held nothing either (every ref, PR head, fork, event). Forty minutes
 of back-and-forth with the founder ("which attachment?") before the obvious
-move: she is a collaborator (`nelyaparfenova-dev`) on the repo.
+move: she is a collaborator (`the-infra-contractor`) on the repo.
 
 ## Rules
 - Treat Slack "attached" as unreachable from a Code session. Do not ask the

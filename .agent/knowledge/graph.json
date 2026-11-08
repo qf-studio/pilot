@@ -1116,8 +1116,8 @@
         "aliases": [],
         "domain": "general"
       },
-      "nelya": {
-        "name": "Nelya",
+      "the infra contractor": {
+        "name": "the infra contractor",
         "aliases": [],
         "domain": "general"
       },
@@ -1652,37 +1652,6 @@
           "api"
         ]
       },
-      "TASK-408": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-408-console-b6-provisioner.md",
-        "title": "Task 408 Console B6 Provisioner",
-        "status": "unknown",
-        "concepts": [
-          "api",
-          "authentication",
-          "workflow",
-          "testing",
-          "theory-of-mind",
-          "deployment",
-          "context",
-          "database"
-        ]
-      },
-      "TASK-405": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-405-pilot-saas-platform.md",
-        "title": "Pilot SaaS Platform (\"Pilot Cloud\")",
-        "status": "unknown",
-        "concepts": [
-          "frontend",
-          "testing",
-          "deployment",
-          "authentication",
-          "api",
-          "database",
-          "context",
-          "knowledge",
-          "theory-of-mind"
-        ]
-      },
       "TASK-407": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-407-dispatch-admission-claim.md",
         "title": "Atomic dispatch-admission claim — make duplicate execution structurally impossible",
@@ -1697,22 +1666,6 @@
           "database",
           "api",
           "testing"
-        ]
-      },
-      "TASK-409": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-409-s6-lite-aws-cutover.md",
-        "title": "S6-lite — move the founder daemon to AWS (atomic cutover, TUI preserved)",
-        "status": "completed",
-        "concepts": [
-          "workflow",
-          "api",
-          "theory-of-mind",
-          "database",
-          "testing",
-          "context",
-          "markers",
-          "deployment",
-          "authentication"
         ]
       },
       "TASK-410": {
@@ -1779,23 +1732,6 @@
           "context"
         ]
       },
-      "TASK-415": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-415-console-fleet-reconciler.md",
-        "title": "Task 415 Console Fleet Reconciler",
-        "status": "unknown",
-        "concepts": [
-          "api",
-          "deployment",
-          "testing",
-          "context",
-          "authentication",
-          "workflow",
-          "knowledge",
-          "database",
-          "theory-of-mind",
-          "frontend"
-        ]
-      },
       "TASK-416": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-416-resolvedenv-builtin-default-environment.md",
         "title": "Task 416 Resolvedenv Builtin Default Environment",
@@ -1803,23 +1739,6 @@
         "concepts": [
           "frontend",
           "theory-of-mind",
-          "testing"
-        ]
-      },
-      "TASK-417": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-417-console-b8-config-push.md",
-        "title": "Task 417 Console B8 Config Push",
-        "status": "completed",
-        "concepts": [
-          "api",
-          "authentication",
-          "deployment",
-          "theory-of-mind",
-          "knowledge",
-          "markers",
-          "context",
-          "workflow",
-          "database",
           "testing"
         ]
       },
@@ -1944,38 +1863,6 @@
           "context"
         ]
       },
-      "TASK-428": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-428-ui-credential-save-silent-failure.md",
-        "title": "Task 428 Ui Credential Save Silent Failure",
-        "status": "unknown",
-        "concepts": [
-          "api",
-          "frontend",
-          "authentication",
-          "testing"
-        ]
-      },
-      "TASK-429": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-429-console-local-secrets-driver.md",
-        "title": "Task 429 Console Local Secrets Driver",
-        "status": "unknown",
-        "concepts": [
-          "knowledge",
-          "testing",
-          "deployment",
-          "workflow",
-          "api"
-        ]
-      },
-      "TASK-430": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-430-ui-error-envelope-mismatch.md",
-        "title": "Task 430 Ui Error Envelope Mismatch",
-        "status": "unknown",
-        "concepts": [
-          "testing",
-          "api"
-        ]
-      },
       "TASK-431": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-431-required-checks-name-mismatch.md",
         "title": "Task 431 Required Checks Name Mismatch",
@@ -1986,62 +1873,6 @@
           "authentication",
           "deployment",
           "database"
-        ]
-      },
-      "TASK-432": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-432-console-c1-board-data-model.md",
-        "title": "Task 432 Console C1 Board Data Model",
-        "status": "completed",
-        "concepts": [
-          "theory-of-mind",
-          "testing",
-          "deployment",
-          "database",
-          "context",
-          "authentication",
-          "api"
-        ]
-      },
-      "TASK-433": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-433-console-c2-sync-reconciler.md",
-        "title": "Task 433 Console C2 Sync Reconciler",
-        "status": "completed",
-        "concepts": [
-          "context",
-          "theory-of-mind",
-          "workflow",
-          "testing",
-          "deployment",
-          "authentication"
-        ]
-      },
-      "TASK-434": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-434-ui-kanban-board-v1.md",
-        "title": "Task 434 Ui Kanban Board V1",
-        "status": "completed",
-        "concepts": [
-          "context",
-          "testing",
-          "deployment",
-          "authentication",
-          "theory-of-mind",
-          "api",
-          "markers",
-          "frontend"
-        ]
-      },
-      "TASK-435": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-435-ui-kanban-drawer-feed.md",
-        "title": "Task 435 Ui Kanban Drawer Feed",
-        "status": "completed",
-        "concepts": [
-          "deployment",
-          "authentication",
-          "markers",
-          "context",
-          "api",
-          "testing",
-          "frontend"
         ]
       },
       "TASK-436": {
@@ -2069,50 +1900,6 @@
           "authentication"
         ]
       },
-      "TASK-438": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-438-console-c7-board-api.md",
-        "title": "Task 438 Console C7 Board Api",
-        "status": "unknown",
-        "concepts": [
-          "testing",
-          "api",
-          "context",
-          "database",
-          "deployment",
-          "authentication"
-        ]
-      },
-      "TASK-439": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-439-console-c3-ingest-workers.md",
-        "title": "Task 439 Console C3 Ingest Workers",
-        "status": "unknown",
-        "concepts": [
-          "testing",
-          "database",
-          "api",
-          "context",
-          "authentication",
-          "deployment",
-          "workflow",
-          "theory-of-mind"
-        ]
-      },
-      "TASK-440": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-440-console-c4-outbound-op-worker.md",
-        "title": "Task 440 Console C4 Outbound Op Worker",
-        "status": "unknown",
-        "concepts": [
-          "context",
-          "database",
-          "api",
-          "workflow",
-          "testing",
-          "markers",
-          "authentication",
-          "deployment",
-          "theory-of-mind"
-        ]
-      },
       "TASK-441": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-441-contract-hardening-tune-up.md",
         "title": "Contract hardening tune-up — seams, dead-man signals, tripwires",
@@ -2127,87 +1914,6 @@
           "database",
           "workflow",
           "context"
-        ]
-      },
-      "TASK-442": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-442-console-c5-statusmap.md",
-        "title": "Task 442 Console C5 Statusmap",
-        "status": "unknown",
-        "concepts": [
-          "authentication",
-          "theory-of-mind",
-          "deployment",
-          "workflow",
-          "context",
-          "database",
-          "testing",
-          "api"
-        ]
-      },
-      "TASK-443": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-443-console-c6-rate-budgeter.md",
-        "title": "Task 443 Console C6 Rate Budgeter",
-        "status": "unknown",
-        "concepts": [
-          "authentication",
-          "testing",
-          "api",
-          "theory-of-mind",
-          "frontend",
-          "context",
-          "deployment",
-          "workflow"
-        ]
-      },
-      "TASK-444": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-444-console-c8-dispatch-verb.md",
-        "title": "Task 444 Console C8 Dispatch Verb",
-        "status": "unknown",
-        "concepts": [
-          "context",
-          "deployment",
-          "authentication",
-          "testing",
-          "api"
-        ]
-      },
-      "TASK-445": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-445-console-c9-sync-metrics.md",
-        "title": "Task 445 Console C9 Sync Metrics",
-        "status": "unknown",
-        "concepts": [
-          "testing",
-          "knowledge",
-          "context",
-          "authentication",
-          "deployment",
-          "api"
-        ]
-      },
-      "TASK-446": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-446-ui-board-httpadapter-unstub.md",
-        "title": "Task 446 Ui Board Httpadapter Unstub",
-        "status": "unknown",
-        "concepts": [
-          "authentication",
-          "context",
-          "api",
-          "testing",
-          "frontend",
-          "deployment"
-        ]
-      },
-      "TASK-447": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-447-ui-statusmap-editor.md",
-        "title": "Task 447 Ui Statusmap Editor",
-        "status": "unknown",
-        "concepts": [
-          "context",
-          "theory-of-mind",
-          "testing",
-          "deployment",
-          "api",
-          "frontend"
         ]
       },
       "TASK-448": {
@@ -2249,32 +1955,6 @@
           "knowledge",
           "context",
           "authentication"
-        ]
-      },
-      "TASK-451": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-451-c15-tenant-labels-alarms.md",
-        "title": "Task 451 C15 Tenant Labels Alarms",
-        "status": "unknown",
-        "concepts": [
-          "authentication",
-          "deployment",
-          "context",
-          "testing",
-          "api"
-        ]
-      },
-      "TASK-452": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-452-c14-console-approval-mirror.md",
-        "title": "Task 452 C14 Console Approval Mirror",
-        "status": "unknown",
-        "concepts": [
-          "testing",
-          "deployment",
-          "authentication",
-          "database",
-          "context",
-          "markers",
-          "api"
         ]
       },
       "TASK-453": {
@@ -2429,41 +2109,6 @@
           "api"
         ]
       },
-      "TASK-464": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-464-console-chat-proxy.md",
-        "title": "C17 console leg — operator chat proxy to the tenant daemon (C14 idiom)",
-        "status": "completed",
-        "concepts": [
-          "api",
-          "testing",
-          "authentication",
-          "deployment",
-          "context"
-        ]
-      },
-      "TASK-465": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-465-console-dashboard-endpoint.md",
-        "title": "C16 — console GET /api/v1/dashboard aggregation for the v4 register",
-        "status": "completed",
-        "concepts": [
-          "deployment",
-          "testing",
-          "api"
-        ]
-      },
-      "TASK-466": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-466-console-docs-page.md",
-        "title": "Console Docs page — surface Navigator `.agent/` docs, later make them manageable",
-        "status": "completed",
-        "concepts": [
-          "deployment",
-          "testing",
-          "context",
-          "authentication",
-          "knowledge",
-          "markers"
-        ]
-      },
       "TASK-467": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-467-durable-recovery-owner-designation.md",
         "title": "Task 467 Durable Recovery Owner Designation",
@@ -2596,22 +2241,6 @@
           "testing"
         ]
       },
-      "TASK-478": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-478-console-rail-implementation.md",
-        "title": "Console rail implementation program — 11 approved designs → shipped surfaces",
-        "status": "completed",
-        "concepts": [
-          "frontend",
-          "api",
-          "theory-of-mind",
-          "deployment",
-          "testing",
-          "authentication",
-          "database",
-          "workflow",
-          "context"
-        ]
-      },
       "TASK-479": {
         "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-479-ghguard-parser-parity.md",
         "title": "gh-guard parser parity — the guard must derive what `gh` derives",
@@ -2719,62 +2348,9 @@
           "api"
         ]
       },
-      "TASK-487": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-487-rls-dormancy-honesty-and-test-credential-cleanup.md",
-        "title": "Task 487 Rls Dormancy Honesty And Test Credential Cleanup",
-        "status": "backlog",
-        "concepts": [
-          "database",
-          "deployment",
-          "context",
-          "testing",
-          "authentication"
-        ]
-      },
-      "TASK-488": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-488-compiler-scoping-close-the-escape-hatch.md",
-        "title": "Task 488 Compiler Scoping Close The Escape Hatch",
-        "status": "backlog",
-        "concepts": [
-          "database",
-          "context",
-          "api",
-          "testing",
-          "deployment"
-        ]
-      },
-      "TASK-489": {
-        "path": ".agent/tasks/archive/TASK-489-isolation-gate-verify-ingress-source-and-kms-canary.md",
-        "title": "Task 489 Receipts Digest",
-        "status": "completed",
-        "concepts": [
-          "api",
-          "markers",
-          "workflow",
-          "testing",
-          "database",
-          "knowledge",
-          "deployment"
-        ]
-      },
-      "TASK-490": {
-        "path": ".agent/tasks/archive/TASK-490-s4-minimal-invpc-console.md",
-        "title": "Task 490 S4 Minimal Invpc Console",
-        "status": "completed",
-        "concepts": [
-          "deployment",
-          "theory of mind",
-          "knowledge",
-          "testing",
-          "api",
-          "workflow",
-          "context",
-          "authentication"
-        ]
-      },
       "TASK-492": {
         "path": ".agent/tasks/archive/TASK-492-pilot-docs-gitlab-to-github-migration.md",
-        "title": "pilot-docs migration — GitLab → GitHub `qf-studio/pilot-docs` + AWS deploy (Nelya)",
+        "title": "pilot-docs migration — GitLab → GitHub `qf-studio/pilot-docs` + AWS deploy (the infra contractor)",
         "status": "completed",
         "concepts": [
           "context",
@@ -2814,51 +2390,6 @@
           "context"
         ]
       },
-      "TASK-495": {
-        "path": ".agent/tasks/TASK-495-fleet-to-be-alignment-nelya.md",
-        "title": "Pilot Fleet TO-BE alignment — Nelya's control-plane transfer (CloudFormation, ECS console, central auth)",
-        "status": "in_progress",
-        "concepts": [
-          "context",
-          "api",
-          "workflow",
-          "authentication",
-          "deployment",
-          "testing",
-          "theory of mind"
-        ]
-      },
-      "TASK-497": {
-        "path": ".agent/tasks/TASK-497-paddle-billing-integration.md",
-        "title": "Paddle Billing integration for pilot-console — vendor swap behind the `billing_status` contract",
-        "status": "in-progress",
-        "concepts": [
-          "authentication",
-          "frontend",
-          "api",
-          "skills",
-          "deployment",
-          "theory of mind",
-          "database",
-          "testing",
-          "knowledge",
-          "context"
-        ]
-      },
-      "TASK-498": {
-        "path": ".agent/tasks/TASK-498-controlplane-instance-role-tenant-proxy-grants.md",
-        "title": "In-VPC console cannot proxy a tenant — control-plane instance role grants",
-        "status": "planned",
-        "concepts": [
-          "deployment",
-          "testing",
-          "theory of mind",
-          "authentication",
-          "database",
-          "api",
-          "context"
-        ]
-      },
       "TASK-503": {
         "path": ".agent/tasks/archive/TASK-503-evidence-classifier-command-passes-phrasing.md",
         "title": "fix(executor): acceptance-evidence classifier treats \"`<allowlisted command>` passes\" as a paste-output item",
@@ -2893,19 +2424,6 @@
           "skills",
           "deployment",
           "authentication"
-        ]
-      },
-      "TASK-502": {
-        "path": ".agent/tasks/archive/TASK-502-included-tokens-platform-key.md",
-        "title": "Included token volume — platform Anthropic key per tenant, allowance metering, own-key overage",
-        "status": "completed",
-        "concepts": [
-          "database",
-          "deployment",
-          "theory of mind",
-          "api",
-          "context",
-          "testing"
         ]
       },
       "TASK-510": {
@@ -2944,98 +2462,6 @@
           "knowledge",
           "api",
           "deployment"
-        ]
-      },
-      "TASK-511": {
-        "path": ".agent/tasks/TASK-511-console-ui-included-allowance-leg4.md",
-        "title": "console-ui Plan & Billing — included allowance, exhausted state, own-key prompt, provision gating (TASK-502 leg 4)",
-        "status": "dispatched",
-        "concepts": [
-          "deployment",
-          "testing",
-          "api",
-          "theory of mind",
-          "context",
-          "frontend"
-        ]
-      },
-      "TASK-512": {
-        "path": ".agent/tasks/archive/TASK-512-allowance-enforcement-leg3.md",
-        "title": "TASK-512: Allowance enforcement at exhaustion — own-key switch, suspend without one, per-period state (TASK-502 leg 3)",
-        "status": "done",
-        "concepts": [
-          "deployment",
-          "billing",
-          "allowance",
-          "reconciler",
-          "pilot-console"
-        ]
-      },
-      "TASK-513": {
-        "title": "Real allowance exhaustion on a prod test org — both branches proven; three fleet regressions found and fixed",
-        "path": "tasks/archive/TASK-513-allowance-exhaustion-prod-test.md",
-        "status": "done",
-        "created": "2026-10-07",
-        "completed": "2026-10-08"
-      },
-      "TASK-515": {
-        "path": ".agent/tasks/TASK-515-pilotcloud-landing-and-legal-pages.md",
-        "title": "pilotcloud.dev landing page + legal pages (Terminal + Console, console-styled)",
-        "status": "backlog",
-        "concepts": [
-          "authentication",
-          "frontend",
-          "theory of mind",
-          "deployment",
-          "api",
-          "knowledge",
-          "context",
-          "database",
-          "markers",
-          "testing"
-        ]
-      },
-      "TASK-516": {
-        "path": ".agent/tasks/archive/TASK-516-site-scaffold.md",
-        "title": "Task 516 Site Scaffold",
-        "status": "dispatched",
-        "concepts": [
-          "testing",
-          "skills",
-          "context",
-          "database",
-          "theory of mind",
-          "frontend",
-          "deployment"
-        ]
-      },
-      "TASK-517": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/archive/TASK-517-site-landing-page.md",
-        "title": "Task 517 Site Landing Page",
-        "status": "dispatched",
-        "concepts": [
-          "authentication",
-          "deployment",
-          "api",
-          "theory of mind",
-          "frontend",
-          "testing",
-          "context"
-        ]
-      },
-      "TASK-518": {
-        "path": ".agent/tasks/archive/TASK-518-side-chat-navigator-research-and-issue-filing.md",
-        "title": "Side chat as a Navigator — agentic research turns + Pilot issue filing",
-        "status": "archived",
-        "concepts": [
-          "knowledge",
-          "workflow",
-          "skills",
-          "api",
-          "testing",
-          "deployment",
-          "context",
-          "authentication"
         ]
       },
       "TASK-519": {
@@ -3099,40 +2525,6 @@
           "deployment"
         ]
       },
-      "TASK-524": {
-        "path": ".agent/tasks/archive/TASK-524-console-chat-relay-project-selection.md",
-        "title": "Task 524 Console Chat Relay Project Selection",
-        "status": "archived",
-        "concepts": [
-          "api",
-          "deployment",
-          "authentication",
-          "testing",
-          "context"
-        ]
-      },
-      "TASK-525": {
-        "path": ".agent/tasks/archive/TASK-525-console-pr388-wire-contract-continuation.md",
-        "title": "Task 525 Console Pr388 Wire Contract Continuation",
-        "status": "archived",
-        "concepts": [
-          "api",
-          "testing",
-          "context",
-          "deployment"
-        ]
-      },
-      "TASK-526": {
-        "path": ".agent/tasks/archive/TASK-526-ui-chat-projects-progress.md",
-        "title": "Task 526 Ui Chat Projects Progress",
-        "status": "archived",
-        "concepts": [
-          "context",
-          "api",
-          "frontend",
-          "testing"
-        ]
-      },
       "TASK-527": {
         "path": ".agent/tasks/archive/TASK-527-ui-chat-issue-card.md",
         "title": "Task 527 Ui Chat Issue Card",
@@ -3180,21 +2572,6 @@
           "context"
         ]
       },
-      "TASK-546": {
-        "path": ".agent/tasks/TASK-546-pricing-v3-honest-allowance-overage-packs.md",
-        "title": "Pricing v3 — honest ticket allowance + prepaid overage packs at a value price",
-        "status": "backlog",
-        "concepts": [
-          "workflow",
-          "api",
-          "deployment",
-          "knowledge",
-          "database",
-          "context",
-          "theory of mind",
-          "testing"
-        ]
-      },
       "TASK-549": {
         "path": ".agent/tasks/TASK-549-legacy-repo-navigator-bootstrap.md",
         "title": "Legacy repo bootstrap — build real Navigator context on first run, persist it, and price it",
@@ -3236,18 +2613,6 @@
           "knowledge"
         ]
       },
-      "TASK-558": {
-        "path": ".agent/tasks/archive/TASK-558-console-ledger-first-poll-sends-since.md",
-        "title": "Task 558 Console Ledger First Poll Sends Since",
-        "status": "completed",
-        "concepts": [
-          "deployment",
-          "context",
-          "api",
-          "testing",
-          "database"
-        ]
-      },
       "TASK-563": {
         "path": ".agent/tasks/archive/TASK-563-executor-push-rejection-swallowed-as-success.md",
         "title": "Task 563 Executor Push Rejection Swallowed As Success",
@@ -3259,18 +2624,6 @@
           "context",
           "workflow",
           "testing"
-        ]
-      },
-      "TASK-567": {
-        "path": ".agent/tasks/archive/TASK-567-ui-register-with-invite-skips-org.md",
-        "title": "Task 567 Ui Register With Invite Skips Org",
-        "status": "completed",
-        "concepts": [
-          "frontend",
-          "testing",
-          "api",
-          "authentication",
-          "context"
         ]
       },
       "TASK-571": {
@@ -3362,19 +2715,6 @@
           "testing"
         ]
       },
-      "TASK-578": {
-        "path": ".agent/tasks/archive/TASK-578-console-419-revision-test-db-lock.md",
-        "title": "Task 578 Console 419 Revision Test Db Lock",
-        "status": "backlog",
-        "concepts": [
-          "authentication",
-          "deployment",
-          "knowledge",
-          "context",
-          "testing",
-          "database"
-        ]
-      },
       "TASK-579": {
         "path": ".agent/tasks/archive/TASK-579-dashboard-queue-grouped-by-project.md",
         "title": "Task 579 Dashboard Queue Grouped By Project",
@@ -3385,19 +2725,6 @@
           "context",
           "deployment",
           "testing"
-        ]
-      },
-      "TASK-580": {
-        "path": ".agent/tasks/archive/TASK-580-console-419-revision-2-scratch-migrate-lock.md",
-        "title": "Task 580 Console 419 Revision 2 Scratch Migrate Lock",
-        "status": "dispatched",
-        "concepts": [
-          "testing",
-          "database",
-          "context",
-          "deployment",
-          "knowledge",
-          "authentication"
         ]
       },
       "TASK-581": {
@@ -3414,38 +2741,6 @@
           "skills",
           "theory of mind",
           "api"
-        ]
-      },
-      "TASK-582": {
-        "path": ".agent/tasks/archive/TASK-582-wave0-site-unblock-the-sale.md",
-        "title": "Wave 0 — pilotcloud.dev copy update (unblock the sale)",
-        "status": "completed",
-        "concepts": [
-          "deployment",
-          "authentication",
-          "theory of mind",
-          "knowledge",
-          "testing",
-          "api",
-          "context",
-          "frontend"
-        ]
-      },
-      "TASK-583": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/pilot-console-nav-start-521e07/.agent/tasks/TASK-583-wave1-design-update-proof-surface.md",
-        "title": "Wave 1 — design update + proof surface (Run Story, Review needed, briefs, pen test)",
-        "status": "completed",
-        "concepts": [
-          "frontend",
-          "authentication",
-          "testing",
-          "database",
-          "theory of mind",
-          "knowledge",
-          "deployment",
-          "api",
-          "markers",
-          "context"
         ]
       },
       "TASK-589": {
@@ -3645,22 +2940,6 @@
           "https://github.com/qf-studio/pilot/issues/6189"
         ]
       },
-      "TASK-585": {
-        "path": ".agent/tasks/TASK-585-wave2-research-to-tickets.md",
-        "title": "Wave 2 — research → tickets (P2, P3, C5, C4, C10, U10)",
-        "status": "backlog",
-        "concepts": [
-          "api",
-          "database",
-          "testing",
-          "knowledge",
-          "context",
-          "frontend",
-          "deployment",
-          "theory of mind",
-          "authentication"
-        ]
-      },
       "TASK-630": {
         "path": ".agent/tasks/TASK-630-monitor-register-epic-subissues-project.md",
         "title": "Dashboard shows epic sub-issues as \"(no project)\" with the id as title — register children with the Monitor",
@@ -3748,19 +3027,6 @@
           "knowledge"
         ]
       },
-      "TASK-637": {
-        "path": ".agent/tasks/archive/TASK-637-mobile-on-the-new-design.md",
-        "title": "Mobile on the new design — port the mobile v1 layer (PR#84, 2026-08-15) to the 2026-10 Figma design, with a 390×844 Playwright check",
-        "status": "completed",
-        "concepts": [
-          "context",
-          "deployment",
-          "theory of mind",
-          "frontend",
-          "testing",
-          "api"
-        ]
-      },
       "TASK-636": {
         "title": "TASK-636: Quality gate timeouts — fail closed on the last attempt, kill the whole process group",
         "status": "merged",
@@ -3777,41 +3043,6 @@
           "quality-gates",
           "ci",
           "tooling"
-        ]
-      },
-      "TASK-639": {
-        "path": ".agent/tasks/archive/TASK-639-desktop-board-page-grouped-list.md",
-        "title": "Desktop Board page per Figma 7-482 — the project-grouped list replaces the lanes; moves go to the drawer; the right column becomes Performance",
-        "status": "completed",
-        "concepts": [
-          "context",
-          "deployment",
-          "api",
-          "knowledge",
-          "frontend",
-          "testing"
-        ]
-      },
-      "TASK-640": {
-        "path": ".agent/tasks/archive/TASK-640-credential-health-console.md",
-        "title": "Credential health — the console re-checks the org's own Anthropic key and tracker tokens, shows a truthful status, and gates chat on a dead key",
-        "status": "completed",
-        "concepts": [
-          "context",
-          "markers",
-          "database",
-          "api",
-          "testing",
-          "deployment",
-          "authentication",
-          "frontend"
-        ],
-        "issues": [
-          "https://github.com/qf-studio/pilot-console/issues/488",
-          "https://github.com/qf-studio/pilot-console/issues/492",
-          "https://github.com/qf-studio/pilot-console-ui/issues/378",
-          "https://github.com/qf-studio/pilot-console-ui/issues/384",
-          "https://github.com/qf-studio/pilot-console-ui/issues/389"
         ]
       },
       "TASK-641": {
@@ -3870,34 +3101,19 @@
           "https://github.com/qf-studio/pilot/issues/6187"
         ]
       },
-      "TASK-644": {
-        "path": ".agent/tasks/archive/TASK-644-desktop-content-container-figma-grid.md",
-        "title": "Desktop content container per the Figma layout grid — 1072 px centered, 6 × 162 px columns, 20 px gutter",
+      "TASK-646": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/task646/.agent/tasks/TASK-646-move-pilot-cloud-docs-to-private-repo.md",
+        "title": "Move Pilot Cloud docs out of the public `pilot` repo into `pilot-console/.agent`",
         "status": "completed",
         "concepts": [
-          "frontend",
-          "testing",
-          "deployment"
-        ],
-        "issues": [
-          "https://github.com/qf-studio/pilot-console-ui/issues/390",
-          "https://github.com/qf-studio/pilot-console-ui/issues/397"
-        ]
-      },
-      "TASK-645": {
-        "path": ".agent/tasks/archive/TASK-645-ticket-page-new-design-absorbs-drawer.md",
-        "title": "Ticket page in the new design — a Board row opens the page, the page absorbs the drawer's settings, the drawer retires",
-        "status": "completed",
-        "concepts": [
-          "frontend",
-          "testing",
-          "design-system",
-          "mobile"
-        ],
-        "issues": [
-          "https://github.com/qf-studio/pilot-console-ui/issues/404",
-          "https://github.com/qf-studio/pilot-console-ui/issues/407",
-          "https://github.com/qf-studio/pilot-console-ui/issues/409"
+          "context",
+          "skills",
+          "theory of mind",
+          "deployment",
+          "api",
+          "knowledge",
+          "markers",
+          "testing"
         ]
       }
     },
@@ -3915,18 +3131,6 @@
         ],
         "created": "2026-11-06",
         "last_validated": "2026-11-06"
-      },
-      "founder-priority-pointer-first-saas-parked": {
-        "type": "learning",
-        "summary": "Founder directive 2026-07-17: deliver pointer first, then pilot reliability fixes; SaaS/platform work (TASK-405, auth-service) parked — do not push in reports/queue recommendations",
-        "file": ".agent/knowledge/memories/learnings/founder-priority-pointer-first-saas-parked.md",
-        "concepts": [
-          "workflow-discipline",
-          "cross-repo",
-          "dispatch"
-        ],
-        "confidence": 0.95,
-        "created": "2026-07-17"
       },
       "nextretrygeneration-blind-to-dead-owner-nonterminal-claims": {
         "type": "pitfall",
@@ -6024,17 +5228,6 @@
         "confidence": 0.9,
         "created": "2026-07-15"
       },
-      "mem-155": {
-        "type": "learning",
-        "summary": "Route SaaS-build work through Navigator skills (nav-task/nav-pilot/nav-graph), not manual gh/bash — founder preference 2026-07-15. Separately: broken nav-spike PreToolUse probe (ephemeral /tmp install wiped) hard-blocked Read tool everywhere; if Read breaks, check /tmp/nav-v7-spike hook files first.",
-        "file": ".agent/knowledge/memories/learnings/mem-155.md",
-        "concepts": [
-          "navigator-integration",
-          "workflow-discipline"
-        ],
-        "confidence": 0.9,
-        "created": "2026-07-15"
-      },
       "mem-156": {
         "type": "pitfall",
         "summary": "Duplicate-execution class: leases and check-then-act guards are not claims — 10 incidents/12 days, 7 dispatch entry points, 6 different dedup keys. Epic direct-exec (epic.go:2008) never consults IsTaskQueued; poller marks decay ~5min and are per-process; executions table has no uniqueness constraint. Every point fix was correct for its incident and irrelevant to the next; only an atomic claim at ExecutionLifecycle.Begin closes the class (TASK-407/#4349).",
@@ -6392,18 +5585,6 @@
         "confidence": 0.95,
         "created": "2026-07-24"
       },
-      "cdk-merged-not-deployed-rots": {
-        "type": "pitfall",
-        "summary": "IaC merged green on synth-only CI but never deployed rots against the provider: the first fleet-VPC deploy 2026-07-24 hit infra#20 (DLM policy missing required ExecutionRoleArn) and infra#21 (AWS retired the pinned postgres 17.4 minor). Budget first deploys as bug-finding, never as a formality on a gate's critical path.",
-        "file": ".agent/knowledge/memories/pitfalls/cdk-merged-not-deployed-rots.md",
-        "concepts": [
-          "aws",
-          "deployment",
-          "pilot-console"
-        ],
-        "confidence": 0.95,
-        "created": "2026-07-24"
-      },
       "ready-gate-couples-credential-validity": {
         "type": "pitfall",
         "summary": "GH-3769 registered live adapter credential probes as /ready readiness checkers (adapter_preflight.go:133 -> server.go:414 returns 503 if any fails), so one expired token makes a lifecycle gate polling /ready report a dead credential as 'instance not ready' — auth faults present as provisioning faults. pilot-console#45 addresses it.",
@@ -6413,32 +5594,6 @@
           "gateway",
           "pilot-console",
           "deployment"
-        ],
-        "confidence": 0.95,
-        "created": "2026-07-24"
-      },
-      "claude-cli-refuses-root-hosted-units": {
-        "type": "pitfall",
-        "summary": "The claude CLI refuses --dangerously-skip-permissions as root, so a systemd unit with no User= silently cannot execute anything; the same default puts the ledger at /.pilot off the data volume. Hosted units need User=pilot + explicit HOME on the data volume + ExecStartPre=+ for privileged pre-steps (pilot-console#53).",
-        "file": ".agent/knowledge/memories/pitfalls/claude-cli-refuses-root-hosted-units.md",
-        "concepts": [
-          "executor",
-          "deployment",
-          "pilot-console",
-          "ledger"
-        ],
-        "confidence": 0.95,
-        "created": "2026-07-24"
-      },
-      "oauth-ssm-params-rot-live-credentials-source-of-truth": {
-        "type": "pitfall",
-        "summary": "A CLAUDE_CODE_OAUTH_TOKEN copied into SSM is a snapshot that expires into silent 401 loops — the live ~/.claude/.credentials.json on a working machine is the only source of truth; separately a well-formed ANTHROPIC_API_KEY can still have zero credits. console secrets.validKeys lacks the OAuth key, forcing raw SSM puts.",
-        "file": ".agent/knowledge/memories/pitfalls/oauth-ssm-params-rot-live-credentials-source-of-truth.md",
-        "concepts": [
-          "pilot-console",
-          "deployment",
-          "anthropic-api",
-          "executor"
         ],
         "confidence": 0.95,
         "created": "2026-07-24"
@@ -6637,22 +5792,6 @@
         "concepts": [
           "epic"
         ]
-      },
-      "cdk-untagged-estate-invisible-to-cost-view": {
-        "type": "pitfall",
-        "summary": "CDK never applies the account's Environment tag convention (only its own aws:cdk:* tags) — pilot-cloud-infra's 4 fleet stacks ran as 'No tag key' spend from the 07-24 deploy until the 07-31 cost audit; same audit: NatGateways=minAzCount(2) in fleetvpc.go contradicts the v1 single-NAT design (~$33/mo waste). Fix: Tags.of(app).Add('Environment','fleet') at app scope in main.go at SCAFFOLD time + synth unit tests asserting tag presence and NAT count (dispatched infra#26).",
-        "path": "memories/pitfalls/cdk-untagged-estate-invisible-to-cost-view.md",
-        "confidence": 0.95,
-        "concepts": [
-          "cdk",
-          "aws",
-          "cost-allocation",
-          "tagging",
-          "nat-gateway",
-          "pilot-cloud-infra"
-        ],
-        "created": "2026-07-31",
-        "last_validated": "2026-07-31"
       },
       "pilot-issue-missing-no-decompose-fragments-single-fix": {
         "type": "pitfall",
@@ -6918,54 +6057,6 @@
         "confidence": 0.98,
         "created": "2026-08-15"
       },
-      "cdk-tenant-role-not-an-instance-role": {
-        "type": "pitfall",
-        "summary": "TenantAccessRole (pilot-cloud-infra) trusts account-root+session-tags, NOT ec2 — cannot back an instance profile (burned 3 ship-test provisions); only in-code instance-role path is pilot-console TenantResourceFactory. Same class: any role running an 'aws s3 cp' bridge needs explicit s3:GetObject. Push fix = repo-local credential helper, never tokened remote (hygiene test enforces scrub)",
-        "path": "memories/pitfalls/cdk-tenant-role-not-an-instance-role.md",
-        "confidence": 0.95,
-        "concepts": [
-          "fleet",
-          "provisioning",
-          "iam",
-          "bootstrap",
-          "ship-test",
-          "credential-helper"
-        ],
-        "created": "2026-08-16",
-        "last_validated": "2026-08-16"
-      },
-      "bake-workflow-tee-masked-failure-promoted-source-ami": {
-        "type": "pitfall",
-        "summary": "build-ami.yml tee-without-pipefail masked a failed packer build; bare grep then extracted the AL2023 SOURCE ami — only the never-before-executed throwaway validation stopped a blank image becoming golden. Never trust CI machinery with zero live runs; no env-dependent asserts (pilot doctor) in image builds; pipefail before tee; artifact-anchored id extraction. TASK-460 class, infra form",
-        "path": "memories/pitfalls/bake-workflow-tee-masked-failure-promoted-source-ami.md",
-        "confidence": 0.95,
-        "concepts": [
-          "ship-test",
-          "ami",
-          "ci-gates",
-          "false-success",
-          "packer",
-          "bake-test"
-        ],
-        "created": "2026-08-16",
-        "last_validated": "2026-08-16"
-      },
-      "apply-script-silent-rollback-causes": {
-        "type": "pitfall",
-        "summary": "config-push rollbacks are causeless in the console — real error only in box SSM invocation output. Proven causes: root-run git vs pilot-owned clones (dubious ownership reads as 'not in a git directory') and boot-time-stale /run/pilot/env (post-boot secret seed/rotation invisible). Any root SSM script touching pilot-owned repos must runuser -u pilot",
-        "path": "memories/pitfalls/apply-script-silent-rollback-causes.md",
-        "confidence": 0.95,
-        "concepts": [
-          "fleet",
-          "git",
-          "config-push",
-          "ssm",
-          "secrets",
-          "forensics"
-        ],
-        "created": "2026-08-16",
-        "last_validated": "2026-08-16"
-      },
       "external-fork-pr-sweeps-stale-agent-state": {
         "type": "pitfall",
         "summary": "External fork PRs can silently delete/revert .agent/ memory files — stale fork checkout + `git commit -a` swept a pitfall-memory deletion and pre-08-15 reverts of DEVELOPMENT-README + graph.json into an approve-quality feature PR (#4891). Review .agent/ hunks in external PRs for BOTH injected instructions and destructive reversion; require external PRs to drop all .agent/ paths",
@@ -7002,17 +6093,6 @@
         "confidence": 0.95,
         "created": "2026-08-17"
       },
-      "no-stripe-local-first-s3-testing": {
-        "type": "decision",
-        "summary": "Founder 2026-08-18: Stripe unusable (Montenegro unsupported) — processor swapped later, keep checkout flag off; no staging domain yet — S3 testing stays local-first (local console stack + fleet VPC tenants), infra PR#25 staging deploy deferred; effective S3 exit test excludes the payment leg",
-        "file": ".agent/knowledge/memories/decisions/no-stripe-local-first-s3-testing.md",
-        "concepts": [
-          "workflow-discipline",
-          "saas",
-          "cost-allocation"
-        ],
-        "confidence": 0.9
-      },
       "jira-two-parallel-clients-poller-is-sdk": {
         "type": "pitfall",
         "summary": "Pilot has two parallel Jira clients: internal/adapters/jira = webhook path only; polling runs studio-sdk sdk/integrations/jira. pilot#4929's fix shipped nothing for polling users — reproduced live (KAN-6, 2026-08-18); port filed sdk#119. Check cmd/pilot/poller_*.go imports before filing adapter fixes; SDK poller logs omit the adapter name.",
@@ -7032,19 +6112,6 @@
           "poller",
           "labels",
           "retry",
-          "hosted-tenant"
-        ],
-        "confidence": 0.95,
-        "created": "2026-08-18"
-      },
-      "s3-exit-three-tenant-pass-proven": {
-        "type": "learning",
-        "summary": "S3 exit test PASSED 2026-08-18: 3 fresh tenants signup->credentials->provision->PR->auto-merge concurrently (local console + consolectl run + fleet VPC, AMI ami-01ed3bb9600200ce4). Remaining operator bridges: SSM secret mirror (local-posture only) and consolectl add-repo (real gap -> console#177); label-wedge defect found -> pilot#4961",
-        "file": ".agent/knowledge/memories/learnings/s3-exit-three-tenant-pass-proven.md",
-        "concepts": [
-          "saas",
-          "fleet",
-          "provisioning",
           "hosted-tenant"
         ],
         "confidence": 0.95,
@@ -7098,20 +6165,6 @@
           "reconciler",
           "pilot",
           "github"
-        ]
-      },
-      "consumer-docblock-trusted-over-producer-wire-source": {
-        "type": "pitfall",
-        "summary": "ui PR#113 (4th TASK-460 incident) shipped green while inverting a wire field's semantics — trusted a stale consumer-side types.ts docblock (specVersion = applied gen) over the producer source (pilot-console handlers.go:141 sends the TARGET, inst.ConfigGeneration) and over the issue's own incident evidence; rewrote comments+tests to enshrine the wrong reading. New evidence shape: doc-vs-wire. Structural fix dispatched: pilot#5009 (Contract Evidence gate, daemon-verified producer citations via Contents API) + console#195 (raw-body CI gate for json-tagged DTO changes). Rule: a field's semantics come from the code that PRODUCES the value, never a consumer-side comment. RECURRENCE 08-20: dashboard chart empty-with-data (UI-6/PR#61, types.ts claimed byProject keyed by name, producer keys by projectDTO.Key UUID) — 5th class incident, fix ui#118.",
-        "file": ".agent/knowledge/memories/pitfalls/consumer-docblock-trusted-over-producer-wire-source.md",
-        "created": "2026-08-20",
-        "last_validated": "2026-08-20",
-        "confidence": 0.9,
-        "concepts": [
-          "dashboard",
-          "pilot",
-          "pilot-console",
-          "api"
         ]
       },
       "mem-171": {
@@ -7276,28 +6329,6 @@
         "created": "2026-08-25",
         "last_validated": "2026-08-25"
       },
-      "console-ssm-paths-work-locally-proxy-does-not": {
-        "type": "learning",
-        "summary": "A laptop-run pilot-console CAN provision, readiness-gate and config-push tenant EC2 boxes — all SSM RunCommand / EC2 API, zero inbound networking (readiness curls localhost:9090 ON the instance via SSM, which is why the 08-18 S3 exit passed locally). It CANNOT reach the dashboard proxy (status/metrics/queue/history/logs/timeline/ws/chat), a direct HTTP call to the tenant's private IP:9090 behind a console-SG-only rule: probing it from the console container TIMES OUT. No tunnel/VPN path exists in code, and IAM denies ssm:StartSession on tenant instances (founder box only).",
-        "file": ".agent/knowledge/memories/learnings/console-ssm-paths-work-locally-proxy-does-not.md",
-        "concepts": [
-          "pilot-console",
-          "fleet",
-          "saas"
-        ],
-        "confidence": 0.9
-      },
-      "s4-dashboard-only-clause-blocks-local-console": {
-        "type": "pitfall",
-        "summary": "S4's exit clause says 'operated dashboard-only', which names exactly the private-IP proxy surface a laptop console cannot reach — so S3's local-first precedent does NOT transfer (S3's criteria were provisioning/execution-shaped and rode SSM paths). Also: the pen test is S5's gate, not S4's — saas-architecture.md's coarser Phase-2 grouping adds a phantom S4 blocker; the roadmap milestone table is authoritative. Cheapest unblock (un-evaluated): a minimal EC2 console inside the control-plane SG, skipping ALB/ACM/SES, reached by SSM port-forward — no domain needed.",
-        "file": ".agent/knowledge/memories/pitfalls/s4-dashboard-only-clause-blocks-local-console.md",
-        "concepts": [
-          "saas",
-          "pilot-console",
-          "fleet"
-        ],
-        "confidence": 0.9
-      },
       "model-refusal-looks-like-exit-status-1": {
         "type": "pitfall",
         "summary": "A backend model refusal surfaces as 'unknown: exit status 1' with empty stderr and ~0 tokens; the real cause (stop_reason=refusal, category=cyber) lives ONLY in the stream recording, and being deterministic it trips the streak threshold -> stalled + pilot-blocked silently. PROVEN 2026-08-26 across three attempts that framing is NOT the cause: infra#36 contained zero security-probe content (signal handling, assignment ordering, a test fake) and was still refused, while infra#31 wrote all six probes and passed. The trigger is the package/surrounding context (isolationharness), so splitting or reframing does not help — that package is off-limits to the executor. Stop after ONE reframing attempt; repeated rewording is circumvention. Fix for the observability half: pilot#5232 (merged PR#5234).",
@@ -7446,33 +6477,6 @@
         ],
         "confidence": 0.95,
         "created": "2026-08-30"
-      },
-      "s4-unblock-minimal-invpc-ec2-console": {
-        "type": "decision",
-        "summary": "Founder decision 2026-08-31 — S4 exit unblocked via a minimal EC2 console inside the fleet VPC control-plane SG (no ALB/ACM/SES/domain); laptop access via SSM port-forward to that one instance. Leg order: infra console deploy (gate) → deprovision-cascade fix (parallel) → second-tracker rig → operator exit week. Do not resurrect the domain purchase as an S4 blocker.",
-        "file": ".agent/knowledge/memories/decisions/s4-unblock-minimal-invpc-ec2-console.md",
-        "concepts": [
-          "deployment",
-          "saas",
-          "aws",
-          "dashboard",
-          "workflow"
-        ],
-        "confidence": 0.95,
-        "created": "2026-08-31"
-      },
-      "ses-identity-has-no-consumer-email-service-is-the-missing-middle": {
-        "type": "learning",
-        "summary": "ControlPlaneStack's SES domain identity has zero deployed consumers — auth-service emails via HTTPSender → the standalone email-service REST API (SMTP/SES/Mailgun/Resend, GitLab linear-invoices org), which is deployed nowhere in the stack. Launch email leg can use email-service's Resend/Mailgun transport, dropping the SES domain identity + sandbox-exit from the critical path (ACM/domain remain only for the public ALB). Irrelevant to S4 (email off by design).",
-        "file": ".agent/knowledge/memories/learnings/ses-identity-has-no-consumer-email-service-is-the-missing-middle.md",
-        "concepts": [
-          "saas",
-          "aws",
-          "deployment",
-          "adapters"
-        ],
-        "confidence": 0.95,
-        "created": "2026-08-31"
       },
       "safeguard-refuses-exploit-framed-issues-describe-as-input-validation": {
         "type": "learning",
@@ -7788,21 +6792,6 @@
         "confidence": 0.95,
         "created": "2026-09-09"
       },
-      "payment-processor-is-paddle-not-stripe": {
-        "type": "decision",
-        "summary": "Founder decision 2026-09-10: Pilot Cloud billing uses Paddle (merchant of record), not Stripe (unavailable for the founder's location/regulations). Existing flag-gated Stripe scaffolding in pilot-console is dead-end; S5 billing-lifecycle leg targets Paddle Billing behind the same billingStatus contract.",
-        "file": ".agent/knowledge/memories/decisions/payment-processor-is-paddle-not-stripe.md",
-        "concepts": [
-          "saas",
-          "product-positioning",
-          "pilot-cloud-infra"
-        ],
-        "confidence": 0.95,
-        "created": "2026-09-10",
-        "contradiction": "compliance/eligibility (Stripe unavailable for the founder's jurisdiction) vs. the sunk Stripe scaffolding and its familiarity.",
-        "separation": "system — swap the provider behind the console's existing billing-status contract rather than redesigning billing.",
-        "principle": "keep the domain contract, replace the vendor adapter."
-      },
       "issue-body-literal-migration-version-collides-with-sibling-leg": {
         "type": "pitfall",
         "summary": "Two same-morning console legs both told to add migration 0018 collided (#284 merged first, PR#285 red at migrate-load, size guard refused a fix, task parked). Issue bodies must say 'next free migration version at merge time', never a literal.",
@@ -7814,258 +6803,6 @@
         ],
         "confidence": 0.95,
         "created": "2026-09-10"
-      },
-      "mem-183": {
-        "type": "decision",
-        "summary": "Checkout surface: Overlay on `/billing/checkout` via `checkout.url` - Default payment link must load Paddle.js anyway; overlay keeps the existing `{url}` redirect contract and no UI branding work; ...",
-        "path": "memories/decisions/mem-183.md",
-        "confidence": 0.8,
-        "concepts": [
-          "frontend",
-          "context",
-          "testing",
-          "api",
-          "theory of mind",
-          "database",
-          "authentication",
-          "knowledge",
-          "deployment"
-        ],
-        "created": "2026-09-12",
-        "last_validated": "2026-09-12",
-        "source": "TASK-497",
-        "provisional": true
-      },
-      "mem-184": {
-        "type": "decision",
-        "summary": "Transaction creation: Server-side - Locks price and customer, carries `custom_data.org_id` to the subscription, keeps the price id off the client",
-        "path": "memories/decisions/mem-184.md",
-        "confidence": 0.8,
-        "concepts": [
-          "frontend",
-          "context",
-          "testing",
-          "api",
-          "theory of mind",
-          "database",
-          "authentication",
-          "knowledge",
-          "deployment"
-        ],
-        "created": "2026-09-12",
-        "last_validated": "2026-09-12",
-        "source": "TASK-497",
-        "provisional": true
-      },
-      "mem-185": {
-        "type": "decision",
-        "summary": "Org resolution in webhooks: `org_id` first, customer id fallback - `custom_data` propagates transaction → subscription (documented); customer id covers events created outside checkout",
-        "path": "memories/decisions/mem-185.md",
-        "confidence": 0.8,
-        "concepts": [
-          "frontend",
-          "context",
-          "testing",
-          "api",
-          "theory of mind",
-          "database",
-          "authentication",
-          "knowledge",
-          "deployment"
-        ],
-        "created": "2026-09-12",
-        "last_validated": "2026-09-12",
-        "source": "TASK-497",
-        "provisional": true
-      },
-      "mem-186": {
-        "type": "decision",
-        "summary": "Idempotency: `billing_events(event_id pk)` insert-first in the same tx - Paddle's documented key; survives restarts and multiple replicas; `notification_id` differs per destination/replay",
-        "path": "memories/decisions/mem-186.md",
-        "confidence": 0.8,
-        "concepts": [
-          "frontend",
-          "context",
-          "testing",
-          "api",
-          "theory of mind",
-          "database",
-          "authentication",
-          "knowledge",
-          "deployment"
-        ],
-        "created": "2026-09-12",
-        "last_validated": "2026-09-12",
-        "source": "TASK-497",
-        "provisional": true
-      },
-      "mem-187": {
-        "type": "decision",
-        "summary": "Ordering: `occurred_at >= billing_status_event_at` - Paddle states events arrive out of order",
-        "path": "memories/decisions/mem-187.md",
-        "confidence": 0.8,
-        "concepts": [
-          "frontend",
-          "context",
-          "testing",
-          "api",
-          "theory of mind",
-          "database",
-          "authentication",
-          "knowledge",
-          "deployment"
-        ],
-        "created": "2026-09-12",
-        "last_validated": "2026-09-12",
-        "source": "TASK-497",
-        "provisional": true
-      },
-      "mem-188": {
-        "type": "decision",
-        "summary": "Signature verification: Own (SDK for API + payload types) - Multi-`h1` rotation support in the SDK unverified; 40 lines with vectors is cheaper than a rotation outage",
-        "path": "memories/decisions/mem-188.md",
-        "confidence": 0.8,
-        "concepts": [
-          "frontend",
-          "context",
-          "testing",
-          "api",
-          "theory of mind",
-          "database",
-          "authentication",
-          "knowledge",
-          "deployment"
-        ],
-        "created": "2026-09-12",
-        "last_validated": "2026-09-12",
-        "source": "TASK-497",
-        "provisional": true
-      },
-      "mem-189": {
-        "type": "decision",
-        "summary": "Timestamp tolerance: 5 min default, env-overridable - Retries and clock skew; replay attacks are already bounded by `event_id` dedupe",
-        "path": "memories/decisions/mem-189.md",
-        "confidence": 0.8,
-        "concepts": [
-          "frontend",
-          "context",
-          "testing",
-          "api",
-          "theory of mind",
-          "database",
-          "authentication",
-          "knowledge",
-          "deployment"
-        ],
-        "created": "2026-09-12",
-        "last_validated": "2026-09-12",
-        "source": "TASK-497",
-        "provisional": true
-      },
-      "mem-190": {
-        "type": "decision",
-        "summary": "Status vocabulary: Keep `none/active/inactive/past_due` - UI and `/me` contract unchanged; paused/trialing have no product meaning for a flat plan",
-        "path": "memories/decisions/mem-190.md",
-        "confidence": 0.8,
-        "concepts": [
-          "frontend",
-          "context",
-          "testing",
-          "api",
-          "theory of mind",
-          "database",
-          "authentication",
-          "knowledge",
-          "deployment"
-        ],
-        "created": "2026-09-12",
-        "last_validated": "2026-09-12",
-        "source": "TASK-497",
-        "provisional": true
-      },
-      "mem-191": {
-        "type": "decision",
-        "summary": "Suspend target state: `suspended` - B7's wake signal must not revive a non-paying tenant",
-        "path": "memories/decisions/mem-191.md",
-        "confidence": 0.8,
-        "concepts": [
-          "frontend",
-          "context",
-          "testing",
-          "api",
-          "theory of mind",
-          "database",
-          "authentication",
-          "knowledge",
-          "deployment"
-        ],
-        "created": "2026-09-12",
-        "last_validated": "2026-09-12",
-        "source": "TASK-497",
-        "provisional": true
-      },
-      "mem-192": {
-        "type": "decision",
-        "summary": "Enforcement rollout: Flag off, dry-run logs - Status tracking ships and is observed before any tenant is suspended; re-arm pitfall",
-        "path": "memories/decisions/mem-192.md",
-        "confidence": 0.8,
-        "concepts": [
-          "frontend",
-          "context",
-          "testing",
-          "api",
-          "theory of mind",
-          "database",
-          "authentication",
-          "knowledge",
-          "deployment"
-        ],
-        "created": "2026-09-12",
-        "last_validated": "2026-09-12",
-        "source": "TASK-497",
-        "provisional": true
-      },
-      "mem-193": {
-        "type": "decision",
-        "summary": "Env naming: Rename + refuse stale vars - A stale ECS task definition cannot half-configure the new provider",
-        "path": "memories/decisions/mem-193.md",
-        "confidence": 0.8,
-        "concepts": [
-          "frontend",
-          "context",
-          "testing",
-          "api",
-          "theory of mind",
-          "database",
-          "authentication",
-          "knowledge",
-          "deployment"
-        ],
-        "created": "2026-09-12",
-        "last_validated": "2026-09-12",
-        "source": "TASK-497",
-        "provisional": true
-      },
-      "mem-194": {
-        "type": "decision",
-        "summary": "Secrets path: Process env - Vendor keys are process-level, not per-tenant; matches every other console secret",
-        "path": "memories/decisions/mem-194.md",
-        "confidence": 0.8,
-        "concepts": [
-          "frontend",
-          "context",
-          "testing",
-          "api",
-          "theory of mind",
-          "database",
-          "authentication",
-          "knowledge",
-          "deployment"
-        ],
-        "created": "2026-09-12",
-        "last_validated": "2026-09-12",
-        "source": "TASK-497",
-        "provisional": true
       },
       "hardening-issue-wording-triggers-model-refusal": {
         "type": "pitfall",
@@ -8092,52 +6829,6 @@
         "confidence": 0.95,
         "created": "2026-09-13"
       },
-      "pricing-flat-fee-byo-tokens-sonnet-default": {
-        "type": "decision",
-        "summary": "Pilot Cloud pricing 2026-09-14: flat monthly fee for box+Pilot, tokens BYO billed by Anthropic directly, default claude-sonnet-5 with a settings switch. Usage-based rejected: our cost doesn't scale with tickets and the customer's own token bill already meters usage. Price open, $299 recommended; Paddle prices immutable once used.",
-        "file": ".agent/knowledge/memories/decisions/pricing-flat-fee-byo-tokens-sonnet-default.md",
-        "concepts": [
-          "pilot-console",
-          "deployment",
-          "api"
-        ],
-        "confidence": 0.95,
-        "created": "2026-09-14"
-      },
-      "fleet-env-doubles-as-environment-tag-value": {
-        "type": "pitfall",
-        "summary": "PILOT_CONSOLE_FLEET_ENV is also the Environment cost-allocation tag value on every tenant resource (GH-261); Nelya's pilot-fleet task boundary keys RunInstances/Terminate/SendCommand on Environment=pilot-fleet, so the manifest's `prod` is a hard IAM deny at first provision (2026-09-18) — set pilot-fleet; decouple the tag from the env name",
-        "file": ".agent/knowledge/memories/pitfalls/fleet-env-doubles-as-environment-tag-value.md",
-        "concepts": [
-          "deployment",
-          "fleet",
-          "iam",
-          "aws"
-        ],
-        "confidence": 0.95
-      },
-      "cfn-typed-parameter-validates-with-deployer-credentials": {
-        "type": "pitfall",
-        "summary": "CFN parameters typed AWS::EC2::Image::Id / AWS::*::Id / AWS::SSM::Parameter::Value are validated with the DEPLOYER's credentials — a least-privilege runner fails at +2 s with AccessDenied on a Describe* action the template never calls (pilot-fleet reconciler, 2026-09-21). Fix: Type String + AllowedPattern, never widen the runner.",
-        "file": ".agent/knowledge/memories/pitfalls/cfn-typed-parameter-validates-with-deployer-credentials.md",
-        "concepts": [
-          "deployment",
-          "iam",
-          "aws"
-        ],
-        "confidence": 0.95
-      },
-      "domain-pilotcloud-dev-keep-pilot-name": {
-        "type": "decision",
-        "summary": "Founder 2026-09-21: hosted product = Pilot Cloud on pilotcloud.dev (console./api.); marketing+docs stay on pilot.quantflow.studio; OSS name Pilot kept; pilot.build ($720) rejected — no domain buys search for a generic word Pilot.com owns; pilothq.dev rejected (Pilot.com's handle); polsia 'Pilot' is an AI-generated placeholder, not a competitor",
-        "file": ".agent/knowledge/memories/decisions/domain-pilotcloud-dev-keep-pilot-name.md",
-        "concepts": [
-          "deployment",
-          "aws",
-          "saas"
-        ],
-        "confidence": 0.95
-      },
       "trademark-clearance-pilot-us-2026-09": {
         "type": "learning",
         "summary": "US TM search 2026-09-21: PILOT live in cl 42 for Pilot.com (bookkeeping, Reg 5550048), Pilot Inc. (mentoring, 6931080), Charter (ad-tech, 5808371) — none for dev tooling; bare PILOT filing by us likely refused; use-risk low-moderate; house-mark compound would register; EU/UK unchecked (registers blocked)",
@@ -8145,19 +6836,6 @@
         "concepts": [
           "saas",
           "deployment"
-        ],
-        "confidence": 0.95
-      },
-      "console-email-transport-ses-not-email-service-repo": {
-        "type": "decision",
-        "summary": "Founder 2026-09-22: console email stays on SES (eu-central-1, console@quantflow.studio). qf-studio/email-service stays undeployed (rejected 07-13: unauthenticated API, at-most-once Redis queue, no DLQ) — its SES+Resend transports are already vendored in pilot-console internal/email behind /send-email, which auth-service calls. Resend not adopted: same DKIM DNS work for Nelya plus a secret and a vendor.",
-        "file": ".agent/knowledge/memories/decisions/console-email-transport-ses-not-email-service-repo.md",
-        "concepts": [
-          "pilot-console",
-          "aws",
-          "deployment",
-          "authentication",
-          "saas"
         ],
         "confidence": 0.95
       },
@@ -8172,28 +6850,6 @@
         ],
         "confidence": 0.9
       },
-      "ecs-az-rebalancing-requires-az-spread-placement-first": {
-        "type": "pitfall",
-        "summary": "ECS AvailabilityZoneRebalancing ENABLED is rejected (400) unless the service's first placement strategy is spread on attribute:ecs.availability-zone — a binpack-only singleton rolls the CFN stack back (console-reconciler 2026-09-23)",
-        "file": ".agent/knowledge/memories/pitfalls/ecs-az-rebalancing-requires-az-spread-placement-first.md",
-        "concepts": [
-          "aws",
-          "deployment",
-          "pilot-console"
-        ],
-        "confidence": 0.9
-      },
-      "dead-cdk-stack-carried-live-founder-box-backup-policy": {
-        "type": "pitfall",
-        "summary": "A 'dead' estate stack can carry a live cross-estate control: DataLifecycleStack (old CDK 10.30) owned the tag-targeted DLM policy that was the founder box's only nightly backup — check DLM TargetTags / tag-scoped resources before deleting an estate",
-        "file": ".agent/knowledge/memories/pitfalls/dead-cdk-stack-carried-live-founder-box-backup-policy.md",
-        "concepts": [
-          "aws",
-          "deployment",
-          "operations"
-        ],
-        "confidence": 0.9
-      },
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid": {
         "type": "learning",
         "summary": "Founder-box data volume swap to encrypted (2026-09-23, ~4 min pause): snapshot copies keep the XFS UUID → side-by-side restore test needs `-o ro,nouuid`, in-place swap needs no fstab change; runbook stop → fuser/umount → detach/attach → mount -a → start → verify (integrity, counts, version, queue metric)",
@@ -8204,48 +6860,6 @@
           "ledger"
         ],
         "confidence": 0.9
-      },
-      "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb": {
-        "type": "learning",
-        "summary": "Hand-added inline policies on CloudFormation-managed roles vanish on the next stack deploy — record every grant we need on Nelya's stacks as a template change through her pipeline (pilot-agent-tenant-secrets drift, 07-23 → found 09-23)",
-        "file": ".agent/knowledge/memories/learnings/hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb.md",
-        "concepts": [
-          "aws",
-          "deployment",
-          "authentication"
-        ],
-        "confidence": 0.9
-      },
-      "mem-195": {
-        "type": "pitfall",
-        "summary": "Production UI build shipped the mock adapter (VITE_API_MODE unset → mock, HTTP adapter tree-shaken): two days of 'passed' browser milestones were fixtures; guard prod bundles for /api/v1/ and forbid fixture markers; demand one wire proof per browser milestone",
-        "path": "memories/pitfalls/mem-195.md",
-        "confidence": 0.98,
-        "concepts": [
-          "deployment",
-          "frontend",
-          "testing",
-          "api"
-        ],
-        "created": "2026-09-24",
-        "last_validated": "2026-09-24",
-        "source": "TASK-495",
-        "provisional": false
-      },
-      "mem-196": {
-        "type": "pitfall",
-        "summary": "Flag-gated worker verified locally, never enabled in the prod task definition: pilot-console board sync workers (SYNC_INGEST/SYNC_OUTBOUND/APPROVAL_INGEST) default off and the pilot-fleet console-api task def never set them, so Board/Needs You were empty with zero errors. Diff the live task-def env against the binary's Getenv list after every deploy; ground truth via /metrics on the ALB (bearer + X-Origin-Verify), not CloudFront.",
-        "path": "memories/pitfalls/mem-196.md",
-        "confidence": 1.0,
-        "concepts": [
-          "false-success",
-          "pilot-console",
-          "deploy-gates",
-          "env-flags",
-          "ecs"
-        ],
-        "created": "2026-09-25",
-        "last_validated": "2026-09-25"
       },
       "mem-197": {
         "type": "pitfall",
@@ -8260,85 +6874,6 @@
         ],
         "created": "2026-09-25",
         "last_validated": "2026-09-25"
-      },
-      "mem-198": {
-        "type": "learning",
-        "summary": "CORRECTED 09-28: repo switch DID reach the box on 09-25 via Reconciler.syncRepos (repos_synced gen4 10:09:21Z, pushed 10:10:33Z), 10 min after the PATCH. The PATCH bump (console PR#328) cannot carry repos: BumpConfigGenerationForOrg re-inserts old params, Push renders stored YAML. Unknown: why syncRepos saw no diff for ~8 ticks then bumped 15 s after the token PUT. Read GET /api/v1/instances/{id}/events before diagnosing a stuck repo switch.",
-        "path": "memories/learnings/mem-198.md",
-        "confidence": 1.0,
-        "concepts": [
-          "config-push",
-          "reconciler",
-          "pilot-console",
-          "tenant"
-        ],
-        "created": "2026-09-25",
-        "last_validated": "2026-09-28"
-      },
-      "mem-199": {
-        "type": "pitfall",
-        "summary": "AWS WAF LinuxRuleSet LFI_QUERYSTRING blocks any query string ending in README.md on BOTH fleet ACLs (CloudFront + regional ALB); console docs/file 403s for the README. Daemon/proxy never emit 403, so HTML 403 on the console = WAF. Fix infra#18: route-scoped ScopeDownStatement, not a Count override.",
-        "path": "memories/pitfalls/mem-199.md",
-        "confidence": 0.95,
-        "concepts": [
-          "waf",
-          "pilot-console",
-          "docs",
-          "fleet",
-          "cloudfront",
-          "alb"
-        ],
-        "created": "2026-09-25",
-        "last_validated": "2026-09-25"
-      },
-      "mem-200": {
-        "type": "learning",
-        "summary": "Tenant secret rotation proof chain: SSM version advanced → pilot.service restart → /run/pilot/env rewritten by fetch-secrets.sh → 'token validated' log. Config file mtime never moves (env refs). Founder saves tokens in the console UI; Claude only verifies (no kms:Decrypt for user/aleks).",
-        "path": "memories/learnings/mem-200.md",
-        "confidence": 0.95,
-        "concepts": [
-          "tenant",
-          "secrets",
-          "reconciler",
-          "config-push",
-          "pilot-console",
-          "operations"
-        ],
-        "created": "2026-09-28",
-        "last_validated": "2026-09-28"
-      },
-      "mem-201": {
-        "type": "decision",
-        "summary": "aws-infrastructure-pilot is Nelya's repo (founder 2026-09-28): we never push, merge, revert or dispatch Pilot there. Template changes are ASKS (issue or #infrastructure post: purpose -> exists -> build -> verify). Our 11 self-merged PRs 08-03..09-28 cost her two corrective commits (#17 superseded by the console-workers split, #19 replaced by her narrower WAF fix). Ours: our repos' deploy workflows that consume her templates with overrides matched to her Parameters block.",
-        "path": "memories/decisions/mem-201.md",
-        "confidence": 0.95,
-        "concepts": [
-          "infrastructure",
-          "ownership",
-          "nelya",
-          "aws-infrastructure-pilot",
-          "template-first",
-          "pilot-fleet",
-          "process"
-        ],
-        "created": "2026-09-28",
-        "last_validated": "2026-09-28"
-      },
-      "mem-202": {
-        "type": "pitfall",
-        "summary": "Merged is not live on the hosted console: UI deploy is dispatch-only, console prod-* tag never cut; autopilot-merged PRs sit undeployed (09-28: UI at 09-24 build, PR#328 not in prod). Check live stamp vs main before saying 'shipped'. Automation: ui#178, console#331.",
-        "path": "memories/pitfalls/mem-202.md",
-        "confidence": 0.95,
-        "concepts": [
-          "deploy",
-          "pilot-console",
-          "pilot-console-ui",
-          "release",
-          "false-success",
-          "operations"
-        ],
-        "created": "2026-09-28",
-        "last_validated": "2026-09-28"
       },
       "mem-203": {
         "type": "learning",
@@ -8383,20 +6918,6 @@
         ],
         "created": "2026-09-29",
         "last_validated": "2026-09-30"
-      },
-      "secrets-live-in-doppler-pilot-console-project": {
-        "type": "decision",
-        "summary": "Founder decision 2026-09-29: third-party API keys for the hosted console (Paddle sandbox/live first) live in Doppler, workplace quantflow, project pilot-console, configs dev / dev_personal / stg / prd. CLI installed and authorized on the laptop (doppler v3.76.6). Never paste such keys into plugin user-config, config.yaml, .env files or issue bodies; inject at run time with doppler run --project pilot-console --config <cfg> -- <cmd>, or read one value with doppler secrets get NAME --plain.",
-        "path": "memories/decisions/secrets-live-in-doppler-pilot-console-project.md",
-        "confidence": 1.0,
-        "concepts": [
-          "secrets",
-          "pilot-console",
-          "cost-allocation",
-          "process"
-        ],
-        "created": "2026-09-29",
-        "last_validated": "2026-09-29"
       },
       "heartbeat-callback-never-set-in-production": {
         "type": "pitfall",
@@ -8701,38 +7222,9 @@
         "confidence": 0.95,
         "created": "2026-10-04"
       },
-      "mem-211": {
-        "type": "pitfall",
-        "summary": "Pasted 'ok pkg 0.00Xs' for live-Postgres (DATABASE_URL-gated) tests is a SKIP, not a PASS. Found 2026-10-05 reviewing pilot-console PR#351/#352 (TASK-502 legs 0+2): both bodies pasted ok internal/db 0.004s, ok internal/orgs 0.007s, ok internal/fleet 0.037s as proof for TestMigrateUpDownUp / Allowance / MeteredUsage, which skip without DATABASE_URL (the executor worktree has none). CI (postgres service + hard-fail gate) ran them for real and was green, so nothing shipped broken, but the pasted evidence was worthless. Rule: acceptance for DB-gated tests must say 'paste go test -v -run <Name> output showing --- PASS lines; an ok <pkg> 0.00Xs line alone is a skip and fails this acceptance'. Reviewers: read the timing on any pasted ok line for a live-DB package before trusting it.",
-        "path": "memories/pitfalls/mem-211.md",
-        "confidence": 0.95,
-        "concepts": [
-          "false-success",
-          "issue-authoring",
-          "delivery-evidence",
-          "live-postgres-tests"
-        ],
-        "created": "2026-10-05",
-        "last_validated": "2026-10-05"
-      },
-      "mem-212": {
-        "type": "learning",
-        "summary": "Anthropic Admin API cannot mint API keys: /v1/organizations/api_keys is list/retrieve/update only and no endpoint ever returns a key value (partial_key_hint only); keys are created in the Claude Console by a human. Verified 2026-10-05 on the live reference while specing TASK-502 leg 1, whose plan said 'workspace + key per org via Admin API'. Workspaces CAN be created/archived and keys CAN be deactivated (status=inactive) programmatically, so a per-tenant key design must be a human-minted pool (console assigns, deactivates, warns on low) or Workload Identity Federation (service accounts + federation rules, OAuth org:admin only, needs an OIDC issuer). Founder chose the pool (console#353/#354/#355). Check the live Admin API reference before any plan that says 'create a key programmatically'.",
-        "path": "memories/learnings/mem-212.md",
-        "confidence": 0.95,
-        "concepts": [
-          "anthropic-admin-api",
-          "api-keys",
-          "platform-key",
-          "tenant-provisioning",
-          "design-verification"
-        ],
-        "created": "2026-10-05",
-        "last_validated": "2026-10-05"
-      },
       "mem-213": {
         "type": "pitfall",
-        "summary": "Two Claude sessions (claude.ai Navigator chat with the Slack connector, and Claude Code in the repo) posted the same ops ask to Nelya in #infrastructure 16 s apart (2026-10-05 10:52 CEST, TASK-502 leg 1 wiring). Both read the same TASK doc, both decided the ask was owed, neither read the channel first; the 'POSTED' line in the TASK doc only landed after sending. Rule: before any outward Slack/email post, read the destination's last 10 messages and search for the topic in the past 2 h; write the 'ask POSTED <ts>' line into the TASK doc (and push) BEFORE sending, not after; and only one session owns outward comms for a task — the founder says which. Also the correct ECS service name for the reconciler is console-workers (split 09-28), not 'reconciler task def'.",
+        "summary": "Two Claude sessions (claude.ai Navigator chat with the Slack connector, and Claude Code in the repo) posted the same ops ask to the infra contractor in #infrastructure 16 s apart (2026-10-05 10:52 CEST, TASK-502 leg 1 wiring). Both read the same TASK doc, both decided the ask was owed, neither read the channel first; the 'POSTED' line in the TASK doc only landed after sending. Rule: before any outward Slack/email post, read the destination's last 10 messages and search for the topic in the past 2 h; write the 'ask POSTED <ts>' line into the TASK doc (and push) BEFORE sending, not after; and only one session owns outward comms for a task — the founder says which. Also the correct ECS service name for the reconciler is console-workers (split 09-28), not 'reconciler task def'.",
         "path": "memories/pitfalls/mem-213.md",
         "confidence": 0.95,
         "concepts": [
@@ -8740,7 +7232,7 @@
           "duplicate-post",
           "multi-session",
           "ops-asks",
-          "nelya"
+          "the infra contractor"
         ],
         "created": "2026-10-05",
         "last_validated": "2026-10-05"
@@ -8769,34 +7261,6 @@
         "created": "2026-10-05",
         "last_validated": "2026-10-05"
       },
-      "mem-216": {
-        "type": "pitfall",
-        "summary": "pilot-console's untracked docker-compose.override.yml runs the local console on the prod SSM driver; a local platform-key assign would write a real pool key into prod SSM while prod platform_keys still says free (double-lend). Use COMPOSE_FILE=docker-compose.yml for pool work.",
-        "path": "memories/pitfalls/mem-216.md",
-        "confidence": 0.95,
-        "concepts": [
-          "pilot-console",
-          "secrets",
-          "operations",
-          "deployment"
-        ],
-        "created": "2026-10-06",
-        "last_validated": "2026-10-06"
-      },
-      "mem-217": {
-        "type": "pitfall",
-        "summary": "Cancelling a console deploy run mid-job leaves the CloudFormation update running with the cancelled image; the next dispatch fails on UPDATE_IN_PROGRESS. Read the newest prod tag and the last run before a manual dispatch; never cancel, let it finish and redeploy.",
-        "path": "memories/pitfalls/mem-217.md",
-        "confidence": 0.95,
-        "concepts": [
-          "deployment",
-          "pilot-console",
-          "operations",
-          "aws"
-        ],
-        "created": "2026-10-07",
-        "last_validated": "2026-10-07"
-      },
       "mem-218": {
         "type": "pitfall",
         "summary": "A per-tick deadline ctx leaked into every goroutine the reconciler tick spawned (provision, config push); the comment promised otherwise; prod provisioning was dead for 13 days after console PR#321. Spawned work takes runCtx; settle paths use WithoutCancel; concurrency comments need a pinning test; provision one real box after reconciler changes.",
@@ -8808,20 +7272,6 @@
           "concurrency",
           "context",
           "prod-verification"
-        ],
-        "created": "2026-10-08"
-      },
-      "mem-219": {
-        "type": "learning",
-        "summary": "Prod test-org discipline: never deprovision (retires the pool key, no stop in UI); one browser = one org (credential saves land on the logged-in org); SPA freezes long tabs — verify via reconciler log, EC2 tags, SSM on the box; PATCH connections config needs X-Requested-With; swap repos to avoid two boxes racing one label.",
-        "path": "memories/learnings/mem-219.md",
-        "confidence": 0.9,
-        "concepts": [
-          "pilot-console",
-          "operations",
-          "testing",
-          "prod-verification",
-          "platform-key"
         ],
         "created": "2026-10-08"
       },
@@ -8867,21 +7317,6 @@
         "created": "2026-10-11",
         "last_validated": "2026-10-11"
       },
-      "console-wire-contract-gate-needs-raw-body-strings-contains-test": {
-        "type": "pitfall",
-        "summary": "pilot-console CI job 'Check Wire-Contract Tests' (scripts/check-wire-contract-tests.sh) fails any PR that adds or changes a json-tagged field in a handler/DTO struct unless a test in the SAME package reads rec.Body.String() and then asserts strings.Contains(...) naming the field inside one test function; fake-gateway request assertions and bytes.Equal relays do not count. Console PR#388 (TASK-524, 2026-10-12) was held by autopilot for this. Every console spec that adds a JSON field must name a Test<Handler>_<Field>JSON with that exact shape and add 'make check-wire-contract-tests passes; paste the output' as an acceptance bullet.",
-        "path": "memories/pitfalls/console-wire-contract-gate-needs-raw-body-strings-contains-test.md",
-        "confidence": 0.9,
-        "concepts": [
-          "issue-authoring",
-          "testing",
-          "pilot-console",
-          "ci",
-          "wire-contract"
-        ],
-        "created": "2026-10-12",
-        "last_validated": "2026-10-12"
-      },
       "autopilot-held-prs-redrive-only-for-size-guard-holds": {
         "type": "pitfall",
         "summary": "escalateAndHold (internal/autopilot/controller.go) has 11 call sites but only 2 revival paths: redriveSizeGuardHeldPR (gated on SizeGuardHoldActive, set only at the 'CI fix size guard fired' site) and reAdoptHeldRebasePR (RebaseHoldActive). A PR held for 'CI failure with zero gathered evidence' or a declined continuation stays in StageFailed forever even after a fix issue pushes a green head, because ProcessPR treats StageFailed as terminal and registerPR is a no-op for an already-tracked PR. Incident: pilot-console PR#388 2026-10-12 (custom CI gate, unparseable log → zero evidence → hold → continuation green → hand merge). Fix: TASK-528 generalizes the hold triple.",
@@ -8921,20 +7356,6 @@
           "base-presence",
           "agent-dir",
           "issue-authoring"
-        ],
-        "created": "2026-10-13",
-        "last_validated": "2026-10-13"
-      },
-      "tenants-do-not-self-upgrade-hosted-invariant": {
-        "type": "learning",
-        "summary": "Hosted tenants never pick up a release train: the self-upgrade pipeline runs only in TUI dashboard mode, AssertHostedInvariants forbids auto_hot_upgrade under PILOT_HOSTED=1 (S0.7 'control plane redeploys'), the console renders auto_hot_upgrade: false, the tenant binary dir is root-owned, and the console reconciler's RunAMIRollout has no caller. Until TASK-532/533/537 ship, upgrade tenants by the SSM swap SOP.",
-        "path": "memories/learnings/tenants-do-not-self-upgrade-hosted-invariant.md",
-        "confidence": 0.9,
-        "concepts": [
-          "upgrade",
-          "hosted",
-          "fleet",
-          "release-train"
         ],
         "created": "2026-10-13",
         "last_validated": "2026-10-13"
@@ -9115,21 +7536,6 @@
         "created": "2026-10-15",
         "last_validated": "2026-10-15"
       },
-      "console-ledger-poller-decoded-assumed-usage-shape-zero-rows": {
-        "type": "pitfall",
-        "summary": "console PR#405 (GH-401) decoded {rows|array} with kind, estimatedUsdCents, reportedUsd, status=succeeded; daemon GH-5676 served {executions,nextSince,hasMore} with estimatedCostUSD, reportedCostUSD, status=completed, no kind. Both merged the same morning from one plan (TASK-546) that never fixed the shape; fixtures on each side were written to their own assumption. Result: ticket_ledger stayed empty with no error above debug; the meter fell back to the rollup delta so enforcement ran but chat dollars (D10) could never land. Fixed: console#409→PR#410 (decoder to the shipped shape + hasMore pagi",
-        "path": "memories/pitfalls/console-ledger-poller-decoded-assumed-usage-shape-zero-rows.md",
-        "confidence": 0.9,
-        "concepts": [
-          "pricing-v3",
-          "usage-ledger",
-          "contract-drift",
-          "doc-vs-wire",
-          "console"
-        ],
-        "created": "2026-10-15",
-        "last_validated": "2026-10-15"
-      },
       "issue-body-backticked-paths-not-on-main-trip-base-presence-hold": {
         "type": "pitfall",
         "summary": "Four dispatches on 2026-10-13/14 sat in 'Task held: prerequisite not on main' for 5–25 min each: a cross-repo .agent/ task doc (ui#233), src/stray.txt as a test fixture name (pilot#5688), five files that existed only on a closed PR branch (pilot#5690), a new testdata JSON to be created (console#409). The legacy gate treats every backticked path-like span as a prerequisite that must exist on main; the shadow classifier would have let 'to_be_created' through but is not authoritative. Fix is an issue-body edit; the next 5-min tick releases the hold.",
@@ -9158,21 +7564,6 @@
         "created": "2026-10-15",
         "last_validated": "2026-10-15"
       },
-      "test-fake-daemon-more-permissive-than-real-route-hides-400": {
-        "type": "pitfall",
-        "summary": "console pollLedger omitted since on a zero cursor; the daemon route GET /api/v1/executions/usage requires since and answers 400 'since is required'. The fake daemon in TestPollLedger_FollowsHasMore served rows for an empty since, so the suite passed while prod failed every 15-min poll from 2026-10-14 14:xxZ (console-reconciler log: 'ledger: unexpected status 400'). Zero cursor + rejected request = permanent deadlock: no row ingests, the cursor never moves. Rule: before writing a consumer's fake of another repo's route, read that handler's http.Error / 4xx branches and mirror each one in the fake; add an explicit first-poll (empty-state) test, because the empty state is what prod hits first and what fixtures skip. Fixed by console#411 (TASK-558); predecessor TASK-554 fixed the body shape but not the request.",
-        "path": "memories/pitfalls/test-fake-daemon-more-permissive-than-real-route-hides-400.md",
-        "confidence": 0.95,
-        "concepts": [
-          "false-success",
-          "wire-contract",
-          "pilot-console",
-          "test-fakes",
-          "usage-ledger"
-        ],
-        "created": "2026-10-15",
-        "last_validated": "2026-10-15"
-      },
       "executor-session-ends-turn-awaiting-background-test-no-commit": {
         "type": "pitfall",
         "summary": "GH-5701 (2026-10-15): session staged all work, backgrounded go test -short -race, its until-grep wait loop hit the Bash timeout, then it ended the turn with 'once it reports I will commit'. Headless -p has no next turn: result fired, background go test kept the process alive, executor killed the group after the 30s grace (GH-5530), harvested SHA == main (no-op), dirty worktree auto-preserved as wip 8fe4dd2 on pilot/GH-5701, task stalled + pilot-blocked. Preserved commit was complete and green; recovery = detached-worktree verify + open the PR from it (PR#5702). Gap: a green auto-preserved commit is treated as a deterministic failure instead of continuing to gates + PR.",
@@ -9185,21 +7576,6 @@
           "stalled",
           "silent-failure",
           "claude-code-integration"
-        ],
-        "created": "2026-10-15",
-        "last_validated": "2026-10-15"
-      },
-      "founder-tenant-legacy-ssm-layout-key-source-unknown-unmetered": {
-        "type": "learning",
-        "summary": "Founder tenant org 425f9f99 (instance 404746db, EC2 i-0289111000cebcee9, provisioned 2026-09-25) has the pre-TASK-502 SSM layout: /tenants/<org>/ holds ANTHROPIC_API_KEY, GITHUB_TOKEN, PILOT_GATEWAY_TOKEN only, no PILOT_ANTHROPIC_KEY_SOURCE and no _PLATFORM/_OWN pair. fetch-secrets.sh therefore writes no key source into /run/pilot/env, the daemon records key_source=unknown on every execution and chat turn, and the console meter (usage_meter.go, FILTER key_source='platform') counts nothing for this org. Tenants provisioned 10-07 (Testica b79d7a56) and 10-08 (19135877) have the full layout. Verified 2026-10-15 via SSM parameter names + ticket_ledger rows. Fix is operator-side: add PILOT_ANTHROPIC_KEY_SOURCE (and the key pair) for that org or re-push its config; not a code defect. Also: ticket_ledger ingest proven end to end 12:55Z (4 execution + 1 chat_turn rows) after console#411.",
-        "path": "memories/learnings/founder-tenant-legacy-ssm-layout-key-source-unknown-unmetered.md",
-        "confidence": 0.95,
-        "concepts": [
-          "usage-ledger",
-          "ssm",
-          "tenant-provisioning",
-          "allowance",
-          "key-source"
         ],
         "created": "2026-10-15",
         "last_validated": "2026-10-15"
@@ -9327,21 +7703,6 @@
         "created": "2026-10-16",
         "last_validated": "2026-10-16"
       },
-      "smoke-new-user-flows-with-a-fresh-account-registration-side-effects": {
-        "type": "learning",
-        "summary": "The first real org-invite smoke (2026-10-16) passed every backend and UI test and still failed for a real invitee: RegisterView's one submit does register→createOrg, the console allows one org per user, and there is no org-delete route, so a new user who registered could never accept (409). Nobody had walked the flow as a brand-new account. Rule: for any user-facing flow that a NEW account enters (invites, shared links, referrals), the smoke must start from a fresh registration, and the spec must name the registration side effects (org creation, onboarding bounces, verification redirects) that can strand the flow. Fixed same morning by ui#237 → PR#238 (TASK-567). Also: a plus-address of a personal Gmail is not readable from a session whose Gmail MCP is the work account — pick the invitee mailbox before the smoke.",
-        "path": "memories/learnings/smoke-new-user-flows-with-a-fresh-account-registration-side-effects.md",
-        "confidence": 0.9,
-        "concepts": [
-          "onboarding",
-          "false-success",
-          "smoke-testing",
-          "invites",
-          "console-ui"
-        ],
-        "created": "2026-10-16",
-        "last_validated": "2026-10-16"
-      },
       "autopilot-selfclose-handoff-leaves-original-task-repickable": {
         "type": "pitfall",
         "summary": "Self-close hand-off skips the superseded write and demotes the original to failed; dispatcher re-picks the original into the fix run's branch (GH-5731 x3, 2026-10-16).",
@@ -9426,7 +7787,7 @@
       },
       "ccd-slack-connector-off-by-default-enable-per-session": {
         "type": "learning",
-        "summary": "Claude desktop Code sessions carry the claude.ai Slack connector but it is disabled per session; session_connectors_status → set_session_connector_enabled turns it on. Pilot's own Linear is not the connected workspace. #infrastructure=C0BV37L87C1, Nelya=U0ADEMJ7J83 (2026-10-19).",
+        "summary": "Claude desktop Code sessions carry the claude.ai Slack connector but it is disabled per session; session_connectors_status → set_session_connector_enabled turns it on. Pilot's own Linear is not the connected workspace. #infrastructure=C0BV37L87C1, the infra contractor=U0ADEMJ7J83 (2026-10-19).",
         "file": ".agent/knowledge/memories/learnings/ccd-slack-connector-off-by-default-enable-per-session.md",
         "concepts": [
           "workflow-discipline"
@@ -9534,7 +7895,7 @@
       },
       "slack-connector-returns-text-only-colleague-attachments-need-a-pr": {
         "type": "learning",
-        "summary": "The Code-session Slack connector returns message text only: a colleague's 'attached' file (Nelya's pilotcloud-site deploy workflow, 2026-10-19) is invisible to slack_read_thread, file search found nothing, and the browser pane needs a Slack sign-in. Ask the author to push the file as a PR to the target repo instead; collaborators already have write access.",
+        "summary": "The Code-session Slack connector returns message text only: a colleague's 'attached' file (the infra contractor's pilotcloud-site deploy workflow, 2026-10-19) is invisible to slack_read_thread, file search found nothing, and the browser pane needs a Slack sign-in. Ask the author to push the file as a PR to the target repo instead; collaborators already have write access.",
         "path": "memories/learnings/slack-connector-returns-text-only-colleague-attachments-need-a-pr.md",
         "confidence": 0.95,
         "concepts": [
@@ -9545,34 +7906,6 @@
         ],
         "created": "2026-10-19",
         "last_validated": "2026-10-19"
-      },
-      "org-runner-group-repo-access-needs-admin-org-scope": {
-        "type": "learning",
-        "summary": "qf-studio self-hosted runner groups are org-level and the default gh token (read:org) gets 403 on their API; run gh auth refresh -h github.com -s admin:org to completion, then PUT orgs/qf-studio/actions/runner-groups/5/repositories/<repo_id>. Group 5 = pilot-fleet-deployer (runner label aws-pilot-fleet-deployer); every new repo that deploys via Nelya's runner needs this grant on our side (done for pilotcloud-site 2026-10-19).",
-        "path": "memories/learnings/org-runner-group-repo-access-needs-admin-org-scope.md",
-        "confidence": 0.95,
-        "concepts": [
-          "github",
-          "deployment",
-          "infra",
-          "cross-repo"
-        ],
-        "created": "2026-10-19",
-        "last_validated": "2026-10-19"
-      },
-      "verify-issue-premise-against-live-fleet-before-dispatch": {
-        "type": "learning",
-        "summary": "console#390 (10-13) was written on a premise the train had already fixed the same day (GH-5651 headless self-upgrade, v2.282.0): before dispatching a planning-era issue, check the release tag of any related fix (git tag --contains) and read the live tenant over SSM (pilot version + journalctl -u pilot | grep upgrade). The 10-20 check showed the tenant on 2.289.0 self-upgraded; #390 shrank to version visibility, and a real gap surfaced instead: the reconciler golden AMI bakes 2.277.4 (< v2.282.0) with no S3 override, so a new tenant boots a binary that never self-upgrades.",
-        "path": "memories/learnings/verify-issue-premise-against-live-fleet-before-dispatch.md",
-        "confidence": 0.95,
-        "concepts": [
-          "dispatch",
-          "issue-authoring",
-          "fleet",
-          "deployment"
-        ],
-        "created": "2026-10-20",
-        "last_validated": "2026-10-20"
       },
       "github-matching-refs-ignores-per-page-and-page": {
         "type": "pitfall",
@@ -9601,19 +7934,6 @@
         "created": "2026-10-20",
         "last_validated": "2026-10-20"
       },
-      "console-ci-shared-postgres-truncate-races-instances-e2e": {
-        "type": "pitfall",
-        "summary": "pilot-console CI runs go test ./... against ONE Postgres service; internal/fleet reconciler_test.go TRUNCATEs instances/instance_events while internal/instances provision_e2e_test.go runs in parallel, so TestProvisionDeprovisionRowTransitions_E2E can fail with 'GetInstance after provision: fleet: not found' on an unrelated change (PR#417 head 94e2bea, 2026-10-20; green on rerun). A 'db down' ERROR line nearby is a fake-store error path from another test, not the cause. Rerun first; durable fix = per-package schema or -p 1 for DB packages. RESOLVED 2026-10-20: PR#419 (a0cde12af) gives each DB package its own database; see test-db-migrations-race-on-cluster-wide-roles-need-base-db-advisory-lock.",
-        "path": "memories/pitfalls/console-ci-shared-postgres-truncate-races-instances-e2e.md",
-        "confidence": 0.9,
-        "concepts": [
-          "ci",
-          "cross-repo",
-          "fleet"
-        ],
-        "created": "2026-10-20",
-        "last_validated": "2026-10-21"
-      },
       "test-db-migrations-race-on-cluster-wide-roles-need-base-db-advisory-lock": {
         "type": "pitfall",
         "summary": "Per-package test databases (pilot-console PR#419) made migration 0014 run in ~10 databases at once; its ALTER ROLE <current_user> BYPASSRLS updates one cluster-wide pg_authid row, so concurrent applies fail with 'tuple concurrently updated' and leave the DB dirty at v14. Every test-time migration (package DBs AND scratch DBs, incl. up/down sequences) must hold one pg_advisory_lock on the BASE database — advisory lock keys are per-database.",
@@ -9626,19 +7946,6 @@
         ],
         "created": "2026-10-21",
         "last_validated": "2026-10-21"
-      },
-      "executor-box-has-no-postgres-db-test-evidence-invalid": {
-        "type": "pitfall",
-        "summary": "CORRECTED 2026-10-22: the founder box HAS a shared Postgres (daemon has DATABASE_URL; the console gate uses it); only the executor's in-session shell lacks DATABASE_URL, so DB evidence pasted into PR bodies is a failing run. Real gate hazard: shared pilot_test_<pkg> databases that sibling worktrees drive to different schema versions (GH-423 vs GH-424, 'no migration found for version 33'). Fix: per-run prefix, console#428.",
-        "path": "memories/pitfalls/executor-box-has-no-postgres-db-test-evidence-invalid.md",
-        "confidence": 0.9,
-        "concepts": [
-          "executor",
-          "ci",
-          "false-success"
-        ],
-        "created": "2026-10-21",
-        "last_validated": "2026-10-22"
       },
       "post-merge-fix-blames-merged-pr-for-preexisting-flake": {
         "type": "pitfall",
@@ -9794,32 +8101,6 @@
         "created": "2026-10-22",
         "last_validated": "2026-10-22"
       },
-      "mem-261": {
-        "type": "decision",
-        "summary": "Pilot Cloud fair-use ceiling = $300/tenant/month (2026-10-21), up from $100. Ledger evidence (box DB executions, 30 days, 324 runs): mean $0.96/run, p50 $0.52, p90 $2.32, max $16.10; 100 runs ≈ $96. At $100 the dollar cap and the 100-ticket count collide (one retry breaks the promise); at $300 the cap is 3× mean and only stops abuse; worst-case margin $499−$300−~$50 box ≈ $149. Expect 1.5–2× on legacy customer repos; recheck after 5 tenants. Source: project_pilot_cloud_positioning.md §4.",
-        "path": "memories/decisions/mem-261.md",
-        "confidence": 1.0,
-        "concepts": [
-          "product-positioning",
-          "saas",
-          "pricing"
-        ],
-        "created": "2026-10-22",
-        "last_validated": "2026-10-22"
-      },
-      "mem-262": {
-        "type": "decision",
-        "summary": "No dollars or tokens on any platform-key surface (2026-10-21): per-ticket cost discloses margin ($499 plan vs ~$1/run). Run Story rows show duration + diff size (+a −b); the only usage number is a pool meter (% of the fair-use allowance). USD/tokens appear only for own-key tenants. Applies to dashboard, queue rows, Research page sub-agent rows, briefs, Run Story share links. Supersedes the BYO-era \"read-only cost display\" item in saas-architecture.md.",
-        "path": "memories/decisions/mem-262.md",
-        "confidence": 1.0,
-        "concepts": [
-          "product-positioning",
-          "saas",
-          "pricing"
-        ],
-        "created": "2026-10-22",
-        "last_validated": "2026-10-22"
-      },
       "mem-263": {
         "type": "decision",
         "summary": "Research → tickets thesis (2026-10-21): Pilot research writes a spec for the executor, not only an answer for a human. Output = SOP-format issue (H2 sections, Acceptance list, file:line evidence, #N deps) that goes to Review needed for spec approval; the human approves prose, which is cheaper than a diff. The moat vs plain Claude Code is the execution feedback loop: only the system that ships tickets knows which ticket shapes ship (receipts, false-success classes, .agent/ graph). Copy: \"Ask about your code. Turn the answer into a ticket.\" Section 2 + 8.3 of project_pilot_cloud_positioning.md.",
@@ -9884,18 +8165,6 @@
         "created": "2026-10-22",
         "last_validated": "2026-10-22"
       },
-      "mem-268": {
-        "type": "pitfall",
-        "summary": "Shared test databases collide across worktrees (2026-10-22): pilot-console tests use persistent per-package databases pilot_test_<pkg> on the box's shared Postgres (internal/testdb/testdb.go const Prefix). GH-424's gate applied migration 0033; GH-423's worktree on an older base then failed 3 gates with 'no migration found for version 33', auto-preserved and stalled. Any two sibling tasks with different migration sets collide. Fix: per-run prefix PILOT_CONSOLE_TESTDB_PREFIX (console#428) in the box gate command.",
-        "path": "memories/pitfalls/mem-268.md",
-        "confidence": 0.85,
-        "concepts": [
-          "pilot-console",
-          "quality-gate"
-        ],
-        "created": "2026-10-22",
-        "last_validated": "2026-10-22"
-      },
       "mem-269": {
         "type": "pitfall",
         "summary": "Effort classifier 429 noise (2026-10-22): internal/executor/effort_classifier.go picks the first of PILOT_CLASSIFIER_API_KEY, ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN; the box has only the OAuth token, so every direct Messages API call returns 429 {message:Error} (23/23 today) and falls back to the subprocess (~5 s per task). Direct mode is disabled only on 401 (GH-5344). These 429s are not an account rate limit and do not correlate with concurrency; do not read them as pool exhaustion. Fix: pilot#5802.",
@@ -9949,19 +8218,6 @@
         "concepts": [
           "navigator",
           "pilot-dispatch"
-        ],
-        "created": "2026-10-22",
-        "last_validated": "2026-10-22"
-      },
-      "mem-274": {
-        "type": "pitfall",
-        "summary": "UI legs bind to wire fields the counterpart API never sends (2026-10-22, second instance in one day): ui PR#252 (U2) read orgName/lastShippedAt/poolPercentUsed/timeToPrMinutes from GET /api/v1/dashboard whose console DTO has only window/stats{shipped,needsYou}/activity/projects, so the header rendered dashes on every tenant while CI stayed green (unit tests mock the adapter). Same class as console PR#426 decoding kind/mode/reason/title the daemon never emits. Pilot copies a spec's assumed contract into types and fixtures; nothing fails. Guard: every cross-repo field in a LEG gets a 'probe: present owner/repo <regex>' line (mem-273); the review checks the producer's DTO on origin/main, not the consumer's fixture; the spec must say 'name the missing field in the PR body' and the review must verify the body does.",
-        "path": "memories/pitfalls/mem-274.md",
-        "confidence": 0.85,
-        "concepts": [
-          "pilot-dispatch",
-          "testing-quality",
-          "console-ui"
         ],
         "created": "2026-10-22",
         "last_validated": "2026-10-22"
@@ -10161,20 +8417,6 @@
           "dispatch",
           "pilot-issues",
           "sop"
-        ],
-        "created": "2026-11-03",
-        "last_validated": "2026-11-03"
-      },
-      "parallel-console-legs-with-migrations-collide-on-the-number": {
-        "type": "pitfall",
-        "summary": "Two console legs dispatched together that each add a migration pick the same next number: C10 (console#460) merged 0039_chat_turn_cap_50 at 16:17Z while C5 (console#459, cut earlier from 3b012c2) also used 0039 → every DB test failed on the merge ref with 'duplicate migration file: 0039_drafts.down.sql' and the size guard refused a fix issue (1149 prod additions). Fix was a hand-filed revision renumbering to 0040 (console#465). Rule: when two legs with migrations go out at once, name the migration number in each leg body or serialize them (dispatch the second after the first merges).",
-        "path": "memories/pitfalls/parallel-console-legs-with-migrations-collide-on-the-number.md",
-        "confidence": 0.95,
-        "concepts": [
-          "issue-authoring",
-          "database",
-          "dispatch",
-          "ci"
         ],
         "created": "2026-11-03",
         "last_validated": "2026-11-03"
@@ -10544,15 +8786,25 @@
         ],
         "created": "2026-11-06",
         "last_validated": "2026-11-06"
+      },
+      "public-repo-agent-tree-holds-public-product-docs-only": {
+        "type": "learning",
+        "summary": "qf-studio/pilot is PUBLIC: its .agent/ holds daemon docs only. Pilot Cloud docs (console, UI, site, fleet, tenants, Paddle, SaaS strategy) live in qf-studio/pilot-console/.agent (TASK-646, 2026-11-08). Never write an AWS account id, IAM user name, SSM path or EC2 instance id into a public .agent/ file; the denylist gate refuses the first two. Account id + user name pair → MFA on every IAM user.",
+        "file": ".agent/knowledge/memories/learnings/public-repo-agent-tree-holds-public-product-docs-only.md",
+        "concepts": [
+          "security",
+          "pilot-console",
+          "aws",
+          "iam",
+          "workflow-discipline",
+          "ops-discipline"
+        ],
+        "confidence": 0.95,
+        "created": "2026-11-08"
       }
     }
   },
   "edges": [
-    {
-      "from": "disabled-gate-whose-only-clearing-path-is-the-disabled-action-locks-out",
-      "to": "TASK-640",
-      "type": "learned-from"
-    },
     {
       "from": "executor",
       "to": "claude-code-integration",
@@ -11634,37 +9886,12 @@
       "type": "implements"
     },
     {
-      "from": "TASK-408",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-408",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-405",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
       "from": "TASK-407",
       "to": "workflow",
       "type": "implements"
     },
     {
       "from": "TASK-407",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-409",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-409",
       "to": "testing",
       "type": "implements"
     },
@@ -11729,16 +9956,6 @@
       "type": "documents"
     },
     {
-      "from": "TASK-415",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-415",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
       "from": "stall-status-reused-as-hold-marker",
       "to": "claim-lost-drops-count-toward-hard-cap",
       "type": "related"
@@ -11755,16 +9972,6 @@
     },
     {
       "from": "TASK-416",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-417",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-417",
       "to": "workflow",
       "type": "implements"
     },
@@ -11797,11 +10004,6 @@
       "from": "TASK-421",
       "to": "testing",
       "type": "implements"
-    },
-    {
-      "from": "mem-160",
-      "to": "TASK-405",
-      "type": "learned-from"
     },
     {
       "from": "TASK-422",
@@ -11864,59 +10066,9 @@
       "type": "implements"
     },
     {
-      "from": "TASK-428",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-429",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-429",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-430",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
       "from": "TASK-431",
       "to": "testing",
       "type": "implements"
-    },
-    {
-      "from": "TASK-432",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-433",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-433",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-434",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-435",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "cdk-untagged-estate-invisible-to-cost-view",
-      "to": "TASK-405",
-      "type": "learned-from"
     },
     {
       "from": "TASK-436",
@@ -11925,31 +10077,6 @@
     },
     {
       "from": "TASK-437",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-438",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-439",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-439",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-440",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-440",
       "to": "testing",
       "type": "implements"
     },
@@ -12014,46 +10141,6 @@
       "type": "learned-from"
     },
     {
-      "from": "TASK-442",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-443",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-443",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-444",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-445",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-442",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-446",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-447",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
       "from": "TASK-448",
       "to": "testing",
       "type": "implements"
@@ -12070,16 +10157,6 @@
     },
     {
       "from": "TASK-450",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-451",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-452",
       "to": "testing",
       "type": "implements"
     },
@@ -12164,21 +10241,6 @@
       "type": "implements"
     },
     {
-      "from": "TASK-464",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-465",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-466",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
       "from": "TASK-467",
       "to": "testing",
       "type": "implements"
@@ -12249,31 +10311,6 @@
       "type": "implements"
     },
     {
-      "from": "TASK-478",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-478",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "cdk-tenant-role-not-an-instance-role",
-      "to": "TASK-405",
-      "type": "learned-from"
-    },
-    {
-      "from": "bake-workflow-tee-masked-failure-promoted-source-ami",
-      "to": "TASK-405",
-      "type": "learned-from"
-    },
-    {
-      "from": "apply-script-silent-rollback-causes",
-      "to": "TASK-405",
-      "type": "learned-from"
-    },
-    {
       "from": "TASK-479",
       "to": "workflow",
       "type": "implements"
@@ -12299,24 +10336,9 @@
       "type": "relates_to"
     },
     {
-      "from": "no-stripe-local-first-s3-testing",
-      "to": "TASK-405",
-      "type": "relates_to"
-    },
-    {
       "from": "jira-two-parallel-clients-poller-is-sdk",
       "to": "executor",
       "type": "relates_to"
-    },
-    {
-      "from": "s3-exit-three-tenant-pass-proven",
-      "to": "poller-labels-in-progress-before-dispatcher-claim-wedge",
-      "type": "discovered"
-    },
-    {
-      "from": "s3-exit-three-tenant-pass-proven",
-      "to": "no-stripe-local-first-s3-testing",
-      "type": "fulfills"
     },
     {
       "from": "golangci-action-cache-self-poisoning-sa5011",
@@ -12374,11 +10396,6 @@
       "type": "learned-from"
     },
     {
-      "from": "TASK-405",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
       "from": "TASK-486",
       "to": "deployment",
       "type": "implements"
@@ -12422,76 +10439,6 @@
       "from": "review-limit-close-keeps-branch-normal-close-deletes-it",
       "to": "TASK-486",
       "type": "learned-from"
-    },
-    {
-      "from": "TASK-487",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-487",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-487",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-487",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-487",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-488",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-488",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-488",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-488",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-488",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-489",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-489",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-489",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-489",
-      "to": "knowledge",
-      "type": "implements"
     },
     {
       "from": "mem-180",
@@ -12539,26 +10486,6 @@
       "type": "implements"
     },
     {
-      "from": "TASK-489",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-489",
-      "to": "markers",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-489",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-489",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
       "from": "TASK-460",
       "to": "authentication",
       "type": "implements"
@@ -12591,46 +10518,6 @@
     {
       "from": "TASK-460",
       "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-490",
-      "to": "knowledge",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-490",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-490",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-490",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-490",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-490",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-490",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-490",
-      "to": "context",
       "type": "implements"
     },
     {
@@ -12754,36 +10641,6 @@
       "type": "implements"
     },
     {
-      "from": "TASK-495",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-495",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-495",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-495",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-495",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-495",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
       "from": "poller-branch-lookup-marks-issue-done-from-another-issues-pr",
       "to": "autopilot",
       "type": "relates_to"
@@ -12804,11 +10661,6 @@
       "type": "relates_to"
     },
     {
-      "from": "poller-branch-lookup-marks-issue-done-from-another-issues-pr",
-      "to": "TASK-495",
-      "type": "discovered_in"
-    },
-    {
       "from": "ci-fix-size-guard-holds-own-pr-on-one-lint-annotation",
       "to": "autopilot",
       "type": "relates_to"
@@ -12819,11 +10671,6 @@
       "type": "relates_to"
     },
     {
-      "from": "ci-fix-size-guard-holds-own-pr-on-one-lint-annotation",
-      "to": "TASK-495",
-      "type": "discovered_in"
-    },
-    {
       "from": "board-stalled-timestamp-is-created-at-after-self-upgrade-reconciliation",
       "to": "dashboard",
       "type": "relates_to"
@@ -12832,11 +10679,6 @@
       "from": "board-stalled-timestamp-is-created-at-after-self-upgrade-reconciliation",
       "to": "stalled",
       "type": "relates_to"
-    },
-    {
-      "from": "board-stalled-timestamp-is-created-at-after-self-upgrade-reconciliation",
-      "to": "TASK-495",
-      "type": "discovered_in"
     },
     {
       "from": "stalled-rearm-sweep-ignores-body-edit-loops-forever",
@@ -12859,24 +10701,9 @@
       "type": "relates_to"
     },
     {
-      "from": "stalled-rearm-sweep-ignores-body-edit-loops-forever",
-      "to": "TASK-495",
-      "type": "discovered_in"
-    },
-    {
       "from": "autopilot-failed-stage-revival-is-a-flag-gated-redrive-before-processpr",
       "to": "autopilot",
       "type": "relates_to"
-    },
-    {
-      "from": "autopilot-failed-stage-revival-is-a-flag-gated-redrive-before-processpr",
-      "to": "TASK-495",
-      "type": "discovered_in"
-    },
-    {
-      "from": "autopilot-meta-footer-ignored-without-autopilot-fix-label",
-      "to": "TASK-495",
-      "type": "discovered_in"
     },
     {
       "from": "hand-merge-leaves-pilot-needs-human-and-stale-body-capture-at-dispatch",
@@ -12892,191 +10719,6 @@
       "from": "hand-merge-leaves-pilot-needs-human-and-stale-body-capture-at-dispatch",
       "to": "dispatch",
       "type": "relates_to"
-    },
-    {
-      "from": "hand-merge-leaves-pilot-needs-human-and-stale-body-capture-at-dispatch",
-      "to": "TASK-495",
-      "type": "discovered_in"
-    },
-    {
-      "from": "TASK-497",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-497",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-497",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-497",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-497",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-497",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-497",
-      "to": "knowledge",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-497",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "mem-183",
-      "to": "TASK-497",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-184",
-      "to": "TASK-497",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-185",
-      "to": "TASK-497",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-186",
-      "to": "TASK-497",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-187",
-      "to": "TASK-497",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-188",
-      "to": "TASK-497",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-189",
-      "to": "TASK-497",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-190",
-      "to": "TASK-497",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-191",
-      "to": "TASK-497",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-192",
-      "to": "TASK-497",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-193",
-      "to": "TASK-497",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-194",
-      "to": "TASK-497",
-      "type": "learned-from"
-    },
-    {
-      "from": "TASK-497",
-      "to": "skills",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-498",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-498",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-498",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-498",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-498",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-498",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "mem-195",
-      "to": "TASK-495",
-      "type": "related_to"
-    },
-    {
-      "from": "mem-195",
-      "to": "TASK-460",
-      "type": "related_to"
-    },
-    {
-      "from": "mem-196",
-      "to": "TASK-405",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-197",
-      "to": "TASK-405",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-198",
-      "to": "TASK-495",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-199",
-      "to": "TASK-466",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-199",
-      "to": "TASK-495",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-200",
-      "to": "TASK-495",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-200",
-      "to": "TASK-405",
-      "type": "learned-from"
     },
     {
       "from": "TASK-503",
@@ -13157,31 +10799,6 @@
       "from": "mem-205",
       "to": "TASK-505",
       "type": "learned-from"
-    },
-    {
-      "from": "TASK-502",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-502",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-502",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-502",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-502",
-      "to": "testing",
-      "type": "implements"
     },
     {
       "from": "ci-post-merge-fix-issue-borrows-merged-branch-short-circuits",
@@ -13304,91 +10921,6 @@
       "type": "relates_to"
     },
     {
-      "from": "mem-211",
-      "to": "TASK-502",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-212",
-      "to": "TASK-502",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-213",
-      "to": "TASK-502",
-      "type": "learned-from"
-    },
-    {
-      "from": "TASK-511",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-511",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-511",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-511",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-511",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
-      "from": "mem-214",
-      "to": "TASK-511",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-215",
-      "to": "TASK-502",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-216",
-      "to": "TASK-502",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-216",
-      "to": "TASK-511",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-217",
-      "to": "TASK-512",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-218",
-      "to": "TASK-513",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-219",
-      "to": "TASK-513",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-219",
-      "to": "mem-218",
-      "type": "related"
-    },
-    {
-      "from": "TASK-513",
-      "to": "TASK-502",
-      "type": "closes-item-of"
-    },
-    {
       "from": "mem-220",
       "to": "mem-221",
       "type": "related"
@@ -13397,161 +10929,6 @@
       "from": "mem-221",
       "to": "mem-220",
       "type": "related"
-    },
-    {
-      "from": "mem-221",
-      "to": "TASK-513",
-      "type": "related"
-    },
-    {
-      "from": "TASK-515",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-515",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-515",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-515",
-      "to": "knowledge",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-515",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-515",
-      "to": "markers",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-515",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-515",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-515",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-516",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-516",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-516",
-      "to": "skills",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-516",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-516",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-516",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-517",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-517",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-517",
-      "to": "knowledge",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-517",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-517",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-517",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-517",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-518",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-518",
-      "to": "skills",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-518",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-518",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-518",
-      "to": "knowledge",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-518",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-518",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-518",
-      "to": "testing",
-      "type": "implements"
     },
     {
       "from": "TASK-519",
@@ -13689,76 +11066,6 @@
       "type": "implements"
     },
     {
-      "from": "TASK-524",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-524",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-524",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-524",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-524",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-525",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-525",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-525",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-525",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "console-wire-contract-gate-needs-raw-body-strings-contains-test",
-      "to": "TASK-524",
-      "type": "learned-from"
-    },
-    {
-      "from": "TASK-526",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-526",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-526",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-526",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
       "from": "TASK-527",
       "to": "context",
       "type": "implements"
@@ -13874,11 +11181,6 @@
       "type": "relates_to"
     },
     {
-      "from": "tenants-do-not-self-upgrade-hosted-invariant",
-      "to": "fleet",
-      "type": "relates_to"
-    },
-    {
       "from": "release-backfill-sweep-runs-inside-controller-tick-and-wedges-the-train",
       "to": "autopilot",
       "type": "relates_to"
@@ -13897,41 +11199,6 @@
       "from": "goreleaser-rerun-on-published-tag-fails-422-push-formula-by-hand",
       "to": "ci",
       "type": "relates_to"
-    },
-    {
-      "from": "TASK-546",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-546",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-546",
-      "to": "knowledge",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-546",
-      "to": "workflow",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-546",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-546",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-546",
-      "to": "context",
-      "type": "implements"
     },
     {
       "from": "TASK-549",
@@ -14069,41 +11336,6 @@
       "type": "implements"
     },
     {
-      "from": "test-fake-daemon-more-permissive-than-real-route-hides-400",
-      "to": "TASK-558",
-      "type": "learned-from"
-    },
-    {
-      "from": "founder-tenant-legacy-ssm-layout-key-source-unknown-unmetered",
-      "to": "TASK-558",
-      "type": "learned-from"
-    },
-    {
-      "from": "TASK-558",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-558",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-558",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-558",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-558",
-      "to": "database",
-      "type": "implements"
-    },
-    {
       "from": "mem-245",
       "to": "TASK-557",
       "type": "learned-from"
@@ -14166,36 +11398,6 @@
     {
       "from": "TASK-563",
       "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "smoke-new-user-flows-with-a-fresh-account-registration-side-effects",
-      "to": "TASK-567",
-      "type": "learned-from"
-    },
-    {
-      "from": "TASK-567",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-567",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-567",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-567",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-567",
-      "to": "context",
       "type": "implements"
     },
     {
@@ -14299,11 +11501,6 @@
       "type": "learned-from"
     },
     {
-      "from": "ccd-slack-connector-off-by-default-enable-per-session",
-      "to": "TASK-515",
-      "type": "learned-from"
-    },
-    {
       "from": "TASK-576",
       "to": "deployment",
       "type": "implements"
@@ -14404,64 +11601,9 @@
       "type": "learned-from"
     },
     {
-      "from": "slack-connector-returns-text-only-colleague-attachments-need-a-pr",
-      "to": "TASK-515",
-      "type": "learned-from"
-    },
-    {
-      "from": "org-runner-group-repo-access-needs-admin-org-scope",
-      "to": "TASK-515",
-      "type": "learned-from"
-    },
-    {
-      "from": "verify-issue-premise-against-live-fleet-before-dispatch",
-      "to": "TASK-405",
-      "type": "learned-from"
-    },
-    {
       "from": "github-matching-refs-ignores-per-page-and-page",
       "to": "TASK-577",
       "type": "learned-from"
-    },
-    {
-      "from": "gh5468-unlisted-check-failure-blocks-gate-but-evidence-still-allowlist-scoped",
-      "to": "TASK-405",
-      "type": "learned-from"
-    },
-    {
-      "from": "console-ci-shared-postgres-truncate-races-instances-e2e",
-      "to": "TASK-405",
-      "type": "learned-from"
-    },
-    {
-      "from": "TASK-578",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-578",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-578",
-      "to": "knowledge",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-578",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-578",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-578",
-      "to": "database",
-      "type": "implements"
     },
     {
       "from": "TASK-579",
@@ -14489,63 +11631,8 @@
       "type": "implements"
     },
     {
-      "from": "TASK-580",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-580",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-580",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-580",
-      "to": "knowledge",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-580",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-580",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "test-db-migrations-race-on-cluster-wide-roles-need-base-db-advisory-lock",
-      "to": "TASK-580",
-      "type": "learned-from"
-    },
-    {
-      "from": "executor-box-has-no-postgres-db-test-evidence-invalid",
-      "to": "TASK-580",
-      "type": "learned-from"
-    },
-    {
       "from": "post-merge-fix-blames-merged-pr-for-preexisting-flake",
       "to": "TASK-508",
-      "type": "learned-from"
-    },
-    {
-      "from": "nav-task-id-generator-ignores-archive-returns-used-id",
-      "to": "TASK-578",
-      "type": "learned-from"
-    },
-    {
-      "from": "tag-push-runs-full-pre-push-gate",
-      "to": "TASK-405",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-251",
-      "to": "TASK-405",
       "type": "learned-from"
     },
     {
@@ -14587,106 +11674,6 @@
       "from": "TASK-581",
       "to": "api",
       "type": "implements"
-    },
-    {
-      "from": "TASK-582",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-582",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-582",
-      "to": "knowledge",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-582",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-582",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-582",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-582",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-583",
-      "to": "markers",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-583",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-583",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-583",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-583",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-583",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-583",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-583",
-      "to": "knowledge",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-583",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
-      "from": "mem-261",
-      "to": "TASK-546",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-262",
-      "to": "TASK-583",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-263",
-      "to": "TASK-583",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-264",
-      "to": "TASK-583",
-      "type": "learned-from"
     },
     {
       "from": "TASK-589",
@@ -14736,46 +11723,6 @@
     {
       "from": "mem-266",
       "to": "TASK-589",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-267",
-      "to": "TASK-583",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-268",
-      "to": "TASK-583",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-269",
-      "to": "TASK-583",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-270",
-      "to": "TASK-583",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-271",
-      "to": "TASK-583",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-272",
-      "to": "TASK-583",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-273",
-      "to": "TASK-583",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-274",
-      "to": "TASK-583",
       "type": "learned-from"
     },
     {
@@ -15229,46 +12176,6 @@
       "type": "learned-from"
     },
     {
-      "from": "TASK-585",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-585",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-585",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-585",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-585",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-585",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-585",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-585",
-      "to": "knowledge",
-      "type": "implements"
-    },
-    {
       "from": "TASK-630",
       "to": "context",
       "type": "implements"
@@ -15336,31 +12243,6 @@
     {
       "from": "mem-279",
       "to": "TASK-631",
-      "type": "learned-from"
-    },
-    {
-      "from": "parallel-console-legs-with-migrations-collide-on-the-number",
-      "to": "TASK-585",
-      "type": "learned-from"
-    },
-    {
-      "from": "epic-children-on-shared-files-conflict-multi-part-leg-needs-no-decompose",
-      "to": "TASK-585",
-      "type": "learned-from"
-    },
-    {
-      "from": "fix-issue-on-borrowed-branch-never-closes-and-blocked-by-fix-deadlocks",
-      "to": "TASK-585",
-      "type": "learned-from"
-    },
-    {
-      "from": "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal",
-      "to": "TASK-585",
-      "type": "learned-from"
-    },
-    {
-      "from": "approval-cards-are-in-slack-a-tap-on-the-wrong-card-approves-another-pr",
-      "to": "TASK-585",
       "type": "learned-from"
     },
     {
@@ -15544,31 +12426,6 @@
       "type": "implements"
     },
     {
-      "from": "TASK-637",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-637",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-637",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-637",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-637",
-      "to": "api",
-      "type": "implements"
-    },
-    {
       "from": "mem-282",
       "to": "TASK-634",
       "type": "learned-from"
@@ -15582,61 +12439,6 @@
       "from": "mem-283",
       "to": "TASK-635",
       "type": "learned-from"
-    },
-    {
-      "from": "TASK-639",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-639",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-639",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-639",
-      "to": "knowledge",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-639",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-639",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-640",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-640",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-640",
-      "to": "context",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-640",
-      "to": "api",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-640",
-      "to": "workflow",
-      "type": "implements"
     },
     {
       "from": "TASK-641",
@@ -15679,26 +12481,6 @@
       "type": "learned-from"
     },
     {
-      "from": "TASK-640",
-      "to": "markers",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-640",
-      "to": "database",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-640",
-      "to": "authentication",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-640",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
       "from": "TASK-642",
       "to": "testing",
       "type": "implements"
@@ -15726,11 +12508,6 @@
     {
       "from": "mem-290",
       "to": "TASK-508",
-      "type": "learned-from"
-    },
-    {
-      "from": "mem-291",
-      "to": "TASK-409",
       "type": "learned-from"
     },
     {
@@ -15787,21 +12564,6 @@
       "from": "mem-294",
       "to": "TASK-641",
       "type": "learned-from"
-    },
-    {
-      "from": "TASK-644",
-      "to": "frontend",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-644",
-      "to": "deployment",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-644",
-      "to": "testing",
-      "type": "implements"
     },
     {
       "from": "mem-295",
@@ -15869,14 +12631,69 @@
       "type": "relates_to"
     },
     {
-      "from": "TASK-645",
-      "to": "frontend",
+      "from": "TASK-646",
+      "to": "api",
       "type": "implements"
     },
     {
-      "from": "TASK-645",
+      "from": "TASK-646",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-646",
+      "to": "skills",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-646",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-646",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-646",
+      "to": "markers",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-646",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "public-repo-agent-tree-holds-public-product-docs-only",
+      "to": "security",
+      "type": "relates_to"
+    },
+    {
+      "from": "public-repo-agent-tree-holds-public-product-docs-only",
+      "to": "pilot-console",
+      "type": "relates_to"
+    },
+    {
+      "from": "public-repo-agent-tree-holds-public-product-docs-only",
+      "to": "aws",
+      "type": "relates_to"
+    },
+    {
+      "from": "public-repo-agent-tree-holds-public-product-docs-only",
+      "to": "iam",
+      "type": "relates_to"
+    },
+    {
+      "from": "public-repo-agent-tree-holds-public-product-docs-only",
+      "to": "workflow-discipline",
+      "type": "relates_to"
+    },
+    {
+      "from": "public-repo-agent-tree-holds-public-product-docs-only",
+      "to": "ops-discipline",
+      "type": "relates_to"
     }
   ],
   "concept_index": {
@@ -15915,15 +12732,12 @@
       "deadlock-alert-idle-refire-mark-sent-asymmetry",
       "autopilot-notifier-never-wired-pr-notices-never-sent"
     ],
-    "ami": [
-      "bake-workflow-tee-masked-failure-promoted-source-ami"
-    ],
+    "ami": [],
     "anthropic-api": [
       "TASK-379",
       "mem-039",
       "mem-041",
       "mem-077",
-      "oauth-ssm-params-rot-live-credentials-source-of-truth",
       "shared-oauth-session-strands-second-machine"
     ],
     "api": [
@@ -15940,16 +12754,11 @@
       "TASK-401",
       "TASK-403",
       "TASK-404",
-      "TASK-405",
       "TASK-407",
-      "TASK-408",
-      "TASK-409",
       "TASK-410",
       "TASK-411",
       "TASK-413",
       "TASK-414",
-      "TASK-415",
-      "TASK-417",
       "TASK-418",
       "TASK-419",
       "TASK-420",
@@ -15958,30 +12767,13 @@
       "TASK-423",
       "TASK-424",
       "TASK-427",
-      "TASK-428",
-      "TASK-429",
-      "TASK-430",
       "TASK-431",
-      "TASK-432",
-      "TASK-434",
-      "TASK-435",
       "TASK-436",
       "TASK-437",
-      "TASK-438",
-      "TASK-439",
-      "TASK-440",
       "TASK-441",
-      "TASK-442",
-      "TASK-443",
-      "TASK-444",
-      "TASK-445",
-      "TASK-446",
-      "TASK-447",
       "TASK-448",
       "TASK-449",
       "TASK-450",
-      "TASK-451",
-      "TASK-452",
       "TASK-454",
       "TASK-455",
       "TASK-456",
@@ -15992,8 +12784,6 @@
       "TASK-461",
       "TASK-462",
       "TASK-463",
-      "TASK-464",
-      "TASK-465",
       "TASK-467",
       "TASK-468",
       "TASK-469",
@@ -16002,7 +12792,6 @@
       "TASK-474",
       "TASK-475",
       "TASK-476",
-      "TASK-478",
       "TASK-479",
       "TASK-480",
       "TASK-481",
@@ -16010,15 +12799,9 @@
       "TASK-484",
       "TASK-485",
       "TASK-486",
-      "TASK-488",
-      "TASK-489",
-      "TASK-490",
       "TASK-492",
       "TASK-493",
       "TASK-494",
-      "TASK-495",
-      "TASK-497",
-      "consumer-docblock-trusted-over-producer-wire-source",
       "github-issues-search-returns-prs",
       "graphql-mock-tests-cannot-catch-schema-validation",
       "mem-116",
@@ -16040,48 +12823,24 @@
       "mem-180",
       "mem-181",
       "mem-182",
-      "mem-183",
-      "mem-184",
-      "mem-185",
-      "mem-186",
-      "mem-187",
-      "mem-188",
-      "mem-189",
-      "mem-190",
-      "mem-191",
-      "mem-192",
-      "mem-193",
-      "mem-194",
-      "pricing-flat-fee-byo-tokens-sonnet-default",
-      "TASK-498",
       "TASK-504",
       "TASK-505",
-      "TASK-502",
       "TASK-510",
       "TASK-509",
       "TASK-508",
-      "TASK-511",
-      "TASK-515",
-      "TASK-517",
-      "TASK-518",
       "TASK-520",
       "TASK-521",
       "TASK-522",
       "TASK-523",
-      "TASK-524",
-      "TASK-525",
-      "TASK-526",
       "TASK-527",
       "TASK-528",
       "TASK-529",
       "TASK-530",
       "mem-233",
       "mem-236",
-      "TASK-546",
       "TASK-549",
       "TASK-547",
       "TASK-557",
-      "TASK-558",
       "mem-245",
       "mem-246",
       "mem-247",
@@ -16089,15 +12848,12 @@
       "mem-249",
       "mem-250",
       "TASK-563",
-      "TASK-567",
       "TASK-573",
       "TASK-569",
       "TASK-576",
       "TASK-577",
       "github-matching-refs-ignores-per-page-and-page",
       "TASK-581",
-      "TASK-582",
-      "TASK-583",
       "mem-252",
       "mem-253",
       "TASK-589",
@@ -16111,18 +12867,14 @@
       "TASK-626",
       "TASK-627",
       "TASK-628",
-      "TASK-585",
       "TASK-631",
       "TASK-633",
       "TASK-632",
       "TASK-635",
-      "TASK-637",
-      "TASK-639",
-      "TASK-640",
       "TASK-641",
       "TASK-642",
       "TASK-643",
-      "TASK-645"
+      "TASK-646"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -16144,44 +12896,21 @@
       "TASK-386",
       "TASK-393",
       "TASK-396",
-      "TASK-405",
-      "TASK-408",
-      "TASK-409",
       "TASK-411",
       "TASK-413",
       "TASK-414",
-      "TASK-415",
-      "TASK-417",
       "TASK-420",
       "TASK-422",
       "TASK-423",
-      "TASK-428",
       "TASK-431",
-      "TASK-432",
-      "TASK-433",
-      "TASK-434",
-      "TASK-435",
       "TASK-437",
-      "TASK-438",
-      "TASK-439",
-      "TASK-440",
-      "TASK-442",
-      "TASK-443",
-      "TASK-444",
-      "TASK-445",
-      "TASK-446",
       "TASK-449",
       "TASK-450",
-      "TASK-451",
-      "TASK-452",
       "TASK-459",
       "TASK-460",
       "TASK-461",
       "TASK-463",
-      "TASK-464",
-      "TASK-466",
       "TASK-469",
-      "TASK-478",
       "TASK-481",
       "TASK-482",
       "TASK-484",
@@ -16207,59 +12936,28 @@
       "mem-122",
       "mem-171",
       "unwired-config-field-validated-but-dead",
-      "TASK-487",
-      "TASK-490",
       "TASK-493",
       "TASK-494",
       "TASK-492",
-      "TASK-495",
-      "TASK-497",
-      "mem-183",
-      "mem-184",
-      "mem-185",
-      "mem-186",
-      "mem-187",
-      "mem-188",
-      "mem-189",
-      "mem-190",
-      "mem-191",
-      "mem-192",
-      "mem-193",
-      "mem-194",
-      "TASK-498",
-      "console-email-transport-ses-not-email-service-repo",
-      "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb",
       "TASK-503",
       "TASK-505",
       "TASK-510",
       "TASK-509",
-      "TASK-515",
-      "TASK-517",
-      "TASK-518",
       "TASK-519",
       "TASK-520",
       "TASK-522",
       "TASK-523",
-      "TASK-524",
       "TASK-563",
-      "TASK-567",
       "TASK-571",
       "TASK-569",
-      "TASK-578",
-      "TASK-580",
       "TASK-581",
-      "TASK-582",
-      "TASK-583",
       "TASK-589",
       "TASK-597",
       "TASK-598",
       "TASK-599",
       "TASK-628",
-      "TASK-585",
       "TASK-631",
-      "TASK-633",
-      "TASK-640",
-      "TASK-645"
+      "TASK-633"
     ],
     "auto-merge": [
       "mem-103"
@@ -16352,27 +13050,16 @@
     ],
     "aws": [
       "absolute-state-paths-bypass-cutover-shim",
-      "cdk-merged-not-deployed-rots",
-      "cdk-untagged-estate-invisible-to-cost-view",
       "mem-126",
       "rlimit-as-breaks-node-subprocesses",
       "ssm-runs-as-root-cli-reads-empty-ledger",
-      "fleet-env-doubles-as-environment-tag-value",
-      "cfn-typed-parameter-validates-with-deployer-credentials",
-      "domain-pilotcloud-dev-keep-pilot-name",
-      "console-email-transport-ses-not-email-service-repo",
       "s3-accessdenied-from-admin-role-is-bucket-policy-condition",
-      "ecs-az-rebalancing-requires-az-spread-placement-first",
-      "dead-cdk-stack-carried-live-founder-box-backup-policy",
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid",
-      "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb",
       "mem-215",
-      "mem-217",
-      "mem-291"
+      "mem-291",
+      "public-repo-agent-tree-holds-public-product-docs-only"
     ],
-    "bake-test": [
-      "bake-workflow-tee-masked-failure-promoted-source-ami"
-    ],
+    "bake-test": [],
     "bench": [
       "mem-071",
       "mem-127"
@@ -16381,16 +13068,12 @@
       "TASK-384",
       "mem-048"
     ],
-    "bootstrap": [
-      "cdk-tenant-role-not-an-instance-role"
-    ],
+    "bootstrap": [],
     "canary": [
       "TASK-379",
       "mem-154"
     ],
-    "cdk": [
-      "cdk-untagged-estate-invisible-to-cost-view"
-    ],
+    "cdk": [],
     "ci": [
       "ci-infra-failure-misclassified-as-code",
       "config-env-expansion-eats-dollar-vars-in-commands",
@@ -16403,19 +13086,14 @@
       "outage-shape-is-jobs-never-run-not-jobs-fail",
       "required-checks-allowlist-makes-other-gates-decorative",
       "mem-214",
-      "console-wire-contract-gate-needs-raw-body-strings-contains-test",
       "autopilot-held-prs-redrive-only-for-size-guard-holds",
       "goreleaser-rerun-on-published-tag-fails-422-push-formula-by-hand",
-      "console-ci-shared-postgres-truncate-races-instances-e2e",
       "test-db-migrations-race-on-cluster-wide-roles-need-base-db-advisory-lock",
-      "executor-box-has-no-postgres-db-test-evidence-invalid",
       "post-merge-fix-blames-merged-pr-for-preexisting-flake",
-      "parallel-console-legs-with-migrations-collide-on-the-number",
       "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal",
       "mem-282"
     ],
     "ci-gates": [
-      "bake-workflow-tee-masked-failure-promoted-source-ami",
       "hand-file-the-ci-fix-issue-in-autopilot-fix-shape-when-the-size-guard-declines"
     ],
     "claude-code-integration": [
@@ -16451,11 +13129,7 @@
       "TASK-631",
       "mem-278"
     ],
-    "config-push": [
-      "apply-script-silent-rollback-causes",
-      "mem-198",
-      "mem-200"
-    ],
+    "config-push": [],
     "context": [
       "TASK-368",
       "TASK-386",
@@ -16468,43 +13142,23 @@
       "TASK-398",
       "TASK-403",
       "TASK-404",
-      "TASK-405",
       "TASK-407",
-      "TASK-408",
-      "TASK-409",
       "TASK-411",
       "TASK-412",
       "TASK-413",
       "TASK-414",
-      "TASK-415",
-      "TASK-417",
       "TASK-418",
       "TASK-419",
       "TASK-420",
       "TASK-421",
       "TASK-426",
       "TASK-427",
-      "TASK-432",
-      "TASK-433",
-      "TASK-434",
-      "TASK-435",
       "TASK-436",
       "TASK-437",
-      "TASK-438",
-      "TASK-439",
-      "TASK-440",
       "TASK-441",
-      "TASK-442",
-      "TASK-443",
-      "TASK-444",
-      "TASK-445",
-      "TASK-446",
-      "TASK-447",
       "TASK-448",
       "TASK-449",
       "TASK-450",
-      "TASK-451",
-      "TASK-452",
       "TASK-453",
       "TASK-454",
       "TASK-455",
@@ -16516,8 +13170,6 @@
       "TASK-461",
       "TASK-462",
       "TASK-463",
-      "TASK-464",
-      "TASK-466",
       "TASK-467",
       "TASK-468",
       "TASK-469",
@@ -16527,7 +13179,6 @@
       "TASK-473",
       "TASK-474",
       "TASK-475",
-      "TASK-478",
       "TASK-479",
       "TASK-480",
       "TASK-481",
@@ -16567,60 +13218,30 @@
       "mem-169",
       "mem-170",
       "TASK-486",
-      "TASK-487",
-      "TASK-488",
-      "TASK-489",
       "mem-180",
       "mem-181",
       "mem-182",
-      "TASK-490",
       "TASK-493",
       "TASK-494",
       "TASK-492",
-      "TASK-495",
-      "TASK-497",
-      "mem-183",
-      "mem-184",
-      "mem-185",
-      "mem-186",
-      "mem-187",
-      "mem-188",
-      "mem-189",
-      "mem-190",
-      "mem-191",
-      "mem-192",
-      "mem-193",
-      "mem-194",
-      "TASK-498",
       "TASK-503",
       "TASK-504",
       "TASK-505",
-      "TASK-502",
       "TASK-510",
-      "TASK-511",
       "mem-218",
-      "TASK-515",
-      "TASK-516",
-      "TASK-517",
-      "TASK-518",
       "TASK-519",
       "TASK-520",
       "TASK-521",
       "TASK-522",
       "TASK-523",
-      "TASK-524",
-      "TASK-525",
-      "TASK-526",
       "TASK-527",
       "TASK-528",
       "TASK-529",
       "TASK-530",
-      "TASK-546",
       "TASK-549",
       "TASK-547",
       "mem-244",
       "TASK-557",
-      "TASK-558",
       "mem-245",
       "mem-246",
       "mem-247",
@@ -16628,15 +13249,10 @@
       "mem-249",
       "mem-250",
       "TASK-563",
-      "TASK-567",
       "TASK-576",
       "TASK-577",
-      "TASK-578",
       "TASK-579",
-      "TASK-580",
       "TASK-581",
-      "TASK-582",
-      "TASK-583",
       "TASK-589",
       "TASK-593",
       "TASK-594",
@@ -16650,7 +13266,6 @@
       "TASK-626",
       "TASK-627",
       "TASK-628",
-      "TASK-585",
       "TASK-630",
       "TASK-631",
       "TASK-633",
@@ -16658,35 +13273,22 @@
       "TASK-632",
       "TASK-634",
       "TASK-635",
-      "TASK-637",
-      "TASK-639",
-      "TASK-640",
       "TASK-643",
-      "TASK-645"
+      "TASK-646"
     ],
     "conversational-bot": [
       "mem-036",
       "mem-042",
       "mem-066"
     ],
-    "cost-allocation": [
-      "cdk-untagged-estate-invisible-to-cost-view",
-      "no-stripe-local-first-s3-testing",
-      "secrets-live-in-doppler-pilot-console-project"
-    ],
-    "credential-helper": [
-      "cdk-tenant-role-not-an-instance-role"
-    ],
+    "cost-allocation": [],
+    "credential-helper": [],
     "cross-repo": [
-      "founder-priority-pointer-first-saas-parked",
       "mem-139",
-      "slack-connector-returns-text-only-colleague-attachments-need-a-pr",
-      "org-runner-group-repo-access-needs-admin-org-scope",
-      "console-ci-shared-postgres-truncate-races-instances-e2e"
+      "slack-connector-returns-text-only-colleague-attachments-need-a-pr"
     ],
     "dashboard": [
       "TASK-358",
-      "consumer-docblock-trusted-over-producer-wire-source",
       "mem-017",
       "mem-019",
       "mem-024",
@@ -16716,26 +13318,14 @@
       "TASK-394",
       "TASK-397",
       "TASK-404",
-      "TASK-405",
       "TASK-407",
-      "TASK-408",
-      "TASK-409",
       "TASK-413",
       "TASK-414",
-      "TASK-415",
-      "TASK-417",
       "TASK-431",
-      "TASK-432",
-      "TASK-438",
-      "TASK-439",
-      "TASK-440",
       "TASK-441",
-      "TASK-442",
-      "TASK-452",
       "TASK-455",
       "TASK-460",
       "TASK-467",
-      "TASK-478",
       "TASK-481",
       "TASK-485",
       "mem-095",
@@ -16769,53 +13359,24 @@
       "mem-169",
       "mem-170",
       "timestamp-hardening-parse-then-compare-in-go",
-      "TASK-487",
-      "TASK-488",
-      "TASK-489",
-      "TASK-490",
       "TASK-494",
       "TASK-492",
-      "TASK-497",
-      "mem-183",
-      "mem-184",
-      "mem-185",
-      "mem-186",
-      "mem-187",
-      "mem-188",
-      "mem-189",
-      "mem-190",
-      "mem-191",
-      "mem-192",
-      "mem-193",
-      "mem-194",
-      "TASK-498",
-      "TASK-502",
       "TASK-509",
-      "TASK-515",
-      "TASK-516",
       "TASK-519",
       "TASK-528",
       "TASK-530",
-      "TASK-546",
       "TASK-557",
-      "TASK-558",
       "mem-245",
       "mem-246",
       "mem-247",
       "mem-248",
       "mem-249",
       "mem-250",
-      "TASK-578",
-      "TASK-580",
       "test-db-migrations-race-on-cluster-wide-roles-need-base-db-advisory-lock",
-      "TASK-583",
       "mem-260",
       "TASK-589",
-      "TASK-585",
       "TASK-631",
-      "parallel-console-legs-with-migrations-collide-on-the-number",
-      "TASK-633",
-      "TASK-640"
+      "TASK-633"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -16848,17 +13409,12 @@
       "TASK-402",
       "TASK-403",
       "TASK-404",
-      "TASK-405",
       "TASK-407",
-      "TASK-408",
-      "TASK-409",
       "TASK-410",
       "TASK-411",
       "TASK-412",
       "TASK-413",
       "TASK-414",
-      "TASK-415",
-      "TASK-417",
       "TASK-418",
       "TASK-419",
       "TASK-420",
@@ -16869,28 +13425,12 @@
       "TASK-425",
       "TASK-426",
       "TASK-427",
-      "TASK-429",
       "TASK-431",
-      "TASK-432",
-      "TASK-433",
-      "TASK-434",
-      "TASK-435",
       "TASK-437",
-      "TASK-438",
-      "TASK-439",
-      "TASK-440",
       "TASK-441",
-      "TASK-442",
-      "TASK-443",
-      "TASK-444",
-      "TASK-445",
-      "TASK-446",
-      "TASK-447",
       "TASK-448",
       "TASK-449",
       "TASK-450",
-      "TASK-451",
-      "TASK-452",
       "TASK-453",
       "TASK-454",
       "TASK-455",
@@ -16902,9 +13442,6 @@
       "TASK-461",
       "TASK-462",
       "TASK-463",
-      "TASK-464",
-      "TASK-465",
-      "TASK-466",
       "TASK-467",
       "TASK-468",
       "TASK-469",
@@ -16915,7 +13452,6 @@
       "TASK-474",
       "TASK-475",
       "TASK-476",
-      "TASK-478",
       "TASK-479",
       "TASK-480",
       "TASK-481",
@@ -16924,17 +13460,9 @@
       "TASK-484",
       "TASK-485",
       "TASK-486",
-      "TASK-487",
-      "TASK-488",
-      "TASK-489",
-      "TASK-490",
       "TASK-492",
       "TASK-493",
       "TASK-494",
-      "TASK-495",
-      "TASK-497",
-      "cdk-merged-not-deployed-rots",
-      "claude-cli-refuses-root-hosted-units",
       "hot-restart-preserves-pid-uptime-false-mismatch",
       "mem-095",
       "mem-096",
@@ -16970,54 +13498,21 @@
       "mem-180",
       "mem-181",
       "mem-182",
-      "mem-183",
-      "mem-184",
-      "mem-185",
-      "mem-186",
-      "mem-187",
-      "mem-188",
-      "mem-189",
-      "mem-190",
-      "mem-191",
-      "mem-192",
-      "mem-193",
-      "mem-194",
       "nextretrygeneration-blind-to-dead-owner-nonterminal-claims",
-      "oauth-ssm-params-rot-live-credentials-source-of-truth",
-      "pricing-flat-fee-byo-tokens-sonnet-default",
       "ready-gate-couples-credential-validity",
       "shared-oauth-session-strands-second-machine",
-      "TASK-498",
-      "fleet-env-doubles-as-environment-tag-value",
-      "cfn-typed-parameter-validates-with-deployer-credentials",
-      "domain-pilotcloud-dev-keep-pilot-name",
       "trademark-clearance-pilot-us-2026-09",
-      "console-email-transport-ses-not-email-service-repo",
       "s3-accessdenied-from-admin-role-is-bucket-policy-condition",
-      "ecs-az-rebalancing-requires-az-spread-placement-first",
-      "dead-cdk-stack-carried-live-founder-box-backup-policy",
-      "hand-applied-iam-on-cfn-managed-roles-is-a-time-bomb",
       "TASK-503",
       "TASK-505",
-      "TASK-502",
       "TASK-510",
       "TASK-509",
       "TASK-508",
-      "TASK-511",
       "mem-215",
-      "mem-216",
-      "mem-217",
-      "TASK-512",
-      "TASK-515",
-      "TASK-516",
-      "TASK-517",
-      "TASK-518",
       "TASK-519",
       "TASK-520",
       "TASK-522",
       "TASK-523",
-      "TASK-524",
-      "TASK-525",
       "TASK-527",
       "TASK-528",
       "TASK-529",
@@ -17028,12 +13523,10 @@
       "mem-237",
       "mem-239",
       "mem-242",
-      "TASK-546",
       "TASK-549",
       "TASK-547",
       "mem-244",
       "TASK-557",
-      "TASK-558",
       "mem-245",
       "mem-246",
       "mem-247",
@@ -17046,14 +13539,8 @@
       "TASK-569",
       "TASK-576",
       "TASK-577",
-      "org-runner-group-repo-access-needs-admin-org-scope",
-      "verify-issue-premise-against-live-fleet-before-dispatch",
-      "TASK-578",
       "TASK-579",
-      "TASK-580",
       "TASK-581",
-      "TASK-582",
-      "TASK-583",
       "mem-252",
       "mem-253",
       "mem-254",
@@ -17074,23 +13561,18 @@
       "TASK-626",
       "TASK-627",
       "TASK-628",
-      "TASK-585",
       "TASK-631",
       "TASK-633",
       "TASK-632",
       "TASK-634",
       "TASK-635",
-      "TASK-637",
-      "TASK-639",
-      "TASK-640",
       "TASK-643",
-      "TASK-645"
+      "TASK-646"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
       "board-sourced-repo-ignores-labeled-issues",
       "claim-lost-drops-count-toward-hard-cap",
-      "founder-priority-pointer-first-saas-parked",
       "fresh-get-body-discarded-list-snapshot-validated",
       "hard-cap-rearm-in-memory-gate",
       "hardening-issue-wording-triggers-model-refusal",
@@ -17110,12 +13592,10 @@
       "stall-status-reused-as-hold-marker",
       "terminal-status-without-rearm-probe-kills-operator-recovery",
       "issue-body-backticked-paths-not-on-main-trip-base-presence-hold",
-      "verify-issue-premise-against-live-fleet-before-dispatch",
       "gh5468-unlisted-check-failure-blocks-gate-but-evidence-still-allowlist-scoped",
       "pre-pr-reviewer-treats-unsatisfiable-issue-requirement-as-blocking",
       "parallel-explore-traces-per-defect-beat-one-research-pass",
       "mem-279",
-      "parallel-console-legs-with-migrations-collide-on-the-number",
       "epic-children-on-shared-files-conflict-multi-part-leg-needs-no-decompose",
       "fix-issue-on-borrowed-branch-never-closes-and-blocked-by-fix-deadlocks",
       "running-execution-cannot-be-cancelled-kill-the-claude-process-group-not-the-gate",
@@ -17202,7 +13682,6 @@
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
       "bare-exit-137-mislabeled-oom",
       "ci-infra-failure-misclassified-as-code",
-      "claude-cli-refuses-root-hosted-units",
       "decomposer-narrative-bullets-as-subtask-boundaries",
       "executor-alert-event-strings-must-equal-alerts-eventtype",
       "executor-session-ends-turn-awaiting-background-test-no-commit",
@@ -17251,7 +13730,6 @@
       "mem-179",
       "model-refusal-looks-like-exit-status-1",
       "nextretrygeneration-blind-to-dead-owner-nonterminal-claims",
-      "oauth-ssm-params-rot-live-credentials-source-of-truth",
       "open-model-executor-research-2026-08",
       "pilot-issue-missing-no-decompose-fragments-single-fix",
       "process-guard-keyed-on-execution-path-is-per-task-under-worktree-isolation",
@@ -17266,7 +13744,6 @@
       "test-asserts-on-pre-rewrite-sha-is-vacuous",
       "tui-subtask-ghost-rows",
       "workflow-yaml-requires-front-matter",
-      "executor-box-has-no-postgres-db-test-evidence-invalid",
       "mem-267",
       "mem-269",
       "gate-exit-2-no-rule-to-make-target-was-a-claude-fixable-failure",
@@ -17284,35 +13761,16 @@
       "external-fork-pr-sweeps-stale-agent-state"
     ],
     "false-success": [
-      "bake-workflow-tee-masked-failure-promoted-source-ami",
-      "mem-196",
-      "mem-202",
       "mem-203",
       "ci-post-merge-fix-issue-borrows-merged-branch-short-circuits",
-      "mem-211",
-      "test-fake-daemon-more-permissive-than-real-route-hides-400",
-      "executor-swallowed-rejected-push-as-success-branch-exists-is-not-pushed",
-      "smoke-new-user-flows-with-a-fresh-account-registration-side-effects",
-      "executor-box-has-no-postgres-db-test-evidence-invalid"
+      "executor-swallowed-rejected-push-as-success-branch-exists-is-not-pushed"
     ],
     "flag-cutover": [
       "absolute-state-paths-bypass-cutover-shim",
       "mem-143"
     ],
-    "fleet": [
-      "apply-script-silent-rollback-causes",
-      "cdk-tenant-role-not-an-instance-role",
-      "console-ssm-paths-work-locally-proxy-does-not",
-      "s3-exit-three-tenant-pass-proven",
-      "s4-dashboard-only-clause-blocks-local-console",
-      "fleet-env-doubles-as-environment-tag-value",
-      "mem-199",
-      "tenants-do-not-self-upgrade-hosted-invariant",
-      "verify-issue-premise-against-live-fleet-before-dispatch",
-      "console-ci-shared-postgres-truncate-races-instances-e2e"
-    ],
+    "fleet": [],
     "forensics": [
-      "apply-script-silent-rollback-causes",
       "mem-177"
     ],
     "frontend": [
@@ -17321,21 +13779,12 @@
       "TASK-395",
       "TASK-397",
       "TASK-401",
-      "TASK-405",
-      "TASK-415",
       "TASK-416",
-      "TASK-428",
-      "TASK-434",
-      "TASK-435",
-      "TASK-443",
-      "TASK-446",
-      "TASK-447",
       "TASK-458",
       "TASK-460",
       "TASK-468",
       "TASK-473",
       "TASK-475",
-      "TASK-478",
       "mem-095",
       "mem-096",
       "mem-097",
@@ -17351,25 +13800,7 @@
       "mem-113",
       "mem-114",
       "mem-115",
-      "TASK-497",
-      "mem-183",
-      "mem-184",
-      "mem-185",
-      "mem-186",
-      "mem-187",
-      "mem-188",
-      "mem-189",
-      "mem-190",
-      "mem-191",
-      "mem-192",
-      "mem-193",
-      "mem-194",
       "TASK-509",
-      "TASK-511",
-      "TASK-515",
-      "TASK-516",
-      "TASK-517",
-      "TASK-526",
       "TASK-527",
       "TASK-549",
       "TASK-557",
@@ -17379,20 +13810,12 @@
       "mem-248",
       "mem-249",
       "mem-250",
-      "TASK-567",
       "TASK-581",
-      "TASK-582",
-      "TASK-583",
       "TASK-589",
       "TASK-593",
       "TASK-594",
       "TASK-596",
-      "TASK-585",
-      "TASK-637",
-      "TASK-639",
-      "TASK-640",
-      "TASK-643",
-      "TASK-645"
+      "TASK-643"
     ],
     "gateway": [
       "TASK-01",
@@ -17404,7 +13827,6 @@
       "box-slack-socket-mode-config-false-but-socket-mode-starts"
     ],
     "git": [
-      "apply-script-silent-rollback-causes",
       "auto-preserve-push-then-rewrite-non-ff-infra-repick-loop",
       "github-events-api-undercounts-multi-ref-delete-pushes",
       "mem-161",
@@ -17447,7 +13869,6 @@
       "pr-numbers-collide-across-repos-approval-must-key-on-owner-repo",
       "required-checks-allowlist-makes-other-gates-decorative",
       "slack-connector-returns-text-only-colleague-attachments-need-a-pr",
-      "org-runner-group-repo-access-needs-admin-org-scope",
       "github-matching-refs-ignores-per-page-and-page",
       "gh5468-unlisted-check-failure-blocks-gate-but-evidence-still-allowlist-scoped",
       "fix-issue-on-borrowed-branch-never-closes-and-blocked-by-fix-deadlocks",
@@ -17478,8 +13899,7 @@
     ],
     "hosted-tenant": [
       "mem-160",
-      "poller-labels-in-progress-before-dispatcher-claim-wedge",
-      "s3-exit-three-tenant-pass-proven"
+      "poller-labels-in-progress-before-dispatcher-claim-wedge"
     ],
     "hot-upgrade": [
       "mem-015",
@@ -17494,9 +13914,7 @@
       "mem-092"
     ],
     "iam": [
-      "cdk-tenant-role-not-an-instance-role",
-      "fleet-env-doubles-as-environment-tag-value",
-      "cfn-typed-parameter-validates-with-deployer-credentials"
+      "public-repo-agent-tree-holds-public-product-docs-only"
     ],
     "incident-response": [
       "bare-exit-137-mislabeled-oom",
@@ -17533,18 +13951,14 @@
       "no-decompose-spec-sizing-one-subsystem",
       "pilot-issue-missing-no-decompose-fragments-single-fix",
       "mem-203",
-      "mem-211",
       "mem-220",
       "mem-221",
       "spec-rerouting-a-platform-must-rewrite-composed-tests-of-the-old-flow",
-      "console-wire-contract-gate-needs-raw-body-strings-contains-test",
       "chat-filed-issues-cite-untracked-agent-scaffold",
       "issue-body-backticked-paths-not-on-main-trip-base-presence-hold",
       "evidence-runner-pastes-nonzero-exit-under-passes-bullet",
-      "verify-issue-premise-against-live-fleet-before-dispatch",
       "pre-pr-reviewer-treats-unsatisfiable-issue-requirement-as-blocking",
       "dispatch-leg-hygiene-test-names-shipped-symbols-refs-boundary",
-      "parallel-console-legs-with-migrations-collide-on-the-number",
       "epic-children-on-shared-files-conflict-multi-part-leg-needs-no-decompose"
     ],
     "knowledge": [
@@ -17562,14 +13976,11 @@
       "TASK-401",
       "TASK-403",
       "TASK-404",
-      "TASK-405",
       "TASK-407",
       "TASK-410",
       "TASK-411",
       "TASK-413",
       "TASK-414",
-      "TASK-415",
-      "TASK-417",
       "TASK-419",
       "TASK-420",
       "TASK-421",
@@ -17578,11 +13989,9 @@
       "TASK-424",
       "TASK-425",
       "TASK-426",
-      "TASK-429",
       "TASK-436",
       "TASK-437",
       "TASK-441",
-      "TASK-445",
       "TASK-448",
       "TASK-449",
       "TASK-450",
@@ -17592,7 +14001,6 @@
       "TASK-459",
       "TASK-460",
       "TASK-462",
-      "TASK-466",
       "TASK-467",
       "TASK-471",
       "TASK-479",
@@ -17628,31 +14036,12 @@
       "mem-168",
       "mem-169",
       "mem-170",
-      "TASK-489",
       "TASK-486",
-      "TASK-490",
       "TASK-493",
       "TASK-494",
-      "TASK-497",
-      "mem-183",
-      "mem-184",
-      "mem-185",
-      "mem-186",
-      "mem-187",
-      "mem-188",
-      "mem-189",
-      "mem-190",
-      "mem-191",
-      "mem-192",
-      "mem-193",
-      "mem-194",
       "TASK-505",
       "TASK-508",
-      "TASK-515",
-      "TASK-517",
-      "TASK-518",
       "TASK-519",
-      "TASK-546",
       "TASK-549",
       "TASK-557",
       "mem-245",
@@ -17665,12 +14054,8 @@
       "task-to-graph-rewrites-graph-json-with-unicode-escapes",
       "TASK-576",
       "TASK-577",
-      "TASK-578",
       "TASK-579",
-      "TASK-580",
       "TASK-581",
-      "TASK-582",
-      "TASK-583",
       "TASK-589",
       "TASK-593",
       "TASK-596",
@@ -17679,14 +14064,12 @@
       "TASK-625",
       "TASK-626",
       "TASK-627",
-      "TASK-585",
       "TASK-630",
       "TASK-631",
       "TASK-633",
       "TASK-635",
-      "TASK-639",
       "TASK-643",
-      "TASK-645"
+      "TASK-646"
     ],
     "labels": [
       "mem-100",
@@ -17703,7 +14086,6 @@
     "ledger": [
       "absolute-state-paths-bypass-cutover-shim",
       "alert-engine-counts-operator-cancels",
-      "claude-cli-refuses-root-hosted-units",
       "github-user-aggregate-rate-pool",
       "hard-cap-rearm-in-memory-gate",
       "mem-142",
@@ -17730,20 +14112,13 @@
       "TASK-399",
       "TASK-402",
       "TASK-403",
-      "TASK-409",
-      "TASK-417",
-      "TASK-434",
-      "TASK-435",
       "TASK-436",
-      "TASK-440",
       "TASK-449",
-      "TASK-452",
       "TASK-453",
       "TASK-458",
       "TASK-459",
       "TASK-461",
       "TASK-463",
-      "TASK-466",
       "TASK-467",
       "TASK-470",
       "TASK-480",
@@ -17753,12 +14128,9 @@
       "mem-180",
       "mem-181",
       "mem-182",
-      "TASK-489",
       "TASK-505",
-      "TASK-515",
       "TASK-573",
       "TASK-579",
-      "TASK-583",
       "TASK-596",
       "TASK-624",
       "TASK-625",
@@ -17767,9 +14139,8 @@
       "TASK-633",
       "TASK-632",
       "TASK-634",
-      "TASK-640",
       "TASK-643",
-      "TASK-645"
+      "TASK-646"
     ],
     "memory": [
       "TASK-358",
@@ -17789,9 +14160,7 @@
       "fix-issue-on-borrowed-branch-never-closes-and-blocked-by-fix-deadlocks",
       "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal"
     ],
-    "nat-gateway": [
-      "cdk-untagged-estate-invisible-to-cost-view"
-    ],
+    "nat-gateway": [],
     "navigator-integration": [
       "guard-research-framing-parity-not-bypass",
       "localmode-tasks-never-get-worktree-qdocs-in-root",
@@ -17803,7 +14172,6 @@
       "mem-008",
       "mem-134",
       "mem-135",
-      "mem-155",
       "use-nav-research-agent-for-all-project-research"
     ],
     "oauth": [
@@ -17832,17 +14200,15 @@
       "ssm-runs-as-root-cli-reads-empty-ledger",
       "slack-routing-three-keys-alerts-vs-approvals-vs-chat",
       "task-stuck-and-lane-starvation-fire-on-terminal-and-needs-human",
-      "slack-approval-click-not-received-relay-via-local-decision-api"
+      "slack-approval-click-not-received-relay-via-local-decision-api",
+      "public-repo-agent-tree-holds-public-product-docs-only"
     ],
     "orchestrator": [
       "TASK-02",
       "mem-149"
     ],
-    "packer": [
-      "bake-workflow-tee-masked-failure-promoted-source-ami"
-    ],
+    "packer": [],
     "pilot": [
-      "consumer-docblock-trusted-over-producer-wire-source",
       "fresh-get-body-discarded-list-snapshot-validated",
       "mem-133",
       "mem-139",
@@ -17858,41 +14224,17 @@
       "mem-009",
       "mem-010"
     ],
-    "pilot-cloud-infra": [
-      "cdk-untagged-estate-invisible-to-cost-view",
-      "payment-processor-is-paddle-not-stripe"
-    ],
+    "pilot-cloud-infra": [],
     "pilot-console": [
-      "cdk-merged-not-deployed-rots",
-      "claude-cli-refuses-root-hosted-units",
-      "console-ssm-paths-work-locally-proxy-does-not",
-      "consumer-docblock-trusted-over-producer-wire-source",
       "mem-160",
-      "oauth-ssm-params-rot-live-credentials-source-of-truth",
-      "pricing-flat-fee-byo-tokens-sonnet-default",
       "ready-gate-couples-credential-validity",
-      "s4-dashboard-only-clause-blocks-local-console",
       "shared-oauth-session-strands-second-machine",
       "workflow-yaml-requires-front-matter",
-      "console-email-transport-ses-not-email-service-repo",
-      "ecs-az-rebalancing-requires-az-spread-placement-first",
-      "mem-196",
       "mem-197",
-      "mem-198",
-      "mem-199",
-      "mem-200",
-      "mem-202",
-      "secrets-live-in-doppler-pilot-console-project",
-      "mem-216",
-      "mem-217",
-      "TASK-512",
       "mem-218",
-      "mem-219",
-      "console-wire-contract-gate-needs-raw-body-strings-contains-test",
-      "test-fake-daemon-more-permissive-than-real-route-hides-400",
       "mem-265",
       "mem-266",
-      "mem-268"
+      "public-repo-agent-tree-holds-public-product-docs-only"
     ],
     "pilot-task-command": [
       "TASK-03",
@@ -17925,26 +14267,17 @@
     ],
     "product-positioning": [
       "mem-080",
-      "payment-processor-is-paddle-not-stripe",
       "mem-251",
-      "mem-261",
-      "mem-262",
       "mem-263"
     ],
     "prompt-injection": [
       "external-fork-pr-sweeps-stale-agent-state",
       "issue-comments-are-untrusted-executor-input"
     ],
-    "provisioning": [
-      "cdk-tenant-role-not-an-instance-role",
-      "s3-exit-three-tenant-pass-proven"
-    ],
+    "provisioning": [],
     "reconciler": [
       "mem-100",
       "merged-feature-dead-callback-not-bridged-onprcreated",
-      "mem-198",
-      "mem-200",
-      "TASK-512",
       "mem-218",
       "release-backfill-sweep-runs-inside-controller-tick-and-wedges-the-train"
     ],
@@ -17969,7 +14302,6 @@
       "mem-140",
       "mem-159",
       "release-tick-retry-with-backoff-and-alert",
-      "mem-202",
       "goreleaser-rerun-on-published-tag-fails-422-push-formula-by-hand",
       "tag-push-runs-full-pre-push-gate",
       "mem-281"
@@ -17998,19 +14330,10 @@
       "mem-294"
     ],
     "saas": [
-      "console-ssm-paths-work-locally-proxy-does-not",
       "mem-160",
-      "no-stripe-local-first-s3-testing",
-      "s3-exit-three-tenant-pass-proven",
-      "s4-dashboard-only-clause-blocks-local-console",
-      "payment-processor-is-paddle-not-stripe",
       "issue-body-literal-migration-version-collides-with-sibling-leg",
-      "domain-pilotcloud-dev-keep-pilot-name",
       "trademark-clearance-pilot-us-2026-09",
-      "console-email-transport-ses-not-email-service-repo",
       "mem-251",
-      "mem-261",
-      "mem-262",
       "mem-263"
     ],
     "scheduler": [
@@ -18030,11 +14353,7 @@
       "startup-label-guard-must-use-done-not-terminal-or-crash-orphans-strand"
     ],
     "secrets": [
-      "apply-script-silent-rollback-causes",
-      "mem-131",
-      "mem-200",
-      "secrets-live-in-doppler-pilot-console-project",
-      "mem-216"
+      "mem-131"
     ],
     "security": [
       "guard-research-framing-parity-not-bypass",
@@ -18044,12 +14363,10 @@
       "required-checks-allowlist-makes-other-gates-decorative",
       "runselfreview-runs-in-repo-root-phantom-reimplementation",
       "allowedtools-inert-under-dangerously-skip-permissions",
-      "mem-260"
+      "mem-260",
+      "public-repo-agent-tree-holds-public-product-docs-only"
     ],
-    "ship-test": [
-      "bake-workflow-tee-masked-failure-promoted-source-ami",
-      "cdk-tenant-role-not-an-instance-role"
-    ],
+    "ship-test": [],
     "shipped-check": [
       "mem-100"
     ],
@@ -18070,10 +14387,7 @@
       "mem-168",
       "mem-169",
       "mem-170",
-      "TASK-497",
       "TASK-505",
-      "TASK-516",
-      "TASK-518",
       "TASK-519",
       "TASK-549",
       "TASK-557",
@@ -18083,14 +14397,13 @@
       "mem-248",
       "mem-249",
       "mem-250",
-      "TASK-581"
+      "TASK-581",
+      "TASK-646"
     ],
     "social-engineering": [
       "mem-125"
     ],
     "ssm": [
-      "apply-script-silent-rollback-causes",
-      "founder-tenant-legacy-ssm-layout-key-source-unknown-unmetered",
       "mem-291"
     ],
     "stalled": [
@@ -18113,9 +14426,7 @@
     "supply-chain": [
       "mem-125"
     ],
-    "tagging": [
-      "cdk-untagged-estate-invisible-to-cost-view"
-    ],
+    "tagging": [],
     "terminal-workflow": [
       "TASK-03",
       "mem-003",
@@ -18139,18 +14450,13 @@
       "TASK-402",
       "TASK-403",
       "TASK-404",
-      "TASK-405",
       "TASK-407",
-      "TASK-408",
-      "TASK-409",
       "TASK-410",
       "TASK-411",
       "TASK-412",
       "TASK-413",
       "TASK-414",
-      "TASK-415",
       "TASK-416",
-      "TASK-417",
       "TASK-418",
       "TASK-419",
       "TASK-420",
@@ -18161,31 +14467,13 @@
       "TASK-425",
       "TASK-426",
       "TASK-427",
-      "TASK-428",
-      "TASK-429",
-      "TASK-430",
       "TASK-431",
-      "TASK-432",
-      "TASK-433",
-      "TASK-434",
-      "TASK-435",
       "TASK-436",
       "TASK-437",
-      "TASK-438",
-      "TASK-439",
-      "TASK-440",
       "TASK-441",
-      "TASK-442",
-      "TASK-443",
-      "TASK-444",
-      "TASK-445",
-      "TASK-446",
-      "TASK-447",
       "TASK-448",
       "TASK-449",
       "TASK-450",
-      "TASK-451",
-      "TASK-452",
       "TASK-453",
       "TASK-454",
       "TASK-455",
@@ -18197,9 +14485,6 @@
       "TASK-461",
       "TASK-462",
       "TASK-463",
-      "TASK-464",
-      "TASK-465",
-      "TASK-466",
       "TASK-467",
       "TASK-468",
       "TASK-469",
@@ -18211,7 +14496,6 @@
       "TASK-475",
       "TASK-476",
       "TASK-477",
-      "TASK-478",
       "TASK-479",
       "TASK-480",
       "TASK-481",
@@ -18264,65 +14548,33 @@
       "mem-179",
       "sqlite-memory-dsn-serializes-to-one-conn",
       "TASK-486",
-      "TASK-487",
-      "TASK-488",
-      "TASK-489",
       "mem-180",
       "mem-181",
       "mem-182",
-      "TASK-490",
       "TASK-493",
       "TASK-494",
       "TASK-492",
-      "TASK-495",
-      "TASK-497",
-      "mem-183",
-      "mem-184",
-      "mem-185",
-      "mem-186",
-      "mem-187",
-      "mem-188",
-      "mem-189",
-      "mem-190",
-      "mem-191",
-      "mem-192",
-      "mem-193",
-      "mem-194",
-      "TASK-498",
       "executor-alert-event-strings-must-equal-alerts-eventtype",
       "TASK-503",
       "TASK-504",
       "TASK-505",
-      "TASK-502",
       "TASK-510",
       "TASK-509",
       "TASK-508",
-      "TASK-511",
       "mem-214",
-      "mem-219",
-      "TASK-515",
-      "TASK-516",
-      "TASK-517",
-      "TASK-518",
       "TASK-519",
       "TASK-520",
       "TASK-521",
       "spec-rerouting-a-platform-must-rewrite-composed-tests-of-the-old-flow",
       "TASK-522",
       "TASK-523",
-      "TASK-524",
-      "TASK-525",
-      "console-wire-contract-gate-needs-raw-body-strings-contains-test",
-      "TASK-526",
       "TASK-527",
       "TASK-528",
       "TASK-529",
       "TASK-530",
-      "TASK-546",
       "TASK-549",
       "TASK-547",
       "TASK-557",
-      "TASK-558",
       "mem-245",
       "mem-246",
       "mem-247",
@@ -18330,7 +14582,6 @@
       "mem-249",
       "mem-250",
       "TASK-563",
-      "TASK-567",
       "TASK-571",
       "TASK-573",
       "TASK-569",
@@ -18340,12 +14591,8 @@
       "TASK-574",
       "TASK-576",
       "TASK-577",
-      "TASK-578",
       "TASK-579",
-      "TASK-580",
       "TASK-581",
-      "TASK-582",
-      "TASK-583",
       "mem-258",
       "mem-259",
       "TASK-589",
@@ -18362,20 +14609,16 @@
       "TASK-626",
       "TASK-627",
       "TASK-628",
-      "TASK-585",
       "TASK-630",
       "TASK-631",
       "TASK-633",
       "TASK-632",
       "TASK-634",
       "TASK-635",
-      "TASK-637",
-      "TASK-639",
-      "TASK-640",
       "mem-286",
       "mem-287",
       "TASK-643",
-      "TASK-645"
+      "TASK-646"
     ],
     "testing-quality": [
       "TASK-384",
@@ -18390,39 +14633,24 @@
       "mem-163",
       "mem-164",
       "mem-165",
-      "unwired-config-field-validated-but-dead",
-      "mem-274"
+      "unwired-config-field-validated-but-dead"
     ],
     "theory-of-mind": [
       "TASK-394",
       "TASK-396",
       "TASK-398",
       "TASK-399",
-      "TASK-405",
       "TASK-407",
-      "TASK-408",
-      "TASK-409",
       "TASK-411",
-      "TASK-415",
       "TASK-416",
-      "TASK-417",
       "TASK-418",
       "TASK-419",
-      "TASK-432",
-      "TASK-433",
-      "TASK-434",
-      "TASK-439",
-      "TASK-440",
       "TASK-441",
-      "TASK-442",
-      "TASK-443",
-      "TASK-447",
       "TASK-453",
       "TASK-454",
       "TASK-459",
       "TASK-460",
       "TASK-461",
-      "TASK-478",
       "TASK-481",
       "TASK-485",
       "mem-116",
@@ -18466,21 +14694,11 @@
       "TASK-401",
       "TASK-403",
       "TASK-407",
-      "TASK-408",
-      "TASK-409",
       "TASK-413",
-      "TASK-415",
-      "TASK-417",
       "TASK-418",
       "TASK-419",
       "TASK-427",
-      "TASK-429",
-      "TASK-433",
-      "TASK-439",
-      "TASK-440",
       "TASK-441",
-      "TASK-442",
-      "TASK-443",
       "TASK-448",
       "TASK-449",
       "TASK-455",
@@ -18491,7 +14709,6 @@
       "TASK-470",
       "TASK-473",
       "TASK-475",
-      "TASK-478",
       "TASK-479",
       "TASK-485",
       "mem-095",
@@ -18531,15 +14748,10 @@
       "mem-180",
       "mem-181",
       "mem-182",
-      "TASK-489",
-      "TASK-490",
       "TASK-493",
-      "TASK-495",
       "TASK-510",
       "TASK-508",
-      "TASK-518",
       "TASK-521",
-      "TASK-546",
       "mem-244",
       "TASK-563",
       "TASK-573",
@@ -18554,7 +14766,6 @@
       "TASK-631",
       "TASK-633",
       "TASK-634",
-      "TASK-640",
       "mem-284",
       "mem-287",
       "TASK-643",
@@ -18565,7 +14776,6 @@
     "workflow-discipline": [
       "TASK-359",
       "external-contributor-vetting-verify-claims-not-profile",
-      "founder-priority-pointer-first-saas-parked",
       "incidents-always-first",
       "mem-018",
       "mem-028",
@@ -18587,12 +14797,10 @@
       "mem-134",
       "mem-149",
       "mem-152",
-      "mem-155",
       "mem-172",
       "mem-173",
       "mem-175",
       "no-decompose-spec-sizing-one-subsystem",
-      "no-stripe-local-first-s3-testing",
       "review-before-approval-ordering",
       "s6-lite-cutover-recipe",
       "pilot-never-reads-gh-comments-by-design",
@@ -18602,7 +14810,8 @@
       "slack-connector-returns-text-only-colleague-attachments-need-a-pr",
       "nav-task-id-generator-ignores-archive-returns-used-id",
       "dispatch-leg-hygiene-test-names-shipped-symbols-refs-boundary",
-      "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread"
+      "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread",
+      "public-repo-agent-tree-holds-public-product-docs-only"
     ],
     "worktree": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -18627,50 +14836,24 @@
     ],
     "theory of mind": [
       "TASK-486",
-      "TASK-489",
       "mem-180",
       "mem-181",
       "mem-182",
       "TASK-485",
       "TASK-460",
-      "TASK-490",
       "TASK-493",
-      "TASK-495",
-      "TASK-497",
-      "mem-183",
-      "mem-184",
-      "mem-185",
-      "mem-186",
-      "mem-187",
-      "mem-188",
-      "mem-189",
-      "mem-190",
-      "mem-191",
-      "mem-192",
-      "mem-193",
-      "mem-194",
-      "TASK-498",
-      "TASK-502",
-      "TASK-511",
-      "TASK-515",
-      "TASK-516",
-      "TASK-517",
       "TASK-528",
-      "TASK-546",
       "TASK-549",
       "TASK-581",
-      "TASK-582",
-      "TASK-583",
       "TASK-594",
       "TASK-596",
       "TASK-600",
       "TASK-628",
-      "TASK-585",
       "TASK-631",
       "TASK-633",
       "TASK-632",
       "TASK-634",
-      "TASK-637"
+      "TASK-646"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -18730,23 +14913,11 @@
       "TASK-634"
     ],
     "operations": [
-      "dead-cdk-stack-carried-live-founder-box-backup-policy",
-      "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid",
-      "mem-200",
-      "mem-202",
-      "mem-216",
-      "mem-217",
-      "mem-219"
+      "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid"
     ],
-    "deploy-gates": [
-      "mem-196"
-    ],
-    "env-flags": [
-      "mem-196"
-    ],
-    "ecs": [
-      "mem-196"
-    ],
+    "deploy-gates": [],
+    "env-flags": [],
+    "ecs": [],
     "board-sync": [
       "mem-197"
     ],
@@ -18756,55 +14927,27 @@
     "backfill": [
       "mem-197"
     ],
-    "tenant": [
-      "mem-198",
-      "mem-200"
-    ],
-    "waf": [
-      "mem-199"
-    ],
-    "docs": [
-      "mem-199"
-    ],
-    "cloudfront": [
-      "mem-199"
-    ],
-    "alb": [
-      "mem-199"
-    ],
-    "infrastructure": [
-      "mem-201"
-    ],
-    "ownership": [
-      "mem-201"
-    ],
-    "nelya": [
-      "mem-201",
+    "tenant": [],
+    "waf": [],
+    "docs": [],
+    "cloudfront": [],
+    "alb": [],
+    "infrastructure": [],
+    "ownership": [],
+    "the infra contractor": [
       "mem-213"
     ],
-    "aws-infrastructure-pilot": [
-      "mem-201"
-    ],
-    "template-first": [
-      "mem-201"
-    ],
-    "pilot-fleet": [
-      "mem-201"
-    ],
+    "aws-infrastructure-pilot": [],
+    "template-first": [],
+    "pilot-fleet": [],
     "process": [
-      "mem-201",
       "mem-203",
       "mem-204",
-      "secrets-live-in-doppler-pilot-console-project",
       "parallel-explore-traces-per-defect-beat-one-research-pass",
       "running-execution-cannot-be-cancelled-kill-the-claude-process-group-not-the-gate"
     ],
-    "deploy": [
-      "mem-202"
-    ],
-    "pilot-console-ui": [
-      "mem-202"
-    ],
+    "deploy": [],
+    "pilot-console-ui": [],
     "pilot-dispatch": [
       "mem-203",
       "mem-204",
@@ -18814,7 +14957,6 @@
       "mem-267",
       "mem-270",
       "mem-273",
-      "mem-274",
       "dispatch-leg-hygiene-test-names-shipped-symbols-refs-boundary"
     ],
     "acceptance-evidence": [
@@ -18913,8 +15055,7 @@
     ],
     "onboarding": [
       "connect-means-wire-the-integration-not-create-work-in-product-repos",
-      "mem-210",
-      "smoke-new-user-flows-with-a-fresh-account-registration-side-effects"
+      "mem-210"
     ],
     "product-repos": [
       "connect-means-wire-the-integration-not-create-work-in-product-repos"
@@ -18936,29 +15077,13 @@
     "env": [
       "mem-209"
     ],
-    "delivery-evidence": [
-      "mem-211"
-    ],
-    "live-postgres-tests": [
-      "mem-211"
-    ],
-    "anthropic-admin-api": [
-      "mem-212"
-    ],
-    "api-keys": [
-      "mem-212"
-    ],
-    "platform-key": [
-      "mem-212",
-      "mem-219"
-    ],
-    "tenant-provisioning": [
-      "mem-212",
-      "founder-tenant-legacy-ssm-layout-key-source-unknown-unmetered"
-    ],
-    "design-verification": [
-      "mem-212"
-    ],
+    "delivery-evidence": [],
+    "live-postgres-tests": [],
+    "anthropic-admin-api": [],
+    "api-keys": [],
+    "platform-key": [],
+    "tenant-provisioning": [],
+    "design-verification": [],
     "duplicate-post": [
       "mem-213"
     ],
@@ -18969,21 +15094,17 @@
       "mem-213"
     ],
     "billing": [
-      "TASK-512",
       "TASK-631",
       "mem-277",
       "mem-280",
       "mem-281"
     ],
     "allowance": [
-      "TASK-512",
-      "founder-tenant-legacy-ssm-layout-key-source-unknown-unmetered",
       "mem-265",
       "mem-266"
     ],
     "prod-verification": [
-      "mem-218",
-      "mem-219"
+      "mem-218"
     ],
     "pilot-product-gap": [
       "mem-220"
@@ -18996,10 +15117,7 @@
       "chat-filed-issues-cite-untracked-agent-scaffold",
       "allowedtools-inert-under-dangerously-skip-permissions"
     ],
-    "wire-contract": [
-      "console-wire-contract-gate-needs-raw-body-strings-contains-test",
-      "test-fake-daemon-more-permissive-than-real-route-hides-400"
-    ],
+    "wire-contract": [],
     "escalateandhold": [
       "autopilot-held-prs-redrive-only-for-size-guard-holds"
     ],
@@ -19022,15 +15140,9 @@
       "mem-243",
       "mem-257"
     ],
-    "test-fakes": [
-      "test-fake-daemon-more-permissive-than-real-route-hides-400"
-    ],
-    "usage-ledger": [
-      "test-fake-daemon-more-permissive-than-real-route-hides-400",
-      "founder-tenant-legacy-ssm-layout-key-source-unknown-unmetered"
-    ],
+    "test-fakes": [],
+    "usage-ledger": [],
     "key-source": [
-      "founder-tenant-legacy-ssm-layout-key-source-unknown-unmetered",
       "TASK-631",
       "mem-277"
     ],
@@ -19041,16 +15153,9 @@
     "continuation": [
       "executor-swallowed-rejected-push-as-success-branch-exists-is-not-pushed"
     ],
-    "smoke-testing": [
-      "smoke-new-user-flows-with-a-fresh-account-registration-side-effects"
-    ],
-    "invites": [
-      "smoke-new-user-flows-with-a-fresh-account-registration-side-effects"
-    ],
-    "console-ui": [
-      "smoke-new-user-flows-with-a-fresh-account-registration-side-effects",
-      "mem-274"
-    ],
+    "smoke-testing": [],
+    "invites": [],
+    "console-ui": [],
     "self-close": [
       "autopilot-selfclose-handoff-leaves-original-task-repickable"
     ],
@@ -19064,8 +15169,7 @@
       "autopilot-selfclose-handoff-leaves-original-task-repickable"
     ],
     "infra": [
-      "infra-repicks-bypass-hard-cap-backoff-and-identical-failure-streak",
-      "org-runner-group-repo-access-needs-admin-org-scope"
+      "infra-repicks-bypass-hard-cap-backoff-and-identical-failure-streak"
     ],
     "co-author": [
       "rev-list-without-topo-order-breaks-oldest-first-reparent"
@@ -19080,8 +15184,6 @@
       "mem-252"
     ],
     "pricing": [
-      "mem-261",
-      "mem-262",
       "mem-265",
       "mem-266"
     ],
@@ -19094,7 +15196,6 @@
       "post-merge-reviewer-loops-on-pr-body-only-defects"
     ],
     "quality-gate": [
-      "mem-268",
       "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread",
       "gate-exit-2-no-rule-to-make-target-was-a-claude-fixable-failure",
       "hasmakefiletarget-is-the-make-target-probe-never-make-n-or-q",
@@ -19157,11 +15258,11 @@
       "mem-291"
     ]
   },
-  "last_updated": "2026-11-07T09:41:08.509494+00:00",
+  "last_updated": "2026-11-08T14:01:34.610316+00:00",
   "stats": {
-    "total_nodes": 889,
-    "total_edges": 1072,
-    "memory_count": 485
+    "total_nodes": 767,
+    "total_edges": 772,
+    "memory_count": 420
   },
   "metadata": {
     "last_updated": null

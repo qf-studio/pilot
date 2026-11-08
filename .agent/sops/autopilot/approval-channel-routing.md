@@ -76,7 +76,7 @@ made asks invisible: PR#4806 sat 50 min in an unwatched bot DM).
 `adapters.slack.approval.channel: 'D09HGS3BR4J'` on the box (not via the empty-key fallback,
 so the choice is visible in config). Alerts moved off `#pointer` to `#pilot-reports` at the
 same time so the DM/`#pointer` split is clean. Consequences:
-- Second approver (Nelya, `U0ADEMJ7J83`) does **not** see DM-routed asks. Founder-accepted.
+- Second approver (the infra contractor, `U0ADEMJ7J83`) does **not** see DM-routed asks. Founder-accepted.
 - Buttons in a DM reach the daemon through **Socket Mode**. The box config says
   `socket_mode: false`, but the daemon starts with `--slack`, and that flag sets
   `SocketMode = true` (`cmd/pilot/main.go`, `cmd.Flags().Changed("slack")` block). The flag
