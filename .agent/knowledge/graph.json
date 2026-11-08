@@ -3885,7 +3885,7 @@
         ]
       },
       "TASK-645": {
-        "path": ".agent/tasks/TASK-645-ticket-page-new-design-absorbs-drawer.md",
+        "path": ".agent/tasks/archive/TASK-645-ticket-page-new-design-absorbs-drawer.md",
         "title": "Ticket page in the new design — a Board row opens the page, the page absorbs the drawer's settings, the drawer retires",
         "status": "completed",
         "concepts": [
@@ -10544,6 +10544,45 @@
         ],
         "created": "2026-11-06",
         "last_validated": "2026-11-06"
+      },
+      "mem-299": {
+        "type": "pitfall",
+        "summary": "A page root with grow basis-0 min-h-0 is for pages with an internal scroll column (pinned composer); a long document page inside the min-h-full page container needs a plain flex root, else the content overflows the container and <main>'s bottom padding is lost — found live, not in jsdom (TASK-645 A1 → A2, 2026-11-07).",
+        "path": "memories/pitfalls/mem-299.md",
+        "confidence": 0.88,
+        "concepts": [
+          "frontend",
+          "design-system",
+          "testing"
+        ],
+        "created": "2026-11-07",
+        "last_validated": "2026-11-07"
+      },
+      "mem-300": {
+        "type": "learning",
+        "summary": "A review-minor issue whose items are comment-only stalls under the per-item mutation-pin template (ui#399); when the next leg edits the same files, close it as folded (ui#406 → A2); let it run only when every item is a testable code change (ui#411 merged fine). One writer per file (TASK-640/645, 2026-11-06/07).",
+        "path": "memories/learnings/mem-300.md",
+        "confidence": 0.88,
+        "concepts": [
+          "review",
+          "workflow-discipline",
+          "autopilot"
+        ],
+        "created": "2026-11-07",
+        "last_validated": "2026-11-07"
+      },
+      "mem-301": {
+        "type": "learning",
+        "summary": "The dispatch pre-check (GitHub search 'GH-N in:title is:pr is:merged') tokenizes numbers: GH-390 matched '390×844', GH-409 matched HTTP-409 titles; the sdk v0.38.6 ownership guard (branch pilot/GH-N) held. A non-zero pre-check needs the matches' headRefName, not a stop (TASK-644/645, 2026-11-06/07).",
+        "path": "memories/learnings/mem-301.md",
+        "confidence": 0.88,
+        "concepts": [
+          "dispatch",
+          "workflow-discipline",
+          "github-api"
+        ],
+        "created": "2026-11-07",
+        "last_validated": "2026-11-07"
       }
     }
   },
@@ -15877,6 +15916,41 @@
       "from": "TASK-645",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "mem-299",
+      "to": "frontend",
+      "type": "relates_to"
+    },
+    {
+      "from": "mem-299",
+      "to": "testing",
+      "type": "relates_to"
+    },
+    {
+      "from": "mem-300",
+      "to": "review",
+      "type": "relates_to"
+    },
+    {
+      "from": "mem-300",
+      "to": "workflow-discipline",
+      "type": "relates_to"
+    },
+    {
+      "from": "mem-300",
+      "to": "autopilot",
+      "type": "relates_to"
+    },
+    {
+      "from": "mem-301",
+      "to": "dispatch",
+      "type": "relates_to"
+    },
+    {
+      "from": "mem-301",
+      "to": "workflow-discipline",
+      "type": "relates_to"
     }
   ],
   "concept_index": {
