@@ -3749,9 +3749,9 @@
         ]
       },
       "TASK-637": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/pilot-console-nav-start-521e07/.agent/tasks/TASK-637-mobile-on-the-new-design.md",
+        "path": ".agent/tasks/archive/TASK-637-mobile-on-the-new-design.md",
         "title": "Mobile on the new design — port the mobile v1 layer (PR#84, 2026-08-15) to the 2026-10 Figma design, with a 390×844 Playwright check",
-        "status": "backlog",
+        "status": "completed",
         "concepts": [
           "context",
           "deployment",
@@ -3780,9 +3780,9 @@
         ]
       },
       "TASK-639": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/pilot-console-nav-start-521e07/.agent/tasks/TASK-639-desktop-board-page-grouped-list.md",
+        "path": ".agent/tasks/archive/TASK-639-desktop-board-page-grouped-list.md",
         "title": "Desktop Board page per Figma 7-482 — the project-grouped list replaces the lanes; moves go to the drawer; the right column becomes Performance",
-        "status": "backlog",
+        "status": "completed",
         "concepts": [
           "context",
           "deployment",
@@ -3885,7 +3885,7 @@
         ]
       },
       "TASK-645": {
-        "path": ".agent/tasks/TASK-645-ticket-page-new-design-absorbs-drawer.md",
+        "path": ".agent/tasks/archive/TASK-645-ticket-page-new-design-absorbs-drawer.md",
         "title": "Ticket page in the new design — a Board row opens the page, the page absorbs the drawer's settings, the drawer retires",
         "status": "completed",
         "concepts": [
