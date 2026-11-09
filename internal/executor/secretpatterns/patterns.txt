@@ -25,3 +25,4 @@ github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}
 AKIA[0-9A-Z]{16}
 lin_api_[a-zA-Z0-9]{40}
 pdl_[a-zA-Z0-9_]{20,}
+[0-9]{8,10}:AA[A-Za-z0-9_-]{33}

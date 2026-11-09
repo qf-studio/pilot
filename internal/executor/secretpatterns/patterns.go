@@ -17,6 +17,7 @@ import (
 	_ "embed"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 //go:embed patterns.txt
@@ -50,4 +51,31 @@ func Regexes() []*regexp.Regexp {
 		res = append(res, regexp.MustCompile(p))
 	}
 	return res
+}
+
+// Redacted replaces every match of a secret pattern in Redact.
+const Redacted = "<redacted>"
+
+var (
+	redactOnce    sync.Once
+	redactRegexes []*regexp.Regexp
+)
+
+// Redact replaces each match of a canonical secret pattern in s with
+// Redacted. The compiled patterns are cached; text without a secret is
+// returned unchanged.
+func Redact(s string) string {
+	return string(RedactBytes([]byte(s)))
+}
+
+// RedactBytes is Redact for a byte slice. It returns p itself when nothing
+// matches, so the common no-secret case does not allocate.
+func RedactBytes(p []byte) []byte {
+	redactOnce.Do(func() { redactRegexes = Regexes() })
+	for _, re := range redactRegexes {
+		if re.Match(p) {
+			p = re.ReplaceAll(p, []byte(Redacted))
+		}
+	}
+	return p
 }

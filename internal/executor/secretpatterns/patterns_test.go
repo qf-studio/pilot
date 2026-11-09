@@ -24,6 +24,7 @@ func TestRegexes_CompileAndMatchKnownShapes(t *testing.T) {
 		"ghp_" + repeat("a1B2c3", 6), // 36 chars
 		"pdl_live_abcdefghijklmnopqrstuvwxyz",
 		"AKIAABCDEFGHIJKLMNOP",
+		"123456789:AA" + repeat("a", 33), // Telegram bot token
 	}
 	for _, c := range cases {
 		matched := false
@@ -45,4 +46,26 @@ func repeat(s string, n int) string {
 		out += s
 	}
 	return out
+}
+
+func TestRedact(t *testing.T) {
+	telegram := "123456789:AA" + repeat("a", 33)
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"telegram token in URL", "Get https://api.telegram.org/bot" + telegram + "/getMe: EOF", "Get https://api.telegram.org/bot" + Redacted + "/getMe: EOF"},
+		{"github token", "auth ghp_" + repeat("a1B2c3", 6) + " failed", "auth " + Redacted + " failed"},
+		{"two secrets", telegram + " " + telegram, Redacted + " " + Redacted},
+		{"no secret", "plain log line 12345:short", "plain log line 12345:short"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Redact(tt.in); got != tt.want {
+				t.Errorf("Redact(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
 }
