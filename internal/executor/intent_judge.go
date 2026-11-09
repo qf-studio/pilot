@@ -175,6 +175,12 @@ func (j *IntentJudge) runCmdIn(ctx context.Context, dir string, args ...string) 
 func (j *IntentJudge) runCmdInHome(ctx context.Context, dir, home string, args ...string) ([]byte, error) {
 	args, prompt, hasPrompt := extractStdinPrompt(args)
 
+	args, guardCleanup, err := withProcessReadGuard(args)
+	if err != nil {
+		return nil, err
+	}
+	defer guardCleanup()
+
 	cmd := exec.CommandContext(ctx, j.claudeCmd, args...)
 	cmd.Dir = dir
 	// GH-5278: scrub the ambient environment before this model-controlled

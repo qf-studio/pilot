@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 )
 
 // readGuardMatcher is the PreToolUse matcher of the read guard: every tool that
@@ -197,4 +198,39 @@ func (c *ClaudeCodeConfig) readGuardSpec() *readGuardSpec {
 	}
 	spec.Home = strings.TrimRight(spec.Home, "/")
 	return spec
+}
+
+// processClaudeCodeConfig is the Claude Code config the helper spawns without a
+// Runner of their own (research subagents, classifiers, subtask parser, intent
+// judge, post-merge reviewer) take their read guard settings from. The daemon
+// sets it at startup; unset means the defaults: guard on, ~/.pilot.
+var processClaudeCodeConfig atomic.Pointer[ClaudeCodeConfig]
+
+// SetReadGuardConfig tells the helper Claude Code spawns which config the read
+// guard follows (read_guard switch, Pilot home, loaded config path). GH-6258.
+func SetReadGuardConfig(cfg *ClaudeCodeConfig) { processClaudeCodeConfig.Store(cfg) }
+
+// withReadGuard returns args plus "--settings <read guard>" and a cleanup for
+// the settings dir. With the guard disabled it returns args and a no-op
+// cleanup. A setup failure is an error: a spawn must not run unguarded just
+// because the guard could not be written. GH-6258: every Claude Code spawn
+// gets the guard, not only the main backend and epic planning.
+func withReadGuard(cfg *ClaudeCodeConfig, args []string) ([]string, func(), error) {
+	spec := cfg.readGuardSpec()
+	if spec == nil {
+		return args, func() {}, nil
+	}
+	settingsPath, cleanup, err := setupRunGuards("", "", spec)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	out := make([]string, 0, len(args)+2)
+	out = append(out, args...)
+	out = append(out, "--settings", settingsPath)
+	return out, cleanup, nil
+}
+
+// withProcessReadGuard is withReadGuard with the daemon-wide config.
+func withProcessReadGuard(args []string) ([]string, func(), error) {
+	return withReadGuard(processClaudeCodeConfig.Load(), args)
 }

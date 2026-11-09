@@ -344,6 +344,7 @@ func TestDefaultCmdRunner_ContextDeadlineKill(t *testing.T) {
 		t.Skip("sleep not available on this system")
 	}
 
+	disableReadGuardForTest(t) // these tests run sleep/sh, which reject --settings
 	judge := NewIntentJudge("sleep")
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -370,6 +371,7 @@ func TestDefaultCmdRunner_StderrCaptured(t *testing.T) {
 		t.Skip("sh not available on this system")
 	}
 
+	disableReadGuardForTest(t) // these tests run sleep/sh, which reject --settings
 	judge := NewIntentJudge("sh")
 	_, err := judge.defaultCmdRunner(context.Background(), "-c", "echo boom-from-stderr >&2; exit 1")
 	if err == nil {
@@ -447,6 +449,7 @@ func TestDefaultCmdRunner_LargePromptViaStdin(t *testing.T) {
 
 	prompt := strings.Repeat("A", 200*1024) // 200KB, over Linux's 128KB MAX_ARG_STRLEN
 
+	disableReadGuardForTest(t) // these tests run sleep/sh, which reject --settings
 	judge := NewIntentJudge("sh")
 	out, err := judge.defaultCmdRunner(context.Background(),
 		"-c", "cat", "--", "--print", "-p", prompt, "--model", "x", "--output-format", "text")
