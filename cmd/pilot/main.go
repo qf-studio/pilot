@@ -55,6 +55,7 @@ import (
 	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 	sdkSlack "github.com/qf-studio/studio-sdk/sdk/integrations/slack"
 	sdkTelegram "github.com/qf-studio/studio-sdk/sdk/integrations/telegram"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -390,6 +391,12 @@ func main() {
 		},
 	}
 
+	// GH-6261: every entrypoint, not only `pilot start`, tells the helper
+	// spawns which config the read guard follows.
+	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
+		applyReadGuardConfigFromFile(cfgFile)
+	}
+
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is ~/.pilot/config.yaml)")
 	rootCmd.PersistentFlags().BoolVarP(&quietMode, "quiet", "q", false, "Suppress non-essential output")
 
@@ -435,6 +442,41 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(exitCodeOf(err))
 	}
+}
+
+// applyReadGuardConfig tells the executor read guard which config file is
+// loaded and what claude_code.read_guard says. A nil claudeCode (no
+// executor.claude_code block) still registers the config path, so a config
+// loaded through a non-default --config is on the deny list. GH-6252, GH-6261.
+func applyReadGuardConfig(claudeCode *executor.ClaudeCodeConfig, configPath string) {
+	if claudeCode == nil {
+		claudeCode = &executor.ClaudeCodeConfig{}
+	}
+	claudeCode.ConfigPath = configPath
+	executor.SetReadGuardConfig(claudeCode)
+}
+
+// applyReadGuardConfigFromFile is applyReadGuardConfig for entrypoints that do
+// not load the full config: it reads only executor.claude_code from the file,
+// without env expansion, validation or warnings. An unreadable or unparsable
+// file leaves the defaults (guard on) with the path still protected.
+func applyReadGuardConfigFromFile(cfgPath string) {
+	if cfgPath == "" {
+		cfgPath = config.DefaultConfigPath()
+	}
+	var doc struct {
+		Executor *struct {
+			ClaudeCode *executor.ClaudeCodeConfig `yaml:"claude_code"`
+		} `yaml:"executor"`
+	}
+	if raw, err := os.ReadFile(cfgPath); err == nil {
+		_ = yaml.Unmarshal(raw, &doc)
+	}
+	var claudeCode *executor.ClaudeCodeConfig
+	if doc.Executor != nil {
+		claudeCode = doc.Executor.ClaudeCode
+	}
+	applyReadGuardConfig(claudeCode, cfgPath)
 }
 
 // gatewayChatNeedsOwnRunner reports whether gateway mode must build a
@@ -513,10 +555,11 @@ Examples:
 			}
 
 			// GH-6252: tell the executor read guard which config file is loaded.
-			if cfg.Executor != nil && cfg.Executor.ClaudeCode != nil {
-				cfg.Executor.ClaudeCode.ConfigPath = configPath
-				executor.SetReadGuardConfig(cfg.Executor.ClaudeCode)
+			var claudeCode *executor.ClaudeCodeConfig
+			if cfg.Executor != nil {
+				claudeCode = cfg.Executor.ClaudeCode
 			}
+			applyReadGuardConfig(claudeCode, configPath)
 
 			// GH-6249: register configured secret values for redaction before
 			// any adapter starts or anything is logged.

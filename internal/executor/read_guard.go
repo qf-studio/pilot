@@ -2,6 +2,7 @@ package executor
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -206,6 +207,10 @@ func (c *ClaudeCodeConfig) readGuardSpec() *readGuardSpec {
 // sets it at startup; unset means the defaults: guard on, ~/.pilot.
 var processClaudeCodeConfig atomic.Pointer[ClaudeCodeConfig]
 
+// ReadGuardConfig returns the daemon-wide read guard config the helper spawns
+// follow, nil when none was set (defaults apply).
+func ReadGuardConfig() *ClaudeCodeConfig { return processClaudeCodeConfig.Load() }
+
 // SetReadGuardConfig tells the helper Claude Code spawns which config the read
 // guard follows (read_guard switch, Pilot home, loaded config path). GH-6258.
 func SetReadGuardConfig(cfg *ClaudeCodeConfig) { processClaudeCodeConfig.Store(cfg) }
@@ -216,9 +221,15 @@ func SetReadGuardConfig(cfg *ClaudeCodeConfig) { processClaudeCodeConfig.Store(c
 // because the guard could not be written. GH-6258: every Claude Code spawn
 // gets the guard, not only the main backend and epic planning.
 func withReadGuard(cfg *ClaudeCodeConfig, args []string) ([]string, func(), error) {
+	if !cfg.ReadGuardEnabled() {
+		return args, func() {}, nil
+	}
 	spec := cfg.readGuardSpec()
 	if spec == nil {
-		return args, func() {}, nil
+		// Enabled, but the Pilot home cannot be resolved (no PilotHome and no
+		// user home dir): that is not the same as the guard being switched
+		// off. Fail closed.
+		return nil, func() {}, errors.New("run guards: cannot resolve the Pilot home to protect (set HOME or claude_code.read_guard: false)")
 	}
 	settingsPath, cleanup, err := setupRunGuards("", "", spec)
 	if err != nil {

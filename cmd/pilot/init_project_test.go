@@ -290,10 +290,9 @@ func TestCreateNavigatorStructure(t *testing.T) {
 func TestAddProjectToConfig_NoDuplicate(t *testing.T) {
 	// Write a temp config
 	dir := t.TempDir()
-	if err := os.Setenv("HOME", dir); err != nil { // redirect config path
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	defer func() { _ = os.Unsetenv("HOME") }()
+	// t.Setenv restores HOME: the old Unsetenv left it unset for every later
+	// test, which now makes helper spawns fail closed (read guard, GH-6261).
+	t.Setenv("HOME", dir) // redirect config path
 
 	data := &initProjectData{
 		ProjectName: "proj",
