@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -166,5 +167,28 @@ func TestRotatingWriter_TightensExistingFileMode(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0600 {
 		t.Errorf("existing log mode = %o, want 600", got)
+	}
+}
+
+func TestRedactingWriter_RegisteredSecretValue(t *testing.T) {
+	const value = "zq-opaque-config-value-0042"
+	secretpatterns.ResetSecretValuesForTest()
+	t.Cleanup(secretpatterns.ResetSecretValuesForTest)
+	secretpatterns.RegisterSecretValues(value)
+
+	tests := []struct{ name, in, want string }{
+		{"registered value", "msg=\"password " + value + " rejected\"\n", "msg=\"password <redacted> rejected\"\n"},
+		{"unregistered text", "msg=\"nothing here\"\n", "msg=\"nothing here\"\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if _, err := newRedactingWriter(&buf).Write([]byte(tt.in)); err != nil {
+				t.Fatalf("Write error: %v", err)
+			}
+			if got := buf.String(); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

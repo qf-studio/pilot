@@ -98,3 +98,40 @@ func TestPatternsFile_HeaderMatchesPatternsAndConsumers(t *testing.T) {
 		}
 	}
 }
+
+// opaqueSecret has no shape any pattern in patterns.txt knows.
+const opaqueSecret = "zq-opaque-config-value-0042"
+
+func TestRedact_RegisteredSecretValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		register  []string
+		in        string
+		want      string
+		wantCount int
+	}{
+		{"unknown shape is masked", []string{opaqueSecret}, "key=" + opaqueSecret + " end", "key=" + Redacted + " end", 1},
+		{"every occurrence", []string{opaqueSecret}, opaqueSecret + "," + opaqueSecret, Redacted + "," + Redacted, 1},
+		{"short value ignored", []string{"short12"}, "a short12 b", "a short12 b", 0},
+		{"unexpanded var ignored", []string{"${SOME_LONG_VARIABLE}"}, "x ${SOME_LONG_VARIABLE} y", "x ${SOME_LONG_VARIABLE} y", 0},
+		{"longest first", []string{opaqueSecret, opaqueSecret + "-suffix"}, "v=" + opaqueSecret + "-suffix", "v=" + Redacted, 2},
+		{"json escaped form", []string{`pa"ss\word-123`}, `{"v":"pa\"ss\\word-123"}`, `{"v":"` + Redacted + `"}`, 2},
+		{"shape still redacted", []string{opaqueSecret}, "ghp_" + repeat("a1B2c3", 6), Redacted, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ResetSecretValuesForTest()
+			t.Cleanup(ResetSecretValuesForTest)
+			RegisterSecretValues(tt.register...)
+			if got := SecretValueCount(); got != tt.wantCount {
+				t.Errorf("SecretValueCount() = %d, want %d", got, tt.wantCount)
+			}
+			if got := Redact(tt.in); got != tt.want {
+				t.Errorf("Redact(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if got := string(RedactBytes([]byte(tt.in))); got != tt.want {
+				t.Errorf("RedactBytes(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}

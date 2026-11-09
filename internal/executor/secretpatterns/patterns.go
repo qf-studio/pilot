@@ -14,8 +14,11 @@
 package secretpatterns
 
 import (
+	"bytes"
 	_ "embed"
+	"encoding/json"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -61,9 +64,73 @@ var (
 	redactRegexes []*regexp.Regexp
 )
 
-// Redact replaces each match of a canonical secret pattern in s with
-// Redacted. The compiled patterns are cached; text without a secret is
-// returned unchanged.
+// minSecretValueLen is the shortest value RegisterSecretValues accepts.
+// Shorter strings ("true", "8080", "dev") would shred ordinary text when
+// masked wherever they occur. Slightly above the acceptance-evidence env
+// floor (minRedactableSecretLen in internal/executor), because this set is
+// applied to every log line, row and recording.
+const minSecretValueLen = 8
+
+var (
+	secretValuesMu sync.RWMutex
+	// secretValues holds the registered exact values, longest first, so a
+	// value that contains another registered value is masked whole.
+	secretValues [][]byte
+)
+
+// RegisterSecretValues adds exact secret values to a process-wide set that
+// Redact and RedactBytes mask before applying the shape patterns. It exists
+// for configured secrets whose shape no pattern knows (GH-6249).
+//
+// Values shorter than 8 characters and unexpanded "${VAR}" references are
+// ignored. The JSON-escaped form of a value is registered alongside it, since
+// recordings and stored output carry text inside JSON strings. Safe for
+// concurrent use.
+func RegisterSecretValues(values ...string) {
+	secretValuesMu.Lock()
+	defer secretValuesMu.Unlock()
+	known := make(map[string]bool, len(secretValues))
+	for _, v := range secretValues {
+		known[string(v)] = true
+	}
+	add := func(v string) {
+		if v != "" && !known[v] {
+			known[v] = true
+			secretValues = append(secretValues, []byte(v))
+		}
+	}
+	for _, v := range values {
+		if len(v) < minSecretValueLen || strings.HasPrefix(v, "${") {
+			continue
+		}
+		add(v)
+		if enc, err := json.Marshal(v); err == nil {
+			add(string(enc[1 : len(enc)-1]))
+		}
+	}
+	sort.SliceStable(secretValues, func(i, j int) bool {
+		return len(secretValues[i]) > len(secretValues[j])
+	})
+}
+
+// SecretValueCount reports how many distinct values are registered
+// (JSON-escaped variants of a value count separately).
+func SecretValueCount() int {
+	secretValuesMu.RLock()
+	defer secretValuesMu.RUnlock()
+	return len(secretValues)
+}
+
+// ResetSecretValuesForTest clears the registered values. Tests only.
+func ResetSecretValuesForTest() {
+	secretValuesMu.Lock()
+	secretValues = nil
+	secretValuesMu.Unlock()
+}
+
+// Redact replaces each registered secret value, then each match of a
+// canonical secret pattern, in s with Redacted. The compiled patterns are
+// cached; text without a secret is returned unchanged.
 func Redact(s string) string {
 	return string(RedactBytes([]byte(s)))
 }
@@ -71,6 +138,14 @@ func Redact(s string) string {
 // RedactBytes is Redact for a byte slice. It returns p itself when nothing
 // matches, so the common no-secret case does not allocate.
 func RedactBytes(p []byte) []byte {
+	secretValuesMu.RLock()
+	for _, v := range secretValues {
+		if bytes.Contains(p, v) {
+			p = bytes.ReplaceAll(p, v, []byte(Redacted))
+		}
+	}
+	secretValuesMu.RUnlock()
+
 	redactOnce.Do(func() { redactRegexes = Regexes() })
 	for _, re := range redactRegexes {
 		if re.Match(p) {
