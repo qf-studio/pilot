@@ -92,9 +92,14 @@ func Init(cfg *Config) error {
 		handler = slog.NewTextHandler(writer, opts)
 	}
 
+	logger := slog.New(handler)
 	loggerMu.Lock()
-	defaultLogger = slog.New(handler)
+	defaultLogger = logger
 	loggerMu.Unlock()
+
+	// Bare slog.Default() loggers (autopilot, upgrade) must go through the
+	// redacting writer too.
+	slog.SetDefault(logger)
 
 	return nil
 }

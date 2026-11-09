@@ -213,7 +213,7 @@ func (c *Client) CheckSingleton(ctx context.Context) error {
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return fmt.Errorf("failed to create request: %w", c.redactError(err))
 	}
 
 	resp, err := c.do(httpReq)
@@ -257,7 +257,7 @@ func (c *Client) GetMe(ctx context.Context) (*User, error) {
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", c.redactError(err))
 	}
 
 	resp, err := c.do(httpReq)
@@ -289,7 +289,7 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]*
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", c.redactError(err))
 	}
 
 	resp, err := c.do(httpReq)
@@ -342,7 +342,7 @@ func (c *Client) SendMessage(ctx context.Context, chatID, text, parseMode string
 	url := c.baseURL + c.botToken + "/sendMessage"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", c.redactError(err))
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -390,7 +390,7 @@ func (c *Client) SendMessageWithKeyboard(ctx context.Context, chatID, text, pars
 	url := c.baseURL + c.botToken + "/sendMessage"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", c.redactError(err))
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -442,7 +442,7 @@ func (c *Client) EditMessage(ctx context.Context, chatID string, messageID int64
 	url := c.baseURL + c.botToken + "/editMessageText"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return fmt.Errorf("failed to create request: %w", c.redactError(err))
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -490,7 +490,7 @@ func (c *Client) AnswerCallback(ctx context.Context, callbackID, text string) er
 	url := c.baseURL + c.botToken + "/answerCallbackQuery"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return fmt.Errorf("failed to create request: %w", c.redactError(err))
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -510,7 +510,7 @@ func (c *Client) GetFile(ctx context.Context, fileID string) (*File, error) {
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", c.redactError(err))
 	}
 
 	resp, err := c.do(httpReq)
@@ -542,7 +542,7 @@ func (c *Client) DownloadFile(ctx context.Context, filePath string) ([]byte, err
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create request: %w", c.redactError(err))
 	}
 
 	resp, err := c.do(httpReq)

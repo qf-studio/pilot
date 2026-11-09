@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,5 +112,59 @@ func TestRedirectToFile_Redacts(t *testing.T) {
 	}
 	if strings.Contains(string(data), token) || !strings.Contains(string(data), "<redacted>") {
 		t.Errorf("unexpected log content: %s", data)
+	}
+}
+
+// mutation pin: Init no longer calls slog.SetDefault, so bare slog.Default() loggers write unredacted -> this test fails
+func TestInit_RedactsBareSlogDefault(t *testing.T) {
+	prev := slog.Default()
+	path := filepath.Join(t.TempDir(), "pilot.log")
+	if err := Init(&Config{Level: "info", Format: "text", Output: path}); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = Init(DefaultConfig())
+		slog.SetDefault(prev)
+	})
+
+	token := secretSamples()["telegram"]
+	// The shape of internal/autopilot's slog.Default().With(...) logger.
+	slog.Default().With("component", "autopilot").Error("failed to send merge notification",
+		"error", "Get \"https://api.telegram.org/bot"+token+"/sendMessage\": EOF")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if strings.Contains(string(data), token) {
+		t.Errorf("slog.Default() write holds the token: %s", data)
+	}
+	if !strings.Contains(string(data), "<redacted>") {
+		t.Errorf("log lacks <redacted>: %s", data)
+	}
+}
+
+// mutation pin: openFile no longer chmods an existing log, so a 0644 daemon.log or backup keeps its mode -> this test fails
+func TestRotatingWriter_TightensExistingFileMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.log")
+	if err := os.WriteFile(path, []byte("old line\n"), 0644); err != nil {
+		t.Fatalf("seed log: %v", err)
+	}
+	if err := os.Chmod(path, 0644); err != nil { // defeat a restrictive umask
+		t.Fatalf("chmod seed: %v", err)
+	}
+
+	w, err := newRotatingWriter(path, nil)
+	if err != nil {
+		t.Fatalf("newRotatingWriter: %v", err)
+	}
+	defer func() { _ = w.(*rotatingWriter).Close() }()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Errorf("existing log mode = %o, want 600", got)
 	}
 }

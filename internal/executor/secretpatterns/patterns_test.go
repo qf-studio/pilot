@@ -1,6 +1,9 @@
 package secretpatterns
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPatterns_NonEmptyAndParsed(t *testing.T) {
 	patterns := Patterns()
@@ -67,5 +70,31 @@ func TestRedact(t *testing.T) {
 				t.Errorf("Redact(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// mutation pin: the patterns.txt header drifts from the pattern list (stale "plain literal prefix" claim, missing logging/alerts consumers) -> this test fails
+func TestPatternsFile_HeaderMatchesPatternsAndConsumers(t *testing.T) {
+	var header []string
+	for _, line := range strings.Split(patternsFile, "\n") {
+		if strings.HasPrefix(line, "#") {
+			header = append(header, line)
+		}
+	}
+	text := strings.Join(header, "\n")
+	text = strings.Join(strings.Fields(strings.ReplaceAll(text, "#", " ")), " ")
+
+	if strings.Contains(text, "plain literal prefix") {
+		t.Error(`header still claims every pattern is a "plain literal prefix"; the Telegram pattern starts with a bracket expression`)
+	}
+	for _, consumer := range []string{
+		"scripts/check-secret-patterns.sh",
+		"acceptance_evidence_redact.go",
+		"internal/logging",
+		"internal/alerts",
+	} {
+		if !strings.Contains(text, consumer) {
+			t.Errorf("header does not list the consumer %q", consumer)
+		}
 	}
 }
