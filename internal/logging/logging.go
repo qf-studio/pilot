@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 )
 
 // contextKey is a type for context keys to avoid collisions.
@@ -71,10 +73,11 @@ func Init(cfg *Config) error {
 	}
 
 	level := parseLevel(cfg.Level)
-	writer, err := getWriter(cfg)
+	raw, err := getWriter(cfg)
 	if err != nil {
 		return err
 	}
+	writer := newRedactingWriter(raw)
 
 	opts := &slog.HandlerOptions{
 		Level:     level,
@@ -94,6 +97,28 @@ func Init(cfg *Config) error {
 	loggerMu.Unlock()
 
 	return nil
+}
+
+// redactingWriter replaces secret patterns in every write before it reaches
+// the underlying writer. A secret in an error message (the Telegram bot token
+// in a url.Error) must not reach the log file or terminal.
+type redactingWriter struct {
+	w io.Writer
+}
+
+func newRedactingWriter(w io.Writer) io.Writer {
+	return &redactingWriter{w: w}
+}
+
+// Write redacts p and forwards it. slog handlers emit one record per Write,
+// so a secret is never split across calls. It reports len(p) on success so
+// callers do not see a short write when the redacted text has another length.
+func (r *redactingWriter) Write(p []byte) (int, error) {
+	out := secretpatterns.RedactBytes(p)
+	if _, err := r.w.Write(out); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // Suppress redirects all logging to io.Discard, effectively silencing logs.
@@ -123,10 +148,11 @@ func DefaultDaemonLogPath() string {
 // Process-global via slog.SetDefault: only call from dashboard-mode startup,
 // never from library code.
 func RedirectToFile(path string, rotation *RotationConfig) error {
-	writer, err := newRotatingWriter(path, rotation)
+	raw, err := newRotatingWriter(path, rotation)
 	if err != nil {
 		return err
 	}
+	writer := newRedactingWriter(raw)
 
 	fileLogger := slog.New(slog.NewTextHandler(writer, &slog.HandlerOptions{
 		Level: slog.LevelInfo,

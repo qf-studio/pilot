@@ -4,15 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
 const (
-	telegramAPIURL = "https://api.telegram.org/bot"
+	telegramAPIURL  = "https://api.telegram.org/bot"
+	telegramFileURL = "https://api.telegram.org/file/bot"
 )
 
 // Client is a Telegram Bot API client
@@ -42,6 +46,34 @@ func NewClientWithBaseURL(botToken, baseURL string) *Client {
 			Timeout: 60 * time.Second,
 		},
 	}
+}
+
+// redactedToken replaces the bot token in URLs that end up in error text.
+const redactedToken = "<redacted>"
+
+// do sends req through the HTTP client. The Bot API carries the token in the
+// URL path, and a transport failure (timeout, DNS, reset) comes back as a
+// *url.Error whose text holds the full URL, so the token is replaced there
+// before any caller wraps the error and logs it.
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, c.redactError(err)
+	}
+	return resp, nil
+}
+
+// redactError rewrites the URL of a *url.Error in err's chain, replacing the
+// bot token with <redacted>. Any other error is returned unchanged.
+func (c *Client) redactError(err error) error {
+	if c.botToken == "" {
+		return err
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		urlErr.URL = strings.ReplaceAll(urlErr.URL, c.botToken, redactedToken)
+	}
+	return err
 }
 
 // SendMessageRequest represents a Telegram sendMessage request
@@ -184,7 +216,7 @@ func (c *Client) CheckSingleton(ctx context.Context) error {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return fmt.Errorf("failed to check singleton: %w", err)
 	}
@@ -228,7 +260,7 @@ func (c *Client) GetMe(ctx context.Context) (*User, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call getMe: %w", err)
 	}
@@ -260,7 +292,7 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]*
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get updates: %w", err)
 	}
@@ -315,7 +347,7 @@ func (c *Client) SendMessage(ctx context.Context, chatID, text, parseMode string
 
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send message: %w", err)
 	}
@@ -363,7 +395,7 @@ func (c *Client) SendMessageWithKeyboard(ctx context.Context, chatID, text, pars
 
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send message: %w", err)
 	}
@@ -415,7 +447,7 @@ func (c *Client) EditMessage(ctx context.Context, chatID string, messageID int64
 
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return fmt.Errorf("failed to edit message: %w", err)
 	}
@@ -463,7 +495,7 @@ func (c *Client) AnswerCallback(ctx context.Context, callbackID, text string) er
 
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return fmt.Errorf("failed to answer callback: %w", err)
 	}
@@ -481,7 +513,7 @@ func (c *Client) GetFile(ctx context.Context, fileID string) (*File, error) {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get file: %w", err)
 	}
@@ -506,14 +538,14 @@ func (c *Client) GetFile(ctx context.Context, fileID string) (*File, error) {
 
 // DownloadFile downloads a file from Telegram servers
 func (c *Client) DownloadFile(ctx context.Context, filePath string) ([]byte, error) {
-	url := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", c.botToken, filePath)
+	url := fmt.Sprintf("%s%s/%s", telegramFileURL, c.botToken, filePath)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download file: %w", err)
 	}

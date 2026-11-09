@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -686,6 +687,8 @@ func (e *Engine) ProcessEvent(event Event) {
 		return
 	}
 
+	event = redactEvent(event)
+
 	if isHighPriorityEvent(event.Type) {
 		select {
 		case e.priorityCh <- event:
@@ -710,6 +713,21 @@ func (e *Engine) ProcessEvent(event Event) {
 		)
 		e.metrics.RecordDropped()
 	}
+}
+
+// redactEvent replaces secret patterns in the free-text fields of an event
+// before rules and channels see it. Error text copied from a failed API call
+// can hold a credential (the Telegram bot token travels in the URL path).
+func redactEvent(event Event) Event {
+	event.Error = secretpatterns.Redact(event.Error)
+	if len(event.Metadata) > 0 {
+		md := make(map[string]string, len(event.Metadata))
+		for k, v := range event.Metadata {
+			md[k] = secretpatterns.Redact(v)
+		}
+		event.Metadata = md
+	}
+	return event
 }
 
 // isHighPriorityEvent reports whether an event must not be lost under load.
