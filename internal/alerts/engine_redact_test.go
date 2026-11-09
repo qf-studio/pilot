@@ -2,6 +2,7 @@ package alerts
 
 import (
 	"context"
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"strings"
 	"testing"
 	"time"
@@ -145,5 +146,24 @@ func TestProcessEvent_RedactsConfigErrorAndMetadata(t *testing.T) {
 	}
 	if got := a.Metadata["detail"]; strings.Contains(got, token) || !strings.Contains(got, "<redacted>") {
 		t.Errorf("alert metadata detail = %q, want the token replaced with <redacted>", got)
+	}
+}
+
+func TestRedactEvent_RegisteredSecretValue(t *testing.T) {
+	const value = "zq-opaque-config-value-0042"
+	secretpatterns.ResetSecretValuesForTest()
+	t.Cleanup(secretpatterns.ResetSecretValuesForTest)
+	secretpatterns.RegisterSecretValues(value)
+
+	got := redactEvent(Event{
+		Error:     "login failed with " + value,
+		TaskTitle: "rotate " + value,
+		Metadata:  map[string]string{"cfg": value},
+	})
+	if strings.Contains(got.Error, value) || strings.Contains(got.TaskTitle, value) || strings.Contains(got.Metadata["cfg"], value) {
+		t.Errorf("redactEvent left the registered value: %+v", got)
+	}
+	if got.Error != "login failed with <redacted>" {
+		t.Errorf("Error = %q", got.Error)
 	}
 }

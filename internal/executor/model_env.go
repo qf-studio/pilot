@@ -139,6 +139,13 @@ func isModelEnvDenied(name string) bool {
 	return false
 }
 
+// IsSecretEnvName reports whether an environment variable name matches the
+// model-env deny rules, i.e. whether its value is a credential. Daemon startup
+// uses it to register those values for log/storage redaction (GH-6249).
+func IsSecretEnvName(name string) bool {
+	return isModelEnvDenied(name)
+}
+
 // modelSubprocessEnv returns a scrubbed copy of base (typically
 // os.Environ(), plus whatever a caller has already appended) suitable for a
 // model-controlled subprocess. It is a denylist, not an allowlist — vars

@@ -512,6 +512,10 @@ Examples:
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 
+			// GH-6249: register configured secret values for redaction before
+			// any adapter starts or anything is logged.
+			secretCount := registerSecretValues(cfg)
+
 			// GH-2361: Fail loudly when an adapter flag is used but the
 			// corresponding adapter block is missing from config. Previously,
 			// `pilot start --github` would silently auto-enable a defaulted
@@ -564,6 +568,10 @@ Examples:
 			if dashboardMode {
 				setupDashboardLogging(cfg)
 			}
+
+			// Count only: the values themselves never reach the log.
+			logging.WithComponent("start").Info("secret values registered for redaction",
+				slog.Int("count", secretCount))
 
 			// GH-3600: verify whether a pending upgrade actually took effect —
 			// the running version vs the state file is the ground truth; the

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	_ "modernc.org/sqlite"
 )
 
@@ -841,6 +842,9 @@ func (s *Store) SaveExecution(exec *Execution) error {
 		ca := exec.CompletedAt.UTC()
 		completedAt = &ca
 	}
+	// GH-6249: agent output and error text can carry a configured secret.
+	output := secretpatterns.Redact(exec.Output)
+	execError := secretpatterns.Redact(exec.Error)
 	return s.withRetry("SaveExecution", func() error {
 		_, err := s.db.Exec(`
 			INSERT INTO executions (id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
@@ -851,7 +855,7 @@ func (s *Store) SaveExecution(exec *Execution) error {
 				approval_request_id, effort_level, complexity_level, is_canary,
 				key_source, reported_cost_usd, billing_mode, continue_branch_sha)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, createdAt, completedAt,
+		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, output, execError, exec.DurationMs, exec.PRUrl, exec.CommitSHA, createdAt, completedAt,
 			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.TokensCacheRead, exec.TokensCacheWrite,
 			exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
 			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose,
@@ -3192,7 +3196,8 @@ func notTerminalClause() (string, []interface{}) {
 func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) error {
 	var errStr *string
 	if len(errorMsg) > 0 && errorMsg[0] != "" {
-		errStr = &errorMsg[0]
+		redacted := secretpatterns.Redact(errorMsg[0])
+		errStr = &redacted
 	}
 
 	// Set completed_at for terminal states.
@@ -6067,6 +6072,8 @@ type LogEntry struct {
 // the column is uniformly UTC on disk.
 func (s *Store) SaveLogEntry(entry *LogEntry) error {
 	entry.Timestamp = entry.Timestamp.UTC()
+	// GH-6249: mask before the row is written and before subscribers see it.
+	entry.Message = secretpatterns.Redact(entry.Message)
 	err := s.withRetry("SaveLogEntry", func() error {
 		result, err := s.db.Exec(`
 			INSERT INTO execution_logs (execution_id, timestamp, level, message, component)

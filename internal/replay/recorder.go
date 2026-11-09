@@ -11,8 +11,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"github.com/qf-studio/pilot/internal/logging"
 	"log/slog"
+)
+
+// Recordings hold the raw agent stream, so they are owner-only (GH-6249).
+const (
+	recordingDirMode  os.FileMode = 0700
+	recordingFileMode os.FileMode = 0600
 )
 
 // Recorder captures execution events for later replay
@@ -38,19 +45,19 @@ func NewRecorder(taskID, projectPath, basePath string) (*Recorder, error) {
 
 	// Create recording directory
 	recordingDir := filepath.Join(basePath, id)
-	if err := os.MkdirAll(recordingDir, 0755); err != nil {
+	if err := os.MkdirAll(recordingDir, recordingDirMode); err != nil {
 		return nil, fmt.Errorf("failed to create recording directory: %w", err)
 	}
 
 	// Create diffs subdirectory
 	diffsDir := filepath.Join(recordingDir, "diffs")
-	if err := os.MkdirAll(diffsDir, 0755); err != nil {
+	if err := os.MkdirAll(diffsDir, recordingDirMode); err != nil {
 		return nil, fmt.Errorf("failed to create diffs directory: %w", err)
 	}
 
 	// Create stream file
 	streamPath := filepath.Join(recordingDir, "stream.jsonl")
-	streamFile, err := os.Create(streamPath)
+	streamFile, err := os.OpenFile(streamPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, recordingFileMode)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stream file: %w", err)
 	}
@@ -132,7 +139,10 @@ func (r *Recorder) RecordEvent(rawJSON string) error {
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
 
-	if _, err := r.streamFile.WriteString(string(eventJSON) + "\n"); err != nil {
+	// GH-6249: the raw agent stream can carry a configured secret (an agent
+	// that Reads config.yaml); mask registered values and known shapes.
+	eventJSON = append(secretpatterns.RedactBytes(eventJSON), '\n')
+	if _, err := r.streamFile.Write(eventJSON); err != nil {
 		return fmt.Errorf("failed to write event: %w", err)
 	}
 
@@ -386,7 +396,7 @@ func (r *Recorder) saveMetadata() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(metadataPath, data, 0644)
+	return os.WriteFile(metadataPath, secretpatterns.RedactBytes(data), recordingFileMode)
 }
 
 // saveDiffs saves file diffs
@@ -405,7 +415,7 @@ func (r *Recorder) saveDiffs() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(diffsPath, data, 0644)
+	return os.WriteFile(diffsPath, secretpatterns.RedactBytes(data), recordingFileMode)
 }
 
 // generateSummary creates a human-readable summary
@@ -468,7 +478,7 @@ func (r *Recorder) generateSummary() error {
 		sb.WriteString("\n")
 	}
 
-	return os.WriteFile(r.recording.SummaryPath, []byte(sb.String()), 0644)
+	return os.WriteFile(r.recording.SummaryPath, secretpatterns.RedactBytes([]byte(sb.String())), recordingFileMode)
 }
 
 // estimateCost calculates estimated cost from token usage
