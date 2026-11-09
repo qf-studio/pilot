@@ -985,13 +985,28 @@ func (e *Engine) handleBudgetEvent(ctx context.Context, event Event) {
 	e.handleCostUpdate(ctx, event)
 }
 
+// SecurityEventSourceLeakScan is the Event.Source of security events raised by
+// internal/leakscan (GH-6250). They fire only AlertTypeSecretLeak rules.
+const SecurityEventSourceLeakScan = "leakscan"
+
 func (e *Engine) handleSecurityEvent(ctx context.Context, event Event) {
+	leak := event.Source == SecurityEventSourceLeakScan
 	for _, rule := range e.config.Rules {
 		if !rule.Enabled {
 			continue
 		}
+		if leak != (rule.Type == AlertTypeSecretLeak) {
+			continue
+		}
 
 		switch rule.Type {
+		case AlertTypeSecretLeak:
+			if e.shouldFire(rule) {
+				msg := fmt.Sprintf("Possible secret in %s (%s, sample %s)",
+					event.Metadata["file"], event.Metadata["kind"], event.Metadata["sample"])
+				alert := e.createAlert(rule, event, msg)
+				e.fireAlert(ctx, rule, alert)
+			}
 		case AlertTypeUnauthorizedAccess:
 			if e.shouldFire(rule) {
 				alert := e.createAlert(rule, event, "Unauthorized access attempt detected")

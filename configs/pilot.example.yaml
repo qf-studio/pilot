@@ -1288,6 +1288,18 @@ projects:
   #     repo: "pilot-canary-sandbox"
   #   canary: true
 
+# Security hardening
+security:
+  # Runtime leak scan (GH-6250): every interval, scan the bytes appended to the
+  # daemon log and the recordings (stream.jsonl, summary.md) modified since the
+  # last tick for secret patterns and registered secret values. A hit raises a
+  # security_event alert (secret_leak rule) with the file, offset, kind and a
+  # masked sample (first 4 characters). It is the net under value redaction:
+  # it catches a writer that bypasses it. Default: enabled, every 5m.
+  leak_scan:
+    enabled: true
+    interval: 5m
+
 # Dashboard settings
 dashboard:
   refresh_interval: 1000     # ms
