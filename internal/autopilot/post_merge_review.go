@@ -191,13 +191,17 @@ type postMergeReviewInputs struct {
 	prURL       string
 	issueNumber int
 	ciStatus    CIStatus
+	// pr is the PR the sample decision already fetched, nil when it did not
+	// fetch (sample rate 1) or the fetch failed; the gather then fetches it.
+	pr *github.PullRequest
 }
 
 // maybeStartPostMergeReview launches the post-merge review for a merged PR
 // when the knob is on. It is called from handleMerged and is a no-op unless
 // the reviewer is wired, the PR came from a GitHub issue (the review is
 // judged against it), the PR has not been reviewed yet (PostMergeReviewPosted,
-// persisted so a restart does not repeat it) and today's budget has room.
+// persisted so a restart does not repeat it), the sample gate
+// (postMergeSampleDecision, GH-6232) keeps it and today's budget has room.
 func (c *Controller) maybeStartPostMergeReview(ctx context.Context, prState *PRState) {
 	if !c.config.PostMergeReviewEnabled() {
 		return
@@ -218,7 +222,8 @@ func (c *Controller) maybeStartPostMergeReview(ctx context.Context, prState *PRS
 
 	// GH-6232: sample before the budget is acquired, so a PR that is sampled
 	// out never consumes a review.
-	if review, reason := c.postMergeSampleDecision(ctx, prState.PRNumber); !review {
+	review, reason, pr := c.postMergeSampleDecision(ctx, prState.PRNumber)
+	if !review {
 		c.metrics.RecordPostMergeReview(postMergeReviewSampledOut)
 		c.log.Info("post-merge review sampled out",
 			"pr", prState.PRNumber, "sample_rate", c.config.PostMergeReview.EffectiveSampleRate(), "reason", reason)
@@ -245,6 +250,7 @@ func (c *Controller) maybeStartPostMergeReview(ctx context.Context, prState *PRS
 		prURL:       prState.PRURL,
 		issueNumber: prState.IssueNumber,
 		ciStatus:    prState.CIStatus,
+		pr:          pr,
 	}
 	// The stage handler's ctx is cancelled when the handler returns, which
 	// would kill the review mid-flight; detach it but keep its values.
@@ -265,52 +271,56 @@ func (c *Controller) maybeStartPostMergeReview(ctx context.Context, prState *PRS
 // under post_merge_review.sample_rate (GH-6232). It returns true when the PR is
 // forced — its pre-PR review did not clear it — or when its number is a
 // multiple of the rate; otherwise false with the sampled-out reason. A rate of
-// 1 reviews every PR without fetching the body.
+// 1 reviews every PR without fetching the body. The fetched PR is returned so
+// the review's input gather does not fetch it a second time; it is nil when no
+// fetch was done or it failed.
 //
 // Decision: sampling is by PR number modulo N, not a counter, so a daemon
 // restart neither skews the sample nor re-rolls a PR. A forced PR does not
 // count against the sample: the audit measures the pre-PR reviewer on the PRs
 // it approved.
-func (c *Controller) postMergeSampleDecision(ctx context.Context, prNumber int) (review bool, reason string) {
+func (c *Controller) postMergeSampleDecision(ctx context.Context, prNumber int) (review bool, reason string, pr *github.PullRequest) {
 	rate := c.config.PostMergeReview.EffectiveSampleRate()
 	if rate <= 1 {
-		return true, ""
+		return true, "", nil
 	}
-	if forced := c.postMergeForcedReason(ctx, prNumber); forced != "" {
+	forced, pr := c.postMergeForcedReason(ctx, prNumber)
+	if forced != "" {
 		c.log.Debug("post-merge review forced", "pr", prNumber, "reason", forced)
-		return true, forced
+		return true, forced, pr
 	}
 	if prNumber%rate == 0 {
-		return true, ""
+		return true, "", pr
 	}
-	return false, "not_in_sample"
+	return false, "not_in_sample", pr
 }
 
 // postMergeForcedReason returns why a PR must be reviewed whatever the sample
 // rate says, or "" when its pre-PR review cleared it: an enforce-mode approve
 // with no fix round or a fixed one. Every other shape forces — the section is
 // missing, the mode is not enforce, the verdict is not an approve, the fix
-// outcome is not clean, or the PR body could not be fetched.
-func (c *Controller) postMergeForcedReason(ctx context.Context, prNumber int) string {
+// outcome is not clean, or the PR body could not be fetched. It also returns
+// the PR it fetched, nil when the fetch failed.
+func (c *Controller) postMergeForcedReason(ctx context.Context, prNumber int) (string, *github.PullRequest) {
 	fetchCtx, cancel := context.WithTimeout(ctx, postMergeReviewGatherTimeout)
 	defer cancel()
 	pr, err := c.ghClient.GetPullRequest(fetchCtx, c.owner, c.repo, prNumber)
 	if err != nil || pr == nil {
-		return "pr_body_unavailable"
+		return "pr_body_unavailable", nil
 	}
 	mode, verdict, fix, ok := executor.ParsePrePRReviewSection(pr.Body)
 	switch {
 	case !ok:
-		return "no_pre_pr_section"
+		return "no_pre_pr_section", pr
 	case mode != executor.PrePRReviewModeEnforce:
-		return "pre_pr_mode_" + mode
+		return "pre_pr_mode_" + mode, pr
 	case verdict != executor.PostMergeApprove && verdict != executor.PostMergeApproveWithNotes:
-		return "pre_pr_verdict_" + string(verdict)
+		return "pre_pr_verdict_" + string(verdict), pr
 	}
 	if f := strings.Fields(strings.ToLower(fix)); fix != executor.PrePRFixNone && (len(f) == 0 || f[0] != "fixed") {
-		return "pre_pr_fix_not_clean"
+		return "pre_pr_fix_not_clean", pr
 	}
-	return ""
+	return "", pr
 }
 
 // postMergeBudget returns the controller's review budget: the one installed by
@@ -336,7 +346,7 @@ func (c *Controller) runPostMergeReview(ctx context.Context, reviewer PostMergeR
 	c.mu.RUnlock()
 
 	gatherCtx, cancel := context.WithTimeout(ctx, postMergeReviewGatherTimeout)
-	gathered, err := gatherPostMergeReviewInput(gatherCtx, c.ghClient, c.owner, c.repo, c.projectPath, in.prNumber, in.issueNumber, true, memories,
+	gathered, err := gatherPostMergeReviewInput(gatherCtx, c.ghClient, c.owner, c.repo, c.projectPath, in.prNumber, in.issueNumber, true, memories, in.pr,
 		func(ctx context.Context, mergeSHA string) (string, string, error) {
 			diff, err := c.postMergeDiffFor(ctx, mergeSHA)
 			return diff, PostMergeDiffSourceLocal, err
@@ -828,7 +838,7 @@ func GatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, 
 	for _, o := range opts {
 		o(&cfg)
 	}
-	return gatherPostMergeReviewInput(ctx, gh, owner, repo, projectPath, prNumber, issueNumber, false, cfg.memories, nil)
+	return gatherPostMergeReviewInput(ctx, gh, owner, repo, projectPath, prNumber, issueNumber, false, cfg.memories, nil, nil)
 }
 
 // GatherOption tunes GatherPostMergeReviewInput.
@@ -881,12 +891,19 @@ func recallPostMergeMemories(projectPath, issueTitle, issueBody, diff string) []
 // own closing-issue reference win over a non-zero issueNumber, which then only
 // serves as the fallback — GH-5927: the controller's PRState.IssueNumber can
 // be a CI-fix issue the PR was adopted under, not the issue it implements.
+// prefetched is the PR the caller already read (GH-6238), so it is not fetched
+// again; nil makes the gather fetch it.
 func gatherPostMergeReviewInput(ctx context.Context, gh PostMergeGitHub, owner, repo, projectPath string, prNumber, issueNumber int, preferClosing, memories bool,
-	diffFn func(ctx context.Context, mergeSHA string) (diff, source string, err error)) (*PostMergeGather, error) {
-	pr, err := gh.GetPullRequest(ctx, owner, repo, prNumber)
-	if err != nil {
-		return nil, fmt.Errorf("fetch PR #%d: %w", prNumber, err)
+	prefetched *github.PullRequest, diffFn func(ctx context.Context, mergeSHA string) (diff, source string, err error)) (*PostMergeGather, error) {
+	pr := prefetched
+	if pr == nil {
+		var err error
+		pr, err = gh.GetPullRequest(ctx, owner, repo, prNumber)
+		if err != nil {
+			return nil, fmt.Errorf("fetch PR #%d: %w", prNumber, err)
+		}
 	}
+	var err error
 	if pr.State == "open" && !pr.Merged {
 		return nil, fmt.Errorf("PR #%d is still open: only merged PRs can be reviewed", prNumber)
 	}

@@ -173,7 +173,7 @@ func TestGatherPostMergeReviewInput_PreferClosingLookupFailure(t *testing.T) {
 			fake.issues[5917] = &github.Issue{Number: 5917, Title: "the real issue"}
 			fake.issues[5922] = &github.Issue{Number: 5922, Title: "the fix issue"}
 
-			got, err := gatherPostMergeReviewInput(context.Background(), fake, "o", "r", "", 5902, 5922, true, false, nil)
+			got, err := gatherPostMergeReviewInput(context.Background(), fake, "o", "r", "", 5902, 5922, true, false, nil, nil)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want one containing %q", err, tt.wantErr)

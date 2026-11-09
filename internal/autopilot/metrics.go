@@ -96,7 +96,8 @@ type Metrics struct {
 	// with no visible signal that the judge was effectively dead.
 	IntentJudgeFailures map[string]int64
 	// PostMergeReviewVerdicts counts post-merge reviews by verdict (APPROVE,
-	// APPROVE-WITH-NOTES, REQUEST-CHANGES, unknown, error) — GH-5861.
+	// APPROVE-WITH-NOTES, REQUEST-CHANGES, unknown, error, sampled_out) — GH-5861.
+	// sampled_out counts PRs the sample gate skipped (GH-6232).
 	PostMergeReviewVerdicts map[string]int64
 	// PostMergeReviewNoFilesRead counts checkout reviews that opened no file and
 	// were posted as APPROVE-WITH-NOTES. It has its own counter so the verdict

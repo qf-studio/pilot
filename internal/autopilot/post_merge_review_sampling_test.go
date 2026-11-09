@@ -42,15 +42,46 @@ func prePRBody(mode, verdict, fix string) string {
 	return fmt.Sprintf("## Summary\nx\n\n## Pre-PR review\n\nMode: %s\nVerdict: %s\nFix: %s\n", mode, verdict, fix)
 }
 
+// pmrPullCounter counts GetPullRequest calls per PR number.
+type pmrPullCounter struct {
+	mu sync.Mutex
+	n  map[int]int
+}
+
+func (p *pmrPullCounter) add(pr int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.n == nil {
+		p.n = map[int]int{}
+	}
+	p.n[pr]++
+}
+
+func (p *pmrPullCounter) get(pr int) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.n[pr]
+}
+
 // newPMRSamplingGitHub serves PR bodies per PR number; a PR missing from bodies
 // answers 500, so fetching its body fails.
 func newPMRSamplingGitHub(t *testing.T, bodies map[int]string) *github.Client {
+	t.Helper()
+	return newPMRCountingGitHub(t, bodies, nil)
+}
+
+// newPMRCountingGitHub is newPMRSamplingGitHub that also counts the PR GETs
+// per PR number into pulls, when it is not nil.
+func newPMRCountingGitHub(t *testing.T, bodies map[int]string, pulls *pmrPullCounter) *github.Client {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(path, "/repos/owner/repo/pulls/"):
 			n, _ := strconv.Atoi(strings.TrimPrefix(path, "/repos/owner/repo/pulls/"))
+			if pulls != nil {
+				pulls.add(n)
+			}
 			body, ok := bodies[n]
 			if !ok {
 				w.WriteHeader(http.StatusInternalServerError)
@@ -243,5 +274,39 @@ func TestPostMergeReviewSampling_SampledOutPRIsNotMarkedReviewed(t *testing.T) {
 	c.waitPostMergeReviews()
 	if prState.PostMergeReviewPosted || len(reviewer.reviewed()) != 0 {
 		t.Errorf("sampled-out PR: posted=%v reviews=%v, want neither", prState.PostMergeReviewPosted, reviewer.reviewed())
+	}
+}
+
+// GH-6238: the sample decision reads the PR body, and the review's input gather
+// reuses that PR instead of fetching it a second time.
+func TestPostMergeReviewSampling_FetchesPROnce(t *testing.T) {
+	cleared := prePRBody(executor.PrePRReviewModeEnforce, string(executor.PostMergeApprove), executor.PrePRFixNone)
+	rc := prePRBody(executor.PrePRReviewModeEnforce, string(executor.PostMergeRequestChanges), "fixed in one round")
+	tests := []struct {
+		name string
+		pr   int
+		body string
+	}{
+		{"forced PR (fixed REQUEST-CHANGES)", 7, rc},
+		{"in-sample PR (cleared approve)", 10, cleared},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reviewer := &pmrNumberReviewer{}
+			pulls := &pmrPullCounter{}
+			c := newPMRController(t, newPMRCountingGitHub(t, map[int]string{tt.pr: tt.body}, pulls), reviewer, true)
+			c.config.PostMergeReview.SampleRate = 5
+			c.SetPostMergeReviewBudget(NewPostMergeReviewBudget(10))
+			if err := c.handleMerged(context.Background(), mergedPRState(tt.pr, 10)); err != nil {
+				t.Fatalf("handleMerged: %v", err)
+			}
+			c.waitPostMergeReviews()
+			if got := reviewer.reviewed(); len(got) != 1 || got[0] != tt.pr {
+				t.Fatalf("reviewed = %v, want [%d]", got, tt.pr)
+			}
+			if got := pulls.get(tt.pr); got != 1 {
+				t.Errorf("GetPullRequest calls = %d, want 1", got)
+			}
+		})
 	}
 }

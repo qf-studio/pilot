@@ -229,8 +229,10 @@ const preReviewReasonPrefix = "Pre-PR review requested changes:"
 // REQUEST-CHANGES and its Fix line does not say fixed — a human must decide
 // before the merge. Like the other gates it only escalates. It fails open: a
 // missing section, a parse failure, any other verdict or a fixed outcome all
-// return "". Decision: a clean fix round merges on green and the post-merge
-// audit samples it (founder decision, GH-5962).
+// return "". Decision: a clean fix round merges on green (GH-5962); the
+// post-merge audit always reviews it, because postMergeForcedReason forces
+// every pre-PR verdict that is not an approve (GH-6232, founder decision
+// 2026-11-09).
 func PreReviewReason(logger *slog.Logger, prBody string) string {
 	mode, verdict, fix, ok := executor.ParsePrePRReviewSection(prBody)
 	if !ok {
