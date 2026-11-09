@@ -3929,9 +3929,10 @@ func (c *Controller) applyCIOutcome(prState *PRState, sha string, status CIStatu
 		missing, discovered := c.requiredCheckMismatchDetail(sha)
 		c.log.Warn("CI required-checks config mismatch, failing PR without CI-fix cascade",
 			"pr", prState.PRNumber, "sha", ShortSHA(sha),
-			"missing_required_checks", missing, "discovered_checks", discovered)
+			"missing_required_checks", missing, "discovered_checks", discovered,
+			"hint", CIChecksInheritHint)
 		prState.Stage = StageFailed
-		prState.Error = fmt.Sprintf("CI required-checks config mismatch: required check(s) %v never posted on this SHA (discovered checks: %v) — fix required_checks/ci_checks.required, then retry (GH-4646)", missing, discovered)
+		prState.Error = fmt.Sprintf("CI required-checks config mismatch: required check(s) %v never posted on this SHA (discovered checks: %v) — fix required_checks/ci_checks.required, then retry; hint: %s (GH-4646)", missing, discovered, CIChecksInheritHint)
 		return true
 	case CIPending, CIRunning:
 		// Stay in StageWaitingCI, will be checked next poll cycle
@@ -7179,11 +7180,12 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 		// timeout before anyone finds out — fail the carrier now with a reason
 		// that names the actual mismatch.
 		missing, discovered := c.requiredCheckMismatchDetail(mainSHA)
-		reason := fmt.Sprintf("post-merge CI required-checks config mismatch at %s: required check(s) %v never appear among this SHA's discovered checks %v (GH-4646)",
-			ShortSHA(mainSHA), missing, discovered)
+		reason := fmt.Sprintf("post-merge CI required-checks config mismatch at %s: required check(s) %v never appear among this SHA's discovered checks %v; hint: %s (GH-4646)",
+			ShortSHA(mainSHA), missing, discovered, CIChecksInheritHint)
 		c.log.Warn("post-merge CI required-checks config mismatch",
 			"pr", prState.PRNumber, "sha", ShortSHA(mainSHA),
-			"missing_required_checks", missing, "discovered_checks", discovered)
+			"missing_required_checks", missing, "discovered_checks", discovered,
+			"hint", CIChecksInheritHint)
 		if prState.ScopeKey != "" {
 			c.handleScopeReleaseFailure(ctx, prState, reason, false)
 			c.removePR(prState.PRNumber)
