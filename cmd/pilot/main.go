@@ -2563,6 +2563,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 						if proj.CIChecks != nil {
 							ctrlOpts = append(ctrlOpts, autopilot.WithCIChecksOverride(proj.CIChecks))
 						}
+						warnInheritedRequiredChecks(cfg.Orchestrator.Autopilot, proj.CIChecks, proj.Name, cfg.Adapters.GitHub.Repo)
 						// GH-4774: apply the per-project approval overlay when configured;
 						// nil is a no-op (inherits the resolved env/global RequireApproval
 						// gate and ApprovalSource channel).
@@ -2635,6 +2636,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				if proj.CIChecks != nil {
 					ctrlOpts = append(ctrlOpts, autopilot.WithCIChecksOverride(proj.CIChecks))
 				}
+				warnInheritedRequiredChecks(cfg.Orchestrator.Autopilot, proj.CIChecks, proj.Name, repoFullName)
 				// GH-4774: apply the per-project approval overlay when configured;
 				// nil is a no-op (inherits the resolved env/global RequireApproval
 				// gate and ApprovalSource channel).

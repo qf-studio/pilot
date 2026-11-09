@@ -431,6 +431,23 @@ func effectiveRequiredChecksForLint(cfg *Config) []string {
 	return nil
 }
 
+// CIChecksInheritHint is the operator-facing fix for a project that inherits
+// the global required checks (GH-6239). Shared by the startup warning in
+// cmd/pilot and the config_mismatch messages in the controller.
+const CIChecksInheritHint = "set ci_checks.required_checks: [] on the project to use auto-discovery, or list its check names"
+
+// InheritedRequiredChecks returns the global required-checks list a project
+// silently inherits (GH-4478: a nil per-project override inherits), or nil
+// when the project has its own override (even an empty required_checks) or
+// the global config lists none. GH-6239: a project whose CI posts other check
+// names ends every PR in config_mismatch (GH-4646), so callers warn on it.
+func InheritedRequiredChecks(global *Config, override *ProjectCIChecksOverride) []string {
+	if override != nil || global == nil {
+		return nil
+	}
+	return effectiveRequiredChecksForLint(global)
+}
+
 // requiredCheckMismatch reports whether any of m.requiredChecks never
 // appeared among checkRuns even though every run on the SHA has already
 // reached a terminal (completed) state. It deliberately scans ALL of
