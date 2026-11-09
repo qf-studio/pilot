@@ -515,6 +515,7 @@ Examples:
 			// GH-6252: tell the executor read guard which config file is loaded.
 			if cfg.Executor != nil && cfg.Executor.ClaudeCode != nil {
 				cfg.Executor.ClaudeCode.ConfigPath = configPath
+				executor.SetReadGuardConfig(cfg.Executor.ClaudeCode)
 			}
 
 			// GH-6249: register configured secret values for redaction before

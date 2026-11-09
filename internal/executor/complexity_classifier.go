@@ -69,6 +69,11 @@ func NewComplexityClassifier() *ComplexityClassifier {
 
 // defaultCmdRunner executes the claude command.
 func (c *ComplexityClassifier) defaultCmdRunner(ctx context.Context, args ...string) ([]byte, error) {
+	args, guardCleanup, err := withProcessReadGuard(args)
+	if err != nil {
+		return nil, err
+	}
+	defer guardCleanup()
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.

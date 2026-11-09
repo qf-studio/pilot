@@ -9131,13 +9131,18 @@ func (r *Runner) getPostExecutionSummary(ctx context.Context, dir string) (*Post
 	if r.config.ClaudeCode.Command != "" {
 		claudeCmd = r.config.ClaudeCode.Command
 	}
-	cmd := exec.CommandContext(ctx, claudeCmd,
+	args, guardCleanup, err := withReadGuard(r.config.ClaudeCode, []string{
 		"--print",
 		"-p", prompt,
 		"--model", r.config.ResolveModel("claude-haiku-4-5-20251001"),
 		"--output-format", "json",
 		"--json-schema", PostExecutionSummarySchema,
-	)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read guard: %w", err)
+	}
+	defer guardCleanup()
+	cmd := exec.CommandContext(ctx, claudeCmd, args...)
 	cmd.Dir = dir
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.
@@ -9185,13 +9190,18 @@ func (r *Runner) getContractEvidence(ctx context.Context, dir string, fields []s
 	if r.config.ClaudeCode.Command != "" {
 		claudeCmd = r.config.ClaudeCode.Command
 	}
-	cmd := exec.CommandContext(ctx, claudeCmd,
+	args, guardCleanup, err := withReadGuard(r.config.ClaudeCode, []string{
 		"--print",
 		"-p", prompt,
 		"--model", r.config.ResolveModel("claude-haiku-4-5-20251001"),
 		"--output-format", "json",
 		"--json-schema", ContractEvidenceSchema,
-	)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read guard: %w", err)
+	}
+	defer guardCleanup()
+	cmd := exec.CommandContext(ctx, claudeCmd, args...)
 	cmd.Dir = dir
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.

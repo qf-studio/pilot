@@ -65,6 +65,11 @@ func newSubtaskParserWithRunner(runner func(ctx context.Context, args ...string)
 }
 
 func (p *SubtaskParser) defaultRunner(ctx context.Context, args ...string) ([]byte, error) {
+	args, guardCleanup, err := withProcessReadGuard(args)
+	if err != nil {
+		return nil, err
+	}
+	defer guardCleanup()
 	cmd := exec.CommandContext(ctx, p.claudeCmd, args...)
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.

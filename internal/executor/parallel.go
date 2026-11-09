@@ -264,6 +264,12 @@ func (p *ParallelRunner) executeSubagent(ctx context.Context, projectPath string
 		args = append([]string{"--model", modelName}, args...)
 	}
 
+	args, guardCleanup, guardErr := withProcessReadGuard(args)
+	if guardErr != nil {
+		return &SubagentResult{Duration: time.Since(start), Error: guardErr.Error()}
+	}
+	defer guardCleanup()
+
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = projectPath
 	// GH-5278: scrub the ambient environment before this model-controlled
