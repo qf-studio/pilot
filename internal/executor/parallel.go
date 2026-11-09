@@ -59,6 +59,7 @@ type Subagent struct {
 
 // SubagentResult holds the output from a subagent execution
 type SubagentResult struct {
+	Type         SubagentType
 	Output       string
 	Error        string
 	Success      bool
@@ -266,7 +267,7 @@ func (p *ParallelRunner) executeSubagent(ctx context.Context, projectPath string
 
 	args, guardCleanup, guardErr := withProcessReadGuard(args)
 	if guardErr != nil {
-		return &SubagentResult{Duration: time.Since(start), Error: guardErr.Error()}
+		return &SubagentResult{Type: task.Type, Duration: time.Since(start), Error: guardErr.Error()}
 	}
 	defer guardCleanup()
 
@@ -301,6 +302,7 @@ func (p *ParallelRunner) executeSubagent(ctx context.Context, projectPath string
 	duration := time.Since(start)
 
 	result := &SubagentResult{
+		Type:     task.Type,
 		Duration: duration,
 	}
 
