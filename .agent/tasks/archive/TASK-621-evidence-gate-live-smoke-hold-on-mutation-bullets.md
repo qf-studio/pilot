@@ -40,7 +40,7 @@ PR#5969 (issue #5967) was held for human approval at 19:32Z with the reason "Not
 
 ## Refs
 
-- .agent/tasks/TASK-620-pre-pr-reviewer-replaces-self-review-and-judge.md
+- .agent/tasks/archive/TASK-620-pre-pr-reviewer-replaces-self-review-and-judge.md
 
 ## Refs
 
