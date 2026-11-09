@@ -104,6 +104,13 @@ func (w *rotatingWriter) openFile() error {
 		return fmt.Errorf("failed to open log file: %w", err)
 	}
 
+	// O_CREATE applies the mode only to a new file; tighten a log (or a
+	// rotated backup that became the live file) left at 0644 by an older build.
+	if err := file.Chmod(0600); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("failed to chmod log file: %w", err)
+	}
+
 	info, err := file.Stat()
 	if err != nil {
 		_ = file.Close()

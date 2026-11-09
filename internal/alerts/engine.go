@@ -720,6 +720,7 @@ func (e *Engine) ProcessEvent(event Event) {
 // can hold a credential (the Telegram bot token travels in the URL path).
 func redactEvent(event Event) Event {
 	event.Error = secretpatterns.Redact(event.Error)
+	event.TaskTitle = secretpatterns.Redact(event.TaskTitle)
 	if len(event.Metadata) > 0 {
 		md := make(map[string]string, len(event.Metadata))
 		for k, v := range event.Metadata {

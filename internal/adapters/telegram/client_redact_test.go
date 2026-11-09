@@ -110,3 +110,58 @@ func TestClient_RedactErrorLeavesOtherErrorsAndEmptyToken(t *testing.T) {
 		t.Errorf("empty token rewrote URL: %s", ue.URL)
 	}
 }
+
+// mutation pin: http.NewRequestWithContext failures are returned without c.redactError -> this test fails
+func TestClient_RequestBuildErrorDoesNotLeakToken(t *testing.T) {
+	// Assembled at runtime: a literal would trip the secret-pattern scan.
+	token := "123456789:AA" + strings.Repeat("a", 33)
+	ctx := context.Background()
+
+	// A control character in the base URL makes every URL fail to parse, so
+	// the *url.Error{Op:"parse"} holding the full URL comes back from
+	// http.NewRequestWithContext before c.do is reached.
+	bad := NewClientWithBaseURL(token, "http://127.0.0.1\x01")
+	calls := map[string]func() error{
+		"CheckSingleton": func() error { return bad.CheckSingleton(ctx) },
+		"GetMe":          func() error { _, err := bad.GetMe(ctx); return err },
+		"GetUpdates":     func() error { _, err := bad.GetUpdates(ctx, 0, 0); return err },
+		"SendMessage": func() error {
+			_, err := bad.SendMessage(ctx, "1", "hi", "", 0)
+			return err
+		},
+		"SendMessageWithKeyboard": func() error {
+			_, err := bad.SendMessageWithKeyboard(ctx, "1", "hi", "", nil, 0)
+			return err
+		},
+		"EditMessage":    func() error { return bad.EditMessage(ctx, "1", 2, "hi", "") },
+		"AnswerCallback": func() error { return bad.AnswerCallback(ctx, "cb", "hi") },
+		"GetFile":        func() error { _, err := bad.GetFile(ctx, "file-id"); return err },
+		// A control character in the caller-supplied part of the URL.
+		"GetFile fileID": func() error {
+			_, err := NewClient(token).GetFile(ctx, "file\x01id")
+			return err
+		},
+		"DownloadFile filePath": func() error {
+			_, err := NewClient(token).DownloadFile(ctx, "photos/\x01.jpg")
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			err := call()
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if strings.Contains(err.Error(), token) {
+				t.Errorf("error text holds the token: %v", err)
+			}
+			var urlErr *url.Error
+			if errors.As(err, &urlErr) && strings.Contains(urlErr.URL, token) {
+				t.Errorf("url.Error.URL holds the token: %q", urlErr.URL)
+			}
+			if !strings.Contains(err.Error(), "<redacted>") {
+				t.Errorf("error lacks <redacted>: %v", err)
+			}
+		})
+	}
+}
