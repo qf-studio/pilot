@@ -512,6 +512,11 @@ Examples:
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 
+			// GH-6252: tell the executor read guard which config file is loaded.
+			if cfg.Executor != nil && cfg.Executor.ClaudeCode != nil {
+				cfg.Executor.ClaudeCode.ConfigPath = configPath
+			}
+
 			// GH-6249: register configured secret values for redaction before
 			// any adapter starts or anything is logged.
 			secretCount := registerSecretValues(cfg)

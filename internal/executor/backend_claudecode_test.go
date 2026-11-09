@@ -2363,7 +2363,8 @@ exit 0
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil { //nolint:gosec // fake CLI must be executable
 		t.Fatal(err)
 	}
-	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script})
+	noReadGuard := false
+	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script, ReadGuard: &noReadGuard})
 	project := t.TempDir()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2432,13 +2433,13 @@ exit 0
 		t.Errorf("per-run settings dir still exists after the run: %v", err)
 	}
 
-	// No boundary, no --settings.
+	// No boundary and no read guard, no --settings.
 	if _, err := backend.Execute(ctx, ExecuteOptions{Prompt: "hello", ProjectPath: project, EventHandler: func(BackendEvent) {}}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	args, _ = os.ReadFile(filepath.Join(captured, "args"))
 	if strings.Contains(string(args), "--settings") {
-		t.Errorf("args %q carry --settings without a WriteBoundary", args)
+		t.Errorf("args %q carry --settings without a WriteBoundary or read guard", args)
 	}
 }
 

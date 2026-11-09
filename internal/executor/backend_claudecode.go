@@ -617,12 +617,14 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	// GH-5688: --allowedTools does nothing under --dangerously-skip-permissions,
 	// so a write boundary is a PreToolUse hook delivered via --settings. Fail
 	// closed: a session that asked for a boundary does not run without it.
-	if opts.WriteBoundary != "" {
-		settingsPath, boundaryCleanup, boundaryErr := setupWriteBoundary(opts.ProjectPath, opts.WriteBoundary)
-		if boundaryErr != nil {
-			return nil, boundaryErr
+	// GH-6252: the read guard rides in the same settings file, on every run.
+	readSpec := b.config.readGuardSpec()
+	if opts.WriteBoundary != "" || readSpec != nil {
+		settingsPath, guardCleanup, guardErr := setupRunGuards(opts.ProjectPath, opts.WriteBoundary, readSpec)
+		if guardErr != nil {
+			return nil, guardErr
 		}
-		defer boundaryCleanup()
+		defer guardCleanup()
 		args = append(args, "--settings", settingsPath)
 	}
 

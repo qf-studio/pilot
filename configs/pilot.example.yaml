@@ -940,6 +940,11 @@ executor:
   #                                # are journaled and surfaced as gh_guard_denied alerts. Set to false
   #                                # only if the guard blocks a legitimate `gh` usage pattern it doesn't
   #                                # yet recognize — prefer filing that as a policy gap over disabling.
+  #   read_guard: true            # read guard (GH-6252) - default true. A per-run PreToolUse hook
+  #                                # blocks Read/Grep/Glob/NotebookRead/Bash calls that touch ~/.pilot,
+  #                                # the loaded config file or /proc/*/environ. Guards against accidental
+  #                                # reads (an agent cat-ing config.yaml); NOT a security boundary - a
+  #                                # separate uid is the real fix. Set false only to debug.
   #   # env_passthrough (GH-5277): names of environment variables that survive
   #   # the model-subprocess env scrub (GH-5275/GH-5276) even though their name
   #   # looks secret-shaped (matches *_TOKEN/*_SECRET/*_API_KEY/etc). The scrub
