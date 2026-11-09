@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/adapters/redact"
 )
 
 const (
@@ -74,7 +76,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to execute request: %w", err)
+		return fmt.Errorf("failed to execute request: %w", redact.Error(err, c.secrets()...))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -87,9 +89,9 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 		// Try to parse Asana error response
 		var apiResp APIResponse[interface{}]
 		if err := json.Unmarshal(respBody, &apiResp); err == nil && len(apiResp.Errors) > 0 {
-			return fmt.Errorf("asana API error (status %d): %s", resp.StatusCode, apiResp.Errors[0].Message)
+			return fmt.Errorf("asana API error (status %d): %s", resp.StatusCode, redact.Text(apiResp.Errors[0].Message, c.secrets()...))
 		}
-		return fmt.Errorf("asana API error (status %d): %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("asana API error (status %d): %s", resp.StatusCode, redact.Text(string(respBody), c.secrets()...))
 	}
 
 	if result != nil && len(respBody) > 0 {
@@ -325,4 +327,9 @@ func (c *Client) GetActiveTasksByTag(ctx context.Context, tagGID string) ([]Task
 func (c *Client) Ping(ctx context.Context) error {
 	_, err := c.GetWorkspace(ctx)
 	return err
+}
+
+// secrets lists the credential values to mask in returned errors.
+func (c *Client) secrets() []string {
+	return []string{c.accessToken}
 }

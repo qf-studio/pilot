@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/adapters/redact"
 )
 
 // Client is a Jira API client
@@ -85,7 +87,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to execute request: %w", err)
+		return fmt.Errorf("failed to execute request: %w", redact.Error(err, c.secrets()...))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -95,7 +97,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
+		return &APIError{StatusCode: resp.StatusCode, Body: redact.Text(string(respBody), c.secrets()...)}
 	}
 
 	if result != nil && len(respBody) > 0 {
@@ -304,4 +306,10 @@ func (c *Client) HasLabel(issue *Issue, label string) bool {
 		}
 	}
 	return false
+}
+
+// secrets lists the credential values to mask in returned errors.
+func (c *Client) secrets() []string {
+	// The token also travels base64-encoded in the Basic auth header.
+	return []string{c.apiToken, base64.StdEncoding.EncodeToString([]byte(c.username + ":" + c.apiToken))}
 }

@@ -19,6 +19,9 @@ jobs:
       - name: Check for realistic secret patterns in tests
         run: ./scripts/check-secret-patterns.sh
 
+      - name: Check adapter packages have a canary leak test
+        run: ./scripts/check-adapter-canary-tests.sh
+
   mock-contracts:
     name: Check Argument-Discarding Mocks
     runs-on: ubuntu-latest
