@@ -6531,8 +6531,10 @@ func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 	// GH-2086: Close parent issue when all sub-issues are done.
 	c.maybeCloseParentIssue(ctx, prState)
 
-	// GH-5861: post-merge review of the merged diff against the issue. Runs in
-	// a goroutine, guarded by the persisted PostMergeReviewPosted flag, and
+	// GH-5861: post-merge review of the merged diff against the issue. The
+	// sample decision fetches the PR synchronously (bounded by
+	// postMergeReviewGatherTimeout); only the review itself runs in a
+	// goroutine. Guarded by the persisted PostMergeReviewPosted flag, and
 	// must stay ahead of the SkipPostMergeCI branch, whose paths removePR.
 	c.maybeStartPostMergeReview(ctx, prState)
 

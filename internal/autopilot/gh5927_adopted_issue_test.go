@@ -293,7 +293,7 @@ func TestGatherPostMergeReviewInput_PreferClosingOverTrackedIssue(t *testing.T) 
 			fake.issues[5917] = &github.Issue{Number: 5917, Title: "the real issue"}
 			fake.issues[5922] = &github.Issue{Number: 5922, Title: "the fix issue"}
 
-			got, err := gatherPostMergeReviewInput(context.Background(), fake, "o", "r", "", 5902, tt.tracked, tt.preferClose, false, nil)
+			got, err := gatherPostMergeReviewInput(context.Background(), fake, "o", "r", "", 5902, tt.tracked, tt.preferClose, false, nil, nil)
 			if err != nil {
 				t.Fatalf("gather: %v", err)
 			}
