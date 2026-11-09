@@ -11,7 +11,7 @@
 **Problem**: two incidents on the founder box.
 
 1. **2026-10-09 → 2026-11-08, Telegram token in the daemon log.** The Telegram client put the bot token in the URL path; every network error wrapped a `*url.Error` that holds the URL, and 134 log lines kept it. Fixed by #6244 (PR#6245) and #6246 in v2.317.0: client-side URL redaction, a redacting log writer, alert redaction, a Telegram pattern, log files 0600. The box log was masked in place and the token rotated 2026-11-09.
-2. **2026-08-03, an agent session read the whole `config.yaml`.** A Telegram task's tool result held every adapter secret, and the replay recorder kept it verbatim in `recordings/TG-1785766274768/stream.jsonl`. Masked in place 2026-11-09; the Slack bot token, Slack app token and Anthropic API key are rotated by the founder.
+2. **2026-08-03, an agent session printed the daemon `config.yaml`.** An agent session (GH-4669, a ticket that cited live box evidence) ran one Bash command — `curl -s http://localhost:9091/metrics`, a `find` for YAML files and `cat ~/.pilot/config.yaml | head -60` ("inspect running config"). The first 60 lines held the Slack bot and app tokens, the Slack classifier Anthropic key (= `bot.api_key`) and the Telegram token; Jira and Discord sit lower and were not exposed. The replay recorder kept the output verbatim in `recordings/TG-1785766274768/stream.jsonl` (`TG-` is the recorder's ID prefix, not a Telegram source). PR#4685 and the box database hold none of the values. Masked in place 2026-11-09; the Slack bot token, Slack app token and Anthropic API key are rotated by the founder.
 
 **What still holds the gap (research 2026-11-09, `origin/main` `deb2c45fa`):**
 
@@ -142,7 +142,7 @@ probe: absent  qf-studio/pilot ^const[[:space:]]+readGuardName[[:space:]]
 
 ## Context
 
-On 2026-08-03 an agent session in a Telegram task read the whole daemon `config.yaml` with a plain tool call. Agent sessions run as the daemon's uid, so the file is readable; the real fix is a separate uid (H1, held). This leg stops the accidental read now. It is a guard against mistakes, not a security boundary: a determined agent can still read the file through an interpreter. Under `--dangerously-skip-permissions` only a PreToolUse hook holds (`allowedtools-inert-under-dangerously-skip-permissions`). The write guard in `internal/executor/write_boundary.go` (`setupWriteBoundary`, `write-guard.sh`) is the pattern: a per-run settings file passed with `--settings` in `internal/executor/backend_claudecode.go`. Today ticket runs pass no settings file; only chat and bootstrap runs set a write boundary.
+On 2026-08-03 an agent session (GH-4669, a ticket that cited live box evidence) ran one Bash command — `curl -s http://localhost:9091/metrics`, a `find` for YAML files and `cat ~/.pilot/config.yaml | head -60` ("inspect running config"). The first 60 lines held the Slack bot and app tokens, the Slack classifier Anthropic key (= `bot.api_key`) and the Telegram token; Jira and Discord sit lower and were not exposed. Agent sessions run as the daemon's uid, so the file is readable; the real fix is a separate uid (H1, held). This leg stops the accidental read now. It is a guard against mistakes, not a security boundary: a determined agent can still read the file through an interpreter. Under `--dangerously-skip-permissions` only a PreToolUse hook holds (`allowedtools-inert-under-dangerously-skip-permissions`). The write guard in `internal/executor/write_boundary.go` (`setupWriteBoundary`, `write-guard.sh`) is the pattern: a per-run settings file passed with `--settings` in `internal/executor/backend_claudecode.go`. Today ticket runs pass no settings file; only chat and bootstrap runs set a write boundary.
 
 ## Scope
 
@@ -177,7 +177,8 @@ Held for a Navigator design pass; filed after the design doc lands in `.agent/sy
 3. **Agent HOME.** Its own `~/.claude` login or `CLAUDE_CODE_OAUTH_TOKEN` injected per run, the Navigator plugin cache, gh and git config, Go and Node caches. `internal/executor/post_merge_confine.go` (per-review `HOME`, `CLAUDE_CONFIG_DIR`, copied login) is the precedent.
 4. **Process control.** Killing a different-uid process group, the `/proc`-based liveness checks, and the cgroup memory leaf all need the privilege path or delegation.
 5. **`/proc`.** `/proc/<daemon>/environ` is closed to another uid by default; `hidepid=2` is optional. `start-pilot.sh` exports `CLAUDE_CODE_OAUTH_TOKEN`, which the agent still receives by design.
-6. **Gate.** `executor.claude_code.run_as_user`, default empty (off); macOS and local dev keep today's behaviour.
+6. **Local gateway.** The agent reached the daemon gateway on `localhost:9091` (metrics). Check which gateway endpoints return config or secrets, and whether an agent uid must be refused there.
+7. **Gate.** `executor.claude_code.run_as_user`, default empty (off); macOS and local dev keep today's behaviour.
 
 ## Refs
 
