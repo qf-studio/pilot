@@ -39,5 +39,5 @@ A hold has no `failure_class` and no PR fields. The console card for it is a sep
 
 ## Related
 
-- `.agent/tasks/TASK-620-pre-pr-reviewer-replaces-self-review-and-judge.md` § Rollout and exit criteria (stage 3 reads the hold count)
+- `.agent/tasks/archive/TASK-620-pre-pr-reviewer-replaces-self-review-and-judge.md` § Rollout and exit criteria (stage 3 reads the hold count)
 - `.agent/tasks/archive/TASK-641-pre-pr-review-unfixed-hold.md`

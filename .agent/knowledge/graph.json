@@ -2926,9 +2926,9 @@
         ]
       },
       "TASK-620": {
-        "path": ".agent/tasks/TASK-620-pre-pr-reviewer-replaces-self-review-and-judge.md",
+        "path": ".agent/tasks/archive/TASK-620-pre-pr-reviewer-replaces-self-review-and-judge.md",
         "title": "TASK-620: the reviewer moves before the PR — one in-run review after the gates with a resumed fix round; self-review and the in-run intent judge retire; post-merge becomes a sampled audit",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "quality-gate",
           "review"
@@ -2938,7 +2938,8 @@
           "https://github.com/qf-studio/pilot/issues/6157",
           "https://github.com/qf-studio/pilot/issues/6168",
           "https://github.com/qf-studio/pilot/issues/6189",
-          "https://github.com/qf-studio/pilot/issues/6232"
+          "https://github.com/qf-studio/pilot/issues/6232",
+          "https://github.com/qf-studio/pilot/issues/6238"
         ]
       },
       "TASK-630": {
@@ -3084,9 +3085,9 @@
         ]
       },
       "TASK-643": {
-        "path": ".agent/tasks/TASK-643-ci-fix-chain-loses-finished-work.md",
+        "path": ".agent/tasks/archive/TASK-643-ci-fix-chain-loses-finished-work.md",
         "title": "Autopilot CI-fix chain loses finished work — sweep deletes the fix branch, pre-flight rejects the fix issue, re-arm restarts from scratch, the upgrade drain pauses admission behind a long task",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "deployment",
           "frontend",
@@ -3123,7 +3124,7 @@
       "TASK-647": {
         "path": ".agent/tasks/TASK-647-research-page-subagent-context-chat-events.md",
         "title": "Research page `subagent` + `context` chat events — the daemon reports sub-agent start/done with durations and the turn's Navigator read counts (pilot#5810, roadmap P17 / U9)",
-        "status": "merged",
+        "status": "shipped",
         "concepts": [
           "frontend",
           "markers",
@@ -3147,9 +3148,9 @@
         ]
       },
       "TASK-649": {
-        "path": ".agent/tasks/TASK-649-git-graph-per-project-selection.md",
+        "path": ".agent/tasks/archive/TASK-649-git-graph-per-project-selection.md",
         "title": "Git graph per-project selection — the gateway and the desktop app serve any configured project's graph, and the GIT GRAPH panel gets a project tab row (pilot#6207)",
-        "status": "merged",
+        "status": "completed",
         "concepts": [
           "knowledge",
           "authentication",
