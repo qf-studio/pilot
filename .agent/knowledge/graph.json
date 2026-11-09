@@ -3165,6 +3165,24 @@
           "https://github.com/qf-studio/pilot/issues/6220",
           "https://github.com/qf-studio/pilot/issues/6207"
         ]
+      },
+      "TASK-650": {
+        "path": ".agent/tasks/TASK-650-secret-exposure-hardening.md",
+        "title": "Secret exposure hardening — value-based redaction, leak detection, adapter canary tests, agent isolation",
+        "status": "dispatched",
+        "concepts": [
+          "security",
+          "secrets",
+          "adapters",
+          "executor",
+          "testing"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6249",
+          "https://github.com/qf-studio/pilot/issues/6250",
+          "https://github.com/qf-studio/pilot/issues/6251",
+          "https://github.com/qf-studio/pilot/issues/6252"
+        ]
       }
     },
     "memories": {
@@ -8892,6 +8910,20 @@
         ],
         "created": "2026-11-08",
         "last_validated": "2026-11-08"
+      },
+      "mem-300": {
+        "type": "pitfall",
+        "summary": "A secret in a URL path leaks through every *url.Error (Telegram bot token: 134 daemon.log lines, 2026-10-09 → 11-08); and an agent session with the daemon's uid reads every daemon secret (2026-08-03 Read of config.yaml kept verbatim in a recording). Send credentials in headers or redact the URL in one request helper; redact by configured value, not only by known shape; isolate agent sessions by uid (TASK-650).",
+        "path": "memories/pitfalls/mem-300.md",
+        "confidence": 0.95,
+        "concepts": [
+          "security",
+          "secrets",
+          "adapters",
+          "executor"
+        ],
+        "created": "2026-11-09",
+        "last_validated": "2026-11-09"
       }
     }
   },
@@ -12905,6 +12937,36 @@
       "from": "TASK-649",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "mem-300",
+      "to": "TASK-650",
+      "type": "learned-from"
+    },
+    {
+      "from": "TASK-650",
+      "to": "security",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-650",
+      "to": "secrets",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-650",
+      "to": "adapters",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-650",
+      "to": "executor",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-650",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -12923,7 +12985,9 @@
       "spec-rerouting-a-platform-must-rewrite-composed-tests-of-the-old-flow",
       "slack-approval-click-not-received-relay-via-local-decision-api",
       "box-slack-socket-mode-config-false-but-socket-mode-starts",
-      "slack-connector-returns-text-only-colleague-attachments-need-a-pr"
+      "slack-connector-returns-text-only-colleague-attachments-need-a-pr",
+      "mem-300",
+      "TASK-650"
     ],
     "alerts": [
       "TASK-379",
@@ -13975,7 +14039,9 @@
       "mem-287",
       "mem-292",
       "mem-293",
-      "mem-294"
+      "mem-294",
+      "mem-300",
+      "TASK-650"
     ],
     "external-contributor": [
       "external-fork-pr-sweeps-stale-agent-state"
@@ -14579,7 +14645,9 @@
       "startup-label-guard-must-use-done-not-terminal-or-crash-orphans-strand"
     ],
     "secrets": [
-      "mem-131"
+      "mem-131",
+      "mem-300",
+      "TASK-650"
     ],
     "security": [
       "guard-research-framing-parity-not-bypass",
@@ -14590,7 +14658,9 @@
       "runselfreview-runs-in-repo-root-phantom-reimplementation",
       "allowedtools-inert-under-dangerously-skip-permissions",
       "mem-260",
-      "public-repo-agent-tree-holds-public-product-docs-only"
+      "public-repo-agent-tree-holds-public-product-docs-only",
+      "mem-300",
+      "TASK-650"
     ],
     "ship-test": [],
     "shipped-check": [
@@ -14846,7 +14916,8 @@
       "TASK-643",
       "TASK-646",
       "TASK-647",
-      "TASK-649"
+      "TASK-649",
+      "TASK-650"
     ],
     "testing-quality": [
       "TASK-384",
@@ -15488,11 +15559,11 @@
       "mem-291"
     ]
   },
-  "last_updated": "2026-11-08T16:07:31.573251+00:00",
+  "last_updated": "2026-11-09T18:46:14.106446+00:00",
   "stats": {
-    "total_nodes": 773,
-    "total_edges": 802,
-    "memory_count": 424
+    "total_nodes": 775,
+    "total_edges": 812,
+    "memory_count": 425
   },
   "metadata": {
     "last_updated": null
