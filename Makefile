@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-mocks check-destructive check-graph test-bench bench-bootstrap-report pentest gate check-integration test-prepush-fastpath test-prepush-gate-output test-install-hooks-worktree auto-fix test-short test-changed test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard watch-git-config
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-adapter-canary check-mocks check-destructive check-graph test-bench bench-bootstrap-report pentest gate check-integration test-prepush-fastpath test-prepush-gate-output test-install-hooks-worktree auto-fix test-short test-changed test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard watch-git-config
 
 # Variables
 BINARY_NAME=pilot
@@ -150,6 +150,10 @@ watch-git-config:
 # Check for realistic secret patterns in test files
 check-secrets:
 	@./scripts/check-secret-patterns.sh
+
+# Check that every adapter package with an HTTP client has a canary leak test
+check-adapter-canary:
+	@./scripts/check-adapter-canary-tests.sh
 
 # Check for argument-discarding mocks in test files: Backend.Execute
 # (TASK-441 L1 / GH-4708) and QualityChecker.Check (TASK-460 / GH-5062)
@@ -335,6 +339,7 @@ help:
 	@echo "  make install-global Install to /usr/local/bin"
 	@echo "  make install-hooks  Install git pre-commit/pre-push hooks"
 	@echo "  make check-secrets  Check for secret patterns in tests"
+	@echo "  make check-adapter-canary  Require a canary leak test in every adapter with an HTTP client"
 	@echo "  make check-mocks    Check for argument-discarding mocks (Backend.Execute, QualityChecker.Check)"
 	@echo "  make check-destructive  Check for destructive-call-gate bypasses"
 	@echo "  make pentest        Run the hostile-ticket pen-test harness (live backend; skipped in CI)"

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/adapters/redact"
 )
 
 // Client is a Plane.so REST API client.
@@ -90,7 +92,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to execute request: %w", err)
+		return fmt.Errorf("failed to execute request: %w", redact.Error(err, c.secrets()...))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -116,7 +118,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, redact.Text(string(respBody), c.secrets()...))
 	}
 
 	if result != nil && len(respBody) > 0 {
@@ -347,4 +349,9 @@ func (c *Client) CreateIssue(ctx context.Context, parentID, title, body string, 
 	url := fmt.Sprintf("%s/workspaces/%s/projects/%s/work-items/%s",
 		c.baseURL, c.workspaceSlug, c.defaultProjectID, item.ID)
 	return item.ID, url, nil
+}
+
+// secrets lists the credential values to mask in returned errors.
+func (c *Client) secrets() []string {
+	return []string{c.apiKey}
 }

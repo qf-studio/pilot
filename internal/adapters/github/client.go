@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/adapters/redact"
 )
 
 const (
@@ -371,7 +373,7 @@ func (c *Client) doRequestAccept(ctx context.Context, method, path, accept strin
 
 			resp, err := c.httpClient.Do(req)
 			if err != nil {
-				return fmt.Errorf("failed to execute request: %w", err)
+				return fmt.Errorf("failed to execute request: %w", redact.Error(err, token))
 			}
 			defer func() { _ = resp.Body.Close() }()
 
@@ -381,7 +383,7 @@ func (c *Client) doRequestAccept(ctx context.Context, method, path, accept strin
 			}
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				msg := string(respBody)
+				msg := redact.Text(string(respBody), token)
 				if resp.StatusCode == http.StatusUnauthorized {
 					return &AuthError{Message: msg}
 				}
@@ -1084,7 +1086,7 @@ func (c *Client) getJobLogsOnce(ctx context.Context, path string) (string, error
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to execute request: %w", err)
+		return "", fmt.Errorf("failed to execute request: %w", redact.Error(err, token))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1094,7 +1096,7 @@ func (c *Client) getJobLogsOnce(ctx context.Context, path string) (string, error
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return "", &AuthError{Message: string(body)}
+		return "", &AuthError{Message: redact.Text(string(body), token)}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("API error (status %d) fetching job logs", resp.StatusCode)
@@ -1330,7 +1332,7 @@ func (c *Client) executeGraphQLCore(ctx context.Context, query string, variables
 
 			resp, err := c.httpClient.Do(req)
 			if err != nil {
-				return fmt.Errorf("graphql request failed: %w", err)
+				return fmt.Errorf("graphql request failed: %w", redact.Error(err, token))
 			}
 			defer func() { _ = resp.Body.Close() }()
 
@@ -1340,10 +1342,10 @@ func (c *Client) executeGraphQLCore(ctx context.Context, query string, variables
 			}
 
 			if resp.StatusCode == http.StatusUnauthorized {
-				return &AuthError{Message: string(respBody)}
+				return &AuthError{Message: redact.Text(string(respBody), token)}
 			}
 			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("graphql API error (status %d): %s", resp.StatusCode, string(respBody))
+				return fmt.Errorf("graphql API error (status %d): %s", resp.StatusCode, redact.Text(string(respBody), token))
 			}
 
 			var gqlResp GraphQLResponse

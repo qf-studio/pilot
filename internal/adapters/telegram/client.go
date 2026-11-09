@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/adapters/redact"
 )
 
 const (
@@ -73,7 +75,8 @@ func (c *Client) redactError(err error) error {
 	if errors.As(err, &urlErr) {
 		urlErr.URL = strings.ReplaceAll(urlErr.URL, c.botToken, redactedToken)
 	}
-	return err
+	// The wrapped transport error may still carry the token (request dump).
+	return redact.Error(err, c.botToken)
 }
 
 // SendMessageRequest represents a Telegram sendMessage request

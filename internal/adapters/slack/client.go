@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/adapters/redact"
 )
 
 const (
@@ -66,7 +68,7 @@ func (c *Client) AuthTest(ctx context.Context) (*AuthTestResponse, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to call auth.test: %w", err)
+		return nil, fmt.Errorf("failed to call auth.test: %w", redact.Error(err, c.botToken))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -174,7 +176,7 @@ func (c *Client) PostMessage(ctx context.Context, msg *Message) (*PostMessageRes
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to post message: %w", err)
+		return nil, fmt.Errorf("failed to post message: %w", redact.Error(err, c.botToken))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -224,7 +226,7 @@ func (c *Client) UpdateMessage(ctx context.Context, channel, ts string, msg *Mes
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to update message: %w", err)
+		return fmt.Errorf("failed to update message: %w", redact.Error(err, c.botToken))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -268,7 +270,7 @@ func (c *Client) PostInteractiveMessage(ctx context.Context, msg *InteractiveMes
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to post message: %w", err)
+		return nil, fmt.Errorf("failed to post message: %w", redact.Error(err, c.botToken))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -319,7 +321,7 @@ func (c *Client) PostEphemeral(ctx context.Context, responseURL, text string) er
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to post ephemeral response: %w", err)
+		return fmt.Errorf("failed to post ephemeral response: %w", redact.Error(err, c.botToken))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -362,7 +364,7 @@ func (c *Client) PostEphemeralToUser(ctx context.Context, channel, user, text st
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to post ephemeral response: %w", err)
+		return fmt.Errorf("failed to post ephemeral response: %w", redact.Error(err, c.botToken))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -409,7 +411,7 @@ func (c *Client) UpdateInteractiveMessage(ctx context.Context, channel, ts strin
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to update message: %w", err)
+		return fmt.Errorf("failed to update message: %w", redact.Error(err, c.botToken))
 	}
 	defer func() { _ = resp.Body.Close() }()
 

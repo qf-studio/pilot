@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/adapters/redact"
 )
 
 const (
@@ -102,7 +104,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to execute request: %w", err)
+		return fmt.Errorf("failed to execute request: %w", redact.Error(err, c.secrets()...))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -112,7 +114,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, redact.Text(string(respBody), c.secrets()...))
 	}
 
 	if result != nil && len(respBody) > 0 {
@@ -148,7 +150,7 @@ func (c *Client) doRequestWithPatch(ctx context.Context, path string, body inter
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to execute request: %w", err)
+		return fmt.Errorf("failed to execute request: %w", redact.Error(err, c.secrets()...))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -158,7 +160,7 @@ func (c *Client) doRequestWithPatch(ctx context.Context, path string, body inter
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, redact.Text(string(respBody), c.secrets()...))
 	}
 
 	if result != nil && len(respBody) > 0 {
@@ -692,4 +694,10 @@ func (c *Client) GetPullRequestWebURL(id int) string {
 // HasTag checks if a work item has a specific tag
 func HasTag(wi *WorkItem, tag string) bool {
 	return wi.HasTag(tag)
+}
+
+// secrets lists the credential values to mask in returned errors.
+func (c *Client) secrets() []string {
+	// The PAT also travels base64-encoded in the Basic auth header.
+	return []string{c.pat, base64.StdEncoding.EncodeToString([]byte(":" + c.pat))}
 }

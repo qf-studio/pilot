@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/qf-studio/pilot/internal/adapters/redact"
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
@@ -93,7 +94,7 @@ func (s *SocketModeClient) OpenConnection(ctx context.Context) (string, error) {
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrConnectionOpen, err)
+		return "", fmt.Errorf("%w: %w", ErrConnectionOpen, redact.Error(err, s.appToken))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -103,7 +104,7 @@ func (s *SocketModeClient) OpenConnection(ctx context.Context) (string, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%w: HTTP %d: %s", ErrConnectionOpen, resp.StatusCode, string(body))
+		return "", fmt.Errorf("%w: HTTP %d: %s", ErrConnectionOpen, resp.StatusCode, redact.Text(string(body), s.appToken))
 	}
 
 	var result connectionsOpenResponse

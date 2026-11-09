@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/redact"
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
@@ -82,7 +83,7 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body in
 		}
 
 		if statusCode >= 400 {
-			return nil, fmt.Errorf("discord API error: HTTP %d: %s", statusCode, string(respBody))
+			return nil, fmt.Errorf("discord API error: HTTP %d: %s", statusCode, redact.Text(string(respBody), c.secrets()...))
 		}
 
 		return respBody, nil
@@ -113,7 +114,7 @@ func (c *Client) doRequestOnce(ctx context.Context, method, endpoint string, bod
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, 0, 0, fmt.Errorf("send request: %w", err)
+		return nil, 0, 0, fmt.Errorf("send request: %w", redact.Error(err, c.secrets()...))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -243,4 +244,9 @@ func (c *Client) GetGatewayURL(ctx context.Context) (string, error) {
 	}
 
 	return result.URL, nil
+}
+
+// secrets lists the credential values to mask in returned errors.
+func (c *Client) secrets() []string {
+	return []string{c.botToken}
 }

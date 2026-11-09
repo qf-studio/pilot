@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/redact"
 	"github.com/qf-studio/pilot/internal/executor"
 )
 
@@ -142,7 +143,7 @@ func (c *Client) Execute(ctx context.Context, query string, variables map[string
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to execute request: %w", err)
+		return fmt.Errorf("failed to execute request: %w", redact.Error(err, c.secrets()...))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -152,7 +153,7 @@ func (c *Client) Execute(ctx context.Context, query string, variables map[string
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("API error: %s", string(respBody))
+		return fmt.Errorf("API error: %s", redact.Text(string(respBody), c.secrets()...))
 	}
 
 	var gqlResp GraphQLResponse
@@ -161,7 +162,7 @@ func (c *Client) Execute(ctx context.Context, query string, variables map[string
 	}
 
 	if len(gqlResp.Errors) > 0 {
-		return fmt.Errorf("GraphQL error: %s", gqlResp.Errors[0].Message)
+		return fmt.Errorf("GraphQL error: %s", redact.Text(gqlResp.Errors[0].Message, c.secrets()...))
 	}
 
 	if result != nil {
@@ -737,4 +738,9 @@ func (c *Client) GetTeamDoneStateID(ctx context.Context, teamKey string) (string
 	c.doneStateMu.Unlock()
 
 	return stateID, nil
+}
+
+// secrets lists the credential values to mask in returned errors.
+func (c *Client) secrets() []string {
+	return []string{c.apiKey}
 }

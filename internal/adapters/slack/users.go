@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/adapters/redact"
 )
 
 const (
@@ -90,7 +92,7 @@ func (c *Client) GetUserInfo(ctx context.Context, userID string) (*UserInfo, err
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get user info: %w", err)
+		return nil, fmt.Errorf("failed to get user info: %w", redact.Error(err, c.botToken))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
