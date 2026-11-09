@@ -1325,6 +1325,19 @@ type ClaudeCodeConfig struct {
 	// use GhGuardEnabled() to read, which treats unset as enabled.
 	GhGuard *bool `yaml:"gh_guard,omitempty"`
 
+	// ReadGuard enables the read guard (GH-6252): a per-run PreToolUse hook
+	// that blocks Read/Grep/Glob/NotebookRead/Bash calls touching the Pilot
+	// home, the config file or /proc/*/environ. A guard against accidental
+	// reads, not a security boundary. Default: true; use ReadGuardEnabled() to
+	// read (unset is enabled).
+	ReadGuard *bool `yaml:"read_guard,omitempty"`
+
+	// PilotHome and ConfigPath tell the read guard what to protect. Set by the
+	// daemon from the loaded config; empty means ~/.pilot and
+	// <home>/config.yaml. Not YAML-configurable.
+	PilotHome  string `yaml:"-"`
+	ConfigPath string `yaml:"-"`
+
 	// EnvPassthrough lists environment variable names that survive the
 	// model-subprocess env scrub (GH-5275/GH-5276) even if they would
 	// otherwise be dropped as a secret-shaped name (e.g. an *_API_KEY a
@@ -1371,6 +1384,15 @@ func (c *ClaudeCodeConfig) GhGuardEnabled() bool {
 		return true
 	}
 	return GetBoolPtrValue(c.GhGuard, true)
+}
+
+// ReadGuardEnabled reports whether the read guard (GH-6252) is wired onto
+// Claude Code runs. Defaults to true; a nil config means enabled.
+func (c *ClaudeCodeConfig) ReadGuardEnabled() bool {
+	if c == nil {
+		return true
+	}
+	return GetBoolPtrValue(c.ReadGuard, true)
 }
 
 // PlanningConfig controls the model and behavior for epic planning subprocesses.

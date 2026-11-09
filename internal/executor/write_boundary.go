@@ -1,10 +1,6 @@
 package executor
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -89,48 +85,11 @@ esac
 deny "$target is outside the writable area"
 `
 
-// setupWriteBoundary writes the guard script and a settings JSON that
+// setupWriteBoundary writes the write guard script and a settings JSON that
 // registers it as a PreToolUse hook into a fresh temp dir. The settings path
 // goes to the CLI as --settings; cleanup removes both files.
 func setupWriteBoundary(projectPath, boundary string) (settingsPath string, cleanup func(), err error) {
-	dir, err := os.MkdirTemp("", "pilot-writeguard-*")
-	if err != nil {
-		return "", func() {}, fmt.Errorf("write boundary: create dir: %w", err)
-	}
-	cleanup = func() { _ = os.RemoveAll(dir) }
-
-	scriptPath := filepath.Join(dir, writeBoundaryGuardName)
-	if err := os.WriteFile(scriptPath, []byte(writeBoundaryGuardScript), 0o755); err != nil { //nolint:gosec // hook script must be executable
-		cleanup()
-		return "", func() {}, fmt.Errorf("write boundary: write guard script: %w", err)
-	}
-
-	settings := map[string]any{
-		"hooks": map[string]any{
-			"PreToolUse": []any{
-				map[string]any{
-					"matcher": writeBoundaryMatcher,
-					"hooks": []any{
-						map[string]any{
-							"type":    "command",
-							"command": shellSingleQuote(scriptPath) + " " + shellSingleQuote(projectPath) + " " + shellSingleQuote(boundary),
-						},
-					},
-				},
-			},
-		},
-	}
-	raw, err := json.Marshal(settings)
-	if err != nil {
-		cleanup()
-		return "", func() {}, fmt.Errorf("write boundary: marshal settings: %w", err)
-	}
-	settingsPath = filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(settingsPath, raw, 0o600); err != nil {
-		cleanup()
-		return "", func() {}, fmt.Errorf("write boundary: write settings: %w", err)
-	}
-	return settingsPath, cleanup, nil
+	return setupRunGuards(projectPath, boundary, nil)
 }
 
 // shellSingleQuote quotes s for a POSIX shell command line.
