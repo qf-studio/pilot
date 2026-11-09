@@ -248,6 +248,14 @@ type CreatedIssue struct {
 //	PlanEpic → parseSubtasksWithFallback → SubtaskParser (Haiku API) → parseSubtasks (regex)
 var numberedListRegex = regexp.MustCompile(`(?mi)^(?:\s*)(?:#{1,6}\s+)?(?:[-*]\s+)?(?:\*{0,2})(?:step|phase|task)?\s*(\d+)[.):]\s*(.+)`)
 
+// claudeCodeConfig returns the runner's Claude Code config, or nil.
+func (r *Runner) claudeCodeConfig() *ClaudeCodeConfig {
+	if r.config == nil {
+		return nil
+	}
+	return r.config.ClaudeCode
+}
+
 // PlanEpic runs Claude Code in planning mode to break an epic into subtasks.
 // Returns an EpicPlan with 3-5 sequential subtasks.
 // executionPath may differ from task.ProjectPath when using worktree isolation (GH-968).
@@ -276,6 +284,17 @@ func (r *Runner) PlanEpic(ctx context.Context, task *Task, executionPath string)
 		"--print", "-p", prompt,
 		"--model", planningModel,
 		"--allowedTools", strings.Join(DefaultAllowedToolsPlanning(), ","),
+	}
+
+	// GH-6252: the planning session reads files with Read/Grep/Glob, so it
+	// gets the same read guard as an execution run.
+	if readSpec := r.claudeCodeConfig().readGuardSpec(); readSpec != nil {
+		settingsPath, guardCleanup, guardErr := setupRunGuards(executionPath, "", readSpec)
+		if guardErr != nil {
+			return nil, guardErr
+		}
+		defer guardCleanup()
+		args = append(args, "--settings", settingsPath)
 	}
 
 	cmd := exec.CommandContext(ctx, claudeCmd, args...)

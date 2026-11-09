@@ -246,3 +246,56 @@ func TestReadGuardBackendPassesSettingsOnEveryRun(t *testing.T) {
 		t.Errorf("read_guard: false run still has --settings: %q", args)
 	}
 }
+
+// TestReadGuardEpicPlanningRun checks that the epic planning spawn, which has
+// Read/Grep/Glob, gets the read guard hook too, and that read_guard: false
+// removes it.
+func TestReadGuardEpicPlanningRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-CLI test relies on shell scripts")
+	}
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	capture := filepath.Join(tmp, "captured")
+	cli := filepath.Join(tmp, "fake-claude")
+	body := `#!/bin/sh
+printf '%s\n' "$*" > ` + capture + `.args
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--settings" ]; then cp "$a" ` + capture + `.settings; fi
+  prev=$a
+done
+printf '1. **feat(a): one** - first\n2. **feat(b): two** - second\n'
+`
+	if err := os.WriteFile(cli, []byte(body), 0o755); err != nil { //nolint:gosec // fake CLI must be executable
+		t.Fatal(err)
+	}
+	plan := func(cfg *ClaudeCodeConfig) {
+		_ = os.Remove(capture + ".args")
+		_ = os.Remove(capture + ".settings")
+		r := newTestRunner(cli)
+		r.config.ClaudeCode = cfg
+		cfg.Command = cli
+		task := &Task{ID: "GH-1", Title: "feat(x): epic", Description: "d", ProjectPath: tmp}
+		if _, err := r.PlanEpic(context.Background(), task, tmp); err != nil {
+			t.Fatalf("PlanEpic: %v", err)
+		}
+	}
+
+	plan(&ClaudeCodeConfig{})
+	args, err := os.ReadFile(capture + ".args")
+	if err != nil || !strings.Contains(string(args), "--settings") {
+		t.Fatalf("planning run has no --settings: %q (%v)", args, err)
+	}
+	settings, err := os.ReadFile(capture + ".settings")
+	if err != nil || !strings.Contains(string(settings), readGuardName) {
+		t.Errorf("planning settings lack the read guard: %q (%v)", settings, err)
+	}
+
+	off := false
+	plan(&ClaudeCodeConfig{ReadGuard: &off})
+	args, _ = os.ReadFile(capture + ".args")
+	if strings.Contains(string(args), "--settings") {
+		t.Errorf("read_guard: false planning run still has --settings: %q", args)
+	}
+}
