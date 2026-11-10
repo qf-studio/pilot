@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -153,4 +154,69 @@ func RedactBytes(p []byte) []byte {
 		}
 	}
 	return p
+}
+
+// KindConfiguredValue is the Match.Kind of a registered secret value.
+const KindConfiguredValue = "configured_value"
+
+// Match is one secret found by FindMatches. Start and End are byte offsets
+// into the searched slice. Kind is KindConfiguredValue for a registered value,
+// else the pattern's literal prefix ("ghp", "xoxb", "AKIA"), or "pattern_<n>"
+// (n = line index among Patterns()) when the pattern starts with a character
+// class.
+type Match struct {
+	Kind       string
+	Start, End int
+}
+
+var (
+	kindsOnce sync.Once
+	kindNames []string
+)
+
+// patternKind derives a metric-safe label from a pattern's literal prefix.
+func patternKind(pattern string, idx int) string {
+	end := strings.IndexAny(pattern, "[({.*+?\\|^$")
+	if end < 0 {
+		end = len(pattern)
+	}
+	prefix := strings.TrimRight(pattern[:end], "-_:")
+	if prefix == "" {
+		return "pattern_" + strconv.Itoa(idx)
+	}
+	return prefix
+}
+
+// FindMatches returns every registered-value and pattern match in p, without
+// altering it. It is the read-only counterpart of RedactBytes: the leak
+// scanner uses it on raw bytes from disk, so it must not assume the writer
+// redacted anything (GH-6250).
+func FindMatches(p []byte) []Match {
+	var out []Match
+
+	secretValuesMu.RLock()
+	for _, v := range secretValues {
+		for from := 0; from < len(p); {
+			i := bytes.Index(p[from:], v)
+			if i < 0 {
+				break
+			}
+			out = append(out, Match{Kind: KindConfiguredValue, Start: from + i, End: from + i + len(v)})
+			from += i + len(v)
+		}
+	}
+	secretValuesMu.RUnlock()
+
+	redactOnce.Do(func() { redactRegexes = Regexes() })
+	kindsOnce.Do(func() {
+		for i, pat := range Patterns() {
+			kindNames = append(kindNames, patternKind(pat, i))
+		}
+	})
+	for i, re := range redactRegexes {
+		for _, loc := range re.FindAllIndex(p, -1) {
+			out = append(out, Match{Kind: kindNames[i], Start: loc[0], End: loc[1]})
+		}
+	}
+	return out
 }

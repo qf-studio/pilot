@@ -102,6 +102,8 @@ func TestDefaultRules(t *testing.T) {
 		// Task timeout and watchdog kill (GH-5500)
 		AlertTypeTaskTimeout:  {"task_timeout", true},
 		AlertTypeWatchdogKill: {"watchdog_kill", true},
+		// Runtime leak scan (GH-6250)
+		AlertTypeSecretLeak: {"secret_leak", true},
 	}
 
 	if len(rules) != len(expectedRules) {
@@ -308,6 +310,7 @@ func TestAlertTypeConstants(t *testing.T) {
 		{AlertTypeUnauthorizedAccess, "unauthorized_access"},
 		{AlertTypeSensitiveFile, "sensitive_file_modified"},
 		{AlertTypeUnusualPattern, "unusual_pattern"},
+		{AlertTypeSecretLeak, "secret_leak"},
 		{AlertTypeEvalRegression, "eval_regression"},
 	}
 

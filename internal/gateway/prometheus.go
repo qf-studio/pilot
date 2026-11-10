@@ -13,6 +13,7 @@ import (
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/leakscan"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -577,6 +578,21 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 		for component, count := range e.panicCtr.snapshot() {
 			writeCounter(w, "pilot_panics_total", count, "component", component)
 		}
+	}
+
+	// pilot_leak_scan_hits_total (GH-6250): secrets the runtime leak scanner
+	// found in the daemon log or a recording, by pattern kind. The value never
+	// appears: kind is a pattern prefix or "configured_value".
+	writeHelp(w, "pilot_leak_scan_hits_total", "Total secrets found by the runtime leak scanner in the daemon log or recordings, by kind")
+	writeType(w, "pilot_leak_scan_hits_total", "counter")
+	leakHits := leakscan.Hits()
+	leakKinds := make([]string, 0, len(leakHits))
+	for kind := range leakHits {
+		leakKinds = append(leakKinds, kind)
+	}
+	sort.Strings(leakKinds)
+	for _, kind := range leakKinds {
+		writeCounter(w, "pilot_leak_scan_hits_total", leakHits[kind], "kind", kind)
 	}
 
 	// pilot_poller_up (GH-5588): 1 while an adapter's poller Start is running,

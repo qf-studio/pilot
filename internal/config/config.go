@@ -65,6 +65,44 @@ type Config struct {
 	Bot            *BotConfig              `yaml:"bot"`
 	Upgrade        *UpgradeConfig          `yaml:"upgrade"`
 	Ledger         *LedgerConfig           `yaml:"ledger"`
+	Security       *SecurityConfig         `yaml:"security"`
+}
+
+// SecurityConfig groups the security hardening settings.
+type SecurityConfig struct {
+	LeakScan *LeakScanConfig `yaml:"leak_scan"`
+}
+
+// LeakScanConfig controls the runtime leak scanner (GH-6250): every Interval
+// it scans the bytes appended to the daemon log and the recordings modified
+// since the last tick for secret patterns and registered secret values, and
+// raises a security_event alert per hit with a masked sample.
+type LeakScanConfig struct {
+	// Enabled defaults to true.
+	Enabled bool `yaml:"enabled"`
+	// Interval between scans; zero means 5m.
+	Interval time.Duration `yaml:"interval"`
+}
+
+// DefaultLeakScanInterval is the scan period when security.leak_scan.interval
+// is unset. It mirrors leakscan.DefaultInterval.
+const DefaultLeakScanInterval = 5 * time.Minute
+
+// LeakScanEnabled reports whether the leak scanner runs. It is on unless
+// security.leak_scan.enabled is explicitly false.
+func (c *Config) LeakScanEnabled() bool {
+	if c == nil || c.Security == nil || c.Security.LeakScan == nil {
+		return true
+	}
+	return c.Security.LeakScan.Enabled
+}
+
+// LeakScanInterval returns the configured scan period or the 5m default.
+func (c *Config) LeakScanInterval() time.Duration {
+	if c == nil || c.Security == nil || c.Security.LeakScan == nil || c.Security.LeakScan.Interval <= 0 {
+		return DefaultLeakScanInterval
+	}
+	return c.Security.LeakScan.Interval
 }
 
 // LedgerConfig controls staleness detection for the executions ledger
@@ -748,6 +786,9 @@ func DefaultConfig() *Config {
 		Quality:  quality.DefaultConfig(),
 		Tunnel:   tunnel.DefaultConfig(),
 		Webhooks: webhooks.DefaultConfig(),
+		Security: &SecurityConfig{
+			LeakScan: &LeakScanConfig{Enabled: true, Interval: DefaultLeakScanInterval},
+		},
 		Upgrade: &UpgradeConfig{
 			AutoHotUpgrade:        true,
 			StaleReleaseThreshold: 3,

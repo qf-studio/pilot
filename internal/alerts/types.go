@@ -31,6 +31,10 @@ const (
 	AlertTypeSensitiveFile      AlertType = "sensitive_file_modified"
 	AlertTypeUnusualPattern     AlertType = "unusual_pattern"
 
+	// Secret leak (GH-6250): the runtime leak scanner found a secret pattern
+	// or a registered secret value in the daemon log or a recording.
+	AlertTypeSecretLeak AlertType = "secret_leak"
+
 	// Autopilot health alerts (GH-728)
 	AlertTypeFailedQueueHigh    AlertType = "failed_queue_high"
 	AlertTypeCircuitBreakerTrip AlertType = "circuit_breaker_trip"
@@ -836,6 +840,20 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    5 * time.Minute,
 			Description: "Alert when the executor watchdog kills a runaway Claude subprocess",
+		},
+		// GH-6250: emitted by internal/leakscan when the daemon log or a
+		// recording holds a secret pattern or a registered secret value. The
+		// scanner folds hits to one event per file and kind per tick, so no
+		// cooldown is needed.
+		{
+			Name:        "secret_leak",
+			Type:        AlertTypeSecretLeak,
+			Enabled:     true,
+			Condition:   RuleCondition{},
+			Severity:    SeverityCritical,
+			Channels:    []string{},
+			Cooldown:    0,
+			Description: "Alert when the runtime leak scanner finds a secret in the daemon log or a recording",
 		},
 	}
 }

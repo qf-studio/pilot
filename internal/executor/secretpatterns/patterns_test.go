@@ -135,3 +135,39 @@ func TestRedact_RegisteredSecretValues(t *testing.T) {
 		})
 	}
 }
+
+func TestFindMatches(t *testing.T) {
+	ResetSecretValuesForTest()
+	t.Cleanup(ResetSecretValuesForTest)
+	RegisterSecretValues("hunter2-config-value")
+
+	token := "ghp_" + repeat("a1B2c3", 6)
+	tg := "123456789:AA" + repeat("a", 33)
+	tests := []struct {
+		name string
+		in   string
+		want []string // kinds, in match order
+	}{
+		{"clean", "nothing to see here", nil},
+		{"pattern", "token=" + token + " end", []string{"ghp"}},
+		{"classless pattern gets index kind", tg, []string{"pattern_" + "12"}},
+		{"registered value", "x hunter2-config-value y", []string{KindConfiguredValue}},
+		{"registered value twice", "hunter2-config-value hunter2-config-value", []string{KindConfiguredValue, KindConfiguredValue}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FindMatches([]byte(tt.in))
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d matches %+v, want %v", len(got), got, tt.want)
+			}
+			for i, m := range got {
+				if m.Kind != tt.want[i] {
+					t.Errorf("match %d kind = %q, want %q", i, m.Kind, tt.want[i])
+				}
+				if m.Start < 0 || m.End > len(tt.in) || m.Start >= m.End {
+					t.Errorf("match %d bad range [%d,%d)", i, m.Start, m.End)
+				}
+			}
+		})
+	}
+}

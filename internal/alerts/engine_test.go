@@ -1034,6 +1034,90 @@ func TestEngine_SecurityEvent(t *testing.T) {
 	}
 }
 
+// TestEngine_SecurityEvent_LeakScan verifies a leakscan security event fires
+// only the secret_leak rule, with the file, kind and masked sample in the
+// message, and that a non-leakscan security event does not fire that rule
+// (GH-6250).
+func TestEngine_SecurityEvent_LeakScan(t *testing.T) {
+	tests := []struct {
+		name      string
+		source    string
+		wantAlert bool
+	}{
+		{name: "leakscan event fires secret_leak", source: SecurityEventSourceLeakScan, wantAlert: true},
+		{name: "other security event does not", source: "other", wantAlert: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &AlertConfig{
+				Enabled: true,
+				Channels: []ChannelConfig{
+					{Name: "test-channel", Type: "webhook", Enabled: true},
+				},
+				Rules: []AlertRule{
+					{
+						Name:     "secret_leak",
+						Type:     AlertTypeSecretLeak,
+						Enabled:  true,
+						Severity: SeverityCritical,
+						Channels: []string{"test-channel"},
+					},
+					{
+						Name:     "unauthorized_access",
+						Type:     AlertTypeUnauthorizedAccess,
+						Enabled:  true,
+						Severity: SeverityCritical,
+						Channels: []string{"test-channel"},
+					},
+				},
+			}
+
+			mockCh := newMockChannel("test-channel", "webhook")
+			dispatcher := NewDispatcher(config)
+			dispatcher.RegisterChannel(mockCh)
+			engine := NewEngine(config, WithDispatcher(dispatcher))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			_ = engine.Start(ctx)
+
+			engine.ProcessEvent(Event{
+				Type:      EventTypeSecurityEvent,
+				Source:    tt.source,
+				Metadata:  map[string]string{"file": "/logs/daemon.log", "kind": "ghp", "sample": "ghp_\u2026"},
+				Timestamp: time.Now(),
+			})
+
+			if !tt.wantAlert {
+				// Only the unauthorized_access rule matches; it must fire for
+				// the non-leakscan source and never as secret_leak.
+				waitForAlerts(t, mockCh, 1, 2*time.Second)
+				for _, a := range mockCh.getAlerts() {
+					if a.Type == AlertTypeSecretLeak {
+						t.Errorf("non-leakscan event fired secret_leak")
+					}
+				}
+				return
+			}
+
+			waitForAlerts(t, mockCh, 1, 2*time.Second)
+			got := mockCh.getAlerts()
+			if len(got) != 1 {
+				t.Fatalf("expected 1 alert, got %d", len(got))
+			}
+			if got[0].Type != AlertTypeSecretLeak {
+				t.Errorf("expected %s, got %s", AlertTypeSecretLeak, got[0].Type)
+			}
+			for _, want := range []string{"/logs/daemon.log", "ghp", "ghp_\u2026"} {
+				if !strings.Contains(got[0].Message, want) {
+					t.Errorf("message %q missing %q", got[0].Message, want)
+				}
+			}
+		})
+	}
+}
+
 // TestEngine_ConfigError verifies a dead-credential event (GH-3718, e.g. a
 // GitHub token that fails validation at startup) fires an
 // AlertTypeServiceUnhealthy rule with the diagnostic message from event.Error.
