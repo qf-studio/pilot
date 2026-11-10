@@ -822,6 +822,9 @@ Examples:
 				task.IsCanary = proj.Canary
 			}
 
+			// GH-6287: the read guard host-tool check, before the first agent session.
+			preflightReadGuardForSpawn()
+
 			// Create the executor runner with config (GH-956: enables worktree isolation, decomposer, model routing)
 			runner, runnerErr := executor.NewRunnerWithConfig(cfg.Executor)
 			if runnerErr != nil {
@@ -1634,6 +1637,9 @@ Examples:
 			if err := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-in-progress"}); err != nil {
 				logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)
 			}
+
+			// GH-6287: the read guard host-tool check, before the first agent session.
+			preflightReadGuardForSpawn()
 
 			// Execute the task with config (GH-956: enables worktree isolation, decomposer, model routing)
 			runner, runnerErr := executor.NewRunnerWithConfig(cfg.Executor)

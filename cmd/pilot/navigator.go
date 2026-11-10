@@ -56,6 +56,9 @@ executor.navigator.bootstrap is "auto".`,
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
+			// GH-6287: the read guard host-tool check, before the first agent session.
+			preflightReadGuardForSpawn()
+
 			runner, err := executor.NewRunnerWithConfig(cfg.Executor)
 			if err != nil {
 				return fmt.Errorf("failed to create executor runner: %w", err)

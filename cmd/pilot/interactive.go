@@ -177,6 +177,9 @@ func interactiveNewTask(cfg *config.Config) error {
 	if backendCfg == nil {
 		backendCfg = executor.DefaultBackendConfig()
 	}
+	// GH-6287: the read guard host-tool check, before the first agent session.
+	preflightReadGuardForSpawn()
+
 	runner, err := executor.NewRunnerWithConfig(backendCfg)
 	if err != nil {
 		return fmt.Errorf("failed to create runner: %w", err)

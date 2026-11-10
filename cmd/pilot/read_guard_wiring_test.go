@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/executor"
@@ -64,19 +65,121 @@ func TestStartCmdWiresReadGuardConfig(t *testing.T) {
 	}
 }
 
-// mutation pin: `pilot start` stops running the read guard preflight (executor.PreflightReadGuard dropped) -> a host without realpath or jq/python3 blocks every Read, Grep, Glob and Bash call of every run and this test fails
-func TestStartCmdRunsReadGuardPreflight(t *testing.T) {
-	found := false
-	ast.Inspect(mainGoFunc(t, "newStartCmd"), func(n ast.Node) bool {
-		if call, ok := n.(*ast.CallExpr); ok {
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "PreflightReadGuard" {
-				found = true
+// callPositions returns the source offsets of the calls in body that match: a
+// plain identifier call (f()) when pkg is empty, otherwise a pkg.name() call.
+func callPositions(body *ast.BlockStmt, pkg, name string) []token.Pos {
+	var out []token.Pos
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fun := call.Fun.(type) {
+		case *ast.Ident:
+			if pkg == "" && fun.Name == name {
+				out = append(out, call.Pos())
+			}
+		case *ast.SelectorExpr:
+			if id, ok := fun.X.(*ast.Ident); ok && pkg != "" && id.Name == pkg && fun.Sel.Name == name {
+				out = append(out, call.Pos())
 			}
 		}
-		return !found
+		return true
 	})
-	if !found {
-		t.Error("newStartCmd does not call executor.PreflightReadGuard")
+	return out
+}
+
+func minPos(ps []token.Pos) token.Pos {
+	m := token.NoPos
+	for _, p := range ps {
+		if m == token.NoPos || p < m {
+			m = p
+		}
+	}
+	return m
+}
+
+func maxPos(ps []token.Pos) token.Pos {
+	m := token.NoPos
+	for _, p := range ps {
+		if p > m {
+			m = p
+		}
+	}
+	return m
+}
+
+// mutation pin: `pilot start` stops running the read guard preflight (executor.PreflightReadGuard dropped) -> a host without realpath or jq/python3 blocks every Read, Grep, Glob and Bash call of every run and this test fails
+func TestStartCmdRunsReadGuardPreflight(t *testing.T) {
+	body := mainGoFunc(t, "newStartCmd")
+	pre := callPositions(body, "executor", "PreflightReadGuard")
+	if len(pre) == 0 {
+		t.Fatal("newStartCmd does not call executor.PreflightReadGuard")
+	}
+	// GH-6287: the Error line of the preflight must land in the daemon log, so
+	// it runs after logging.Init and after the dashboard log redirect.
+	at := minPos(pre)
+	for _, setup := range []struct{ pkg, name string }{{"logging", "Init"}, {"", "setupDashboardLogging"}} {
+		ps := callPositions(body, setup.pkg, setup.name)
+		if len(ps) == 0 {
+			t.Fatalf("newStartCmd does not call %s %s", setup.pkg, setup.name)
+		}
+		if maxPos(ps) > at {
+			t.Errorf("newStartCmd runs the read guard preflight before %s %s: the Error line would miss the daemon log", setup.pkg, setup.name)
+		}
+	}
+	// ...and before the first agent session is possible.
+	for _, spawn := range callPositions(body, "executor", "NewRunnerWithConfig") {
+		if spawn < at {
+			t.Error("newStartCmd builds a runner before the read guard preflight")
+		}
+	}
+	if poll := callPositions(body, "", "runPollingMode"); len(poll) == 0 || minPos(poll) < at {
+		t.Error("newStartCmd must call runPollingMode (which builds a runner) after the read guard preflight")
+	}
+}
+
+// mutation pin: a command that spawns agent sessions (task, github run, navigator bootstrap, the interactive new-task flow) stops calling preflightReadGuardForSpawn before its runner -> a host without realpath or jq/python3 blocks every call of the session instead of getting the Error line and the guard off, and this test fails
+func TestEverySpawnCommandRunsReadGuardPreflight(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// runPollingMode is only reached from newStartCmd, which preflights first
+	// (TestStartCmdRunsReadGuardPreflight pins that order).
+	startOnly := map[string]bool{"runPollingMode": true}
+	seen := map[string]bool{}
+	fset := token.NewFileSet()
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			spawns := callPositions(fn.Body, "executor", "NewRunnerWithConfig")
+			if len(spawns) == 0 || startOnly[fn.Name.Name] {
+				continue
+			}
+			seen[fn.Name.Name] = true
+			pre := append(callPositions(fn.Body, "", "preflightReadGuardForSpawn"), callPositions(fn.Body, "executor", "PreflightReadGuard")...)
+			// A dry run builds a runner only to print the prompt; the last
+			// runner of the function is the one that spawns sessions.
+			if len(pre) == 0 || minPos(pre) > maxPos(spawns) {
+				t.Errorf("%s (%s) builds an executor runner without running the read guard preflight first", fn.Name.Name, file)
+			}
+		}
+	}
+	for _, want := range []string{"newStartCmd", "newTaskCmd", "newGitHubRunCmd", "newNavigatorBootstrapCmd", "interactiveNewTask"} {
+		if !seen[want] {
+			t.Errorf("expected %s to build an executor runner; the scan lost it", want)
+		}
 	}
 }
 

@@ -457,6 +457,17 @@ func applyReadGuardConfig(claudeCode *executor.ClaudeCodeConfig, configPath stri
 	executor.SetReadGuardConfig(claudeCode)
 }
 
+// preflightReadGuardForSpawn runs the read guard host-tool check for a command
+// that spawns agent sessions but does not set up the daemon logger (`pilot
+// start` calls executor.PreflightReadGuard itself, after logging.Init). A host
+// without realpath, or without both jq and python3, gets one Error line and the
+// guard off for the process instead of a guard that blocks every call. It must
+// run after the PersistentPreRun that stores the read guard config and before
+// the first agent session. GH-6287.
+func preflightReadGuardForSpawn() {
+	executor.PreflightReadGuard(executor.ReadGuardConfig())
+}
+
 // applyReadGuardConfigFromFile is applyReadGuardConfig for entrypoints that do
 // not load the full config: it reads only executor.claude_code from the file,
 // without env expansion, validation or warnings. An unreadable or unparsable
