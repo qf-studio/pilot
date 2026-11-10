@@ -1,10 +1,12 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/config"
@@ -183,18 +185,89 @@ func TestLoadConfigRegisteringSecrets_TaskPath(t *testing.T) {
 	}
 }
 
-// Every command file that builds a Runner must register secrets after its
-// config load (GH-6266); a file that builds one through plain config.Load is
-// a leak path.
+// lastCfgLoader returns the name of the function whose result was last
+// assigned to the variable cfg in fn before pos ("" when none).
+func lastCfgLoader(fn *ast.FuncDecl, before token.Pos) string {
+	var name string
+	var at token.Pos
+	ast.Inspect(fn, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok || len(as.Lhs) == 0 || len(as.Rhs) != 1 || as.Pos() >= before || as.Pos() < at {
+			return true
+		}
+		lhs, ok := as.Lhs[0].(*ast.Ident)
+		call, isCall := as.Rhs[0].(*ast.CallExpr)
+		if !ok || lhs.Name != "cfg" || !isCall {
+			return true
+		}
+		at = as.Pos()
+		switch f := call.Fun.(type) {
+		case *ast.Ident:
+			name = f.Name
+		case *ast.SelectorExpr:
+			if x, ok := f.X.(*ast.Ident); ok {
+				name = x.Name + "." + f.Sel.Name
+			}
+		}
+		return true
+	})
+	return name
+}
+
+// The config a command hands to executor.NewRunnerWithConfig must come from
+// loadConfigRegisteringSecrets, so no entry point records a session before
+// its secrets are registered (GH-6266). The check is per command function: the
+// last cfg assignment before the Runner is built is the one that counts.
 func TestRunnerBuildingCommandsRegisterSecrets(t *testing.T) {
-	for _, file := range []string{"commands.go", "interactive.go", "navigator.go"} {
-		data, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatal(err)
-		}
-		src := string(data)
-		if strings.Contains(src, "NewRunnerWithConfig") && !strings.Contains(src, "loadConfigRegisteringSecrets") {
-			t.Errorf("%s builds a Runner without loadConfigRegisteringSecrets", file)
-		}
+	tests := []struct {
+		file, fn string
+		// runnerAnchored: the Runner is built in fn from cfg.Executor; else
+		// fn only loads the config that its helpers build Runners from.
+		runnerAnchored bool
+	}{
+		{"commands.go", "newTaskCmd", true},
+		{"commands.go", "newGitHubRunCmd", true},
+		{"navigator.go", "newNavigatorBootstrapCmd", true},
+		{"interactive.go", "runInteractiveMode", false},
+	}
+	fset := token.NewFileSet()
+	for _, tt := range tests {
+		t.Run(tt.fn, func(t *testing.T) {
+			f, err := parser.ParseFile(fset, tt.file, nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fn *ast.FuncDecl
+			for _, d := range f.Decls {
+				if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == tt.fn {
+					fn = fd
+				}
+			}
+			if fn == nil {
+				t.Fatalf("%s not found in %s", tt.fn, tt.file)
+			}
+			anchor := fn.End()
+			if tt.runnerAnchored {
+				anchor = token.NoPos
+				ast.Inspect(fn, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok || len(call.Args) != 1 {
+						return true
+					}
+					sel, ok := call.Fun.(*ast.SelectorExpr)
+					arg, argOK := call.Args[0].(*ast.SelectorExpr)
+					if ok && argOK && sel.Sel.Name == "NewRunnerWithConfig" && arg.Sel.Name == "Executor" {
+						anchor = call.Pos()
+					}
+					return true
+				})
+				if anchor == token.NoPos {
+					t.Fatalf("%s: no NewRunnerWithConfig(cfg.Executor) call", tt.fn)
+				}
+			}
+			if got := lastCfgLoader(fn, anchor); got != "loadConfigRegisteringSecrets" {
+				t.Errorf("%s builds its Runner from a cfg loaded by %q, want loadConfigRegisteringSecrets", tt.fn, got)
+			}
+		})
 	}
 }
