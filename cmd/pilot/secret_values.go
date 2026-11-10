@@ -52,7 +52,36 @@ var credentialConfigKeys = map[string]bool{
 	"webhook_headers": true,
 	"headers":         true,
 	"routing_key":     true,
-	"dsn":             true,
+}
+
+// reservedCredentialConfigKeys are credential keys that no config struct
+// produces today: GH-6266 asked for dsn explicitly, so it is masked from the
+// day a field with that key appears. The producer test fails when one does,
+// as the cue to move the key into credentialConfigKeys.
+var reservedCredentialConfigKeys = map[string]bool{
+	"dsn": true,
+}
+
+// headerMapConfigKeys hold a map of HTTP header names to values.
+var headerMapConfigKeys = map[string]bool{
+	"headers":         true,
+	"webhook_headers": true,
+}
+
+// ordinaryHeaderNames are request headers whose values are never credentials;
+// registering a value such as application/json would mask it in every
+// recording and store row (lowercase).
+var ordinaryHeaderNames = map[string]bool{
+	"accept":          true,
+	"accept-charset":  true,
+	"accept-encoding": true,
+	"accept-language": true,
+	"cache-control":   true,
+	"connection":      true,
+	"content-length":  true,
+	"content-type":    true,
+	"host":            true,
+	"user-agent":      true,
 }
 
 // billingKeyEnvConfigKey names the config key whose value is an env var name;
@@ -60,7 +89,7 @@ var credentialConfigKeys = map[string]bool{
 const billingKeyEnvConfigKey = "api_key_env"
 
 // webhookHostFragments mark a url whose path is itself the credential.
-var webhookHostFragments = []string{"hooks.slack.com", "discord.com/api/webhooks"}
+var webhookHostFragments = []string{"hooks.slack.com", "discord.com/api/webhooks", "discordapp.com/api/webhooks"}
 
 // collectSecretValues returns every configured secret value: string values of
 // config keys matching secretKeyPattern (minus *public_key and the name/path
@@ -133,7 +162,7 @@ func isSecretConfigKey(k string) bool {
 	if notSecretConfigKeys[lk] {
 		return false
 	}
-	if credentialConfigKeys[lk] {
+	if credentialConfigKeys[lk] || reservedCredentialConfigKeys[lk] {
 		return true
 	}
 	return secretKeyPattern.MatchString(k) && !publicKeySuffix.MatchString(k)
@@ -176,6 +205,10 @@ func collectKeyedStrings(v interface{}, inSecret bool, out []string) []string {
 		}
 	case map[string]interface{}:
 		for k, sub := range val {
+			if headers, ok := sub.(map[string]interface{}); ok && !inSecret && headerMapConfigKeys[strings.ToLower(k)] {
+				out = collectKeyedStrings(withoutOrdinaryHeaders(headers), true, out)
+				continue
+			}
 			secret := inSecret || isSecretConfigKey(k)
 			if s, ok := sub.(string); ok && !secret && strings.EqualFold(k, "url") && isCredentialURL(s) {
 				secret = true
@@ -188,6 +221,18 @@ func collectKeyedStrings(v interface{}, inSecret bool, out []string) []string {
 		}
 	}
 	return out
+}
+
+// withoutOrdinaryHeaders returns the header map minus the headers whose
+// values are ordinary text (Content-Type, Accept, ...).
+func withoutOrdinaryHeaders(headers map[string]interface{}) map[string]interface{} {
+	kept := make(map[string]interface{}, len(headers))
+	for name, v := range headers {
+		if !ordinaryHeaderNames[strings.ToLower(name)] {
+			kept[name] = v
+		}
+	}
+	return kept
 }
 
 // collectKeyedEnvNames appends the values of api_key_env keys: names of env
