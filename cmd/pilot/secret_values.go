@@ -285,7 +285,12 @@ func registerSecretGate(cfg *config.Config) {
 		if p.Security != nil && p.Security.SecretGate != nil {
 			proj.AllowPaths = p.Security.SecretGate.AllowPaths
 		}
-		executor.SetSecretGateProject(p.Path, proj)
+		if !executor.SetSecretGateProject(p.Path, proj) {
+			// Not dropped silently: without the entry the gate falls back to
+			// detecting the default branch and ignores this project's allow_paths.
+			slog.Warn("Secret gate: project path is not a git repository, its default branch and allow_paths are not registered",
+				slog.String("project", p.Name), slog.String("path", p.Path))
+		}
 	}
 }
 
