@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2677,5 +2680,524 @@ func TestCIMonitor_StuckPromotionLogCleared(t *testing.T) {
 	}
 	if got := count(); got != 0 {
 		t.Errorf("completed run left %d keys, want 0", got)
+	}
+}
+
+// ---- GH-6283: CI verdict without check runs (fine-grained tokens) ----
+
+// forbiddenCheckRunsBody is the body GitHub answers a fine-grained token with
+// on the check-runs route, verbatim from the incident.
+const forbiddenCheckRunsBody = `{"message":"Resource not accessible by personal access token","documentation_url":"https://docs.github.com/rest/checks/runs#list-check-runs-for-a-git-reference","status":"403"}`
+
+// fallbackGitHub is a fake GitHub whose check-runs route is refused and whose
+// Actions runs, run jobs and combined status routes are scripted per test.
+type fallbackGitHub struct {
+	checkRunsStatus int    // default 403
+	checkRunsBody   string // default forbiddenCheckRunsBody
+	checkRunsHeader map[string]string
+
+	runs       []map[string]interface{}
+	runsStatus int // 0 = 200
+	jobs       map[int64][]map[string]interface{}
+	jobsStatus int
+	combined   map[string]interface{} // nil = no statuses
+	statusCode int
+
+	checkRunsCalls atomic.Int32
+	runsCalls      atomic.Int32
+}
+
+func (f *fallbackGitHub) handler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/check-runs"):
+			f.checkRunsCalls.Add(1)
+			for k, v := range f.checkRunsHeader {
+				w.Header().Set(k, v)
+			}
+			code, body := f.checkRunsStatus, f.checkRunsBody
+			if code == 0 {
+				code, body = http.StatusForbidden, forbiddenCheckRunsBody
+			}
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(body))
+		case r.URL.Path == "/repos/owner/repo/actions/runs":
+			f.runsCalls.Add(1)
+			if f.runsStatus != 0 {
+				w.WriteHeader(f.runsStatus)
+				_, _ = w.Write([]byte(`{"message":"Resource not accessible by personal access token"}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"total_count": len(f.runs), "workflow_runs": f.runs})
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/actions/runs/") && strings.HasSuffix(r.URL.Path, "/jobs"):
+			if f.jobsStatus != 0 {
+				w.WriteHeader(f.jobsStatus)
+				_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+				return
+			}
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/repos/owner/repo/actions/runs/"), "/jobs")
+			var runID int64
+			_, _ = fmt.Sscanf(id, "%d", &runID)
+			jobs := f.jobs[runID]
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"total_count": len(jobs), "jobs": jobs})
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			if f.statusCode != 0 {
+				w.WriteHeader(f.statusCode)
+				_, _ = w.Write([]byte(`{"message":"Resource not accessible by personal access token"}`))
+				return
+			}
+			combined := f.combined
+			if combined == nil {
+				combined = map[string]interface{}{"state": "pending", "total_count": 0, "statuses": []interface{}{}}
+			}
+			_ = json.NewEncoder(w).Encode(combined)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+}
+
+func (f *fallbackGitHub) monitor(t *testing.T, mutate func(*Config)) *CIMonitor {
+	t.Helper()
+	srv := httptest.NewServer(f.handler())
+	t.Cleanup(srv.Close)
+	sdkClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL)
+	stepClient := ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL)
+	cfg := DefaultConfig()
+	cfg.CIPollInterval = 10 * time.Millisecond
+	cfg.CIWaitTimeout = time.Second
+	cfg.RequiredChecks = nil
+	cfg.CIChecks = &CIChecksConfig{Mode: "auto", DiscoveryGracePeriod: 30 * time.Millisecond}
+	if mutate != nil {
+		mutate(cfg)
+	}
+	m := NewCIMonitor(sdkClient, "owner", "repo", cfg)
+	m.SetStepLogClient(stepClient)
+	return m
+}
+
+func wfRun(id, workflowID int64, name, status, conclusion string, attempt int) map[string]interface{} {
+	return map[string]interface{}{
+		"id": id, "workflow_id": workflowID, "name": name, "status": status,
+		"conclusion": conclusion, "head_sha": "abc1234", "run_attempt": attempt,
+	}
+}
+
+func commitStatuses(state string, contexts map[string]string) map[string]interface{} {
+	statuses := []map[string]interface{}{}
+	for name, st := range contexts {
+		statuses = append(statuses, map[string]interface{}{"context": name, "state": st})
+	}
+	return map[string]interface{}{"state": state, "total_count": len(statuses), "statuses": statuses}
+}
+
+func TestCIMonitor_CheckRunsForbidden_FallbackVerdict(t *testing.T) {
+	tests := []struct {
+		name     string
+		runs     []map[string]interface{}
+		combined map[string]interface{}
+		want     CIStatus
+	}{
+		{
+			name: "check-runs forbidden, green Actions run is success",
+			runs: []map[string]interface{}{wfRun(1, 10, "CI", "completed", "success", 1)},
+			want: CISuccess,
+		},
+		{
+			name: "skipped and neutral runs are green",
+			runs: []map[string]interface{}{
+				wfRun(1, 10, "CI", "completed", "success", 1),
+				wfRun(2, 11, "Docs", "completed", "skipped", 1),
+				wfRun(3, 12, "Lint", "completed", "neutral", 1),
+			},
+			want: CISuccess,
+		},
+		{
+			name: "in-progress run is pending",
+			runs: []map[string]interface{}{wfRun(1, 10, "CI", "in_progress", "", 1)},
+			want: CIPending,
+		},
+		{
+			name: "waiting run is pending",
+			runs: []map[string]interface{}{
+				wfRun(1, 10, "CI", "completed", "success", 1),
+				wfRun(2, 11, "Deploy", "waiting", "", 1),
+			},
+			want: CIPending,
+		},
+		{
+			name: "failed run is failure",
+			runs: []map[string]interface{}{wfRun(1, 10, "CI", "completed", "failure", 1)},
+			want: CIFailure,
+		},
+		{
+			name: "failure waits for a pending sibling",
+			runs: []map[string]interface{}{
+				wfRun(1, 10, "CI", "completed", "failure", 1),
+				wfRun(2, 11, "Lint", "queued", "", 1),
+			},
+			want: CIPending,
+		},
+		{
+			name:     "failure status context with green runs is failure",
+			runs:     []map[string]interface{}{wfRun(1, 10, "CI", "completed", "success", 1)},
+			combined: commitStatuses("failure", map[string]string{"ci/other": "failure"}),
+			want:     CIFailure,
+		},
+		{
+			name:     "error status context is failure",
+			runs:     []map[string]interface{}{wfRun(1, 10, "CI", "completed", "success", 1)},
+			combined: commitStatuses("error", map[string]string{"ci/other": "error"}),
+			want:     CIFailure,
+		},
+		{
+			name:     "pending status context holds green runs",
+			runs:     []map[string]interface{}{wfRun(1, 10, "CI", "completed", "success", 1)},
+			combined: commitStatuses("pending", map[string]string{"ci/other": "pending"}),
+			want:     CIPending,
+		},
+		{
+			name:     "success status context with green runs is success",
+			runs:     []map[string]interface{}{wfRun(1, 10, "CI", "completed", "success", 1)},
+			combined: commitStatuses("success", map[string]string{"ci/other": "success"}),
+			want:     CISuccess,
+		},
+		{
+			name: "two attempts of one workflow, first failed, second success",
+			runs: []map[string]interface{}{
+				wfRun(1, 10, "CI", "completed", "failure", 1),
+				wfRun(1, 10, "CI", "completed", "success", 2),
+			},
+			want: CISuccess,
+		},
+		{
+			name: "two attempts of one workflow, newest still running",
+			runs: []map[string]interface{}{
+				wfRun(1, 10, "CI", "completed", "success", 1),
+				wfRun(1, 10, "CI", "in_progress", "", 2),
+			},
+			want: CIPending,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := &fallbackGitHub{runs: tt.runs, combined: tt.combined}
+			m := gh.monitor(t, nil)
+			got, err := m.CheckCI(context.Background(), "abc1234")
+			if err != nil {
+				t.Fatalf("CheckCI() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("CheckCI() = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCIMonitor_CheckRunsForbidden_RemembersAndSkipsCheckRuns(t *testing.T) {
+	gh := &fallbackGitHub{runs: []map[string]interface{}{wfRun(1, 10, "CI", "completed", "success", 1)}}
+	m := gh.monitor(t, nil)
+	for i := 0; i < 3; i++ {
+		if got, err := m.CheckCI(context.Background(), "abc1234"); err != nil || got != CISuccess {
+			t.Fatalf("poll %d: CheckCI() = %s, %v, want success", i+1, got, err)
+		}
+	}
+	if n := gh.checkRunsCalls.Load(); n != 1 {
+		t.Errorf("check-runs calls = %d, want 1 (later polls must skip the forbidden call)", n)
+	}
+	if n := gh.runsCalls.Load(); n != 3 {
+		t.Errorf("Actions runs calls = %d, want 3", n)
+	}
+	if !m.hasEverSeenCheckRuns() {
+		t.Error("a seen workflow run must count as a seen check run")
+	}
+}
+
+func TestCIMonitor_CheckRunsForbidden_ZeroRunsZeroStatusesFollowGracePeriod(t *testing.T) {
+	gh := &fallbackGitHub{} // no runs, combined status with total_count 0 (state pending)
+	m := gh.monitor(t, nil)
+
+	// A combined status with zero statuses must add nothing: the first poll
+	// starts the discovery grace period instead of resolving to success.
+	got, err := m.CheckCI(context.Background(), "abc1234")
+	if err != nil {
+		t.Fatalf("CheckCI() error = %v", err)
+	}
+	if got != CIPending {
+		t.Fatalf("first poll with zero runs and zero statuses = %s, want %s (grace period)", got, CIPending)
+	}
+	m.mu.RLock()
+	_, started := m.discoveryStart["abc1234"]
+	m.mu.RUnlock()
+	if !started {
+		t.Error("discovery grace period not started")
+	}
+
+	// Within the grace period it stays pending; past it the repo with no CI
+	// at all resolves exactly as zero check runs do today.
+	time.Sleep(50 * time.Millisecond)
+	got, err = m.CheckCI(context.Background(), "abc1234")
+	if err != nil {
+		t.Fatalf("CheckCI() after grace error = %v", err)
+	}
+	if got != CISuccess {
+		t.Errorf("after the grace period = %s, want %s", got, CISuccess)
+	}
+}
+
+func TestCIMonitor_CheckRunsForbidden_RepoWithPriorRunsHoldsEmptySha(t *testing.T) {
+	gh := &fallbackGitHub{runs: []map[string]interface{}{wfRun(1, 10, "CI", "completed", "success", 1)}}
+	m := gh.monitor(t, nil)
+	if got, err := m.CheckCI(context.Background(), "abc1234"); err != nil || got != CISuccess {
+		t.Fatalf("seed poll = %s, %v", got, err)
+	}
+
+	gh.runs = nil
+	_, _ = m.CheckCI(context.Background(), "other00")
+	time.Sleep(50 * time.Millisecond)
+	got, err := m.CheckCI(context.Background(), "other00")
+	if err != nil {
+		t.Fatalf("CheckCI() error = %v", err)
+	}
+	if got != CIPending {
+		t.Errorf("sha without runs on a repo that has had runs = %s, want %s (GH-5233 hold)", got, CIPending)
+	}
+}
+
+func TestCIMonitor_CheckRunsForbidden_Unreadable(t *testing.T) {
+	green := []map[string]interface{}{wfRun(1, 10, "CI", "completed", "success", 1)}
+	tests := []struct {
+		name        string
+		gh          *fallbackGitHub
+		wantSources []string
+	}{
+		{"Actions 403", &fallbackGitHub{runsStatus: http.StatusForbidden}, []string{"actions runs"}},
+		{"Actions 404", &fallbackGitHub{runsStatus: http.StatusNotFound}, []string{"actions runs"}},
+		{"statuses 403", &fallbackGitHub{runs: green, statusCode: http.StatusForbidden}, []string{"commit statuses"}},
+		{"both 403", &fallbackGitHub{runsStatus: http.StatusForbidden, statusCode: http.StatusForbidden}, []string{"actions runs", "commit statuses"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := tt.gh.monitor(t, nil)
+			got, err := m.CheckCI(context.Background(), "abc1234")
+			var unreadable *ErrCIUnreadable
+			if !errors.As(err, &unreadable) {
+				t.Fatalf("CheckCI() error = %v, want *ErrCIUnreadable", err)
+			}
+			if !errors.Is(err, &ErrCIUnreadable{}) {
+				t.Error("errors.Is(err, &ErrCIUnreadable{}) = false")
+			}
+			if got != CIPending {
+				t.Errorf("status = %s, want %s", got, CIPending)
+			}
+			if strings.Join(unreadable.Sources, ",") != strings.Join(tt.wantSources, ",") {
+				t.Errorf("Sources = %v, want %v", unreadable.Sources, tt.wantSources)
+			}
+		})
+	}
+}
+
+func TestCIMonitor_CheckRunsForbidden_TransientFallbackErrorIsNotUnreadable(t *testing.T) {
+	gh := &fallbackGitHub{runsStatus: http.StatusBadRequest}
+	m := gh.monitor(t, nil)
+	_, err := m.CheckCI(context.Background(), "abc1234")
+	if err == nil {
+		t.Fatal("CheckCI() error = nil, want the Actions error")
+	}
+	var unreadable *ErrCIUnreadable
+	if errors.As(err, &unreadable) {
+		t.Errorf("a 400 from the Actions call must not read as unreadable: %v", err)
+	}
+}
+
+func TestCIMonitor_CheckRunsRateLimited403_NotForbidden(t *testing.T) {
+	gh := &fallbackGitHub{
+		checkRunsStatus: http.StatusForbidden,
+		checkRunsBody:   `{"message":"You have exceeded a secondary rate limit."}`,
+		runs:            []map[string]interface{}{wfRun(1, 10, "CI", "completed", "success", 1)},
+	}
+	m := gh.monitor(t, nil)
+	_, err := m.CheckCI(context.Background(), "abc1234")
+	if err == nil {
+		t.Fatal("CheckCI() error = nil, want the rate-limit error")
+	}
+	if n := gh.runsCalls.Load(); n != 0 {
+		t.Errorf("Actions runs calls = %d, want 0: a rate limit is not a forbidden token", n)
+	}
+	if m.checkRunsForbidden.Load() {
+		t.Error("a rate-limited 403 was remembered as forbidden")
+	}
+}
+
+func TestIsCheckRunsForbidden(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"adapter APIError 403", &ghadapter.APIError{StatusCode: 403, Message: "x"}, true},
+		{"adapter APIError 404", &ghadapter.APIError{StatusCode: 404, Message: "x"}, false},
+		{"adapter rate limit 403", &ghadapter.RateLimitError{StatusCode: 403, Message: "x"}, false},
+		{"sdk rate limit 403", &github.RateLimitError{StatusCode: 403, Message: "x"}, false},
+		{"sdk plain 403", fmt.Errorf("API error (status 403): %s", forbiddenCheckRunsBody), true},
+		{"wrapped sdk plain 403", fmt.Errorf("poll: %w", fmt.Errorf("API error (status 403): x")), true},
+		{"500", fmt.Errorf("API error (status 500): x"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ghadapter.IsCheckRunsForbidden(tt.err); got != tt.want {
+				t.Errorf("IsCheckRunsForbidden() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCIMonitor_CheckRunsForbidden_RequiredChecksResolveJobNames(t *testing.T) {
+	jobs := map[int64][]map[string]interface{}{
+		1: {
+			{"id": 101, "name": "test", "status": "completed", "conclusion": "success"},
+			{"id": 102, "name": "lint", "status": "completed", "conclusion": "success"},
+		},
+	}
+	required := func(names ...string) func(*Config) {
+		return func(cfg *Config) {
+			cfg.CIChecks = &CIChecksConfig{Mode: "manual", Required: names, DiscoveryGracePeriod: 30 * time.Millisecond}
+		}
+	}
+	tests := []struct {
+		name     string
+		runs     []map[string]interface{}
+		jobs     map[int64][]map[string]interface{}
+		combined map[string]interface{}
+		required []string
+		want     CIStatus
+	}{
+		{
+			name:     "required job names all green",
+			runs:     []map[string]interface{}{wfRun(1, 10, "CI", "completed", "success", 1)},
+			jobs:     jobs,
+			required: []string{"test", "lint"},
+			want:     CISuccess,
+		},
+		{
+			name: "required job failed",
+			runs: []map[string]interface{}{wfRun(1, 10, "CI", "completed", "failure", 1)},
+			jobs: map[int64][]map[string]interface{}{1: {
+				{"id": 101, "name": "test", "status": "completed", "conclusion": "failure"},
+				{"id": 102, "name": "lint", "status": "completed", "conclusion": "success"},
+			}},
+			required: []string{"test", "lint"},
+			want:     CIFailure,
+		},
+		{
+			name: "required job still running",
+			runs: []map[string]interface{}{wfRun(1, 10, "CI", "in_progress", "", 1)},
+			jobs: map[int64][]map[string]interface{}{1: {
+				{"id": 101, "name": "test", "status": "completed", "conclusion": "success"},
+				{"id": 102, "name": "lint", "status": "in_progress"},
+			}},
+			required: []string{"test", "lint"},
+			want:     CIPending,
+		},
+		{
+			name:     "required name that is a status context",
+			runs:     []map[string]interface{}{wfRun(1, 10, "CI", "completed", "success", 1)},
+			jobs:     jobs,
+			combined: commitStatuses("success", map[string]string{"ci/external": "success"}),
+			required: []string{"test", "ci/external"},
+			want:     CISuccess,
+		},
+		{
+			name:     "required name that is neither job nor status context stays pending while CI runs",
+			runs:     []map[string]interface{}{wfRun(1, 10, "CI", "in_progress", "", 1), wfRun(2, 11, "Slow", "queued", "", 1)},
+			jobs:     jobs,
+			required: []string{"test", "missing"},
+			want:     CIPending,
+		},
+		{
+			name: "unlisted failing run still fails the gate",
+			runs: []map[string]interface{}{
+				wfRun(1, 10, "CI", "completed", "success", 1),
+				wfRun(2, 11, "Wire-Contract", "completed", "failure", 1),
+			},
+			jobs:     jobs,
+			required: []string{"test", "lint"},
+			want:     CIFailure,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gh := &fallbackGitHub{runs: tt.runs, jobs: tt.jobs, combined: tt.combined}
+			m := gh.monitor(t, required(tt.required...))
+			got, err := m.CheckCI(context.Background(), "abc1234")
+			if err != nil {
+				t.Fatalf("CheckCI() error = %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("CheckCI() = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCIMonitor_CheckRunsForbidden_JobsUnreadable(t *testing.T) {
+	gh := &fallbackGitHub{
+		runs:       []map[string]interface{}{wfRun(1, 10, "CI", "completed", "success", 1)},
+		jobsStatus: http.StatusNotFound,
+	}
+	m := gh.monitor(t, func(cfg *Config) {
+		cfg.CIChecks = &CIChecksConfig{Mode: "manual", Required: []string{"test"}, DiscoveryGracePeriod: time.Second}
+	})
+	_, err := m.CheckCI(context.Background(), "abc1234")
+	var unreadable *ErrCIUnreadable
+	if !errors.As(err, &unreadable) || len(unreadable.Sources) != 1 || unreadable.Sources[0] != "actions jobs" {
+		t.Fatalf("CheckCI() error = %v, want ErrCIUnreadable for actions jobs", err)
+	}
+}
+
+func TestCIMonitor_CheckRunsForbidden_OtherConsumers(t *testing.T) {
+	gh := &fallbackGitHub{runs: []map[string]interface{}{
+		wfRun(1, 10, "CI", "completed", "failure", 1),
+		wfRun(2, 11, "Lint", "completed", "success", 1),
+	}}
+	m := gh.monitor(t, nil)
+	ctx := context.Background()
+
+	failed, err := m.GetFailedChecks(ctx, "abc1234")
+	if err != nil || len(failed) != 1 || failed[0] != "CI" {
+		t.Errorf("GetFailedChecks() = %v, %v, want [CI]", failed, err)
+	}
+	if got, err := m.GetCheckStatus(ctx, "abc1234", "Lint"); err != nil || got != CISuccess {
+		t.Errorf("GetCheckStatus(Lint) = %s, %v, want success", got, err)
+	}
+	if ok, err := m.HasAnyCIConfigured(ctx, "abc1234"); err != nil || !ok {
+		t.Errorf("HasAnyCIConfigured() = %v, %v, want true", ok, err)
+	}
+	// Log collection stays degraded: a workflow-level entry has no job to read.
+	for _, l := range m.GetFailedCheckLogsByCheck(ctx, "abc1234") {
+		if l.CheckName == "CI" && l.Logs != "" {
+			t.Errorf("logs for a workflow-level entry = %q, want empty", l.Logs)
+		}
+	}
+}
+
+func TestLatestWorkflowRuns(t *testing.T) {
+	runs := []ghadapter.WorkflowRun{
+		{ID: 1, WorkflowID: 10, Name: "CI", RunAttempt: 1, Conclusion: "failure"},
+		{ID: 1, WorkflowID: 10, Name: "CI", RunAttempt: 2, Conclusion: "success"},
+		{ID: 5, WorkflowID: 11, Name: "Lint", RunAttempt: 1, Conclusion: "failure"},
+		{ID: 6, WorkflowID: 11, Name: "Lint", RunAttempt: 1, Conclusion: "success"},
+	}
+	got := latestWorkflowRuns(runs)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2: %+v", len(got), got)
+	}
+	if got[0].Conclusion != "success" || got[0].RunAttempt != 2 {
+		t.Errorf("CI kept %+v, want attempt 2", got[0])
+	}
+	if got[1].ID != 6 {
+		t.Errorf("Lint kept run %d, want the higher run ID 6", got[1].ID)
 	}
 }
