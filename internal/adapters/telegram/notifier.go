@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/comms"
@@ -122,7 +123,7 @@ func (n *Notifier) SendTaskFailed(ctx context.Context, taskID, title, errorMsg s
 	if n.plainTextMode {
 		text = fmt.Sprintf("❌ Pilot task failed\n%s %s\n\n%s", taskID, title, errorMsg)
 	} else {
-		text = fmt.Sprintf("❌ *Pilot task failed*\n`%s` %s\n\n```\n%s\n```", taskID, escapeMarkdown(title), errorMsg)
+		text = fmt.Sprintf("❌ *Pilot task failed*\n`%s` %s\n\n```\n%s\n```", taskID, escapeMarkdown(title), strings.ReplaceAll(errorMsg, "```", "'''"))
 	}
 	_, err := n.client.SendMessage(ctx, n.chatID, text, n.getParseMode(), n.messageThreadID)
 	return err

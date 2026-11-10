@@ -30,17 +30,17 @@ func envPrefix(prState *PRState) string {
 	if prState.EnvironmentName == "" {
 		return ""
 	}
-	return fmt.Sprintf("[%s] ", prState.EnvironmentName)
+	return fmt.Sprintf("[%s] ", escapeLegacyMarkdown(prState.EnvironmentName))
 }
 
 // prDetail returns PR title and target branch details when available.
 func prDetail(prState *PRState) string {
 	var parts []string
 	if prState.PRTitle != "" {
-		parts = append(parts, fmt.Sprintf("Title: %s", prState.PRTitle))
+		parts = append(parts, fmt.Sprintf("Title: %s", escapeLegacyMarkdown(prState.PRTitle)))
 	}
 	if prState.TargetBranch != "" {
-		parts = append(parts, fmt.Sprintf("Branch: `%s`", prState.TargetBranch))
+		parts = append(parts, fmt.Sprintf("Branch: `%s`", escapeCodeSpan(prState.TargetBranch)))
 	}
 	if len(parts) == 0 {
 		return ""
@@ -53,6 +53,24 @@ func prDetail(prState *PRState) string {
 // sends with); the V2-style escapeMarkdown would leave literal backslashes.
 func escapeLegacyMarkdown(s string) string {
 	return strings.NewReplacer("_", "\\_", "*", "\\*", "`", "\\`", "[", "\\[").Replace(s)
+}
+
+// escapeCodeSpan makes s safe inside a legacy-Markdown `code` span, where
+// backslash escapes are not honored and only a backtick ends the entity.
+func escapeCodeSpan(s string) string {
+	return strings.ReplaceAll(s, "`", "'")
+}
+
+// send delivers msg in legacy Markdown. GH-6276: when Telegram rejects the
+// entities (400 "can't parse entities", e.g. an unescaped delimiter in free
+// text that slipped through), the same text is sent once more with no parse
+// mode so the notice still arrives instead of being lost to a Warn line.
+func (n *TelegramNotifier) send(ctx context.Context, msg string) error {
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)
+	if err != nil && telegram.IsParseEntitiesError(err) {
+		_, err = n.client.SendMessage(ctx, n.chatID, msg, "", n.messageThreadID)
+	}
+	return err
 }
 
 // approvalReasonDetail renders why the PR is gated (EscalationReason) and, for
@@ -85,8 +103,7 @@ func (n *TelegramNotifier) NotifyMerged(ctx context.Context, prState *PRState) e
 		"Method: squash",
 		envPrefix(prState), prState.PRNumber, prDetail(prState))
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)
-	return err
+	return n.send(ctx, msg)
 }
 
 // NotifyCIFailed sends notification when CI checks fail.
@@ -95,7 +112,7 @@ func (n *TelegramNotifier) NotifyCIFailed(ctx context.Context, prState *PRState,
 	if len(failedChecks) > 0 {
 		checks = "Failed checks:\n"
 		for _, c := range failedChecks {
-			checks += fmt.Sprintf("  • `%s`\n", c)
+			checks += fmt.Sprintf("  • `%s`\n", escapeCodeSpan(c))
 		}
 	} else {
 		checks = "Failed checks: _unknown_"
@@ -104,8 +121,7 @@ func (n *TelegramNotifier) NotifyCIFailed(ctx context.Context, prState *PRState,
 	msg := fmt.Sprintf("%s❌ *CI Failed* for PR #%d%s\n\n%s",
 		envPrefix(prState), prState.PRNumber, prDetail(prState), checks)
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)
-	return err
+	return n.send(ctx, msg)
 }
 
 // NotifyApprovalRequired sends notification when a PR requires human approval.
@@ -116,8 +132,7 @@ func (n *TelegramNotifier) NotifyApprovalRequired(ctx context.Context, prState *
 		envPrefix(prState), prState.PRNumber, prDetail(prState), approvalReasonDetail(prState),
 		prState.PRNumber, prState.PRNumber)
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)
-	return err
+	return n.send(ctx, msg)
 }
 
 // NotifyFixIssueCreated sends notification when a fix issue is auto-created.
@@ -127,8 +142,7 @@ func (n *TelegramNotifier) NotifyFixIssueCreated(ctx context.Context, prState *P
 		"Pilot will pick this up automatically.",
 		envPrefix(prState), issueNumber, prState.PRNumber)
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)
-	return err
+	return n.send(ctx, msg)
 }
 
 // NotifyPipelineComplete sends notification when the full pipeline completes for a PR.
@@ -136,8 +150,7 @@ func (n *TelegramNotifier) NotifyPipelineComplete(ctx context.Context, prState *
 	msg := fmt.Sprintf("%s🏁 *Pipeline complete* for GH-%d — PR #%d merged%s",
 		envPrefix(prState), prState.IssueNumber, prState.PRNumber, prDetail(prState))
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)
-	return err
+	return n.send(ctx, msg)
 }
 
 // NotifyReleased sends notification when a release is created.
@@ -157,7 +170,7 @@ func (n *TelegramNotifier) NotifyReleased(ctx context.Context, prState *PRState,
 	// headline and member count instead of a misleading "From PR: #<anchor>".
 	sourceLine := fmt.Sprintf("From PR: #%d", prState.PRNumber)
 	if prState.ScopeTitle != "" {
-		sourceLine = fmt.Sprintf("Scope: %s (%d PRs)", escapeMarkdown(prState.ScopeTitle), len(prState.ScopeMemberPRs))
+		sourceLine = fmt.Sprintf("Scope: %s (%d PRs)", escapeLegacyMarkdown(prState.ScopeTitle), len(prState.ScopeMemberPRs))
 	}
 
 	msg := fmt.Sprintf("%s✨ *Release %s Published*\n\n"+
@@ -166,38 +179,12 @@ func (n *TelegramNotifier) NotifyReleased(ctx context.Context, prState *PRState,
 		"%s\n\n"+
 		"[View Release](%s)",
 		envPrefix(prState),
-		escapeMarkdown(prState.ReleaseVersion),
-		prState.ReleaseVersion,
+		escapeLegacyMarkdown(prState.ReleaseVersion),
+		escapeCodeSpan(prState.ReleaseVersion),
 		bumpLabel,
 		sourceLine,
 		releaseURL,
 	)
 
-	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown", n.messageThreadID)
-	return err
-}
-
-// escapeMarkdown escapes special characters for Telegram Markdown.
-func escapeMarkdown(s string) string {
-	replacer := strings.NewReplacer(
-		"_", "\\_",
-		"*", "\\*",
-		"[", "\\[",
-		"]", "\\]",
-		"(", "\\(",
-		")", "\\)",
-		"~", "\\~",
-		"`", "\\`",
-		">", "\\>",
-		"#", "\\#",
-		"+", "\\+",
-		"-", "\\-",
-		"=", "\\=",
-		"|", "\\|",
-		"{", "\\{",
-		"}", "\\}",
-		".", "\\.",
-		"!", "\\!",
-	)
-	return replacer.Replace(s)
+	return n.send(ctx, msg)
 }

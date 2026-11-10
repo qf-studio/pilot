@@ -285,6 +285,10 @@ type EvalStore interface {
 	// underlying UPDATE is filtered on status='superseded', so calling this
 	// when no such row exists is a safe no-op.
 	ReclassifySupersededForRearm(taskID, projectPath, reason string) error
+	// ReconcileFailedExecutionAfterMerge promotes the latest 'failed' row of
+	// taskID/projectPath to 'completed' with prURL and reports whether a row
+	// changed. GH-6276: only rows of that task, only the latest generation.
+	ReconcileFailedExecutionAfterMerge(taskID, projectPath, prURL string) (bool, error)
 }
 
 // ControllerOption is a functional option for Controller configuration.
@@ -1211,6 +1215,26 @@ func (c *Controller) selfHealForPR(ctx context.Context, issueNum int, prURL stri
 			return
 		}
 		c.selfHealTask(fmt.Sprintf("GH-%d", parent), prURL)
+	}
+}
+
+// reconcileExecutionAfterMerge flips the latest 'failed' execution row of the
+// merged PR's issue to 'completed' and stamps the PR URL. GH-6276: a failed
+// auto-rebase leaves the row 'failed'; when a human then pushes the merge
+// commit and the PR merges, the row must not keep showing a failure for work
+// that landed. No-op when the eval store is unset or issueNum is zero.
+func (c *Controller) reconcileExecutionAfterMerge(issueNum int, prURL string) {
+	if c.evalStore == nil || issueNum == 0 {
+		return
+	}
+	taskID := fmt.Sprintf("GH-%d", issueNum)
+	changed, err := c.evalStore.ReconcileFailedExecutionAfterMerge(taskID, c.projectPath, prURL)
+	if err != nil {
+		c.log.Warn("failed to reconcile execution after merge", "task_id", taskID, "error", err)
+		return
+	}
+	if changed {
+		c.log.Info("execution reconciled after merge", "task_id", taskID, "pr_url", prURL)
 	}
 }
 
@@ -6309,6 +6333,7 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		// Promotes prior "failed" rows (for the issue AND its parent epic) to
 		// "completed" and stamps the PR URL so the dashboard reflects the merged
 		// outcome (handles user-pushed commits, sub-issues merged via parent, etc.).
+		c.reconcileExecutionAfterMerge(prState.IssueNumber, prState.PRURL)
 		c.selfHealForPR(ctx, prState.IssueNumber, prState.PRURL)
 
 		// GH-1870: Sync board card to "Done" column on merge
@@ -11070,6 +11095,10 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 			})
 			// GH-4021: same stale-label cleanup as the polled-merge path.
 			c.clearRetryLabels(ctx, prState.IssueNumber)
+			// GH-6276: the PR merged, so reconcile the issue's 'failed' execution
+			// row (failed auto-rebase, then a human merge) whether or not the
+			// close call below succeeds — this path runs once per PR.
+			c.reconcileExecutionAfterMerge(prState.IssueNumber, prState.PRURL)
 			// Close the issue
 			if err := c.ghClient.UpdateIssueState(ctx, c.owner, c.repo, prState.IssueNumber, "closed"); err != nil {
 				c.log.Warn("failed to close issue after external merge", "issue", prState.IssueNumber, "error", err)

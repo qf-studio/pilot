@@ -351,29 +351,6 @@ func TestNewTelegramNotifier(t *testing.T) {
 	}
 }
 
-func TestEscapeMarkdown(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"hello", "hello"},
-		{"hello_world", "hello\\_world"},
-		{"*bold*", "\\*bold\\*"},
-		{"[link](url)", "\\[link\\]\\(url\\)"},
-		{"code`block`", "code\\`block\\`"},
-		{"item #1", "item \\#1"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			result := escapeMarkdown(tt.input)
-			if result != tt.expected {
-				t.Errorf("escapeMarkdown(%q) = %q, want %q", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestEnvPrefix(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -414,5 +391,91 @@ func TestEnvironmentName(t *testing.T) {
 				t.Errorf("EnvironmentName() = %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+// GH-6276: a PR title with Markdown delimiters (the "security_event" title of
+// PR #6270) must reach Telegram escaped, or the legacy parser rejects the
+// whole notice with "can't parse entities".
+func TestTelegramNotifier_NotifyMerged_EscapesFreeText(t *testing.T) {
+	var receivedText string
+	notifier, server := newTestNotifier(t, &receivedText)
+	defer server.Close()
+
+	prState := &PRState{
+		PRNumber:     6270,
+		PRTitle:      "fix: log security_event with *bold* [x] and `code`",
+		TargetBranch: "release/v1`x",
+	}
+	if err := notifier.NotifyMerged(context.Background(), prState); err != nil {
+		t.Fatalf("NotifyMerged error: %v", err)
+	}
+
+	wantTitle := "Title: fix: log security\\_event with \\*bold\\* \\[x] and \\`code\\`"
+	if !strings.Contains(receivedText, wantTitle) {
+		t.Errorf("title not escaped, want %q in: %s", wantTitle, receivedText)
+	}
+	if !strings.Contains(receivedText, "Branch: `release/v1'x`") {
+		t.Errorf("branch backtick not neutralised in: %s", receivedText)
+	}
+}
+
+// GH-6276: Telegram answering 400 "can't parse entities" must not lose the
+// notice — the same text goes out once more with no parse mode.
+func TestTelegramNotifier_NotifyMerged_ParseEntitiesFallback(t *testing.T) {
+	var reqs []telegram.SendMessageRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req telegram.SendMessageRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request: %v", err)
+		}
+		reqs = append(reqs, req)
+		if req.ParseMode != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(telegram.SendMessageResponse{
+				OK: false, ErrorCode: 400,
+				Description: "Bad Request: can't parse entities: Can't find end of the entity starting at byte offset 171",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(telegram.SendMessageResponse{OK: true})
+	}))
+	defer server.Close()
+
+	notifier := NewTelegramNotifier(telegram.NewClientWithBaseURL("test-token", server.URL), "123456", 0)
+	if err := notifier.NotifyMerged(context.Background(), &PRState{PRNumber: 6270, PRTitle: "t"}); err != nil {
+		t.Fatalf("NotifyMerged error: %v", err)
+	}
+
+	if len(reqs) != 2 {
+		t.Fatalf("got %d requests, want 2 (Markdown, then plain text)", len(reqs))
+	}
+	if reqs[0].ParseMode != "Markdown" {
+		t.Errorf("first request parse_mode = %q, want Markdown", reqs[0].ParseMode)
+	}
+	if reqs[1].ParseMode != "" {
+		t.Errorf("retry parse_mode = %q, want none", reqs[1].ParseMode)
+	}
+	if reqs[0].Text != reqs[1].Text {
+		t.Errorf("retry text differs from first: %q vs %q", reqs[1].Text, reqs[0].Text)
+	}
+}
+
+// Any other failure is returned as-is, without a second request.
+func TestTelegramNotifier_NotifyMerged_OtherErrorNoRetry(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(telegram.SendMessageResponse{OK: false, ErrorCode: 403, Description: "Forbidden: bot was blocked"})
+	}))
+	defer server.Close()
+
+	notifier := NewTelegramNotifier(telegram.NewClientWithBaseURL("test-token", server.URL), "123456", 0)
+	if err := notifier.NotifyMerged(context.Background(), &PRState{PRNumber: 1}); err == nil {
+		t.Fatal("expected error")
+	}
+	if calls != 1 {
+		t.Errorf("got %d requests, want 1", calls)
 	}
 }
