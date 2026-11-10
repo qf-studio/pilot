@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -277,6 +278,9 @@ func (r *BillingResolver) Resolve(ctx context.Context) (*BillingCredential, erro
 	if err != nil {
 		return nil, err
 	}
+	// GH-6266: a key printed by api_key_command is in no config file or
+	// environment, so config-time registration never saw it.
+	secretpatterns.RegisterSecretValues(string(key))
 	return &BillingCredential{mode: BillingModeAPIKey, key: key}, nil
 }
 

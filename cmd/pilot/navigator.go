@@ -52,7 +52,7 @@ executor.navigator.bootstrap is "auto".`,
 			if configPath == "" {
 				configPath = config.DefaultConfigPath()
 			}
-			cfg, err := config.Load(configPath)
+			cfg, err := loadConfigRegisteringSecrets(configPath) // GH-6266
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}

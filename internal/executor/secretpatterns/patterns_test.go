@@ -115,7 +115,14 @@ func TestRedact_RegisteredSecretValues(t *testing.T) {
 		{"short value ignored", []string{"short12"}, "a short12 b", "a short12 b", 0},
 		{"unexpanded var ignored", []string{"${SOME_LONG_VARIABLE}"}, "x ${SOME_LONG_VARIABLE} y", "x ${SOME_LONG_VARIABLE} y", 0},
 		{"longest first", []string{opaqueSecret, opaqueSecret + "-suffix"}, "v=" + opaqueSecret + "-suffix", "v=" + Redacted, 2},
-		{"json escaped form", []string{`pa"ss\word-123`}, `{"v":"pa\"ss\\word-123"}`, `{"v":"` + Redacted + `"}`, 2},
+		{"json escaped form", []string{`pa"ss\word-123`}, `{"v":"pa\"ss\\word-123"}`, `{"v":"` + Redacted + `"}`, 1},
+		{"overlapping values leave no tail", []string{"abcdefgh-XYZ12345", "XYZ12345-ijklmnop"}, "v=abcdefgh-XYZ12345-ijklmnop;", "v=" + Redacted + ";", 2},
+		{"overlap in either registration order", []string{"XYZ12345-ijklmnop", "abcdefgh-XYZ12345"}, "abcdefgh-XYZ12345-ijklmnop", Redacted, 2},
+		{"contained value inside longer one", []string{"abcdefgh-XYZ12345", "XYZ12345"}, "abcdefgh-XYZ12345|XYZ12345", Redacted + "|" + Redacted, 2},
+		{"self-overlapping occurrences merge", []string{"abababab"}, "x" + "abababababab" + "y", "x" + Redacted + "y", 1},
+		{"query-escaped form", []string{"p@ss w/rd+1&x"}, "u=p%40ss+w%2Frd%2B1%26x", "u=" + Redacted, 1},
+		{"path-escaped form", []string{"p@ss w/rd+1&x"}, "/p@ss%20w%2Frd+1&x", "/" + Redacted, 1},
+		{"substring of marker ignored", []string{"redacted", "<redacted>"}, "a redacted b", "a redacted b", 0},
 		{"shape still redacted", []string{opaqueSecret}, "ghp_" + repeat("a1B2c3", 6), Redacted, 1},
 	}
 	for _, tt := range tests {

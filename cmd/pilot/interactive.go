@@ -42,7 +42,7 @@ func runInteractiveMode() error {
 	fmt.Println()
 
 	// Load config
-	cfg, err := config.Load(config.DefaultConfigPath())
+	cfg, err := loadConfigRegisteringSecrets(config.DefaultConfigPath()) // GH-6266
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}

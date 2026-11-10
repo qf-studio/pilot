@@ -38,6 +38,18 @@ type Recorder struct {
 	log          *slog.Logger
 }
 
+// tightenDirMode chmods dir to recordingDirMode when it grants more.
+func tightenDirMode(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm()&^recordingDirMode == 0 {
+		return nil
+	}
+	return os.Chmod(dir, recordingDirMode)
+}
+
 // NewRecorder creates a recorder for a task execution
 func NewRecorder(taskID, projectPath, basePath string) (*Recorder, error) {
 	// Generate unique recording ID
@@ -47,6 +59,13 @@ func NewRecorder(taskID, projectPath, basePath string) (*Recorder, error) {
 	recordingDir := filepath.Join(basePath, id)
 	if err := os.MkdirAll(recordingDir, recordingDirMode); err != nil {
 		return nil, fmt.Errorf("failed to create recording directory: %w", err)
+	}
+	// MkdirAll leaves an existing directory's mode alone; tighten a wider one
+	// (GH-6266).
+	for _, d := range []string{basePath, recordingDir} {
+		if err := tightenDirMode(d); err != nil {
+			return nil, fmt.Errorf("failed to restrict recording directory: %w", err)
+		}
 	}
 
 	// Create diffs subdirectory
@@ -99,6 +118,12 @@ func NewRecorder(taskID, projectPath, basePath string) (*Recorder, error) {
 func (r *Recorder) RecordEvent(rawJSON string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// GH-6266: Raw holds a JSON line, so marshalling the event escapes it a
+	// second time and a registered value with a quote, backslash or newline no
+	// longer matches any registered form. Mask the line itself first, while
+	// the value is still in its single-escaped form.
+	rawJSON = secretpatterns.Redact(rawJSON)
 
 	r.sequence++
 	event := StreamEvent{
