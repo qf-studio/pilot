@@ -318,3 +318,31 @@ func TestContinueHeldBranch(t *testing.T) {
 		}
 	})
 }
+
+// TestHoldContinuation_SupersededCommentWritesNoSHA pins GH-6281 item 4: when the
+// poller logs that the hold comment is superseded or invalid, the SHA it hands the
+// Task (and so the execution row) is empty, whatever the comment carried.
+func TestHoldContinuation_SupersededCommentWritesNoSHA(t *testing.T) {
+	local := rearmRemoteFixture(t)
+	const own = "pilot/GH-100"
+	tests := []struct {
+		name   string
+		bodies []string
+	}{
+		{"superseded by a later task start", []string{holdComment(100, own, rearmSHA), "Pilot started working on this issue"}},
+		{"invalid sha", []string{holdComment(100, own, "zz")}},
+		{"footer for another issue", []string{holdComment(7, own, rearmSHA)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			read := captureLogs(t)
+			b, sha := continueHeldBranch(context.Background(), fakeCommentLister{bodies: tt.bodies}, "o", "r", 100, local, "GH-100", own, 0)
+			if sha != "" || b != own {
+				t.Errorf("got (%q, %q), want the unchanged branch and no sha", b, sha)
+			}
+			if got := read(); !strings.Contains(got, "hold comment superseded or invalid") || strings.Contains(got, "Continuing the branch a pre-PR hold pushed") {
+				t.Errorf("want the superseded-or-invalid line and no continuation line, got %q", got)
+			}
+		})
+	}
+}

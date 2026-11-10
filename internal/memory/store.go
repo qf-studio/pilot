@@ -640,6 +640,13 @@ func (s *Store) migrate() error {
 // here because the decline reason was never persisted to executions.error.
 //
 // Keep the LIKE patterns in sync with the signature lists in executor/runner.go.
+//
+// GH-6281: the infra statement skips a non-fast-forward rejection against the
+// task branch (executor.nonFastForwardTaskBranchMarker). Its error still reads
+// "push failed", but it is deterministic and TerminalStatus keeps it "failed" so
+// the dispatcher escalates instead of re-picking. Without the exclusion a daemon
+// restart turned such a row into "infra" (re-pickable) while an escalated row
+// stayed "failed"/"stalled", so the same error ended in two statuses.
 func (s *Store) reclassifyLegacyOutcomes() error {
 	stmts := []string{
 		`UPDATE executions SET status = 'no_op'
@@ -678,7 +685,7 @@ func (s *Store) reclassifyLegacyOutcomes() error {
 			error LIKE '%worktree creation failed%' OR
 			error LIKE '%create/switch branch%' OR
 			error LIKE '%branch switch failed%'
-		 )`,
+		 ) AND error NOT LIKE '%non-fast-forward against task branch%'`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -3095,13 +3102,19 @@ func (s *Store) GetQueuedTasks(limit int) ([]*Execution, error) {
 // GetQueuedTasksForProject returns queued/pending tasks for a specific project.
 // Results are ordered by creation time ascending (oldest first) up to the specified limit.
 // This is used by the per-project worker to get the next task to execute.
+//
+// GH-6281: the worker rebuilds the Task from these rows (buildTaskFromExecution),
+// so every column that Begin persists for the runner must be selected here.
+// continue_branch_sha and inherited_head were missing, so a task that waited in
+// the queue lost its pre-PR hold continuation and was cut from the default branch.
 func (s *Store) GetQueuedTasksForProject(projectPath string, limit int) ([]*Execution, error) {
 	rows, err := s.db.Query(`
 		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
 			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
 			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0),
 			COALESCE(task_source_adapter, ''), COALESCE(task_source_issue_id, ''),
-			COALESCE(task_labels, ''), COALESCE(is_canary, 0)
+			COALESCE(task_labels, ''), COALESCE(is_canary, 0),
+			COALESCE(inherited_head, ''), COALESCE(continue_branch_sha, '')
 		FROM executions
 		WHERE (status = 'queued' OR status = 'pending') AND project_path = ?
 		ORDER BY created_at ASC
@@ -3119,7 +3132,8 @@ func (s *Store) GetQueuedTasksForProject(projectPath string, limit int) ([]*Exec
 		var labelsJSON string
 		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
 			&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose,
-			&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON, &exec.IsCanary); err != nil {
+			&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON, &exec.IsCanary,
+			&exec.InheritedHead, &exec.ContinueBranchSHA); err != nil {
 			return nil, err
 		}
 		if completedAt.Valid {

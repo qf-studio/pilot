@@ -3509,6 +3509,38 @@ var inheritedHeadOpenPRCheck = func(ctx context.Context, git *GitOperations, bra
 	return git.FindOpenPRByBranch(ctx, branch)
 }
 
+// recordReplaceableBranchHead is called when the worktree is cut from the
+// default branch. If origin already has task.Branch at a head this run did not
+// push (a hold comment that was superseded, a SHA that did not resolve, or no
+// continuation at all), the run's final push can never fast-forward it and used
+// to fail only after the whole run (GH-6281). The head is recorded as
+// task.inheritedHeadSHA, so pushBranchWithRetry may replace it once with a lease
+// on exactly that SHA, behind leasePushInheritedHead's open-PR guard.
+// Decision: a lease, not a worktree cut from the remote head. The run was
+// already told to start from the default branch, and rebasing it onto unknown
+// work would change what it builds; the replaced commit stays recoverable by SHA
+// through the issue comment leasePushInheritedHead posts.
+// Autopilot-fix continuations and a head the dispatcher already recorded are
+// left alone. Best-effort: an unreachable origin records nothing.
+func (r *Runner) recordReplaceableBranchHead(ctx context.Context, task *Task) {
+	if task.Branch == "" || task.FromPR > 0 || task.FixFromSHA != "" || task.inheritedHeadSHA != "" {
+		return
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	sha, ok := NewGitOperations(task.ProjectPath).RemoteBranchHead(probeCtx, task.Branch)
+	if !ok || sha == "" {
+		return
+	}
+	task.inheritedHeadSHA = sha
+	r.log.Info("worktree starts from the default branch but origin already has the task branch — final push may lease on that head",
+		slog.String("task_id", task.ID),
+		slog.String("branch", task.Branch),
+		slog.String("remote_head", sha),
+		slog.Bool("hold_continuation_requested", task.ContinueBranchSHA != ""),
+	)
+}
+
 // leasePushInheritedHead is the single leased push a re-pick gets over the
 // stale head a previous run left on task.Branch (GH-5864). It refuses when an
 // open PR now has the branch as its head (that is the autopilot continuation
@@ -4087,6 +4119,8 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		// GH-6233: a retry after a pre-PR hold continues the held branch. No PR
 		// backs it (task.FromPR stays 0), so a miss here is not an error: the
 		// worktree falls back to the default base like any fresh task.
+		// GH-6281: with a continuation SHA exactly one of the two lines below is
+		// logged before the worktree exists.
 		if task.ContinueBranchSHA != "" && worktreeBaseRef == "" {
 			worktreeBaseRef = NewGitOperations(task.ProjectPath).ResolveFixContinuationBaseRef(ctx, task.Branch, task.ContinueBranchSHA)
 			if worktreeBaseRef == "" {
@@ -4102,6 +4136,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 					slog.String("base_ref", worktreeBaseRef),
 				)
 			}
+		}
+
+		// GH-6281: decide once, before any work, what the final push may do about
+		// a task branch that already exists on origin.
+		if worktreeBaseRef == "" {
+			r.recordReplaceableBranchHead(ctx, task)
 		}
 
 		var worktreePath string
