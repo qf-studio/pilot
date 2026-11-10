@@ -22,6 +22,7 @@ type AlertMetrics struct {
 	firedTotal    map[alertFiredKey]int64
 	deliveryTotal map[alertDeliveryKey]int64
 	droppedTotal  int64
+	cancelled     int64
 }
 
 // NewAlertMetrics creates an empty AlertMetrics instance.
@@ -54,6 +55,14 @@ func (m *AlertMetrics) RecordDropped() {
 	m.droppedTotal++
 }
 
+// RecordCancelled increments the counter of security events whose submit was
+// cancelled by the caller before the event was queued. It is not a drop.
+func (m *AlertMetrics) RecordCancelled() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cancelled++
+}
+
 // Snapshot returns a point-in-time copy of all counters.
 func (m *AlertMetrics) Snapshot() AlertMetricsSnapshot {
 	m.mu.RLock()
@@ -68,17 +77,19 @@ func (m *AlertMetrics) Snapshot() AlertMetricsSnapshot {
 		delivery[k] = v
 	}
 	return AlertMetricsSnapshot{
-		FiredTotal:    fired,
-		DeliveryTotal: delivery,
-		DroppedTotal:  m.droppedTotal,
+		FiredTotal:     fired,
+		DeliveryTotal:  delivery,
+		DroppedTotal:   m.droppedTotal,
+		CancelledTotal: m.cancelled,
 	}
 }
 
 // AlertMetricsSnapshot is a read-only copy of alert metrics at a point in time.
 // QueueDepth is populated by Engine.AlertSnapshot, not by Snapshot() itself.
 type AlertMetricsSnapshot struct {
-	FiredTotal    map[alertFiredKey]int64
-	DeliveryTotal map[alertDeliveryKey]int64
-	DroppedTotal  int64
-	QueueDepth    int
+	FiredTotal     map[alertFiredKey]int64
+	DeliveryTotal  map[alertDeliveryKey]int64
+	DroppedTotal   int64
+	CancelledTotal int64
+	QueueDepth     int
 }

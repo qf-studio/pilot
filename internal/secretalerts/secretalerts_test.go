@@ -58,6 +58,7 @@ type fakeGitHub struct {
 	numbers []int
 	updated map[int]string // number -> updated_at; default baseUpdated
 	status  int            // non-zero: answer every request with it
+	message string         // error message for status; default "Resource not accessible by integration"
 }
 
 const baseUpdated = "2026-04-07T10:00:00Z"
@@ -82,7 +83,11 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	if f.status != 0 {
 		w.WriteHeader(f.status)
-		_, _ = w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
+		msg := f.message
+		if msg == "" {
+			msg = "Resource not accessible by integration"
+		}
+		_, _ = fmt.Fprintf(w, `{"message":%q}`, msg)
 		return
 	}
 	var items []string
@@ -507,5 +512,213 @@ func TestSecretAlert_ListerForPerRepo(t *testing.T) {
 	}
 	if h.sink.events[1].Metadata["repo"] != "o/b" || h.sink.events[1].Metadata["number"] != "7" {
 		t.Errorf("second event = %+v", h.sink.events[1].Metadata)
+	}
+}
+
+func (h *harness) repoWatcher(repos ...Repo) *Watcher {
+	return NewWatcher(Config{
+		Lister:   github.NewClientWithBaseURL("test-github-token", h.srv.URL),
+		Sink:     h.sink,
+		Repos:    repos,
+		SeenPath: h.seen,
+		Logger:   slog.New(slog.NewTextHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+}
+
+// TestSecretAlert_UnavailableEventSurvivesRestart: the weekly "unavailable"
+// event is limited across daemon starts, not only inside one process
+// (GH-6279). Three watchers one after the other on the same state directory
+// send one event.
+func TestSecretAlert_UnavailableEventSurvivesRestart(t *testing.T) {
+	h := newHarness(t)
+	h.fake.status = http.StatusForbidden
+	now := time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		h.watcher(clock).PollOnce(ctx)
+		now = now.Add(time.Hour)
+	}
+	if got := h.sink.count(); got != 1 {
+		t.Fatalf("3 starts: %d events, want 1", got)
+	}
+
+	// A week after the event the limit lifts, for a restarted watcher too.
+	now = now.Add(7 * 24 * time.Hour)
+	h.watcher(clock).PollOnce(ctx)
+	if got := h.sink.count(); got != 2 {
+		t.Errorf("a week later: %d events, want 2", got)
+	}
+
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(h.seen), NoticesFileName))
+	if err != nil {
+		t.Fatalf("notices file not written: %v", err)
+	}
+	if !strings.Contains(string(data), "o/r") {
+		t.Errorf("notices file lacks the repo: %s", data)
+	}
+}
+
+// TestSecretAlert_DisabledIsNotAnEvent: a 404 that says scanning is off is a
+// setting, so it gets one Warn per week and no security_event; a 403 and any
+// other 404 keep the event (GH-6279).
+func TestSecretAlert_DisabledIsNotAnEvent(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int
+		message    string
+		wantEvents int
+		wantWarn   string
+	}{
+		{"scanning disabled", http.StatusNotFound, "Secret scanning is disabled on this repository", 0, "secret scanning is disabled"},
+		{"disabled, other case and extra text", http.StatusNotFound, "secret scanning is DISABLED on this repository. Contact an admin.", 0, "secret scanning is disabled"},
+		{"404 other message", http.StatusNotFound, "Not Found", 1, "secret scanning alerts unavailable"},
+		{"403", http.StatusForbidden, "Resource not accessible by integration", 1, "secret scanning alerts unavailable"},
+		{"403 with the disabled text", http.StatusForbidden, "Secret scanning is disabled on this repository", 1, "secret scanning alerts unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.fake.status, h.fake.message = tt.status, tt.message
+			now := time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC)
+			clock := func() time.Time { return now }
+			ctx := context.Background()
+
+			w := h.watcher(clock)
+			w.PollOnce(ctx)
+			w.PollOnce(ctx)
+			if n := strings.Count(h.logs.String(), tt.wantWarn); n != 1 {
+				t.Errorf("%q logged %d times, want 1\n%s", tt.wantWarn, n, h.logs.String())
+			}
+			h.watcher(clock).PollOnce(ctx) // a restart
+			if got := h.sink.count(); got != tt.wantEvents {
+				t.Errorf("%d events, want %d", got, tt.wantEvents)
+			}
+			if tt.wantEvents == 0 {
+				// The weekly limit of the disabled Warn survives the restart.
+				if n := strings.Count(h.logs.String(), tt.wantWarn); n != 1 {
+					t.Errorf("after restart: %q logged %d times, want 1", tt.wantWarn, n)
+				}
+			}
+
+			// Next week: the disabled Warn comes back once, the event too where it applies.
+			now = now.Add(7*24*time.Hour + time.Minute)
+			h.watcher(clock).PollOnce(ctx)
+			if got := h.sink.count(); got != 2*tt.wantEvents {
+				t.Errorf("a week later: %d events, want %d", got, 2*tt.wantEvents)
+			}
+			if tt.wantEvents == 0 {
+				if n := strings.Count(h.logs.String(), tt.wantWarn); n != 2 {
+					t.Errorf("a week later: %q logged %d times, want 2", tt.wantWarn, n)
+				}
+			}
+		})
+	}
+}
+
+// TestSecretAlert_PageCapWarnsOncePerDay: the page-cap Warn of one repo is logged
+// once a day, not on every tick (GH-6279).
+func TestSecretAlert_PageCapWarnsOncePerDay(t *testing.T) {
+	h := newHarness(t)
+	l := &pagedLister{list: []*github.SecretScanningAlert{{Number: 1}}, capped: true}
+	now := time.Date(2026, 11, 10, 8, 0, 0, 0, time.UTC)
+	w := NewWatcher(Config{
+		Lister: l,
+		Sink:   h.sink,
+		Repos:  []Repo{{Owner: "o", Name: "r"}},
+		Logger: slog.New(slog.NewTextHandler(h.logs, nil)),
+		Now:    func() time.Time { return now },
+	})
+	ctx := context.Background()
+
+	for i := 0; i < 4; i++ {
+		now = now.Add(time.Hour)
+		w.PollOnce(ctx)
+	}
+	if n := strings.Count(h.logs.String(), "page cap"); n != 1 {
+		t.Fatalf("same day: %d page cap warns, want 1\n%s", n, h.logs.String())
+	}
+	now = now.Add(24 * time.Hour)
+	w.PollOnce(ctx)
+	if n := strings.Count(h.logs.String(), "page cap"); n != 2 {
+		t.Errorf("next day: %d page cap warns, want 2", n)
+	}
+}
+
+// TestSecretAlert_RefusedSendsLogOneWarnPerPoll: refused events cost one Warn
+// line with the count per poll, not two lines per alert (GH-6279).
+func TestSecretAlert_RefusedSendsLogOneWarnPerPoll(t *testing.T) {
+	tests := []struct {
+		name      string
+		alerts    []int
+		refuse    bool
+		wantWarns int
+		wantCount string
+	}{
+		{"three refused", []int{1, 2, 3}, true, 1, "events=3"},
+		{"one refused", []int{1}, true, 1, "events=1"},
+		{"accepted: one line per alert, no refusal line", []int{1, 2}, false, 2, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.fake.set(tt.alerts...)
+			h.sink.setRefuse(tt.refuse)
+			h.watcher(nil).PollOnce(context.Background())
+
+			if n := strings.Count(h.logs.String(), "level=WARN"); n != tt.wantWarns {
+				t.Errorf("%d warns, want %d\n%s", n, tt.wantWarns, h.logs.String())
+			}
+			if tt.refuse && strings.Contains(h.logs.String(), "new secret scanning alert") {
+				t.Errorf("a refused alert was logged as new:\n%s", h.logs.String())
+			}
+			if tt.wantCount != "" && !strings.Contains(h.logs.String(), tt.wantCount) {
+				t.Errorf("warn lacks %q:\n%s", tt.wantCount, h.logs.String())
+			}
+		})
+	}
+}
+
+// TestSecretAlert_PrunesReposNoLongerConfigured: the seen entries and notice
+// times of a repo that left the config are dropped from the files (GH-6279).
+func TestSecretAlert_PrunesReposNoLongerConfigured(t *testing.T) {
+	h := newHarness(t)
+	h.fake.set(1)
+	ctx := context.Background()
+	repoA, repoB := Repo{Owner: "o", Name: "a"}, Repo{Owner: "o", Name: "b"}
+
+	h.repoWatcher(repoA, repoB).PollOnce(ctx)
+	if got := h.sink.count(); got != 2 {
+		t.Fatalf("both repos: %d events, want 2", got)
+	}
+	// o/b stops answering, which records a notice time for it.
+	h.fake.status = http.StatusForbidden
+	h.repoWatcher(repoA, repoB).PollOnce(ctx)
+
+	noticesPath := filepath.Join(filepath.Dir(h.seen), NoticesFileName)
+	for _, path := range []string{h.seen, noticesPath} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "o/b") {
+			t.Fatalf("setup: %s lacks o/b: %s", path, data)
+		}
+	}
+
+	h.fake.status = 0
+	h.repoWatcher(repoA).PollOnce(ctx)
+	for _, path := range []string{h.seen, noticesPath} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "o/b") {
+			t.Errorf("%s still holds the removed repo: %s", path, data)
+		}
+	}
+	if data, _ := os.ReadFile(h.seen); !strings.Contains(string(data), "o/a") {
+		t.Errorf("seen file lost the configured repo: %s", data)
 	}
 }

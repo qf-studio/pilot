@@ -1630,9 +1630,11 @@ Examples:
 			// alerts engine exists to carry the alert.
 			if gwAlertsEngine != nil {
 				startLeakScan(context.Background(), cfg, dashboardMode, gwAlertsEngine)
-				// GH-6273: the secret-scanning alert watcher too.
-				startSecretAlertWatch(context.Background(), cfg, gwAlertsEngine)
 			}
+			// GH-6273: the secret-scanning alert watcher too. It runs on both
+			// branches so that a missing engine gets its one Warn line here
+			// (GH-6279).
+			startSecretAlertWatch(context.Background(), cfg, gwAlertsEngine)
 
 			// Start tunnel if enabled
 			if cfg.Tunnel != nil && cfg.Tunnel.Enabled {

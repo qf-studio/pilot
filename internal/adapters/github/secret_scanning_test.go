@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -94,5 +95,55 @@ func TestListSecretScanningAlertsCapped_ReportsCap(t *testing.T) {
 	}
 	if !capped || len(got) != maxSecretScanningPages*100 {
 		t.Errorf("capped=%v len=%d, want capped with %d alerts", capped, len(got), maxSecretScanningPages*100)
+	}
+}
+
+// TestListSecretScanningAlertsCapped_CapOnlyWhenMoreRemain: a repo with exactly
+// the capped number of alerts is complete; only an alert on the page past the cap
+// makes the list partial (GH-6279).
+func TestListSecretScanningAlertsCapped_CapOnlyWhenMoreRemain(t *testing.T) {
+	tests := []struct {
+		name         string
+		fullPages    int // pages of 100 alerts
+		extra        int // alerts on the page after the last full one
+		wantCapped   bool
+		wantAlerts   int
+		wantRequests int
+	}{
+		{"short list", 2, 5, false, 205, 3},
+		{"exactly the cap", maxSecretScanningPages, 0, false, maxSecretScanningPages * 100, maxSecretScanningPages + 1},
+		{"one past the cap", maxSecretScanningPages, 1, true, maxSecretScanningPages * 100, maxSecretScanningPages + 1},
+		{"far past the cap", maxSecretScanningPages + 5, 0, true, maxSecretScanningPages * 100, maxSecretScanningPages + 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				requests++
+				mu.Unlock()
+				page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+				switch {
+				case page <= tt.fullPages:
+					_, _ = w.Write([]byte(secretScanningPage((page-1)*100+1, 100)))
+				case page == tt.fullPages+1:
+					_, _ = w.Write([]byte(secretScanningPage(page*100, tt.extra)))
+				default:
+					_, _ = w.Write([]byte("[]"))
+				}
+			}))
+			defer srv.Close()
+
+			c := NewClientWithBaseURL("test-github-token", srv.URL)
+			got, capped, err := c.ListSecretScanningAlertsCapped(context.Background(), "o", "r", "open")
+			if err != nil {
+				t.Fatalf("ListSecretScanningAlertsCapped: %v", err)
+			}
+			if capped != tt.wantCapped || len(got) != tt.wantAlerts || requests != tt.wantRequests {
+				t.Errorf("capped=%v alerts=%d requests=%d, want capped=%v alerts=%d requests=%d",
+					capped, len(got), requests, tt.wantCapped, tt.wantAlerts, tt.wantRequests)
+			}
+		})
 	}
 }
