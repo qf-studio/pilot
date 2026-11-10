@@ -216,7 +216,32 @@ func collectKeyedEnvNames(v interface{}, out []string) []string {
 // load (GH-6266).
 func registerSecretValues(cfg *config.Config) int {
 	secretpatterns.RegisterSecretValues(collectSecretValues(cfg, os.Environ())...)
+	registerSecretGate(cfg)
 	return secretpatterns.SecretValueCount()
+}
+
+// registerSecretGate hands the push gate its per-project settings: the
+// configured default branch (the scan base) and security.secret_gate.allow_paths
+// (GH-6272).
+func registerSecretGate(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	var global []string
+	if cfg.Security != nil && cfg.Security.SecretGate != nil {
+		global = cfg.Security.SecretGate.AllowPaths
+	}
+	executor.SetSecretGateAllowPaths(global)
+	for _, p := range cfg.Projects {
+		if p == nil || p.Path == "" {
+			continue
+		}
+		proj := executor.SecretGateProject{DefaultBranch: p.ResolveBaseBranch()}
+		if p.Security != nil && p.Security.SecretGate != nil {
+			proj.AllowPaths = p.Security.SecretGate.AllowPaths
+		}
+		executor.SetSecretGateProject(p.Path, proj)
+	}
 }
 
 // loadConfigRegisteringSecrets loads the config at path and registers its

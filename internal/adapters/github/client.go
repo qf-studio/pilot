@@ -541,13 +541,73 @@ func (c *Client) ListIssueTimeline(ctx context.Context, owner, repo string, numb
 	return events, nil
 }
 
+// doTextRequest is doRequest for every method that posts free text to GitHub
+// (comments, issues, PRs, releases, check runs). GH-6263, GH-6272: a registered
+// secret value or secret shape never reaches a public text field, so the
+// payload is masked here, in one place, instead of at each call site.
+func (c *Client) doTextRequest(ctx context.Context, method, path string, payload, result any) error {
+	return c.doRequest(ctx, method, path, redactTextPayload(payload), result)
+}
+
+// redactTextPayload returns payload with the free-text fields masked. It copies
+// the typed inputs, so the caller's struct is left as it was.
+func redactTextPayload(payload any) any {
+	switch p := payload.(type) {
+	case map[string]string:
+		out := make(map[string]string, len(p))
+		for k, v := range p {
+			out[k] = secretpatterns.Redact(v)
+		}
+		return out
+	case *IssueInput:
+		if p == nil {
+			return p
+		}
+		cp := *p
+		cp.Title, cp.Body = secretpatterns.Redact(cp.Title), secretpatterns.Redact(cp.Body)
+		return &cp
+	case *PullRequestInput:
+		if p == nil {
+			return p
+		}
+		cp := *p
+		cp.Title, cp.Body = secretpatterns.Redact(cp.Title), secretpatterns.Redact(cp.Body)
+		return &cp
+	case *ReleaseInput:
+		if p == nil {
+			return p
+		}
+		cp := *p
+		cp.Name, cp.Body = secretpatterns.Redact(cp.Name), secretpatterns.Redact(cp.Body)
+		return &cp
+	case *CommitStatus:
+		if p == nil {
+			return p
+		}
+		cp := *p
+		cp.Description = secretpatterns.Redact(cp.Description)
+		return &cp
+	case *CheckRun:
+		if p == nil {
+			return p
+		}
+		cp := *p
+		cp.Name = secretpatterns.Redact(cp.Name)
+		if p.Output != nil {
+			out := *p.Output
+			out.Title, out.Summary, out.Text = secretpatterns.Redact(out.Title), secretpatterns.Redact(out.Summary), secretpatterns.Redact(out.Text)
+			cp.Output = &out
+		}
+		return &cp
+	}
+	return payload
+}
+
 // AddComment adds a comment to an issue
 func (c *Client) AddComment(ctx context.Context, owner, repo string, number int, body string) (*Comment, error) {
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number)
-	// GH-6263: a registered value or secret shape never reaches a public comment.
-	reqBody := map[string]string{"body": secretpatterns.Redact(body)}
 	var comment Comment
-	if err := c.doRequest(ctx, http.MethodPost, path, reqBody, &comment); err != nil {
+	if err := c.doTextRequest(ctx, http.MethodPost, path, map[string]string{"body": body}, &comment); err != nil {
 		return nil, err
 	}
 	return &comment, nil
@@ -594,7 +654,7 @@ func (c *Client) GetRepository(ctx context.Context, owner, repo string) (*Reposi
 func (c *Client) CreateCommitStatus(ctx context.Context, owner, repo, sha string, status *CommitStatus) (*CommitStatus, error) {
 	path := fmt.Sprintf("/repos/%s/%s/statuses/%s", owner, repo, sha)
 	var result CommitStatus
-	if err := c.doRequest(ctx, http.MethodPost, path, status, &result); err != nil {
+	if err := c.doTextRequest(ctx, http.MethodPost, path, status, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -605,7 +665,7 @@ func (c *Client) CreateCommitStatus(ctx context.Context, owner, repo, sha string
 func (c *Client) CreateCheckRun(ctx context.Context, owner, repo string, checkRun *CheckRun) (*CheckRun, error) {
 	path := fmt.Sprintf("/repos/%s/%s/check-runs", owner, repo)
 	var result CheckRun
-	if err := c.doRequest(ctx, http.MethodPost, path, checkRun, &result); err != nil {
+	if err := c.doTextRequest(ctx, http.MethodPost, path, checkRun, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -615,7 +675,7 @@ func (c *Client) CreateCheckRun(ctx context.Context, owner, repo string, checkRu
 func (c *Client) UpdateCheckRun(ctx context.Context, owner, repo string, checkRunID int64, checkRun *CheckRun) (*CheckRun, error) {
 	path := fmt.Sprintf("/repos/%s/%s/check-runs/%d", owner, repo, checkRunID)
 	var result CheckRun
-	if err := c.doRequest(ctx, http.MethodPatch, path, checkRun, &result); err != nil {
+	if err := c.doTextRequest(ctx, http.MethodPatch, path, checkRun, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -625,7 +685,7 @@ func (c *Client) UpdateCheckRun(ctx context.Context, owner, repo string, checkRu
 func (c *Client) CreatePullRequest(ctx context.Context, owner, repo string, input *PullRequestInput) (*PullRequest, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls", owner, repo)
 	var result PullRequest
-	if err := c.doRequest(ctx, http.MethodPost, path, input, &result); err != nil {
+	if err := c.doTextRequest(ctx, http.MethodPost, path, input, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -673,7 +733,7 @@ func (c *Client) AddPRComment(ctx context.Context, owner, repo string, number in
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number)
 	reqBody := map[string]string{"body": body}
 	var result PRComment
-	if err := c.doRequest(ctx, http.MethodPost, path, reqBody, &result); err != nil {
+	if err := c.doTextRequest(ctx, http.MethodPost, path, reqBody, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -768,7 +828,7 @@ func (c *Client) MergePullRequest(ctx context.Context, owner, repo string, numbe
 		body["commit_title"] = commitTitle
 	}
 
-	return c.doRequest(ctx, http.MethodPut, path, body, nil)
+	return c.doTextRequest(ctx, http.MethodPut, path, body, nil)
 }
 
 // GetCombinedStatus gets combined status for a commit SHA
@@ -809,7 +869,7 @@ func (c *Client) ApprovePullRequest(ctx context.Context, owner, repo string, num
 		payload["body"] = body
 	}
 
-	return c.doRequest(ctx, http.MethodPost, path, payload, nil)
+	return c.doTextRequest(ctx, http.MethodPost, path, payload, nil)
 }
 
 // IssueInput is the input for creating a new issue
@@ -823,7 +883,7 @@ type IssueInput struct {
 func (c *Client) CreateIssue(ctx context.Context, owner, repo string, input *IssueInput) (*Issue, error) {
 	path := fmt.Sprintf("/repos/%s/%s/issues", owner, repo)
 	var issue Issue
-	if err := c.doRequest(ctx, http.MethodPost, path, input, &issue); err != nil {
+	if err := c.doTextRequest(ctx, http.MethodPost, path, input, &issue); err != nil {
 		return nil, err
 	}
 	return &issue, nil
@@ -905,7 +965,7 @@ func (c *Client) ListPullRequests(ctx context.Context, owner, repo, state string
 func (c *Client) CreateRelease(ctx context.Context, owner, repo string, input *ReleaseInput) (*Release, error) {
 	path := fmt.Sprintf("/repos/%s/%s/releases", owner, repo)
 	var result Release
-	if err := c.doRequest(ctx, http.MethodPost, path, input, &result); err != nil {
+	if err := c.doTextRequest(ctx, http.MethodPost, path, input, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -956,7 +1016,7 @@ func (c *Client) GetReleaseByTag(ctx context.Context, owner, repo, tag string) (
 func (c *Client) UpdateRelease(ctx context.Context, owner, repo string, releaseID int64, input *ReleaseInput) (*Release, error) {
 	path := fmt.Sprintf("/repos/%s/%s/releases/%d", owner, repo, releaseID)
 	var result Release
-	if err := c.doRequest(ctx, http.MethodPatch, path, input, &result); err != nil {
+	if err := c.doTextRequest(ctx, http.MethodPatch, path, input, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil

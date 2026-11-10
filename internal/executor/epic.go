@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -1843,7 +1844,8 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 		// decomposition on the first blip. Non-transient errors (4xx auth/
 		// validation) fail fast, same as before.
 		subLabels := append([]string{"pilot"}, filterPropagatableLabels(plan.ParentTask.Labels)...)
-		args := []string{"issue", "create", "--title", title, "--body", body}
+		// GH-6272: a registered value or secret shape never reaches a public issue.
+		args := []string{"issue", "create", "--title", secretpatterns.Redact(title), "--body", secretpatterns.Redact(body)}
 		for _, l := range subLabels {
 			args = append(args, "--label", l)
 		}
@@ -1917,7 +1919,7 @@ func (r *Runner) UpdateIssueProgress(ctx context.Context, projectPath string, is
 		return nil
 	}
 
-	args := []string{"issue", "comment", issueID, "--body", message}
+	args := []string{"issue", "comment", issueID, "--body", secretpatterns.Redact(message)}
 	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 	if projectPath != "" {
 		cmd.Dir = projectPath
@@ -1952,7 +1954,7 @@ func (r *Runner) CloseIssueWithComment(ctx context.Context, projectPath string, 
 		}
 	}
 
-	args := []string{"issue", "close", issueID, "--comment", comment}
+	args := []string{"issue", "close", issueID, "--comment", secretpatterns.Redact(comment)}
 	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 	if projectPath != "" {
 		cmd.Dir = projectPath
