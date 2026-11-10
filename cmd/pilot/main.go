@@ -40,6 +40,7 @@ import (
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/dashboard"
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"github.com/qf-studio/pilot/internal/gateway"
 	"github.com/qf-studio/pilot/internal/ghbudget"
 	"github.com/qf-studio/pilot/internal/health"
@@ -549,7 +550,9 @@ Examples:
 				configPath = config.DefaultConfigPath()
 			}
 
-			cfg, err := config.Load(configPath)
+			// GH-6249: the load registers the configured secret values for
+			// redaction before any adapter starts or anything is logged.
+			cfg, err := loadConfigRegisteringSecrets(configPath)
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
@@ -561,9 +564,7 @@ Examples:
 			}
 			applyReadGuardConfig(claudeCode, configPath)
 
-			// GH-6249: register configured secret values for redaction before
-			// any adapter starts or anything is logged.
-			secretCount := registerSecretValues(cfg)
+			secretCount := secretpatterns.SecretValueCount()
 
 			// GH-2361: Fail loudly when an adapter flag is used but the
 			// corresponding adapter block is missing from config. Previously,

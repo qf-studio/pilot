@@ -1960,6 +1960,7 @@ func (s *Store) InvalidateCompletion(taskID, projectPath string) error {
 // A later merge (human recovery PR, retried issue) heals the row back to
 // "completed" via SelfHealExecutionAfterMerge, so this is not a one-way trip.
 func (s *Store) ReclassifyCompletionAsFailed(taskID, projectPath, reason string) error {
+	reason = secretpatterns.Redact(reason)
 	return s.withRetry("ReclassifyCompletionAsFailed", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
@@ -1984,6 +1985,7 @@ func (s *Store) ReclassifyCompletionAsFailed(taskID, projectPath, reason string)
 // rows misread that way); "superseded" is a muted, distinct outcome instead
 // (see internal/dashboard/stage_strip.go's mutedOutcomes).
 func (s *Store) ReclassifyCompletionAsSuperseded(taskID, projectPath, reason string) error {
+	reason = secretpatterns.Redact(reason)
 	return s.withRetry("ReclassifyCompletionAsSuperseded", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
@@ -2016,6 +2018,7 @@ func (s *Store) ReclassifyCompletionAsSuperseded(taskID, projectPath, reason str
 // projectPath follows ReclassifyCompletionAsFailed's scoping convention:
 // empty drops the scope and matches by task_id alone.
 func (s *Store) TerminateNonTerminalExecution(taskID, projectPath, reason string) error {
+	reason = secretpatterns.Redact(reason)
 	return s.withRetry("TerminateNonTerminalExecution", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
@@ -2037,6 +2040,7 @@ func (s *Store) TerminateNonTerminalExecution(taskID, projectPath, reason string
 // sibling for the GH-4701 case: see ReclassifyCompletionAsSuperseded's doc
 // comment for when this applies over the "failed" variant.
 func (s *Store) TerminateNonTerminalExecutionAsSuperseded(taskID, projectPath, reason string) error {
+	reason = secretpatterns.Redact(reason)
 	return s.withRetry("TerminateNonTerminalExecutionAsSuperseded", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
@@ -2948,13 +2952,13 @@ func (s *Store) ResolveOrphanedRunningExecution(id, prURL string) error {
 				UPDATE executions
 				SET status = 'completed', error = '', completed_at = CURRENT_TIMESTAMP, pr_url = ?
 				WHERE id = ? AND status = 'running'
-			`, prURL, id)
+			`, secretpatterns.Redact(prURL), id)
 		} else {
 			result, err = tx.Exec(`
 				UPDATE executions
 				SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP
 				WHERE id = ? AND status = 'running'
-			`, secretpatterns.Redact(orphanedRunningNoEvidenceError), id)
+			`, orphanedRunningNoEvidenceError, id)
 		}
 		if err != nil {
 			return err
@@ -2968,7 +2972,7 @@ func (s *Store) ResolveOrphanedRunningExecution(id, prURL string) error {
 			return tx.Commit()
 		}
 
-		stage, detail := StageFailed, secretpatterns.Redact(orphanedRunningNoEvidenceError)
+		stage, detail := StageFailed, orphanedRunningNoEvidenceError
 		if prURL != "" {
 			stage, detail = StageMerged, secretpatterns.Redact("orphaned running execution resolved: merged "+prURL)
 		}

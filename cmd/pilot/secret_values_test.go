@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/config"
@@ -185,44 +186,105 @@ func TestLoadConfigRegisteringSecrets_TaskPath(t *testing.T) {
 	}
 }
 
-// lastCfgLoader returns the name of the function whose result was last
-// assigned to the variable cfg in fn before pos ("" when none).
-func lastCfgLoader(fn *ast.FuncDecl, before token.Pos) string {
-	var name string
-	var at token.Pos
+// calleeName renders the callee of call as "name" or "pkg.name".
+func calleeName(call *ast.CallExpr) string {
+	switch f := call.Fun.(type) {
+	case *ast.Ident:
+		return f.Name
+	case *ast.SelectorExpr:
+		if x, ok := f.X.(*ast.Ident); ok {
+			return x.Name + "." + f.Sel.Name
+		}
+	}
+	return ""
+}
+
+// assignsTo returns the right-hand sides assigned to the variable name in fn
+// before pos, in source order.
+func assignsTo(fn *ast.FuncDecl, name string, before token.Pos) []ast.Expr {
+	var out []ast.Expr
 	ast.Inspect(fn, func(n ast.Node) bool {
 		as, ok := n.(*ast.AssignStmt)
-		if !ok || len(as.Lhs) == 0 || len(as.Rhs) != 1 || as.Pos() >= before || as.Pos() < at {
+		if !ok || as.Pos() >= before {
 			return true
 		}
-		lhs, ok := as.Lhs[0].(*ast.Ident)
-		call, isCall := as.Rhs[0].(*ast.CallExpr)
-		if !ok || lhs.Name != "cfg" || !isCall {
-			return true
-		}
-		at = as.Pos()
-		switch f := call.Fun.(type) {
-		case *ast.Ident:
-			name = f.Name
-		case *ast.SelectorExpr:
-			if x, ok := f.X.(*ast.Ident); ok {
-				name = x.Name + "." + f.Sel.Name
+		for i, lhs := range as.Lhs {
+			id, ok := lhs.(*ast.Ident)
+			if !ok || id.Name != name {
+				continue
+			}
+			switch {
+			case len(as.Rhs) == len(as.Lhs):
+				out = append(out, as.Rhs[i])
+			case len(as.Rhs) == 1:
+				out = append(out, as.Rhs[0]) // cfg, err := load()
 			}
 		}
 		return true
 	})
-	return name
+	return out
+}
+
+// loaderOf returns the function whose result was last assigned to the
+// variable name in fn before pos ("" when none).
+func loaderOf(fn *ast.FuncDecl, name string, before token.Pos) string {
+	var loader string
+	for _, rhs := range assignsTo(fn, name, before) {
+		if call, ok := rhs.(*ast.CallExpr); ok {
+			loader = calleeName(call)
+		}
+	}
+	return loader
+}
+
+// runnerConfigVar names the config variable the argument of a
+// NewRunnerWithConfig call at pos is derived from: x for x.Executor, and for
+// a plain variable the x of its x.Executor assignment (the backend config
+// pulled out of a loaded config), else the variable itself.
+func runnerConfigVar(fn *ast.FuncDecl, arg ast.Expr, pos token.Pos) string {
+	switch a := arg.(type) {
+	case *ast.SelectorExpr:
+		if x, ok := a.X.(*ast.Ident); ok && a.Sel.Name == "Executor" {
+			return x.Name
+		}
+	case *ast.Ident:
+		for _, rhs := range assignsTo(fn, a.Name, pos) {
+			if sel, ok := rhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "Executor" {
+				if x, ok := sel.X.(*ast.Ident); ok {
+					return x.Name
+				}
+			}
+		}
+		return a.Name
+	}
+	return ""
+}
+
+// runnerConfigLoaders returns, for every NewRunnerWithConfig call in fn, the
+// function that loaded the config the Runner is built from.
+func runnerConfigLoaders(fn *ast.FuncDecl) []string {
+	var loaders []string
+	ast.Inspect(fn, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) != 1 || !strings.HasSuffix(calleeName(call), ".NewRunnerWithConfig") {
+			return true
+		}
+		cfgVar := runnerConfigVar(fn, call.Args[0], call.Pos())
+		loaders = append(loaders, cfgVar+" <- "+loaderOf(fn, cfgVar, call.Pos()))
+		return true
+	})
+	return loaders
 }
 
 // The config a command hands to executor.NewRunnerWithConfig must come from
 // loadConfigRegisteringSecrets, so no entry point records a session before
-// its secrets are registered (GH-6266). The check is per command function: the
-// last cfg assignment before the Runner is built is the one that counts.
+// its secrets are registered (GH-6266). The check is per command function and
+// covers every Runner it builds, whatever the config variable is called.
 func TestRunnerBuildingCommandsRegisterSecrets(t *testing.T) {
 	tests := []struct {
 		file, fn string
-		// runnerAnchored: the Runner is built in fn from cfg.Executor; else
-		// fn only loads the config that its helpers build Runners from.
+		// runnerAnchored: the Runner is built in fn; else fn only loads the
+		// config that its helpers build Runners from.
 		runnerAnchored bool
 	}{
 		{"commands.go", "newTaskCmd", true},
@@ -246,27 +308,20 @@ func TestRunnerBuildingCommandsRegisterSecrets(t *testing.T) {
 			if fn == nil {
 				t.Fatalf("%s not found in %s", tt.fn, tt.file)
 			}
-			anchor := fn.End()
-			if tt.runnerAnchored {
-				anchor = token.NoPos
-				ast.Inspect(fn, func(n ast.Node) bool {
-					call, ok := n.(*ast.CallExpr)
-					if !ok || len(call.Args) != 1 {
-						return true
-					}
-					sel, ok := call.Fun.(*ast.SelectorExpr)
-					arg, argOK := call.Args[0].(*ast.SelectorExpr)
-					if ok && argOK && sel.Sel.Name == "NewRunnerWithConfig" && arg.Sel.Name == "Executor" {
-						anchor = call.Pos()
-					}
-					return true
-				})
-				if anchor == token.NoPos {
-					t.Fatalf("%s: no NewRunnerWithConfig(cfg.Executor) call", tt.fn)
+			if !tt.runnerAnchored {
+				if got := loaderOf(fn, "cfg", fn.End()); got != "loadConfigRegisteringSecrets" {
+					t.Errorf("%s loads cfg with %q, want loadConfigRegisteringSecrets", tt.fn, got)
 				}
+				return
 			}
-			if got := lastCfgLoader(fn, anchor); got != "loadConfigRegisteringSecrets" {
-				t.Errorf("%s builds its Runner from a cfg loaded by %q, want loadConfigRegisteringSecrets", tt.fn, got)
+			loaders := runnerConfigLoaders(fn)
+			if len(loaders) == 0 {
+				t.Fatalf("%s: no NewRunnerWithConfig call", tt.fn)
+			}
+			for _, got := range loaders {
+				if !strings.HasSuffix(got, " <- loadConfigRegisteringSecrets") {
+					t.Errorf("%s builds a Runner from config %q, want loadConfigRegisteringSecrets", tt.fn, got)
+				}
 			}
 		})
 	}
