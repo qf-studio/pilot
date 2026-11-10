@@ -64,6 +64,22 @@ func TestStartCmdWiresReadGuardConfig(t *testing.T) {
 	}
 }
 
+// mutation pin: `pilot start` stops running the read guard preflight (executor.PreflightReadGuard dropped) -> a host without realpath or jq/python3 blocks every Read, Grep, Glob and Bash call of every run and this test fails
+func TestStartCmdRunsReadGuardPreflight(t *testing.T) {
+	found := false
+	ast.Inspect(mainGoFunc(t, "newStartCmd"), func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "PreflightReadGuard" {
+				found = true
+			}
+		}
+		return !found
+	})
+	if !found {
+		t.Error("newStartCmd does not call executor.PreflightReadGuard")
+	}
+}
+
 // mutation pin: only `pilot start` sets the daemon-wide read guard config, other entrypoints keep the defaults (read_guard: false ignored, custom --config path not denied) -> this test fails
 func TestEveryEntrypointAppliesReadGuardConfig(t *testing.T) {
 	t.Cleanup(func() { executor.SetReadGuardConfig(nil) })
