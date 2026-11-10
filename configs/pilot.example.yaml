@@ -944,9 +944,7 @@ executor:
   #                                # blocks Read/Grep/Glob/NotebookRead/Bash calls that touch ~/.pilot,
   #                                # the loaded config file or /proc/*/environ. Guards against accidental
   #                                # reads (an agent cat-ing config.yaml); NOT a security boundary - a
-  #                                # separate uid is the real fix. Set false only to debug. Needs realpath
-  #                                # and jq or python3 on the host; at daemon start a missing one logs an
-  #                                # Error and turns the guard off for the process (GH-6267).
+  #                                # separate uid is the real fix. Set false only to debug.
   #   # env_passthrough (GH-5277): names of environment variables that survive
   #   # the model-subprocess env scrub (GH-5275/GH-5276) even though their name
   #   # looks secret-shaped (matches *_TOKEN/*_SECRET/*_API_KEY/etc). The scrub
