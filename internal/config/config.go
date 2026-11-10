@@ -70,7 +70,41 @@ type Config struct {
 
 // SecurityConfig groups the security hardening settings.
 type SecurityConfig struct {
-	LeakScan *LeakScanConfig `yaml:"leak_scan"`
+	LeakScan         *LeakScanConfig         `yaml:"leak_scan"`
+	GitHubAlertWatch *GitHubAlertWatchConfig `yaml:"github_alert_watch"`
+}
+
+// GitHubAlertWatchConfig controls the GitHub secret-scanning alert watcher
+// (GH-6264): every Interval it lists the open secret-scanning alerts of each
+// configured GitHub repo and raises a security_event alert per alert number
+// not seen before.
+type GitHubAlertWatchConfig struct {
+	// Enabled defaults to true.
+	Enabled bool `yaml:"enabled"`
+	// Interval between polls; zero means 1h.
+	Interval time.Duration `yaml:"interval"`
+}
+
+// DefaultGitHubAlertWatchInterval is the poll period when
+// security.github_alert_watch.interval is unset. It mirrors
+// secretalerts.DefaultInterval.
+const DefaultGitHubAlertWatchInterval = time.Hour
+
+// GitHubAlertWatchEnabled reports whether the secret-scanning alert watcher
+// runs. It is on unless security.github_alert_watch.enabled is explicitly false.
+func (c *Config) GitHubAlertWatchEnabled() bool {
+	if c == nil || c.Security == nil || c.Security.GitHubAlertWatch == nil {
+		return true
+	}
+	return c.Security.GitHubAlertWatch.Enabled
+}
+
+// GitHubAlertWatchInterval returns the configured poll period or the 1h default.
+func (c *Config) GitHubAlertWatchInterval() time.Duration {
+	if c == nil || c.Security == nil || c.Security.GitHubAlertWatch == nil || c.Security.GitHubAlertWatch.Interval <= 0 {
+		return DefaultGitHubAlertWatchInterval
+	}
+	return c.Security.GitHubAlertWatch.Interval
 }
 
 // LeakScanConfig controls the runtime leak scanner (GH-6250): every Interval
@@ -787,7 +821,8 @@ func DefaultConfig() *Config {
 		Tunnel:   tunnel.DefaultConfig(),
 		Webhooks: webhooks.DefaultConfig(),
 		Security: &SecurityConfig{
-			LeakScan: &LeakScanConfig{Enabled: true, Interval: DefaultLeakScanInterval},
+			LeakScan:         &LeakScanConfig{Enabled: true, Interval: DefaultLeakScanInterval},
+			GitHubAlertWatch: &GitHubAlertWatchConfig{Enabled: true, Interval: DefaultGitHubAlertWatchInterval},
 		},
 		Upgrade: &UpgradeConfig{
 			AutoHotUpgrade:        true,

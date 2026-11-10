@@ -989,8 +989,13 @@ func (e *Engine) handleBudgetEvent(ctx context.Context, event Event) {
 // internal/leakscan (GH-6250). They fire only AlertTypeSecretLeak rules.
 const SecurityEventSourceLeakScan = "leakscan"
 
+// SecurityEventSourceGitHubSecretScanning is the Event.Source of security
+// events raised by internal/secretalerts for a new GitHub secret-scanning alert
+// (GH-6264). Like leakscan events they fire only AlertTypeSecretLeak rules.
+const SecurityEventSourceGitHubSecretScanning = "github_secret_scanning"
+
 func (e *Engine) handleSecurityEvent(ctx context.Context, event Event) {
-	leak := event.Source == SecurityEventSourceLeakScan
+	leak := event.Source == SecurityEventSourceLeakScan || event.Source == SecurityEventSourceGitHubSecretScanning
 	for _, rule := range e.config.Rules {
 		if !rule.Enabled {
 			continue
@@ -1004,6 +1009,10 @@ func (e *Engine) handleSecurityEvent(ctx context.Context, event Event) {
 			if e.shouldFire(rule) {
 				msg := fmt.Sprintf("Possible secret in %s (%s, sample %s)",
 					event.Metadata["file"], event.Metadata["kind"], event.Metadata["sample"])
+				if event.Source == SecurityEventSourceGitHubSecretScanning {
+					msg = fmt.Sprintf("GitHub secret scanning alert #%s in %s (%s): %s",
+						event.Metadata["number"], event.Metadata["repo"], event.Metadata["type"], event.Metadata["html_url"])
+				}
 				alert := e.createAlert(rule, event, msg)
 				e.fireAlert(ctx, rule, alert)
 			}

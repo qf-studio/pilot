@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/logging"
 )
@@ -55,5 +56,44 @@ func TestLeakScanConfigDefaults(t *testing.T) {
 				t.Errorf("interval = %v, want %v", got, tt.wantInterval)
 			}
 		})
+	}
+}
+
+func TestGitHubAlertWatchConfigDefaults(t *testing.T) {
+	tests := []struct {
+		name         string
+		cfg          *config.Config
+		wantEnabled  bool
+		wantInterval time.Duration
+	}{
+		{"nil security", &config.Config{}, true, time.Hour},
+		{"default config", config.DefaultConfig(), true, time.Hour},
+		{"disabled", &config.Config{Security: &config.SecurityConfig{GitHubAlertWatch: &config.GitHubAlertWatchConfig{Enabled: false}}}, false, time.Hour},
+		{"custom interval", &config.Config{Security: &config.SecurityConfig{GitHubAlertWatch: &config.GitHubAlertWatchConfig{Enabled: true, Interval: 2 * time.Hour}}}, true, 2 * time.Hour},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.GitHubAlertWatchEnabled(); got != tt.wantEnabled {
+				t.Errorf("enabled = %v, want %v", got, tt.wantEnabled)
+			}
+			if got := tt.cfg.GitHubAlertWatchInterval(); got != tt.wantInterval {
+				t.Errorf("interval = %v, want %v", got, tt.wantInterval)
+			}
+		})
+	}
+}
+
+func TestSecretAlertRepos(t *testing.T) {
+	cfg := &config.Config{
+		Projects: []*config.ProjectConfig{
+			{Name: "a", GitHub: &config.ProjectGitHubConfig{Owner: "o", Repo: "a"}},
+			{Name: "none"},
+			{Name: "dup", GitHub: &config.ProjectGitHubConfig{Owner: "o", Repo: "a"}},
+		},
+		Adapters: &config.AdaptersConfig{GitHub: &github.Config{Repo: "o/default"}},
+	}
+	got := secretAlertRepos(cfg)
+	if len(got) != 2 || got[0].String() != "o/a" || got[1].String() != "o/default" {
+		t.Errorf("repos = %v, want [o/a o/default]", got)
 	}
 }

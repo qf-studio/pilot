@@ -853,7 +853,7 @@ func defaultRules() []AlertRule {
 			Severity:    SeverityCritical,
 			Channels:    []string{},
 			Cooldown:    0,
-			Description: "Alert when the runtime leak scanner finds a secret in the daemon log or a recording",
+			Description: "Alert when the runtime leak scanner finds a secret in the daemon log or a recording, or GitHub raises a new secret-scanning alert",
 		},
 	}
 }

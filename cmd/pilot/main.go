@@ -3532,6 +3532,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// GH-6250: runtime leak scan — the net under value redaction.
 	startLeakScan(ctx, cfg, dashboardMode, alertsEngine)
 
+	// GH-6264: route GitHub secret-scanning alerts to the alert channels.
+	startSecretAlertWatch(ctx, cfg, alertsEngine)
+
 	// GH-929: Start GitHub polling for multiple repos if enabled
 	// GH-4110: repo-keyed registry of every GitHub poller (populated by the SDK
 	// poller's CreateAndStart). The sub-issue-skip / done-remark / stale-label
