@@ -719,6 +719,17 @@ func (e *Engine) SubmitEvent(ctx context.Context, event Event) bool {
 			case e.priorityCh <- event:
 				return true
 			case <-ctx.Done():
+				// Decision: a cancelled caller (shutdown) is not a full queue.
+				// Only a deadline that ran out while the queue stayed full is
+				// a drop; a cancel is logged and counted on its own (GH-6279).
+				if errors.Is(ctx.Err(), context.Canceled) {
+					e.logger.Warn("security event not queued — submit cancelled",
+						"type", event.Type,
+						"task_id", event.TaskID,
+					)
+					e.metrics.RecordCancelled()
+					return false
+				}
 			}
 		}
 		// The priority queue is independent of eventCh, so this only happens

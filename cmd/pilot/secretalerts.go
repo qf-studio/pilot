@@ -55,23 +55,30 @@ func secretAlertSeenPath(cfg *config.Config) string {
 // every event would be lost, so it does not start and says why in one Warn line
 // (GH-6273).
 func startSecretAlertWatch(ctx context.Context, cfg *config.Config, alertsEngine *alerts.Engine) {
+	startSecretAlertWatchWith(ctx, cfg, alertsEngine, logging.WithComponent("secretalerts"))
+}
+
+// startSecretAlertWatchWith is startSecretAlertWatch with the logger passed in.
+// It reports whether the watcher started. main calls it on the polling and the
+// gateway-only path alike, so the missing-engine Warn shows in both (GH-6279).
+func startSecretAlertWatchWith(ctx context.Context, cfg *config.Config, alertsEngine *alerts.Engine, log *slog.Logger) bool {
 	if !cfg.GitHubAlertWatchEnabled() {
-		return
+		return false
 	}
 	if cfg.Adapters == nil || cfg.Adapters.GitHub == nil || !cfg.Adapters.GitHub.Enabled {
-		return
+		return false
 	}
 	repos := secretAlertRepos(cfg)
 	if len(repos) == 0 {
-		return
+		return false
 	}
 	if token, _ := resolveGitHubToken(cfg); token == "" {
-		return
+		return false
 	}
 	if alertsEngine == nil {
-		logging.WithComponent("secretalerts").Warn("github secret alert watch not started: no alerts engine (alerts disabled or the engine failed to start), so an alert could not be delivered",
+		log.Warn("github secret alert watch not started: no alerts engine (alerts disabled or the engine failed to start), so an alert could not be delivered",
 			slog.Int("repos", len(repos)))
-		return
+		return false
 	}
 	// One client per repo, resolved the way the poller resolves its own
 	// (newGitHubClient re-reads the token on every request). Config holds one
@@ -87,10 +94,11 @@ func startSecretAlertWatch(ctx context.Context, cfg *config.Config, alertsEngine
 		Repos:     repos,
 		SeenPath:  secretAlertSeenPath(cfg),
 		Interval:  cfg.GitHubAlertWatchInterval(),
-		Logger:    logging.WithComponent("secretalerts"),
+		Logger:    log,
 	})
 	logging.SafeGo("secretalerts", func() { watcher.Run(ctx) })
 	logging.WithComponent("start").Info("github secret alert watch started",
 		slog.Duration("interval", cfg.GitHubAlertWatchInterval()),
 		slog.Int("repos", len(repos)))
+	return true
 }

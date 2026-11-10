@@ -166,10 +166,17 @@ func TestScanOnce_LargeRecordingFinishedAcrossTicks(t *testing.T) {
 	t.Cleanup(func() { maxPerTick = old })
 
 	rec := filepath.Join(t.TempDir(), "recordings")
-	run := filepath.Join(rec, "TASK-1")
-	if err := os.MkdirAll(run, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(rec, "TASK-1"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// The scanner keys recOffsets by the symlink-resolved root. On macOS
+	// t.TempDir() is under /var, a symlink to /private/var, so the offset is
+	// looked up by the resolved path (GH-6279).
+	rec, err := filepath.EvalSymlinks(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := filepath.Join(rec, "TASK-1")
 	s, sink := newScanner(t, "", rec)
 	stream := filepath.Join(run, "stream.jsonl")
 	writeFile(t, stream, strings.Repeat("0123456789abcdef\n", 60)+"leak "+tokenShape+"\n")

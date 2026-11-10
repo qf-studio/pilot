@@ -487,13 +487,17 @@ func (c *Client) ListSecretScanningAlerts(ctx context.Context, owner, repo, stat
 }
 
 // ListSecretScanningAlertsCapped is ListSecretScanningAlerts that also reports
-// whether pagination stopped at the page cap with more pages left, so the
-// returned list is partial (GH-6273).
+// whether pagination stopped at the page cap with more alerts left (checked
+// with one probe request past the cap), so the returned list is partial
+// (GH-6273, GH-6279).
 func (c *Client) ListSecretScanningAlertsCapped(ctx context.Context, owner, repo, state string) ([]*SecretScanningAlert, bool, error) {
 	const perPage = 100
 
 	var alerts []*SecretScanningAlert
-	for page := 1; page <= maxSecretScanningPages; page++ {
+	// One page past the cap is only a probe: a repo with exactly the capped
+	// number of alerts is complete, so the list is partial only when that extra
+	// page holds more (GH-6279).
+	for page := 1; page <= maxSecretScanningPages+1; page++ {
 		path := fmt.Sprintf("/repos/%s/%s/secret-scanning/alerts?", owner, repo)
 		if state != "" {
 			path += "state=" + url.QueryEscape(state) + "&"
@@ -503,12 +507,15 @@ func (c *Client) ListSecretScanningAlertsCapped(ctx context.Context, owner, repo
 		if err := c.doRequest(ctx, http.MethodGet, path, nil, &batch); err != nil {
 			return nil, false, err
 		}
+		if page > maxSecretScanningPages {
+			return alerts, len(batch) > 0, nil
+		}
 		alerts = append(alerts, batch...)
 		if len(batch) < perPage {
 			return alerts, false, nil
 		}
 	}
-	return alerts, true, nil
+	return alerts, false, nil // unreachable: the probe page returns
 }
 
 // ListIssueEvents returns an issue's timeline events (labeled, unlabeled,

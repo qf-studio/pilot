@@ -8,7 +8,9 @@
 // the sink accepted its event, so a refused or dropped event is retried on the
 // next tick. Seen numbers persist per repo with the alert's updated_at in a
 // 0600 JSON file, so a restart does not resend, and an alert that is reopened
-// (newer updated_at) fires again. Numbers that are no longer open leave the file.
+// (newer updated_at) fires again. Numbers that are no longer open leave the file,
+// and so does a repo that is no longer in the config. The times of the weekly
+// "unavailable" notices persist next to it, so a restart does not repeat them.
 //
 // The API's "secret" field is never decoded (see github.SecretScanningAlert),
 // so the live credential cannot reach an event, a log line or the seen file.
@@ -23,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,13 +40,22 @@ const (
 	// SeenFileName is the seen-numbers file inside the Pilot data directory.
 	SeenFileName = "secret-alerts-seen.json"
 
+	// NoticesFileName holds the last time of each weekly notice per repo. It
+	// sits next to the seen file.
+	NoticesFileName = "secret-alerts-notices.json"
+
+	// disabledMessage is what GitHub answers with (404) for a repo that has
+	// secret scanning switched off. That is a setting, not a leak signal.
+	disabledMessage = "secret scanning is disabled on this repository"
+
 	// permissionHint tells the operator what a 403/404 needs.
 	permissionHint = "grant secret_scanning_alerts: read (GitHub App) or the security_events / repo scope (token), and enable secret scanning on the repository"
 )
 
 // unavailableEventEvery is the minimum gap between the security_events that
 // report a 403/404 for one repo, so the gap is visible outside the daemon log
-// without paging every poll.
+// without paging every poll. It is also the gap between the Warn lines of a
+// repo with scanning disabled.
 const unavailableEventEvery = 7 * 24 * time.Hour
 
 // submitTimeout bounds one sink submission.
@@ -100,7 +112,16 @@ type Watcher struct {
 	seen      map[string]map[int]time.Time // repo -> alert number -> updated_at when its event was accepted
 	loaded    bool
 	warnedDay map[string]string    // repo -> UTC day of the last permission Warn
-	eventedAt map[string]time.Time // repo -> last accepted "unavailable" security_event
+	capDay    map[string]string    // repo -> UTC day of the last page-cap Warn
+	eventedAt map[string]time.Time // repo -> last accepted "unavailable" security_event (persisted)
+	disabled  map[string]time.Time // repo -> last "scanning disabled" Warn (persisted)
+	refused   int                  // events the sink refused during the current poll
+}
+
+// notices is the on-disk form of the weekly notice times.
+type notices struct {
+	Events   map[string]time.Time `json:"events"`
+	Disabled map[string]time.Time `json:"disabled"`
 }
 
 // NewWatcher builds a watcher. The seen file is read on the first poll.
@@ -120,7 +141,9 @@ func NewWatcher(cfg Config) *Watcher {
 		log:       log.With(slog.String("component", "secretalerts")),
 		seen:      make(map[string]map[int]time.Time),
 		warnedDay: make(map[string]string),
+		capDay:    make(map[string]string),
 		eventedAt: make(map[string]time.Time),
+		disabled:  make(map[string]time.Time),
 	}
 }
 
@@ -145,11 +168,17 @@ func (w *Watcher) PollOnce(ctx context.Context) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.load()
+	w.refused = 0
 	for _, repo := range w.cfg.Repos {
 		if ctx.Err() != nil {
-			return
+			break
 		}
 		w.pollRepo(ctx, repo)
+	}
+	// One line per poll, not two per alert (GH-6279).
+	if w.refused > 0 {
+		w.log.Warn("secret scanning events not accepted by the alert engine; retrying next poll",
+			slog.Int("events", w.refused))
 	}
 }
 
@@ -171,8 +200,13 @@ func (w *Watcher) pollRepo(ctx context.Context, repo Repo) {
 	}
 	delete(w.warnedDay, key) // the repo answers again: warn afresh if it stops
 	if capped {
-		w.log.Warn("secret scanning alert list stopped at the page cap; later alerts are not watched",
-			slog.String("repo", key), slog.Int("listed", len(list)))
+		if day := w.cfg.Now().UTC().Format("2006-01-02"); w.capDay[key] != day {
+			w.capDay[key] = day
+			w.log.Warn("secret scanning alert list stopped at the page cap; later alerts are not watched",
+				slog.String("repo", key), slog.Int("listed", len(list)))
+		}
+	} else {
+		delete(w.capDay, key)
 	}
 
 	seen := w.seen[key]
@@ -234,6 +268,18 @@ func (w *Watcher) logListError(ctx context.Context, key string, err error) {
 		return
 	}
 	now := w.cfg.Now()
+	if apiErr.StatusCode == http.StatusNotFound && strings.Contains(strings.ToLower(apiErr.Message), disabledMessage) {
+		// Decision: scanning switched off is a setting, not a leak signal, so
+		// it gets one Warn per repo per week and no security_event (GH-6279).
+		// 403 and any other 404 keep the event: they mean no access.
+		if last, ok := w.disabled[key]; !ok || now.Sub(last) >= unavailableEventEvery {
+			w.disabled[key] = now
+			w.saveNotices()
+			w.log.Warn("secret scanning is disabled on this repository; its alerts are not watched",
+				slog.String("repo", key))
+		}
+		return
+	}
 	if day := now.UTC().Format("2006-01-02"); w.warnedDay[key] != day {
 		w.warnedDay[key] = day
 		w.log.Warn("secret scanning alerts unavailable",
@@ -257,17 +303,12 @@ func (w *Watcher) logListError(ctx context.Context, key string, err error) {
 		Timestamp: now,
 	}) {
 		w.eventedAt[key] = now
+		w.saveNotices()
 	}
 }
 
 // send raises the event for one alert and reports whether the sink accepted it.
 func (w *Watcher) send(ctx context.Context, key string, a *github.SecretScanningAlert, reopened bool) bool {
-	w.log.Warn("new secret scanning alert",
-		slog.String("repo", key),
-		slog.Int("number", a.Number),
-		slog.String("type", a.SecretType),
-		slog.String("url", a.HTMLURL),
-		slog.Bool("reopened", reopened))
 	accepted := w.submit(ctx, alerts.Event{
 		Type:   alerts.EventTypeSecurityEvent,
 		Source: alerts.SecurityEventSourceGitHubSecretScanning,
@@ -281,25 +322,44 @@ func (w *Watcher) send(ctx context.Context, key string, a *github.SecretScanning
 		},
 		Timestamp: w.cfg.Now(),
 	})
-	if !accepted {
-		w.log.Warn("secret scanning alert event not accepted; retrying next poll",
-			slog.String("repo", key), slog.Int("number", a.Number))
+	if accepted {
+		w.log.Warn("new secret scanning alert",
+			slog.String("repo", key),
+			slog.Int("number", a.Number),
+			slog.String("type", a.SecretType),
+			slog.String("url", a.HTMLURL),
+			slog.Bool("reopened", reopened))
 	}
 	return accepted
 }
 
 // submit hands an event to the sink; a nil sink accepts nothing.
+// A refusal is counted for the one Warn line of the poll.
 func (w *Watcher) submit(ctx context.Context, event alerts.Event) bool {
 	if w.cfg.Sink == nil {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(ctx, submitTimeout)
 	defer cancel()
-	return w.cfg.Sink.SubmitEvent(ctx, event)
+	if w.cfg.Sink.SubmitEvent(ctx, event) {
+		return true
+	}
+	w.refused++
+	return false
 }
 
-// load reads the seen file once. A missing or unreadable file leaves the set
-// empty, so every currently open alert counts as new.
+// noticesPath is the notice-times file next to the seen file; empty keeps the
+// times in memory only.
+func (w *Watcher) noticesPath() string {
+	if w.cfg.SeenPath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(w.cfg.SeenPath), NoticesFileName)
+}
+
+// load reads the seen file and the notice times once, then drops the repos that
+// are no longer configured. A missing or unreadable file leaves the set empty,
+// so every currently open alert counts as new.
 func (w *Watcher) load() {
 	if w.loaded {
 		return
@@ -308,6 +368,70 @@ func (w *Watcher) load() {
 	if w.cfg.SeenPath == "" {
 		return
 	}
+	w.loadSeen()
+	w.loadNotices()
+	w.pruneUnconfigured()
+}
+
+// pruneUnconfigured drops the seen entries and notice times of repos that are
+// not in the config any more, so the files do not keep them for good.
+func (w *Watcher) pruneUnconfigured() {
+	keep := make(map[string]bool, len(w.cfg.Repos))
+	for _, r := range w.cfg.Repos {
+		keep[r.String()] = true
+	}
+	seenChanged, noticesChanged := false, false
+	for repo := range w.seen {
+		if !keep[repo] {
+			delete(w.seen, repo)
+			seenChanged = true
+		}
+	}
+	for _, m := range []map[string]time.Time{w.eventedAt, w.disabled} {
+		for repo := range m {
+			if !keep[repo] {
+				delete(m, repo)
+				noticesChanged = true
+			}
+		}
+	}
+	if seenChanged {
+		w.save()
+	}
+	if noticesChanged {
+		w.saveNotices()
+	}
+}
+
+func (w *Watcher) loadNotices() {
+	path := w.noticesPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			w.log.Warn("read secret alert notices file failed", slog.String("file", path), slog.Any("error", err))
+		}
+		return
+	}
+	var stored notices
+	if err := json.Unmarshal(data, &stored); err != nil {
+		w.log.Warn("parse secret alert notices file failed", slog.String("file", path), slog.Any("error", err))
+		return
+	}
+	for repo, at := range stored.Events {
+		w.eventedAt[repo] = at
+	}
+	for repo, at := range stored.Disabled {
+		w.disabled[repo] = at
+	}
+}
+
+// saveNotices writes the notice times atomically with mode 0600.
+func (w *Watcher) saveNotices() {
+	w.writeFile(w.noticesPath(), notices{Events: w.eventedAt, Disabled: w.disabled}, "notices")
+}
+
+// loadSeen reads the seen file.
+func (w *Watcher) loadSeen() {
 	data, err := os.ReadFile(w.cfg.SeenPath)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
@@ -346,10 +470,6 @@ func (w *Watcher) load() {
 
 // save writes the seen set atomically with mode 0600.
 func (w *Watcher) save() {
-	path := w.cfg.SeenPath
-	if path == "" {
-		return
-	}
 	stored := make(map[string]map[string]time.Time, len(w.seen))
 	for repo, m := range w.seen {
 		entries := make(map[string]time.Time, len(m))
@@ -358,27 +478,36 @@ func (w *Watcher) save() {
 		}
 		stored[repo] = entries
 	}
-	data, err := json.MarshalIndent(stored, "", "  ")
+	w.writeFile(w.cfg.SeenPath, stored, "seen")
+}
+
+// writeFile writes v as JSON to path atomically with mode 0600. An empty path
+// writes nothing.
+func (w *Watcher) writeFile(path string, v any, what string) {
+	if path == "" {
+		return
+	}
+	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		w.log.Warn("encode secret alert seen file failed", slog.Any("error", err))
+		w.log.Warn("encode secret alert "+what+" file failed", slog.Any("error", err))
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		w.log.Warn("create secret alert seen dir failed", slog.Any("error", err))
+		w.log.Warn("create secret alert "+what+" dir failed", slog.Any("error", err))
 		return
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		w.log.Warn("write secret alert seen file failed", slog.String("file", path), slog.Any("error", err))
+		w.log.Warn("write secret alert "+what+" file failed", slog.String("file", path), slog.Any("error", err))
 		return
 	}
 	if err := os.Chmod(tmp, 0o600); err != nil {
 		_ = os.Remove(tmp)
-		w.log.Warn("chmod secret alert seen file failed", slog.String("file", path), slog.Any("error", err))
+		w.log.Warn("chmod secret alert "+what+" file failed", slog.String("file", path), slog.Any("error", err))
 		return
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		w.log.Warn("save secret alert seen file failed", slog.String("file", path), slog.Any("error", err))
+		w.log.Warn("save secret alert "+what+" file failed", slog.String("file", path), slog.Any("error", err))
 	}
 }

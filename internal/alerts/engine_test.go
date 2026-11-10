@@ -1,6 +1,7 @@
 package alerts
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -5321,6 +5322,67 @@ func TestEngine_SecurityEvent_SubmitEventBlocksNotDrops(t *testing.T) {
 	}
 	if engine.SubmitEvent(context.Background(), Event{Type: EventTypeTaskProgress}) {
 		t.Error("ordinary event accepted on a full queue")
+	}
+}
+
+// TestEngine_SecurityEvent_RefusedSubmitCauses verifies a refused security event
+// on a full queue is told apart by cause: an expired deadline is a drop (error
+// line, dropped counter), a cancelled caller is neither (one Warn line, its own
+// counter) (GH-6279).
+func TestEngine_SecurityEvent_RefusedSubmitCauses(t *testing.T) {
+	tests := []struct {
+		name          string
+		ctx           func() (context.Context, context.CancelFunc)
+		wantDropped   int64
+		wantCancelled int64
+		wantLog       string
+		denyLog       string
+	}{
+		{
+			name: "deadline with a full queue is a drop",
+			ctx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 20*time.Millisecond)
+			},
+			wantDropped: 1,
+			wantLog:     "priority queue full",
+			denyLog:     "submit cancelled",
+		},
+		{
+			name: "cancel is not a drop",
+			ctx: func() (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, cancel
+			},
+			wantCancelled: 1,
+			wantLog:       "submit cancelled",
+			denyLog:       "priority queue full",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+			engine := NewEngine(&AlertConfig{Enabled: true}, WithLogger(logger)) // not Started: nothing drains
+			for i := 0; i < cap(engine.priorityCh); i++ {
+				if !engine.SubmitEvent(context.Background(), Event{Type: EventTypeSecurityEvent}) {
+					t.Fatalf("event %d refused with room in the queue", i)
+				}
+			}
+			ctx, cancel := tt.ctx()
+			defer cancel()
+			if engine.SubmitEvent(ctx, Event{Type: EventTypeSecurityEvent}) {
+				t.Fatal("full queue and finished context: SubmitEvent returned true")
+			}
+			snap := engine.metrics.Snapshot()
+			if snap.DroppedTotal != tt.wantDropped || snap.CancelledTotal != tt.wantCancelled {
+				t.Errorf("dropped=%d cancelled=%d, want dropped=%d cancelled=%d",
+					snap.DroppedTotal, snap.CancelledTotal, tt.wantDropped, tt.wantCancelled)
+			}
+			if !strings.Contains(buf.String(), tt.wantLog) || strings.Contains(buf.String(), tt.denyLog) {
+				t.Errorf("log want %q and not %q:\n%s", tt.wantLog, tt.denyLog, buf.String())
+			}
+		})
 	}
 }
 
