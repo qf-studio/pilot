@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
@@ -29,9 +30,10 @@ func NewGitHubPRCreator(client *githubSDK.Client, owner, repo string) *GitHubPRC
 // create because an open PR for the branch exists, the existing PR's URL is
 // recovered and returned instead of an error.
 func (g *GitHubPRCreator) CreatePR(ctx context.Context, sourceBranch, targetBranch, title, body string) (string, error) {
+	// GH-6263: a registered value or secret shape never reaches a public PR.
 	pr, err := g.client.CreatePullRequest(ctx, g.owner, g.repo, &githubSDK.PullRequestInput{
-		Title: title,
-		Body:  body,
+		Title: secretpatterns.Redact(title),
+		Body:  secretpatterns.Redact(body),
 		Head:  sourceBranch,
 		Base:  targetBranch,
 	})

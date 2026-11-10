@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 // mechanicalResolutionCommitMessage is the commit used when autopilot
@@ -93,6 +95,9 @@ func resolveGoModSumConflict(ctx context.Context, worktreePath, branchName strin
 		return fmt.Errorf("commit mechanical resolution: %w", err)
 	}
 
+	if err := executor.CheckSecretGate(ctx, worktreePath, "HEAD", ""); err != nil {
+		return fmt.Errorf("push mechanical resolution to %s: %w", branchName, err)
+	}
 	if err := runGitCmd(ctx, worktreePath, "push", "origin", "HEAD:refs/heads/"+branchName); err != nil {
 		return fmt.Errorf("push mechanical resolution to %s: %w", branchName, err)
 	}
