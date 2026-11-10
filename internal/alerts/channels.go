@@ -175,14 +175,14 @@ func (c *TelegramChannel) formatMessage(alert *Alert) string {
 	fmt.Fprintf(&sb, "*%s*\n", escapeMarkdown(alert.Title))
 	fmt.Fprintf(&sb, "%s\n\n", escapeMarkdown(alert.Message))
 
-	fmt.Fprintf(&sb, "📋 *Type:* `%s`\n", alert.Type)
+	fmt.Fprintf(&sb, "📋 *Type:* `%s`\n", escapeCodeSpan(string(alert.Type)))
 
 	if alert.Source != "" {
-		fmt.Fprintf(&sb, "🔗 *Source:* `%s`\n", alert.Source)
+		fmt.Fprintf(&sb, "🔗 *Source:* `%s`\n", escapeCodeSpan(alert.Source))
 	}
 
 	if alert.ProjectPath != "" {
-		fmt.Fprintf(&sb, "📁 *Project:* `%s`\n", alert.ProjectPath)
+		fmt.Fprintf(&sb, "📁 *Project:* `%s`\n", escapeCodeSpan(alert.ProjectPath))
 	}
 
 	fmt.Fprintf(&sb, "\n🕐 %s", alert.CreatedAt.Format(time.RFC822))
@@ -224,6 +224,14 @@ func escapeMarkdown(text string) string {
 		"!", "\\!",
 	)
 	return replacer.Replace(text)
+}
+
+// escapeCodeSpan escapes text for a MarkdownV2 `code` span, where only the
+// backtick and the backslash are special. GH-6276: the span fields (type,
+// source, project path) were interpolated raw, so one backtick in a path ended
+// the entity and Telegram rejected the whole alert.
+func escapeCodeSpan(text string) string {
+	return strings.NewReplacer("\\", "\\\\", "`", "\\`").Replace(text)
 }
 
 // WebhookChannel sends alerts to a webhook endpoint

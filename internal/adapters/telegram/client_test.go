@@ -846,3 +846,24 @@ func TestSendBriefMessagePassesMessageThreadID(t *testing.T) {
 		})
 	}
 }
+
+// GH-6276: only a 400 "can't parse entities" answer triggers the plain-text retry.
+func TestIsParseEntitiesError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"400 parse entities", errors.New("telegram API error: Bad Request: can't parse entities: Can't find end of the entity starting at byte offset 171 (code: 400)"), true},
+		{"other 400", errors.New("telegram API error: Bad Request: chat not found (code: 400)"), false},
+		{"403", errors.New("telegram API error: Forbidden (code: 403)"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsParseEntitiesError(tt.err); got != tt.want {
+				t.Errorf("IsParseEntitiesError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}

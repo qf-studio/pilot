@@ -7349,3 +7349,107 @@ func TestStore_GetLiveExecutions(t *testing.T) {
 		t.Errorf("expected 4 live executions, got %d", len(live))
 	}
 }
+
+// GH-6276: ReconcileFailedExecutionAfterMerge flips only the latest 'failed'
+// row of the task and project to 'completed'.
+func TestReconcileFailedExecutionAfterMerge(t *testing.T) {
+	const prURL = "https://github.com/o/r/pull/6270"
+	base := time.Now().Add(-time.Hour)
+
+	tests := []struct {
+		name        string
+		rows        []Execution
+		projectPath string
+		wantChanged bool
+		wantStatus  map[string]string
+	}{
+		{
+			name: "latest failed row completes, older generation stays failed",
+			rows: []Execution{
+				{ID: "old", TaskID: "GH-6264", ProjectPath: "/p", Status: "failed", Error: "e", CreatedAt: base},
+				{ID: "new", TaskID: "GH-6264", ProjectPath: "/p", Status: "failed", Error: "rebase failed", CreatedAt: base.Add(time.Minute)},
+			},
+			projectPath: "/p",
+			wantChanged: true,
+			wantStatus:  map[string]string{"old": "failed", "new": "completed"},
+		},
+		{
+			name: "other task untouched",
+			rows: []Execution{
+				{ID: "mine", TaskID: "GH-6264", ProjectPath: "/p", Status: "failed", Error: "e", CreatedAt: base},
+				{ID: "other", TaskID: "GH-6265", ProjectPath: "/p", Status: "failed", Error: "e", CreatedAt: base.Add(time.Minute)},
+			},
+			projectPath: "/p",
+			wantChanged: true,
+			wantStatus:  map[string]string{"mine": "completed", "other": "failed"},
+		},
+		{
+			name: "other project untouched",
+			rows: []Execution{
+				{ID: "elsewhere", TaskID: "GH-6264", ProjectPath: "/q", Status: "failed", Error: "e", CreatedAt: base},
+			},
+			projectPath: "/p",
+			wantChanged: false,
+			wantStatus:  map[string]string{"elsewhere": "failed"},
+		},
+		{
+			name: "newer running row shields the older failed one",
+			rows: []Execution{
+				{ID: "failed-old", TaskID: "GH-6264", ProjectPath: "/p", Status: "failed", Error: "e", CreatedAt: base},
+				{ID: "live-retry", TaskID: "GH-6264", ProjectPath: "/p", Status: "running", CreatedAt: base.Add(time.Minute)},
+			},
+			projectPath: "/p",
+			wantChanged: false,
+			wantStatus:  map[string]string{"failed-old": "failed", "live-retry": "running"},
+		},
+		{
+			name: "latest row not failed is left alone",
+			rows: []Execution{
+				{ID: "done", TaskID: "GH-6264", ProjectPath: "/p", Status: "declined", CreatedAt: base},
+			},
+			projectPath: "/p",
+			wantChanged: false,
+			wantStatus:  map[string]string{"done": "declined"},
+		},
+		{
+			name:        "no rows",
+			projectPath: "/p",
+			wantChanged: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+			for i := range tt.rows {
+				if err := store.SaveExecution(&tt.rows[i]); err != nil {
+					t.Fatalf("SaveExecution: %v", err)
+				}
+			}
+
+			changed, err := store.ReconcileFailedExecutionAfterMerge("GH-6264", tt.projectPath, prURL)
+			if err != nil {
+				t.Fatalf("ReconcileFailedExecutionAfterMerge: %v", err)
+			}
+			if changed != tt.wantChanged {
+				t.Errorf("changed = %v, want %v", changed, tt.wantChanged)
+			}
+			for id, want := range tt.wantStatus {
+				got, err := store.GetExecution(id)
+				if err != nil {
+					t.Fatalf("GetExecution %s: %v", id, err)
+				}
+				if got.Status != want {
+					t.Errorf("row %s status = %q, want %q", id, got.Status, want)
+				}
+				if want == "completed" && (got.PRUrl != prURL || got.Error != "") {
+					t.Errorf("row %s pr_url=%q error=%q, want pr_url stamped and error cleared", id, got.PRUrl, got.Error)
+				}
+			}
+		})
+	}
+}

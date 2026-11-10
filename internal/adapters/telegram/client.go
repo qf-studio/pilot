@@ -328,6 +328,17 @@ func (c *Client) Verify(ctx context.Context) error {
 	return nil
 }
 
+// IsParseEntitiesError reports whether err is Telegram's 400 answer to a
+// message whose text its parse mode could not parse ("can't parse entities").
+// Callers use it to send the same text once more with no parse mode. GH-6276.
+func IsParseEntitiesError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "can't parse entities") && strings.Contains(msg, "code: 400")
+}
+
 // SendMessage sends a message to a chat
 func (c *Client) SendMessage(ctx context.Context, chatID, text, parseMode string, messageThreadID int64) (*SendMessageResponse, error) {
 	req := SendMessageRequest{

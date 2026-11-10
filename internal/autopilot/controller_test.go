@@ -6389,6 +6389,8 @@ type mockEvalStore struct {
 	updateStatus []updateStatusCall
 	reclassified []reclassifyCall
 	terminated   []terminateCall
+	// GH-6276: ReconcileFailedExecutionAfterMerge call log.
+	reconciled []selfHealCall
 	// GH-4701: separate call logs for the superseded-close siblings so tests
 	// can assert which variant fired without disturbing the failed-path
 	// assertions above.
@@ -6463,6 +6465,12 @@ func (m *mockEvalStore) GetExecutionStatusByTaskID(taskID, projectPath string) (
 func (m *mockEvalStore) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) error {
 	m.selfHealed = append(m.selfHealed, selfHealCall{TaskID: taskID, ProjectPath: projectPath, PRURL: prURL})
 	return nil
+}
+
+// ReconcileFailedExecutionAfterMerge records the call for assertions. GH-6276.
+func (m *mockEvalStore) ReconcileFailedExecutionAfterMerge(taskID, projectPath, prURL string) (bool, error) {
+	m.reconciled = append(m.reconciled, selfHealCall{TaskID: taskID, ProjectPath: projectPath, PRURL: prURL})
+	return false, nil
 }
 
 // ReclassifyCompletionAsFailed records the call for assertions. GH-3818.

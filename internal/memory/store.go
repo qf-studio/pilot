@@ -3414,6 +3414,75 @@ func (s *Store) SelfHealExecutionByPRURL(prURL string) error {
 	})
 }
 
+// ReconcileFailedExecutionAfterMerge promotes the LATEST execution row for
+// taskID (same created_at DESC, rowid DESC selection as
+// TerminateNonTerminalExecution) from 'failed' to 'completed', clears its
+// error and stamps prURL. GH-6276: this is the one reason a 'failed' row may
+// become 'completed' outside the executor — autopilot closed the issue after
+// observing the PR merge (its own merge, or one a human pushed through after a
+// failed auto-rebase), so the queue history must not keep showing a failure
+// for work that is on the default branch.
+//
+// Narrower than SelfHealExecutionAfterMerge on purpose: only the latest row of
+// this task and project is eligible, so an older generation's failure stays as
+// the record it is, and a newer queued/running row (a live retry) shields it.
+// projectPath follows the other task-keyed methods' convention: empty drops
+// the scope. Returns whether a row was changed, so the caller can log once.
+func (s *Store) ReconcileFailedExecutionAfterMerge(taskID, projectPath, prURL string) (bool, error) {
+	var changed bool
+	err := s.withRetry("ReconcileFailedExecutionAfterMerge", func() error {
+		tx, err := s.db.BeginTx(context.Background(), nil)
+		if err != nil {
+			return fmt.Errorf("begin tx: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		var id string
+		err = tx.QueryRow(`
+			SELECT id FROM executions
+			WHERE task_id = ? AND (? = '' OR project_path = ?)
+			ORDER BY created_at DESC, rowid DESC
+			LIMIT 1
+		`, taskID, projectPath, projectPath).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			changed = false
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		res, err := tx.Exec(`
+			UPDATE executions
+			SET status = 'completed',
+				error = '',
+				completed_at = CURRENT_TIMESTAMP,
+				pr_url = CASE WHEN ? <> '' THEN ? ELSE pr_url END
+			WHERE id = ? AND status = 'failed'
+		`, prURL, prURL, id)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			changed = false
+			return nil
+		}
+		if err := recordExecutionEventOn(tx, id, StageMerged, "reconciled after merge: "+orDefault(prURL, "no PR URL known")); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	return changed, err
+}
+
 // orDefault returns s unless it's empty, in which case it returns def — used
 // to build a human-readable execution_events detail string for the no-PR-URL
 // branch without a multi-line if/else at each call site.
