@@ -1377,7 +1377,7 @@ func recordExecutionEventOn(db dbExecer, executionID string, stage Stage, detail
 	_, err := db.Exec(`
 		INSERT INTO execution_events (execution_id, stage, occurred_at, detail)
 		VALUES (?, ?, ?, ?)
-	`, executionID, string(stage), time.Now().UTC(), detail)
+	`, executionID, string(stage), time.Now().UTC(), secretpatterns.Redact(detail))
 	return err
 }
 
@@ -1388,6 +1388,7 @@ func recordExecutionEventOn(db dbExecer, executionID string, stage Stage, detail
 // row exists first; this method is exposed for call sites (e.g. tests,
 // RecordExecutionEvent itself) that already hold a known-good execution ID.
 func (s *Store) InsertExecutionEvent(executionID string, stage Stage, detail string) error {
+	detail = secretpatterns.Redact(detail)
 	return s.withRetry("InsertExecutionEvent", func() error {
 		_, err := s.db.Exec(`
 			INSERT INTO execution_events (execution_id, stage, occurred_at, detail)
@@ -1609,6 +1610,7 @@ func (s *Store) LatestCanceledExecution(taskID, projectPath string) (exec *Execu
 // cancel timestamp LatestCanceledExecution returned) before calling this —
 // it does not itself decide re-arm eligibility.
 func (s *Store) ReclassifyCanceledForRearm(taskID, projectPath, reason string) error {
+	reason = secretpatterns.Redact(reason) // GH-6266
 	return s.withRetry("ReclassifyCanceledForRearm", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
@@ -1674,6 +1676,7 @@ func (s *Store) LatestStalledExecution(taskID, projectPath string) (exec *Execut
 // keeps the poller excluding the issue from candidacy regardless of this
 // row's status.
 func (s *Store) ReclassifyStalledForRearm(taskID, projectPath, reason string) error {
+	reason = secretpatterns.Redact(reason) // GH-6266
 	return s.withRetry("ReclassifyStalledForRearm", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
@@ -1738,6 +1741,7 @@ func (s *Store) LatestSupersededExecution(taskID, projectPath string) (exec *Exe
 // (that is the root defect GH-5249 fixes), so removing it is a hygiene step
 // for the caller, not a correctness requirement of this method.
 func (s *Store) ReclassifySupersededForRearm(taskID, projectPath, reason string) error {
+	reason = secretpatterns.Redact(reason) // GH-6266
 	return s.withRetry("ReclassifySupersededForRearm", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
@@ -1799,6 +1803,7 @@ func (s *Store) LatestNeedsHumanExecution(taskID, projectPath string) (exec *Exe
 // timestamp LatestNeedsHumanExecution returned) before calling this — it
 // does not itself decide re-arm eligibility.
 func (s *Store) ReclassifyNeedsHumanForRearm(taskID, projectPath, reason string) error {
+	reason = secretpatterns.Redact(reason) // GH-6266
 	return s.withRetry("ReclassifyNeedsHumanForRearm", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
@@ -2949,7 +2954,7 @@ func (s *Store) ResolveOrphanedRunningExecution(id, prURL string) error {
 				UPDATE executions
 				SET status = 'failed', error = ?, completed_at = CURRENT_TIMESTAMP
 				WHERE id = ? AND status = 'running'
-			`, orphanedRunningNoEvidenceError, id)
+			`, secretpatterns.Redact(orphanedRunningNoEvidenceError), id)
 		}
 		if err != nil {
 			return err
@@ -2963,9 +2968,9 @@ func (s *Store) ResolveOrphanedRunningExecution(id, prURL string) error {
 			return tx.Commit()
 		}
 
-		stage, detail := StageFailed, orphanedRunningNoEvidenceError
+		stage, detail := StageFailed, secretpatterns.Redact(orphanedRunningNoEvidenceError)
 		if prURL != "" {
-			stage, detail = StageMerged, "orphaned running execution resolved: merged "+prURL
+			stage, detail = StageMerged, secretpatterns.Redact("orphaned running execution resolved: merged "+prURL)
 		}
 		if err := recordExecutionEventOn(tx, id, stage, detail); err != nil {
 			return err

@@ -17,6 +17,7 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/json"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -74,19 +75,24 @@ const minSecretValueLen = 8
 
 var (
 	secretValuesMu sync.RWMutex
-	// secretValues holds the registered exact values, longest first, so a
-	// value that contains another registered value is masked whole.
+	// secretValues holds the registered exact values and their encoded
+	// variants, longest first.
 	secretValues [][]byte
+	// secretDistinct holds the plain values behind secretValues, so the count
+	// reports secrets, not variants.
+	secretDistinct = map[string]bool{}
 )
 
 // RegisterSecretValues adds exact secret values to a process-wide set that
 // Redact and RedactBytes mask before applying the shape patterns. It exists
 // for configured secrets whose shape no pattern knows (GH-6249).
 //
-// Values shorter than 8 characters and unexpanded "${VAR}" references are
-// ignored. The JSON-escaped form of a value is registered alongside it, since
-// recordings and stored output carry text inside JSON strings. Safe for
-// concurrent use.
+// Values shorter than 8 characters, unexpanded "${VAR}" references and values
+// that are a substring of the redaction marker are ignored. The JSON-escaped
+// form of a value is registered alongside it, since recordings and stored
+// output carry text inside JSON strings, and so are the URL-encoded forms
+// (url.QueryEscape, url.PathEscape) when they differ from the plain value
+// (GH-6266). Safe for concurrent use.
 func RegisterSecretValues(values ...string) {
 	secretValuesMu.Lock()
 	defer secretValuesMu.Unlock()
@@ -101,12 +107,19 @@ func RegisterSecretValues(values ...string) {
 		}
 	}
 	for _, v := range values {
-		if len(v) < minSecretValueLen || strings.HasPrefix(v, "${") {
+		if len(v) < minSecretValueLen || strings.HasPrefix(v, "${") || strings.Contains(Redacted, v) {
 			continue
 		}
+		secretDistinct[v] = true
 		add(v)
 		if enc, err := json.Marshal(v); err == nil {
 			add(string(enc[1 : len(enc)-1]))
+		}
+		if q := url.QueryEscape(v); q != v {
+			add(q)
+		}
+		if p := url.PathEscape(v); p != v {
+			add(p)
 		}
 	}
 	sort.SliceStable(secretValues, func(i, j int) bool {
@@ -114,18 +127,19 @@ func RegisterSecretValues(values ...string) {
 	})
 }
 
-// SecretValueCount reports how many distinct values are registered
-// (JSON-escaped variants of a value count separately).
+// SecretValueCount reports how many distinct secrets are registered; the
+// encoded variants of one value count once.
 func SecretValueCount() int {
 	secretValuesMu.RLock()
 	defer secretValuesMu.RUnlock()
-	return len(secretValues)
+	return len(secretDistinct)
 }
 
 // ResetSecretValuesForTest clears the registered values. Tests only.
 func ResetSecretValuesForTest() {
 	secretValuesMu.Lock()
 	secretValues = nil
+	secretDistinct = map[string]bool{}
 	secretValuesMu.Unlock()
 }
 
@@ -140,12 +154,21 @@ func Redact(s string) string {
 // matches, so the common no-secret case does not allocate.
 func RedactBytes(p []byte) []byte {
 	secretValuesMu.RLock()
+	var spans [][2]int
 	for _, v := range secretValues {
-		if bytes.Contains(p, v) {
-			p = bytes.ReplaceAll(p, v, []byte(Redacted))
+		for from := 0; from < len(p); {
+			i := bytes.Index(p[from:], v)
+			if i < 0 {
+				break
+			}
+			spans = append(spans, [2]int{from + i, from + i + len(v)})
+			// Step one byte, not len(v): overlapping occurrences of one
+			// value must merge too.
+			from += i + 1
 		}
 	}
 	secretValuesMu.RUnlock()
+	p = maskSpans(p, spans)
 
 	redactOnce.Do(func() { redactRegexes = Regexes() })
 	for _, re := range redactRegexes {
@@ -154,6 +177,36 @@ func RedactBytes(p []byte) []byte {
 		}
 	}
 	return p
+}
+
+// maskSpans replaces the union of spans in p with Redacted in one pass, so two
+// registered values that overlap in the text leave no tail of the second one.
+// It returns p itself when spans is empty.
+func maskSpans(p []byte, spans [][2]int) []byte {
+	if len(spans) == 0 {
+		return p
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
+	out := make([]byte, 0, len(p))
+	pos := 0
+	cur := spans[0]
+	flush := func() {
+		out = append(out, p[pos:cur[0]]...)
+		out = append(out, Redacted...)
+		pos = cur[1]
+	}
+	for _, s := range spans[1:] {
+		if s[0] <= cur[1] {
+			if s[1] > cur[1] {
+				cur[1] = s[1]
+			}
+			continue
+		}
+		flush()
+		cur = s
+	}
+	flush()
+	return append(out, p[pos:]...)
 }
 
 // KindConfiguredValue is the Match.Kind of a registered secret value.

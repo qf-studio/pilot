@@ -644,7 +644,7 @@ Examples:
 				if dryRunCfgPath == "" {
 					dryRunCfgPath = config.DefaultConfigPath()
 				}
-				dryRunCfg, cfgErr := config.Load(dryRunCfgPath)
+				dryRunCfg, cfgErr := loadConfigRegisteringSecrets(dryRunCfgPath) // GH-6266
 				if cfgErr != nil {
 					return fmt.Errorf("failed to load config for dry-run: %w", cfgErr)
 				}
@@ -804,7 +804,7 @@ Examples:
 			if configPath == "" {
 				configPath = config.DefaultConfigPath()
 			}
-			cfg, cfgErr := config.Load(configPath)
+			cfg, cfgErr := loadConfigRegisteringSecrets(configPath) // GH-6266
 			if cfgErr != nil {
 				return fmt.Errorf("failed to load config: %w", cfgErr)
 			}
@@ -1489,7 +1489,7 @@ Examples:
 				configPath = config.DefaultConfigPath()
 			}
 
-			cfg, err := config.Load(configPath)
+			cfg, err := loadConfigRegisteringSecrets(configPath) // GH-6266
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}

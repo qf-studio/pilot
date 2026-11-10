@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 )
 
 // Chat turn statuses.
@@ -58,6 +60,7 @@ func (s *Store) SaveChatTurn(t *ChatTurn) error {
 	if t.Status == "" {
 		t.Status = ChatTurnCompleted
 	}
+	errText := secretpatterns.Redact(t.Error) // GH-6266
 	var reported interface{}
 	if t.ReportedCostUSD != nil {
 		reported = *t.ReportedCostUSD
@@ -70,7 +73,7 @@ func (s *Store) SaveChatTurn(t *ChatTurn) error {
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.ConversationID, t.ProjectPath, t.Model,
 		t.TokensInput, t.TokensOutput, t.TokensCacheRead, t.TokensCacheWrite,
-		t.EstimatedCostUSD, reported, t.KeySource, t.BillingMode, t.Status, t.Error,
+		t.EstimatedCostUSD, reported, t.KeySource, t.BillingMode, t.Status, errText,
 		t.DurationMs, t.ToolCalls, t.Partial, t.StartedAt.UTC(), t.CompletedAt.UTC())
 	if err != nil {
 		return fmt.Errorf("failed to save chat turn: %w", err)
