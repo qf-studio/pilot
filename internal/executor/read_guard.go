@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // readGuardMatcher is the PreToolUse matcher of the read guard: every tool that
@@ -33,46 +37,68 @@ type readGuardSpec struct {
 // security boundary — a determined agent can still read the file through an
 // interpreter. The real fix is a separate uid. Under
 // --dangerously-skip-permissions only a PreToolUse hook holds, so the guard
-// is a hook. Path inputs are resolved through symlinks (nearest existing
-// ancestor via plain `realpath`, as in the write guard) so a link into the
-// Pilot home does not slip through; Bash commands are matched textually.
-// Unparseable input fails closed.
+// is a hook. Path inputs (Read file_path, Grep/Glob path, NotebookRead
+// notebook_path) are resolved through symlinks (nearest existing ancestor via
+// plain realpath, as in the write guard) so a link into the Pilot home does
+// not slip through. Grep/Glob pattern text is never checked.
+//
+// GH-6267: a Bash command is tokenized (quotes honoured, separators split into
+// simple commands, a leading ~, ~user, $HOME and ${HOME} expanded, cd tracked)
+// and each path-looking token is resolved through the same resolve() as a Read
+// path, instead of matching substrings, so "grep -rn ~/.pilot docs/" or a
+// commit message that mentions the path is not a read. Words after -m,
+// --message, -e, --regexp and the pattern of grep/rg are text. A recursive read
+// (Grep/Glob path, grep -r, rg, find, ls -R, tree, du) of a parent of the Pilot
+// home is denied too, except /tmp and the project dir. Only unparseable hook
+// JSON fails closed; a token that cannot be resolved is allowed.
 const readGuardScript = `#!/bin/sh
 home=$1
 cfg=$2
+nl='
+'
+tab=$(printf '\t')
+bt=$(printf '\140')
 deny() { echo "read blocked: $1 (rule read-guard: the Pilot home, its config and process environments are off limits to agent sessions)" >&2; exit 2; }
 input=$(cat)
 if command -v jq >/dev/null 2>&1; then
-  tool=$(printf '%s' "$input" | jq -r '.tool_name // empty') || deny "cannot parse hook input"
-  paths=$(printf '%s' "$input" | jq -r '[.tool_input.file_path, .tool_input.path, .tool_input.notebook_path] | map(select(type == "string" and . != "")) | .[]') || deny "cannot parse hook input"
-  pattern=$(printf '%s' "$input" | jq -r '.tool_input.pattern // empty | strings') || deny "cannot parse hook input"
-  cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty | strings') || deny "cannot parse hook input"
+  tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null) || deny "cannot parse hook input"
+  paths=$(printf '%s' "$input" | jq -r '[.tool_input.file_path, .tool_input.path, .tool_input.notebook_path] | map(select(type == "string" and . != "")) | .[]' 2>/dev/null) || deny "cannot parse hook input"
+  cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty | strings' 2>/dev/null) || deny "cannot parse hook input"
 elif command -v python3 >/dev/null 2>&1; then
-  py() { printf '%s' "$input" | python3 -I -c "import json,sys; d=json.load(sys.stdin); i=d.get('tool_input') or {}; $1"; }
+  py() { printf '%s' "$input" | python3 -I -c "import json,sys; d=json.load(sys.stdin); i=d.get('tool_input') or {}; $1" 2>/dev/null; }
   tool=$(py 'print(d.get("tool_name") or "")') || deny "cannot parse hook input"
   paths=$(py 'print("\n".join(v for v in (i.get("file_path"), i.get("path"), i.get("notebook_path")) if isinstance(v, str) and v))') || deny "cannot parse hook input"
-  pattern=$(py 'v=i.get("pattern"); print(v if isinstance(v, str) else "")') || deny "cannot parse hook input"
   cmd=$(py 'v=i.get("command"); print(v if isinstance(v, str) else "")') || deny "cannot parse hook input"
 else
   deny "neither jq nor python3 is available to read the tool input"
 fi
 [ -n "$tool" ] || deny "tool call carries no tool name"
+# resolve prints the physical path of $1: the nearest existing ancestor goes
+# through realpath, the missing rest is appended. A "." or ".." in the missing
+# part is applied lexically (the missing directory cannot be a symlink).
 resolve() {
   p=$1
   tail=
+  dd=0
   while [ "$p" != / ]; do
     p=${p%/}
     [ -n "$p" ] || break
     if [ -e "$p" ] || [ -L "$p" ]; then break; fi
     base=${p##*/}
     case $base in
-      .|..) return 1 ;;
+      .) ;;
+      ..) dd=$((dd+1)) ;;
+      *) if [ "$dd" -gt 0 ]; then dd=$((dd-1)); else tail=$base${tail:+/$tail}; fi ;;
     esac
-    tail=$base${tail:+/$tail}
     p=${p%/*}
     [ -n "$p" ] || p=/
   done
   r=$(realpath -- "$p") || return 1
+  while [ "$dd" -gt 0 ]; do
+    r=${r%/*}
+    [ -n "$r" ] || r=/
+    dd=$((dd-1))
+  done
   case $r in
     /) printf '%s' "/$tail" ;;
     *) printf '%s' "$r${tail:+/$tail}" ;;
@@ -80,41 +106,263 @@ resolve() {
 }
 real_home=$(resolve "$home") || real_home=$home
 real_cfg=$(resolve "$cfg") || real_cfg=$cfg
-mentions() {
-  case $1 in
-    *"$home"*|*"$real_home"*|*"$cfg"*|*"$real_cfg"*) return 0 ;;
+real_pwd=$(resolve "$PWD") || real_pwd=$PWD
+real_tmp=$(resolve /tmp) || real_tmp=/tmp
+cwd=$PWD
+# expand sets ex to $1 with a leading ~, ~user, $HOME or ${HOME} expanded and
+# a relative path made absolute against cwd.
+expand() {
+  ex=$1
+  case $ex in
+    "~") ex=$HOME ;;
+    "~/"*) ex=$HOME/${ex#"~/"} ;;
+    "~"*)
+      uname_=${ex#"~"}
+      uname_=${uname_%%/*}
+      case $uname_ in
+        ""|*[!A-Za-z0-9_.-]*) ;;
+        *)
+          uhome=$(eval "printf '%s' ~$uname_" 2>/dev/null)
+          case $uhome in
+            /*) ex=$uhome${ex#"~$uname_"} ;;
+          esac ;;
+      esac ;;
+    '$HOME'|'$HOME/'*) ex=$HOME${ex#'$HOME'} ;;
+    '${HOME}'|'${HOME}/'*) ex=$HOME${ex#'${HOME}'} ;;
+  esac
+  case $ex in
+    /*) ;;
+    *) ex=$cwd/$ex ;;
+  esac
+}
+# is_ancestor: $1 is / or a parent of the Pilot home, as configured or resolved
+# (the home may itself be a symlink).
+is_ancestor() {
+  [ "$1" = / ] && return 0
+  case $real_home in
+    "$1"/*) return 0 ;;
+  esac
+  case $home in
+    "$1"/*) return 0 ;;
   esac
   return 1
 }
+in_project() {
+  [ "$real_pwd" = / ] && return 1
+  case $1 in
+    "$real_pwd"|"$real_pwd"/*) return 0 ;;
+  esac
+  return 1
+}
+# check_target denies an absolute path that is inside the Pilot home, equals the
+# config file, is a process environment, or, when $2 is 1 (a recursive read), is
+# a parent of the Pilot home. A path that cannot be resolved is allowed. Sets
+# last to the resolved path.
+check_target() {
+  t=$1
+  last=
+  case $t in
+    *[*?[]*)
+      case $real_home in $t) deny "$t reaches the Pilot home" ;; esac
+      case $real_cfg in $t) deny "$t reaches the Pilot config" ;; esac
+      case $real_home/_ in $t) deny "$t reaches the Pilot home" ;; esac
+      return 0 ;;
+  esac
+  r=$(resolve "$t") || return 0
+  last=$r
+  case $r in
+    "$real_home"|"$real_home"/*|"$real_cfg") deny "$t is inside the Pilot home" ;;
+    /proc/self/environ|/proc/thread-self/environ|/proc/[0-9]*/environ|/proc/[0-9]*/task/[0-9]*/environ) deny "$t is a process environment" ;;
+  esac
+  if [ "$2" = 1 ] && is_ancestor "$r" && [ "$r" != /tmp ] && [ "$r" != "$real_tmp" ] && ! in_project "$r"; then
+    deny "$t is a parent of the Pilot home and is read recursively"
+  fi
+  return 0
+}
+# run_seg checks one simple command given as words. Words after -m, --message,
+# -e, --regexp and the pattern of grep/rg are text, not paths.
+run_seg() {
+  while [ $# -gt 0 ]; do
+    case $1 in
+      *=*)
+        n=${1%%=*}
+        case $n in ""|[0-9]*|*[!A-Za-z0-9_]*) break ;; esac
+        shift ;;
+      sudo|env|time|nice|nohup|exec|command|builtin|xargs)
+        shift
+        while [ $# -gt 0 ]; do
+          case $1 in -*) shift ;; *) break ;; esac
+        done ;;
+      *) break ;;
+    esac
+  done
+  [ $# -gt 0 ] || return 0
+  name=${1##*/}
+  shift
+  sr=0
+  grepish=0
+  has_pat=0
+  case $name in rg|ag|ack|fd|find|tree|du) sr=1 ;; esac
+  case $name in grep|egrep|fgrep|zgrep|rg|ag|ack) grepish=1 ;; esac
+  prev=
+  endo=0
+  for a; do
+    if [ $endo = 0 ]; then
+      case $a in
+        --) endo=1 ;;
+        --recursive|--dereference-recursive|--directories=recurse) sr=1 ;;
+        --regexp|--regexp=*|--file|--file=*) has_pat=1 ;;
+        --*) ;;
+        -?*)
+          case $name in
+            grep|egrep|fgrep|zgrep) case $a in *[rR]*) sr=1 ;; esac ;;
+            ls) case $a in *R*) sr=1 ;; esac ;;
+          esac
+          case $a in -e*|-f) has_pat=1 ;; esac ;;
+        recurse) [ "$prev" = -d ] && sr=1 ;;
+      esac
+    fi
+    prev=$a
+  done
+  need_pat=0
+  [ $grepish = 1 ] && [ $has_pat = 0 ] && need_pat=1
+  prev=
+  endo=0
+  npaths=0
+  for a; do
+    p=$prev
+    prev=$a
+    if [ $endo = 0 ]; then
+      case $p in
+        -m|--message|-e|--regexp|-A|-B|-C|-g|--glob|--max-count|--include|--exclude|--exclude-dir|--after-context|--before-context|--context|-t|--type|-d|--directories) continue ;;
+      esac
+      case $a in
+        --) endo=1; continue ;;
+        --message=*|--regexp=*|--max-count=*|--glob=*|--include=*|--exclude=*|--exclude-dir=*) continue ;;
+        -?*=*) a=${a#*=} ;;
+        -?*) continue ;;
+      esac
+    fi
+    if [ $need_pat = 1 ]; then
+      need_pat=0
+      continue
+    fi
+    islike=0
+    case $a in
+      */*|"~"*|.*|'$HOME'*|'${HOME}'*|*[*?[]*) islike=1 ;;
+    esac
+    if [ "$name" = cd ]; then
+      [ "$a" = - ] && continue
+      islike=1
+    fi
+    [ $islike = 1 ] || continue
+    npaths=$((npaths+1))
+    expand "$a"
+    check_target "$ex" "$sr"
+    if [ "$name" = cd ] && [ -n "$last" ]; then
+      cwd=$last
+    fi
+  done
+  if [ $sr = 1 ] && [ $npaths -eq 0 ]; then
+    check_target "$cwd" 1
+  fi
+  return 0
+}
+tool_rec=0
+case $tool in Grep|Glob) tool_rec=1 ;; esac
 if [ -n "$paths" ]; then
   while IFS= read -r target; do
-    case $target in
-      "~") target=$HOME ;;
-      "~/"*) target=$HOME/${target#"~/"} ;;
-      /*) ;;
-      *) target=$PWD/$target ;;
-    esac
-    resolved=$(resolve "$target") || deny "cannot resolve $target"
-    case $resolved in
-      "$real_home"|"$real_home"/*|"$real_cfg") deny "$target is inside the Pilot home" ;;
-    esac
+    expand "$target"
+    check_target "$ex" "$tool_rec"
   done <<EOF_PATHS
 $paths
 EOF_PATHS
 fi
-if [ -n "$pattern" ] && mentions "$pattern"; then
-  deny "the pattern points into the Pilot home"
-fi
 if [ -n "$cmd" ]; then
-  if mentions "$cmd"; then
-    deny "the command touches the Pilot home or its config"
+  dq='"'
+  sq="'"
+  bs='\'
+  set --
+  tok=
+  have=0
+  rest=$cmd
+  while [ -n "$rest" ]; do
+    c=${rest%"${rest#?}"}
+    rest=${rest#?}
+    etok=0
+    eseg=0
+    case $c in
+      "$sq")
+        have=1
+        seg=${rest%%"$sq"*}
+        if [ "$seg" = "$rest" ]; then
+          tok=$tok$rest
+          rest=
+        else
+          tok=$tok$seg
+          rest=${rest#"$seg$sq"}
+        fi ;;
+      "$dq")
+        have=1
+        while [ -n "$rest" ]; do
+          a=${rest%%"$dq"*}
+          b=${rest%%"$bs"*}
+          if [ "${#b}" -lt "${#a}" ]; then
+            tok=$tok$b
+            rest=${rest#"$b"}
+            rest=${rest#?}
+            e=${rest%"${rest#?}"}
+            rest=${rest#?}
+            tok=$tok$e
+          elif [ "$a" = "$rest" ]; then
+            tok=$tok$rest
+            rest=
+          else
+            tok=$tok$a
+            rest=${rest#"$a$dq"}
+            break
+          fi
+        done ;;
+      "$bs")
+        e=${rest%"${rest#?}"}
+        rest=${rest#?}
+        if [ "$e" != "$nl" ]; then
+          tok=$tok$e
+          have=1
+        fi ;;
+      " "|"$tab"|"<"|">") etok=1 ;;
+      ";"|"|"|"&"|"("|")"|"$nl"|"$bt") etok=1; eseg=1 ;;
+      "#")
+        if [ $have = 0 ]; then
+          etok=1
+          eseg=1
+          case $rest in
+            *"$nl"*) rest=${rest#*"$nl"} ;;
+            *) rest= ;;
+          esac
+        else
+          tok=$tok$c
+        fi ;;
+      *)
+        tok=$tok$c
+        have=1 ;;
+    esac
+    if [ $etok = 1 ]; then
+      if [ $have = 1 ]; then
+        set -- "$@" "$tok"
+      fi
+      tok=
+      have=0
+    fi
+    if [ $eseg = 1 ]; then
+      run_seg "$@"
+      set --
+    fi
+  done
+  if [ $have = 1 ]; then
+    set -- "$@" "$tok"
   fi
-  case $cmd in
-    *.pilot/config*|*"~/.pilot"*|*'$HOME/.pilot'*|*'${HOME}/.pilot'*)
-      deny "the command touches the Pilot home or its config" ;;
-    */proc/*environ*)
-      deny "the command reads a process environment" ;;
-  esac
+  run_seg "$@"
 fi
 exit 0
 `
@@ -170,6 +418,48 @@ func setupRunGuards(projectPath, writeBoundary string, read *readGuardSpec) (set
 		return fail("write settings", err)
 	}
 	return settingsPath, cleanup, nil
+}
+
+// readGuardOffForProcess is set by PreflightReadGuard when the host lacks a tool
+// the guard script needs. ReadGuardEnabled then reports false for every config.
+var readGuardOffForProcess atomic.Bool
+
+// readGuardMissingTools names the host tools the guard script needs and
+// lookPath cannot find: realpath, and jq or python3.
+func readGuardMissingTools(lookPath func(string) (string, error)) []string {
+	var missing []string
+	if _, err := lookPath("realpath"); err != nil {
+		missing = append(missing, "realpath")
+	}
+	_, jqErr := lookPath("jq")
+	_, pyErr := lookPath("python3")
+	if jqErr != nil && pyErr != nil {
+		missing = append(missing, "jq or python3")
+	}
+	return missing
+}
+
+// PreflightReadGuard checks the host tools the read guard script runs on. When
+// the guard is on and a tool is missing it logs one Error line naming the tool
+// and turns the guard off for the process, because a broken guard blocks every
+// Read, Grep, Glob and Bash call of every run (GH-6267). It reports whether it
+// turned the guard off.
+func PreflightReadGuard(cfg *ClaudeCodeConfig) bool {
+	return preflightReadGuard(cfg, exec.LookPath)
+}
+
+func preflightReadGuard(cfg *ClaudeCodeConfig, lookPath func(string) (string, error)) bool {
+	if !cfg.ReadGuardEnabled() {
+		return false
+	}
+	missing := readGuardMissingTools(lookPath)
+	if len(missing) == 0 {
+		return false
+	}
+	logging.WithComponent("read-guard").Error("Read guard turned off: the host is missing a tool the guard script needs; agent sessions can read the Pilot home until it is installed",
+		slog.String("missing", strings.Join(missing, ", ")))
+	readGuardOffForProcess.Store(true)
+	return true
 }
 
 // readGuardSpec resolves what the read guard protects, or nil when the guard

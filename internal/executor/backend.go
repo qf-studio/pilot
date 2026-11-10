@@ -1387,8 +1387,12 @@ func (c *ClaudeCodeConfig) GhGuardEnabled() bool {
 }
 
 // ReadGuardEnabled reports whether the read guard (GH-6252) is wired onto
-// Claude Code runs. Defaults to true; a nil config means enabled.
+// Claude Code runs. Defaults to true; a nil config means enabled. False for the
+// whole process once PreflightReadGuard found a missing host tool (GH-6267).
 func (c *ClaudeCodeConfig) ReadGuardEnabled() bool {
+	if readGuardOffForProcess.Load() {
+		return false
+	}
 	if c == nil {
 		return true
 	}

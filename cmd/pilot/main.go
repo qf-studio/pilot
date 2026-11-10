@@ -560,6 +560,9 @@ Examples:
 				claudeCode = cfg.Executor.ClaudeCode
 			}
 			applyReadGuardConfig(claudeCode, configPath)
+			// GH-6267: a guard that cannot run blocks every call, so turn it off
+			// (one Error line) when realpath, or both jq and python3, are missing.
+			executor.PreflightReadGuard(claudeCode)
 
 			// GH-6249: register configured secret values for redaction before
 			// any adapter starts or anything is logged.
