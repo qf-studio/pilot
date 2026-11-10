@@ -1732,6 +1732,7 @@ func (r *Runner) CloseWorktreePool() {
 // The processor interface is satisfied by alerts.Engine.
 func (r *Runner) SetAlertProcessor(processor AlertEventProcessor) {
 	r.alertProcessor = processor
+	SetSecretGateAlertProcessor(processor)
 }
 
 // DailyCapGate returns the gate for executor.daily_ticket_cap, or nil when no
@@ -3402,6 +3403,11 @@ func (r *Runner) pushBranchWithRetry(ctx context.Context, git *GitOperations, ta
 		pushErr = git.Push(ctx, task.Branch, task.ID)
 		if pushErr == nil {
 			return nil
+		}
+		if IsPushRefused(pushErr) {
+			// GH-6263: the secret gate refused the commits; retrying, or
+			// forgiving the failure, would publish them another way.
+			return pushErr
 		}
 		localHead, localErr := git.LocalHead(ctx)
 		remoteHead, remoteOK := git.RemoteBranchHead(ctx, task.Branch)

@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 // GH-5527: epic sub-issues run sequentially and each sub-issue branch is cut
@@ -403,6 +405,9 @@ func rebaseStackedBranch(ctx context.Context, repoPath, branchName, baseBranch s
 		}
 	}
 
+	if err := executor.CheckSecretGate(ctx, worktreePath, "HEAD", ""); err != nil {
+		return nil, fmt.Errorf("push stacked rebase to %s: %w", branchName, err)
+	}
 	lease := fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", branchName, headSHA)
 	if err := runGitCmd(ctx, worktreePath, "push", lease, "origin", "HEAD:refs/heads/"+branchName); err != nil {
 		return nil, fmt.Errorf("push stacked rebase to %s: %w", branchName, err)

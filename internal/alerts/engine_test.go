@@ -5195,3 +5195,45 @@ func TestEngine_SecurityEvent_GitHubSecretScanning(t *testing.T) {
 		}
 	}
 }
+
+// TestEngine_SecurityEvent_SecretGate verifies a push-gate security event fires
+// only the secret_leak rule and carries the gate's own text (GH-6263).
+func TestEngine_SecurityEvent_SecretGate(t *testing.T) {
+	config := &AlertConfig{
+		Enabled:  true,
+		Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+		Rules: []AlertRule{
+			{Name: "secret_leak", Type: AlertTypeSecretLeak, Enabled: true, Severity: SeverityCritical, Channels: []string{"test-channel"}},
+			{Name: "unauthorized_access", Type: AlertTypeUnauthorizedAccess, Enabled: true, Severity: SeverityCritical, Channels: []string{"test-channel"}},
+		},
+	}
+	mockCh := newMockChannel("test-channel", "webhook")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	const text = "push refused: commit abc123 adds a secret value in notes.md"
+	engine.ProcessEvent(Event{
+		Type:      EventTypeSecurityEvent,
+		Source:    SecurityEventSourceSecretGate,
+		Error:     text,
+		Metadata:  map[string]string{"commit": "abc123", "file": "notes.md"},
+		Timestamp: time.Now(),
+	})
+
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
+	got := mockCh.getAlerts()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 alert, got %d", len(got))
+	}
+	if got[0].Type != AlertTypeSecretLeak {
+		t.Errorf("expected %s, got %s", AlertTypeSecretLeak, got[0].Type)
+	}
+	if got[0].Message != text {
+		t.Errorf("message %q, want %q", got[0].Message, text)
+	}
+}
