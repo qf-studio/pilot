@@ -220,3 +220,101 @@ func TestSecretGate_CreatePRMasksTitleAndBody(t *testing.T) {
 		t.Errorf("gh args hold no mask:\n%s", got)
 	}
 }
+
+// lateRepo registers gate settings for a project path that is not a git
+// repository yet, then makes it one (a clone or init that finishes after the
+// config load). The settings are { DefaultBranch: "trunk", AllowPaths: fixtures/** }.
+func lateRepo(t *testing.T) string {
+	t.Helper()
+	ResetSecretGateConfigForTest()
+	t.Cleanup(ResetSecretGateConfigForTest)
+	dir := t.TempDir()
+	SetSecretGateProject(dir, SecretGateProject{DefaultBranch: "trunk", AllowPaths: []string{"fixtures/**"}})
+
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", "-b", "trunk", remote).CombinedOutput(); err != nil {
+		t.Fatalf("init bare: %v\n%s", err, out)
+	}
+	run("init", "-b", "trunk")
+	run("remote", "add", "origin", remote)
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "README.md")
+	run("commit", "-m", "init")
+	run("push", "-u", "origin", "trunk")
+	run("checkout", "-b", "pilot/GH-9")
+	return dir
+}
+
+// mutation pin: CheckSecretGate reads the project's settings from the process-wide registry, which drops a path that was not a git repository at load time, so its allow_paths never apply -> this test fails
+func TestSecretGate_ProjectRegisteredBeforeRepoExistsKeepsAllowPaths(t *testing.T) {
+	secretpatterns.ResetSecretValuesForTest()
+	t.Cleanup(secretpatterns.ResetSecretValuesForTest)
+	dir := lateRepo(t)
+	shaped := "1234567890" + ":AA" + strings.Repeat("d", 33)
+	if err := os.MkdirAll(filepath.Join(dir, "fixtures"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fixtures", "x.txt"), []byte(shaped+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "fixtures/x.txt"}, {"commit", "-m", "test: fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	if err := CheckSecretGate(context.Background(), dir, "pilot/GH-9", "GH-9"); err != nil {
+		t.Fatalf("a secret shape in an allow_paths file must pass: %v", err)
+	}
+}
+
+// mutation pin: project gate settings registered before the path is a git repository are dropped with no log, so the default branch never applies -> this test fails
+func TestSecretGate_LateRepositoryDefaultBranchReachesWorktrees(t *testing.T) {
+	var warned int
+	prev := slog.Default()
+	slog.SetDefault(slog.New(countingHandler{msg: "Secret gate: project path is not a git repository yet; its settings apply once it is", n: &warned}))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	dir := lateRepo(t)
+	if warned != 1 {
+		t.Errorf("registering a non-repository path logged %d warnings, want 1", warned)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	cmd := exec.Command("git", "worktree", "add", "-b", "pilot/GH-10", wt, "pilot/GH-9")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+
+	opts := secretGateOptions(context.Background(), wt)
+	if opts.DefaultBranch != "trunk" {
+		t.Errorf("DefaultBranch = %q for a worktree of the project, want %q", opts.DefaultBranch, "trunk")
+	}
+	if len(opts.AllowPaths) != 1 || opts.AllowPaths[0] != "fixtures/**" {
+		t.Errorf("AllowPaths = %v, want [fixtures/**]", opts.AllowPaths)
+	}
+	// Once resolved the entry is keyed by the repository; nothing is left pending.
+	secretGateProjMu.RLock()
+	pending := len(secretGatePending)
+	secretGateProjMu.RUnlock()
+	if pending != 0 {
+		t.Errorf("%d entries still pending after the repository resolved", pending)
+	}
+}

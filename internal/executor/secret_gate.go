@@ -49,6 +49,7 @@ type SecretGateProject struct {
 var (
 	secretGateProjMu    sync.RWMutex
 	secretGateProjects  = map[string]SecretGateProject{} // by repository identity, see gateRepoKey
+	secretGatePending   = map[string]SecretGateProject{} // by project path: not a git repository when registered
 	secretGateAllowPath []string                         // security.secret_gate.allow_paths, every project
 )
 
@@ -63,20 +64,28 @@ func SetSecretGateAllowPaths(globs []string) {
 // project resolves to the same entry (the key is the repository's common git
 // dir), so the Runner's per-task worktrees and the autopilot's scratch
 // worktrees see the project's default branch and allow_paths.
+//
+// A path that is not a git repository yet (the config loads before a clone or
+// init finishes) is kept by path and resolved on the first push from the
+// project's repository, so its default branch and allow_paths still apply.
 func SetSecretGateProject(projectPath string, p SecretGateProject) {
 	key := gateRepoKey(context.Background(), projectPath)
+	secretGateProjMu.Lock()
+	defer secretGateProjMu.Unlock()
 	if key == "" {
+		slog.Warn("Secret gate: project path is not a git repository yet; its settings apply once it is",
+			slog.String("path", projectPath))
+		secretGatePending[filepath.Clean(projectPath)] = p
 		return
 	}
-	secretGateProjMu.Lock()
 	secretGateProjects[key] = p
-	secretGateProjMu.Unlock()
 }
 
 // ResetSecretGateConfigForTest clears every gate setting.
 func ResetSecretGateConfigForTest() {
 	secretGateProjMu.Lock()
 	secretGateProjects = map[string]SecretGateProject{}
+	secretGatePending = map[string]SecretGateProject{}
 	secretGateAllowPath = nil
 	secretGateProjMu.Unlock()
 }
@@ -104,6 +113,7 @@ func gateRepoKey(ctx context.Context, dir string) string {
 // secretGateOptions builds the scan options for a push from dir.
 func secretGateOptions(ctx context.Context, dir string) secretpatterns.PushOptions {
 	key := gateRepoKey(ctx, dir)
+	promoteSecretGatePending(ctx, key)
 	secretGateProjMu.RLock()
 	defer secretGateProjMu.RUnlock()
 	opts := secretpatterns.PushOptions{AllowPaths: append([]string(nil), secretGateAllowPath...)}
@@ -114,10 +124,52 @@ func secretGateOptions(ctx context.Context, dir string) secretpatterns.PushOptio
 	return opts
 }
 
+// promoteSecretGatePending moves the pending projects that are the repository
+// key into the keyed registry (see SetSecretGateProject).
+func promoteSecretGatePending(ctx context.Context, key string) {
+	if key == "" {
+		return
+	}
+	secretGateProjMu.RLock()
+	paths := make([]string, 0, len(secretGatePending))
+	for path := range secretGatePending {
+		paths = append(paths, path)
+	}
+	secretGateProjMu.RUnlock()
+	for _, path := range paths {
+		if gateRepoKey(ctx, path) != key {
+			continue
+		}
+		secretGateProjMu.Lock()
+		if p, ok := secretGatePending[path]; ok {
+			delete(secretGatePending, path)
+			if _, set := secretGateProjects[key]; !set {
+				secretGateProjects[key] = p
+			}
+		}
+		secretGateProjMu.Unlock()
+	}
+}
+
 // IsPushRefused reports whether err is the secret gate's refusal. Nothing
 // retries it: the same commits hold the same secret on every attempt.
 func IsPushRefused(err error) bool {
 	return errors.Is(err, secretpatterns.ErrPushRefused)
+}
+
+// secretGateUnavailableError is the gate failing to run (git failed inside the
+// scan). The text is the cause's; the type lets pushNeverForgiven tell it from
+// an ordinary push error.
+type secretGateUnavailableError struct{ err error }
+
+func (e *secretGateUnavailableError) Error() string { return e.err.Error() }
+func (e *secretGateUnavailableError) Unwrap() error { return e.err }
+
+// IsSecretGateUnavailable reports whether err is the gate failing to run: the
+// push was neither cleared nor refused, and nothing was pushed.
+func IsSecretGateUnavailable(err error) bool {
+	var u *secretGateUnavailableError
+	return errors.As(err, &u)
 }
 
 // CheckSecretGate refuses a push of head from dir when the commits it would
@@ -136,7 +188,10 @@ func CheckSecretGate(ctx context.Context, dir, head, taskID string) error {
 		// Not a secret hit: the gate could not clear the push (the base could not
 		// be computed, a commit is too large to scan, or git failed). No alert.
 		slog.Warn("Secret gate could not scan the push range", slog.String("task_id", taskID), slog.Any("error", err))
-		return err
+		if IsPushRefused(err) {
+			return err
+		}
+		return &secretGateUnavailableError{err: err}
 	}
 	slog.Error("Push refused by the secret gate",
 		slog.String("task_id", taskID), slog.String("head", head),
@@ -168,14 +223,22 @@ func CheckSecretGate(ctx context.Context, dir, head, taskID string) error {
 // outcome, and the error text carries no "push failed" infra signature.
 const pushRefusedMarker = "push refused"
 
+// pushNeverForgiven reports whether a failed Push stopped at the secret gate:
+// the gate refused the commits (GH-6272) or could not run (the caller must not
+// push either). The commits did not leave the machine, so no remote state
+// excuses the failure, and retrying a refusal changes nothing. The one place
+// that classifies a push error as a gate stop; every push site goes through it.
+func pushNeverForgiven(err error) bool {
+	return IsPushRefused(err) || IsSecretGateUnavailable(err)
+}
+
 // pushFailureForgiven reports whether a failed Push of branch may be ignored
 // because the data is already on origin (the GH-1389 chdir false positive).
-// A refusal by the secret gate is never forgiven (GH-6272): the commits did not
-// leave the machine, and an earlier push of the same branch only means the
-// remote holds a stale head, not this one. Every Push call site that tolerates
-// an existing remote branch goes through here.
+// A gate stop is never forgiven (GH-6272): an earlier push of the same branch
+// only means the remote holds a stale head, not this one. Every Push call site
+// that tolerates an existing remote branch goes through here.
 func pushFailureForgiven(ctx context.Context, git *GitOperations, branch string, err error) bool {
-	if IsPushRefused(err) {
+	if pushNeverForgiven(err) {
 		return false
 	}
 	return git.RemoteBranchExists(ctx, branch)

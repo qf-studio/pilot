@@ -408,3 +408,43 @@ func TestCheckPushRange_MatchPathGlob(t *testing.T) {
 		}
 	}
 }
+
+// mutation pin: the no-base fallback diffs from the oldest unpushed commit's parent and refuses a remote branch's old secret that a merge brought in -> this test fails
+func TestCheckPushRange_NoBaseMergeOfPushedBranchIsNotNew(t *testing.T) {
+	const old = "hunter2-not-a-known-shape"
+	f := newTrunkFixture(t, "x")
+	f.git("checkout", "-b", "feat-b")
+	f.commit("b.md", "token "+old+"\n", "docs: b")
+	f.git("push", "-u", "origin", "feat-b")
+	f.git("checkout", "pilot/GH-1")
+	f.commit("new.go", "package x\n", "feat: new")
+	f.git("merge", "--no-ff", "feat-b", "-m", "merge feat-b")
+	RegisterSecretValues(old)
+
+	if got := PushBase(context.Background(), f.local, "pilot/GH-1", ""); got != "" {
+		t.Fatalf("setup: a base resolved (%q); the fallback is not under test", got)
+	}
+	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", PushOptions{}); err != nil {
+		t.Fatalf("secret of an already pushed branch, merged in: got %v, want it not refused as new", err)
+	}
+
+	// A secret the merge itself introduces (a conflict resolution) is still refused.
+	f.git("checkout", "-b", "pilot/GH-2", "trunk")
+	f.commit("c.txt", "one\n", "feat: c")
+	f.git("checkout", "-b", "side", "trunk")
+	f.commit("c.txt", "two\n", "feat: c side")
+	f.git("checkout", "pilot/GH-2")
+	f.commit("c.txt", "three\n", "feat: c head")
+	if out, err := exec.Command("git", "-C", f.local, "merge", "side").CombinedOutput(); err == nil {
+		t.Fatalf("setup: merge did not conflict: %s", out)
+	}
+	if err := os.WriteFile(filepath.Join(f.local, "c.txt"), []byte("token "+old+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.git("add", "c.txt")
+	f.git("commit", "-m", "merge side")
+	var pre *PushRangeError
+	if err := CheckPush(context.Background(), f.local, "pilot/GH-2", PushOptions{}); !errors.As(err, &pre) || pre.File != "c.txt" {
+		t.Fatalf("secret in a merge's conflict resolution: got %v, want a hit in c.txt", err)
+	}
+}
