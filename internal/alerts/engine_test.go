@@ -5149,6 +5149,53 @@ func TestBillingFallbackUnavailableAlert_RuleAndPayload(t *testing.T) {
 	}
 }
 
+// TestEngine_SecurityEvent_GitHubSecretScanning verifies a GitHub
+// secret-scanning event fires the secret_leak rule with the repo, alert number
+// and URL in the message, and never the unauthorized_access rule (GH-6264).
+func TestEngine_SecurityEvent_GitHubSecretScanning(t *testing.T) {
+	config := &AlertConfig{
+		Enabled:  true,
+		Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+		Rules: []AlertRule{
+			{Name: "secret_leak", Type: AlertTypeSecretLeak, Enabled: true, Severity: SeverityCritical, Channels: []string{"test-channel"}},
+			{Name: "unauthorized_access", Type: AlertTypeUnauthorizedAccess, Enabled: true, Severity: SeverityCritical, Channels: []string{"test-channel"}},
+		},
+	}
+	mockCh := newMockChannel("test-channel", "webhook")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	engine.ProcessEvent(Event{
+		Type:   EventTypeSecurityEvent,
+		Source: SecurityEventSourceGitHubSecretScanning,
+		Metadata: map[string]string{
+			"repo": "o/r", "number": "2", "type": "telegram_bot_token",
+			"html_url": "https://github.com/o/r/security/secret-scanning/2",
+		},
+		Timestamp: time.Now(),
+	})
+
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
+	time.Sleep(50 * time.Millisecond)
+	got := mockCh.getAlerts()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 alert, got %d", len(got))
+	}
+	if got[0].Type != AlertTypeSecretLeak {
+		t.Errorf("expected %s, got %s", AlertTypeSecretLeak, got[0].Type)
+	}
+	for _, want := range []string{"#2", "o/r", "telegram_bot_token", "secret-scanning/2"} {
+		if !strings.Contains(got[0].Message, want) {
+			t.Errorf("message %q missing %q", got[0].Message, want)
+		}
+	}
+}
+
 // TestEngine_SecurityEvent_SecretGate verifies a push-gate security event fires
 // only the secret_leak rule and carries the gate's own text (GH-6263).
 func TestEngine_SecurityEvent_SecretGate(t *testing.T) {

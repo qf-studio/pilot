@@ -36,6 +36,19 @@ func (e *RateLimitError) Error() string {
 	return fmt.Sprintf("API error (status %d): %s", e.StatusCode, e.Message)
 }
 
+// APIError is returned by doRequest for a non-2xx response that is not an
+// auth failure or a rate limit. Its text matches the plain
+// "API error (status N): msg" form the string-based helpers (isNotFoundError,
+// isRetryableError) already read; callers that need the code use errors.As.
+type APIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("API error (status %d): %s", e.StatusCode, e.Message)
+}
+
 // AuthError is returned by doRequest when GitHub rejects the token itself
 // (401 Unauthorized) — as opposed to a 403 which can mean rate-limited or
 // forbidden-but-authenticated. Callers use errors.As to distinguish a dead/
@@ -408,7 +421,7 @@ func (c *Client) doRequestAccept(ctx context.Context, method, path, accept strin
 						}
 					}
 				}
-				return fmt.Errorf("API error (status %d): %s", resp.StatusCode, msg)
+				return &APIError{StatusCode: resp.StatusCode, Message: msg}
 			}
 
 			if raw, ok := result.(*string); ok {
@@ -444,6 +457,47 @@ func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, numb
 		return nil, err
 	}
 	return comments, nil
+}
+
+// SecretScanningAlert is one GitHub secret-scanning alert. It decodes only the
+// fields needed to route the alert to a person. The API's "secret" field (the
+// live credential) is deliberately absent, so it can never be logged, stored or
+// put in an event (GH-6264).
+type SecretScanningAlert struct {
+	Number                 int       `json:"number"`
+	SecretType             string    `json:"secret_type"`
+	SecretTypeDisplayName  string    `json:"secret_type_display_name"`
+	CreatedAt              time.Time `json:"created_at"`
+	HTMLURL                string    `json:"html_url"`
+	PushProtectionBypassed bool      `json:"push_protection_bypassed"`
+}
+
+// ListSecretScanningAlerts returns a repository's secret-scanning alerts in the
+// given state ("open", "resolved"; empty means all), paginated at 100 per page.
+// A 403 or 404 comes back as *APIError: the token lacks the permission
+// (secret_scanning_alerts: read for a GitHub App, security_events or repo scope
+// for a token) or scanning is off for the repository.
+func (c *Client) ListSecretScanningAlerts(ctx context.Context, owner, repo, state string) ([]*SecretScanningAlert, error) {
+	const perPage = 100
+	const maxPages = 50
+
+	var alerts []*SecretScanningAlert
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/repos/%s/%s/secret-scanning/alerts?", owner, repo)
+		if state != "" {
+			path += "state=" + url.QueryEscape(state) + "&"
+		}
+		path += fmt.Sprintf("per_page=%d&page=%d", perPage, page)
+		var batch []*SecretScanningAlert
+		if err := c.doRequest(ctx, http.MethodGet, path, nil, &batch); err != nil {
+			return nil, err
+		}
+		alerts = append(alerts, batch...)
+		if len(batch) < perPage {
+			break
+		}
+	}
+	return alerts, nil
 }
 
 // ListIssueEvents returns an issue's timeline events (labeled, unlabeled,

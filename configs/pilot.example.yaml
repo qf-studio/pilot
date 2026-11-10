@@ -1305,6 +1305,18 @@ security:
     enabled: true
     interval: 5m
 
+  # GitHub secret-scanning alert watch (GH-6264): every interval, list the open
+  # secret-scanning alerts of each configured GitHub repo (projects[].github and
+  # adapters.github.repo) and raise a security_event alert (secret_leak rule) for
+  # each alert number not seen before. Seen numbers persist in
+  # <memory.path>/secret-alerts-seen.json (0600), so a restart does not resend;
+  # on the first run every open alert counts as new. Needs
+  # secret_scanning_alerts: read (GitHub App) or the security_events / repo scope
+  # (token); a 403/404 logs one warning per repo per day. Default: enabled, 1h.
+  github_alert_watch:
+    enabled: true
+    interval: 1h
+
 # Dashboard settings
 dashboard:
   refresh_interval: 1000     # ms

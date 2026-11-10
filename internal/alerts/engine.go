@@ -994,9 +994,14 @@ const SecurityEventSourceLeakScan = "leakscan"
 // AlertTypeSecretLeak rules. Mirrors executor.SecurityEventSourceSecretGate.
 const SecurityEventSourceSecretGate = "secret_gate"
 
+// SecurityEventSourceGitHubSecretScanning is the Event.Source of security
+// events raised by internal/secretalerts for a new GitHub secret-scanning alert
+// (GH-6264). Like leakscan events they fire only AlertTypeSecretLeak rules.
+const SecurityEventSourceGitHubSecretScanning = "github_secret_scanning"
+
 func (e *Engine) handleSecurityEvent(ctx context.Context, event Event) {
 	gate := event.Source == SecurityEventSourceSecretGate
-	leak := event.Source == SecurityEventSourceLeakScan || gate
+	leak := event.Source == SecurityEventSourceLeakScan || gate || event.Source == SecurityEventSourceGitHubSecretScanning
 	for _, rule := range e.config.Rules {
 		if !rule.Enabled {
 			continue
@@ -1012,6 +1017,10 @@ func (e *Engine) handleSecurityEvent(ctx context.Context, event Event) {
 					event.Metadata["file"], event.Metadata["kind"], event.Metadata["sample"])
 				if gate {
 					msg = event.Error
+				}
+				if event.Source == SecurityEventSourceGitHubSecretScanning {
+					msg = fmt.Sprintf("GitHub secret scanning alert #%s in %s (%s): %s",
+						event.Metadata["number"], event.Metadata["repo"], event.Metadata["type"], event.Metadata["html_url"])
 				}
 				alert := e.createAlert(rule, event, msg)
 				e.fireAlert(ctx, rule, alert)
