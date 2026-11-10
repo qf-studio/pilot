@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/redact"
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
@@ -298,7 +299,9 @@ func (ts *TokenSource) mint(ctx context.Context) (string, time.Time, error) {
 
 	resp, err := ts.httpClient.Do(req)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("minting installation token: %w", err)
+		// The App JWT is the credential of this request; a transport error
+		// can carry the request it failed on.
+		return "", time.Time{}, fmt.Errorf("minting installation token: %w", redact.Error(err, appJWT))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -308,9 +311,10 @@ func (ts *TokenSource) mint(ctx context.Context) (string, time.Time, error) {
 	}
 
 	if resp.StatusCode != http.StatusCreated {
-		// GitHub's error bodies are JSON messages ("Bad credentials" etc.)
-		// and never echo the request's JWT/token back — safe to include.
-		return "", time.Time{}, fmt.Errorf("minting installation token: status %d: %s", resp.StatusCode, string(body))
+		// GitHub's own error bodies are JSON messages ("Bad credentials"
+		// etc.), but a proxy or an intercepting server can echo the request
+		// back, so the JWT is masked rather than assumed absent.
+		return "", time.Time{}, fmt.Errorf("minting installation token: status %d: %s", resp.StatusCode, redact.Text(string(body), appJWT))
 	}
 
 	var parsed mintResponse

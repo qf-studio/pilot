@@ -1013,8 +1013,11 @@ func (e *Engine) handleSecurityEvent(ctx context.Context, event Event) {
 		switch rule.Type {
 		case AlertTypeSecretLeak:
 			if e.shouldFire(rule) {
-				msg := fmt.Sprintf("Possible secret in %s (%s, sample %s)",
-					event.Metadata["file"], event.Metadata["kind"], event.Metadata["sample"])
+				// The byte offset keeps a second leak of the same kind in the
+				// same file from collapsing into the first under
+				// SuppressDuplicates (GH-6268).
+				msg := fmt.Sprintf("Possible secret in %s (%s, sample %s, offset %s)",
+					event.Metadata["file"], event.Metadata["kind"], event.Metadata["sample"], event.Metadata["offset"])
 				if gate {
 					msg = event.Error
 				}

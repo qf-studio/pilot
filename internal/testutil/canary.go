@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -62,16 +63,48 @@ func FailingTransport() http.RoundTripper {
 	return failingTransport{}
 }
 
+// EchoOption customizes EchoServer.
+type EchoOption func(*echoConfig)
+
+type echoConfig struct {
+	jsonFields []string
+}
+
+// EchoJSONFields makes EchoServer answer with a JSON object instead of plain
+// text. Each named field holds the echo (request line, headers and body) as a
+// string. Slack and Telegram parse a JSON body and put its "error" or
+// "description" string into the error they return, so a plain-text echo never
+// reaches that code path; a JSON echo does.
+func EchoJSONFields(fields ...string) EchoOption {
+	return func(c *echoConfig) { c.jsonFields = fields }
+}
+
 // EchoServer starts an httptest server that answers every request with status
 // and a plain-text body holding the request line, all request headers and the
-// request body. It is closed when the test ends.
-func EchoServer(t testing.TB, status int) *httptest.Server {
+// request body. With EchoJSONFields the body is a JSON object that carries the
+// same text in the named string fields. It is closed when the test ends.
+func EchoServer(t testing.TB, status int, opts ...EchoOption) *httptest.Server {
 	t.Helper()
+	var cfg echoConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		echo := fmt.Sprintf("%s\n%s", dumpRequest(r), body)
+		if len(cfg.jsonFields) > 0 {
+			obj := make(map[string]string, len(cfg.jsonFields))
+			for _, f := range cfg.jsonFields {
+				obj[f] = echo
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(obj)
+			return
+		}
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(status)
-		_, _ = fmt.Fprintf(w, "%s\n%s", dumpRequest(r), body)
+		_, _ = fmt.Fprint(w, echo)
 	}))
 	t.Cleanup(srv.Close)
 	return srv

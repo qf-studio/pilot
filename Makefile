@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-adapter-canary check-mocks check-destructive check-graph test-bench bench-bootstrap-report pentest gate check-integration test-prepush-fastpath test-prepush-gate-output test-install-hooks-worktree auto-fix test-short test-changed test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard watch-git-config
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets check-adapter-canary test-check-adapter-canary check-mocks check-destructive check-graph test-bench bench-bootstrap-report pentest gate check-integration test-prepush-fastpath test-prepush-gate-output test-install-hooks-worktree auto-fix test-short test-changed test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard watch-git-config
 
 # Variables
 BINARY_NAME=pilot
@@ -154,6 +154,10 @@ check-secrets:
 # Check that every adapter package with an HTTP client has a canary leak test
 check-adapter-canary:
 	@./scripts/check-adapter-canary-tests.sh
+
+# Test the canary check itself: a comment-only file must fail it
+test-check-adapter-canary:
+	@./scripts/test-check-adapter-canary.sh
 
 # Check for argument-discarding mocks in test files: Backend.Execute
 # (TASK-441 L1 / GH-4708) and QualityChecker.Check (TASK-460 / GH-5062)

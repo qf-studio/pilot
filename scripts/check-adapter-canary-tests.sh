@@ -11,6 +11,11 @@
 # For every directory under internal/adapters/ whose non-test Go files
 # contain http.Client or http.NewRequest, a _test.go file in the same
 # directory must call testutil.AssertNoCanaryLeak (internal/testutil/canary.go).
+# A call is `testutil.AssertNoCanaryLeak(t` outside a `//` comment line; a
+# mention in a comment or a string does not count (GH-6268).
+#
+# CANARY_ADAPTERS_DIR overrides the directory to check (used by
+# scripts/test-check-adapter-canary.sh).
 #
 # Used by CI (.github/workflows/ci.yml) and by `make check-adapter-canary`.
 
@@ -18,7 +23,20 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-ADAPTERS_DIR="internal/adapters"
+# has_canary_call succeeds when a _test.go file in $1 calls
+# testutil.AssertNoCanaryLeak(t...) on a line that is not a // comment.
+has_canary_call() {
+    local file
+    for file in "$1"/*_test.go; do
+        [ -f "$file" ] || continue
+        if grep -vE '^[[:space:]]*//' "$file" | grep -qE 'testutil\.AssertNoCanaryLeak\(t'; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+ADAPTERS_DIR="${CANARY_ADAPTERS_DIR:-internal/adapters}"
 missing=()
 checked=0
 
@@ -35,7 +53,7 @@ while IFS= read -r dir; do
     [ "$has_client" -eq 1 ] || continue
     checked=$((checked + 1))
 
-    if ! grep -qlE 'testutil\.AssertNoCanaryLeak\(' "$dir"/*_test.go 2>/dev/null; then
+    if ! has_canary_call "$dir"; then
         missing+=("$dir")
     fi
 done < <(find "$ADAPTERS_DIR" -type d | sort)
