@@ -30,7 +30,9 @@ You can use either a **Personal Access Token (PAT)** or a **GitHub App** token.
 1. Go to **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**
 2. Select the target repository
 3. Set permissions:
-   - **Repository permissions**: Contents (Read and write), Issues (Read and write), Pull requests (Read and write), Metadata (Read)
+   - **Repository permissions**: Contents (Read and write), Issues (Read and write), Pull requests (Read and write), Metadata (Read), Actions (Read), Commit statuses (Read)
+
+Fine-grained tokens cannot read check runs, so Pilot reads CI from Actions runs and commit statuses; CI that reports only through another app's check runs needs a classic token or the GitHub App.
 
 <Callout type="warning">
 For production deployments, use a dedicated service account and fine-grained PAT scoped to specific repositories for better security isolation.

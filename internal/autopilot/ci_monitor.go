@@ -7,6 +7,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ghadapter "github.com/qf-studio/pilot/internal/adapters/github"
@@ -65,6 +66,12 @@ type CIMonitor struct {
 	// deliberate: the whole point is comparing THIS sha's silence against
 	// what OTHER shas on the same repo have done.
 	everSeenCheckRuns bool
+
+	// checkRunsForbidden records that GitHub refused this repository's
+	// check-runs read with a 403 (a fine-grained token, GH-6283), so later
+	// polls skip the doomed call and read Actions runs and commit statuses
+	// directly. It lives as long as the monitor; a restart resets it.
+	checkRunsForbidden atomic.Bool
 
 	// stuckPromotionLogged dedupes the Debug line mapCheckRun writes when it
 	// promotes a stuck check-run (conclusion set, status never completed) —
@@ -207,10 +214,18 @@ func (m *CIMonitor) WaitForCI(ctx context.Context, sha string) (CIStatus, error)
 // m.ghClient.ListCheckRuns directly — see latestCheckRunsByName for why a
 // SHA can carry more than one check-run per name and how "most recent" is
 // decided.
+//
+// GH-6283: a fine-grained token cannot read check runs (403). When that
+// happens the list is built from Actions runs and commit statuses instead
+// (fallbackCheckRuns), for this call and every later one, so the verdict and
+// every other consumer keep working; ErrCIUnreadable if those are closed too.
 func (m *CIMonitor) listLatestCheckRuns(ctx context.Context, sha string) (*github.CheckRunsResponse, error) {
+	if m.checkRunsForbidden.Load() {
+		return m.fallbackCheckRuns(ctx, sha)
+	}
 	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
 	if err != nil {
-		return nil, err
+		return m.checkRunsDenied(ctx, sha, err)
 	}
 	deduped := latestCheckRunsByName(checkRuns.CheckRuns)
 	return &github.CheckRunsResponse{TotalCount: len(deduped), CheckRuns: deduped}, nil
@@ -925,7 +940,7 @@ func (m *CIMonitor) CheckCI(ctx context.Context, sha string) (CIStatus, error) {
 // what let scope-release carriers (auth-service #476/#446/#443/#439,
 // studio-sdk #104) retry every ~30m and hold their scope indefinitely.
 func (m *CIMonitor) HasAnyCIConfigured(ctx context.Context, sha string) (bool, error) {
-	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
+	checkRuns, err := m.listLatestCheckRuns(ctx, sha)
 	if err != nil {
 		return false, err
 	}

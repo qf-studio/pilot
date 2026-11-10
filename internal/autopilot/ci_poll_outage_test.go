@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	ghadapter "github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/testutil"
@@ -20,9 +21,10 @@ import (
 type ciOutageMode int32
 
 const (
-	ciOutageDown    ciOutageMode = iota // HTTP 500
-	ciOutageGreen                       // one completed, successful check
-	ciOutagePending                     // one in-progress check
+	ciOutageDown      ciOutageMode = iota // HTTP 500
+	ciOutageGreen                         // one completed, successful check
+	ciOutagePending                       // one in-progress check
+	ciOutageForbidden                     // 403 on check-runs, one green Actions run (GH-6283)
 )
 
 // ciOutageFixture is a controller wired to a fake GitHub whose check-runs
@@ -39,6 +41,7 @@ type ciOutageFixture struct {
 	mode    atomic.Int32
 	ciCalls atomic.Int32
 	ctx     context.Context
+	srvURL  string
 }
 
 func newCIOutageFixture(t *testing.T, mutate func(*Config)) *ciOutageFixture {
@@ -51,10 +54,21 @@ func newCIOutageFixture(t *testing.T, mutate func(*Config)) *ciOutageFixture {
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case strings.Contains(r.URL.Path, "/actions/runs"):
+			w.Header().Set("Content-Type", "application/json")
+			runs := []map[string]interface{}{{
+				"id": 1, "workflow_id": 10, "name": "CI", "status": "completed",
+				"conclusion": "success", "head_sha": "abc1234", "run_attempt": 1,
+			}}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"total_count": len(runs), "workflow_runs": runs})
 		case strings.Contains(r.URL.Path, "check-runs"):
 			f.ciCalls.Add(1)
 			var checks []map[string]interface{}
 			switch ciOutageMode(f.mode.Load()) {
+			case ciOutageForbidden:
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(forbiddenCheckRunsBody))
+				return
 			case ciOutageDown:
 				w.WriteHeader(http.StatusInternalServerError)
 				_, _ = w.Write([]byte(`{"message":"Server Error"}`))
@@ -77,6 +91,7 @@ func newCIOutageFixture(t *testing.T, mutate func(*Config)) *ciOutageFixture {
 		}
 	}))
 	t.Cleanup(srv.Close)
+	f.srvURL = srv.URL
 
 	cfg := DefaultConfig()
 	if mutate != nil {
@@ -181,6 +196,32 @@ func TestWaitingCI_APIOutageHoldsInsteadOfFailing(t *testing.T) {
 	}
 	if got := evs[0].Metadata["outcome"]; got != "hold" {
 		t.Errorf("alert outcome = %q, want hold", got)
+	}
+}
+
+// TestWaitingCI_CheckRunsForbiddenGreenActionsRunLeavesWaitingCI is GH-6283: a
+// fine-grained token gets a 403 on check-runs for ever; with a green Actions
+// run the PR leaves waiting-CI on the first poll, with no hold and no error.
+func TestWaitingCI_CheckRunsForbiddenGreenActionsRunLeavesWaitingCI(t *testing.T) {
+	f := newCIOutageFixture(t, nil)
+	f.c.ciMonitor.SetStepLogClient(ghadapter.NewClientWithBaseURL(testutil.FakeGitHubToken, f.srvURL))
+	f.setMode(ciOutageForbidden)
+
+	if err := f.c.ProcessPR(f.ctx, 42, nil); err != nil {
+		t.Fatalf("ProcessPR: %v", err)
+	}
+
+	if f.pr.Stage == StageWaitingCI {
+		t.Fatalf("Stage = %s, want it to have left waiting-CI on the first poll", f.pr.Stage)
+	}
+	if f.pr.Stage != StageCIPassed {
+		t.Errorf("Stage = %s, want %s", f.pr.Stage, StageCIPassed)
+	}
+	if f.pr.APIOutageHoldActive || f.pr.ConsecutiveAPIFailures != 0 {
+		t.Errorf("hold=%v consecutive failures=%d, want no hold and no failures", f.pr.APIOutageHoldActive, f.pr.ConsecutiveAPIFailures)
+	}
+	if n := len(f.outageEvents()); n != 0 {
+		t.Errorf("ci_poll_api_outage alerts = %d, want 0", n)
 	}
 }
 
