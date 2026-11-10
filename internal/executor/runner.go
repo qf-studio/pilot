@@ -3293,6 +3293,22 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 	result.BranchPushed = nil
 	if git != nil && task.Branch != "" {
 		if pushErr := git.Push(pushCtx, task.Branch, task.ID); pushErr != nil {
+			if IsPushRefused(pushErr) {
+				// GH-6272: the secret gate refused the commits, so the hold ends as
+				// a push refusal like every other site: "push refused" leads the
+				// error and the commits are pinned under a recovery ref. The
+				// worktree is kept for the same reason as a failed hold push.
+				log.Warn("timeout salvage: hold push refused by the secret gate",
+					slog.String("task_id", task.ID),
+					slog.String("branch", task.Branch),
+					slog.String("hold_reason", reason),
+				)
+				if preserveWorktree != nil {
+					*preserveWorktree = true
+				}
+				r.failPushRefused(ctx, task, git, result, log, pushErr)
+				return
+			}
 			if pushFailureForgiven(pushCtx, git, task.Branch, pushErr) {
 				pushed = true
 			} else {
@@ -3418,9 +3434,9 @@ func (r *Runner) pushBranchWithRetry(ctx context.Context, git *GitOperations, ta
 		if pushErr == nil {
 			return nil
 		}
-		if IsPushRefused(pushErr) {
-			// GH-6263: the secret gate refused the commits; retrying, or
-			// forgiving the failure, would publish them another way.
+		if pushNeverForgiven(pushErr) {
+			// GH-6263: the secret gate refused the commits or could not run;
+			// retrying, or forgiving the failure, would publish them another way.
 			return pushErr
 		}
 		localHead, localErr := git.LocalHead(ctx)

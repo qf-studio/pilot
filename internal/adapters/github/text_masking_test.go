@@ -120,3 +120,51 @@ func TestSecretGate_RedactDoesNotMutateInput(t *testing.T) {
 		t.Errorf("input was rewritten: %+v", in)
 	}
 }
+
+// mutation pin: redactTextPayload masks fixed fields (merge_method, event) and CheckRun.Name, not only free text -> this test fails
+func TestSecretGate_RedactLeavesFixedFieldsAndCheckName(t *testing.T) {
+	secretpatterns.ResetSecretValuesForTest()
+	t.Cleanup(secretpatterns.ResetSecretValuesForTest)
+	const secret = "hunter2-not-a-known-shape"
+	secretpatterns.RegisterSecretValues(secret)
+
+	// A registered value that equals a fixed field's value is still sent as is.
+	const method = "hunter2-merge-method"
+	secretpatterns.RegisterSecretValues(method, "pilot-check-identity")
+
+	tests := []struct {
+		name string
+		call func(c *Client) error
+		want []string
+	}{
+		{"MergePullRequest merge_method", func(c *Client) error {
+			return c.MergePullRequest(context.Background(), "o", "r", 1, method, "")
+		}, []string{`"merge_method":"` + method + `"`}},
+		{"CreateCheckRun name", func(c *Client) error {
+			_, err := c.CreateCheckRun(context.Background(), "o", "r", &CheckRun{HeadSHA: "abc", Name: "pilot-check-identity", Output: &CheckOutput{Summary: secret}})
+			return err
+		}, []string{`"name":"pilot-check-identity"`, `"summary":"\u003credacted`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read body: %v", err)
+				}
+				got = string(b)
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+			if err := tt.call(NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL)); err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			for _, w := range tt.want {
+				if !strings.Contains(got, w) {
+					t.Errorf("request body lacks %s: %s", w, got)
+				}
+			}
+		})
+	}
+}

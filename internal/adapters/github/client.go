@@ -556,6 +556,9 @@ func (c *Client) doTextRequest(ctx context.Context, method, path string, payload
 	return c.doRequest(ctx, method, path, redactTextPayload(payload), result)
 }
 
+// textPayloadKeys are the free-text keys of a map[string]string payload.
+var textPayloadKeys = map[string]bool{"body": true, "title": true, "commit_title": true}
+
 // redactTextPayload returns payload with the free-text fields masked. It copies
 // the typed inputs, so the caller's struct is left as it was.
 func redactTextPayload(payload any) any {
@@ -563,7 +566,12 @@ func redactTextPayload(payload any) any {
 	case map[string]string:
 		out := make(map[string]string, len(p))
 		for k, v := range p {
-			out[k] = secretpatterns.Redact(v)
+			// Only the free-text keys: merge_method, event and state are fixed
+			// vocabulary and stay as sent.
+			if textPayloadKeys[k] {
+				v = secretpatterns.Redact(v)
+			}
+			out[k] = v
 		}
 		return out
 	case *IssueInput:
@@ -598,8 +606,7 @@ func redactTextPayload(payload any) any {
 		if p == nil {
 			return p
 		}
-		cp := *p
-		cp.Name = secretpatterns.Redact(cp.Name)
+		cp := *p // Name is the check's identity, not free text: left as it is
 		if p.Output != nil {
 			out := *p.Output
 			out.Title, out.Summary, out.Text = secretpatterns.Redact(out.Title), secretpatterns.Redact(out.Summary), secretpatterns.Redact(out.Text)

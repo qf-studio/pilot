@@ -241,3 +241,117 @@ func gateRefusalForTest(t *testing.T, f *pushRefusedFixture) error {
 	}
 	return err
 }
+
+// breakGateScan removes the loose blob of the fixture's unpushed commit, so
+// `git diff` inside the gate fails: the gate cannot run, and that is neither a
+// clearance nor a refusal.
+func (f *pushRefusedFixture) breakGateScan(t *testing.T) {
+	t.Helper()
+	blob := f.run("rev-parse", "HEAD:notes.md")
+	obj := filepath.Join(f.local, ".git", "objects", blob[:2], blob[2:])
+	if err := os.Remove(obj); err != nil {
+		t.Fatalf("remove blob: %v", err)
+	}
+}
+
+// gateUnavailableForTest returns the error CheckSecretGate gives when it cannot run.
+func gateUnavailableForTest(t *testing.T, f *pushRefusedFixture) error {
+	t.Helper()
+	f.breakGateScan(t)
+	err := CheckSecretGate(context.Background(), f.local, "pilot/GH-9", "GH-9")
+	if err == nil || IsPushRefused(err) {
+		t.Fatalf("setup: got %v, want a gate error that is not a refusal", err)
+	}
+	if !IsSecretGateUnavailable(err) {
+		t.Fatalf("setup: %v is not a gate-unavailable error", err)
+	}
+	return err
+}
+
+// mutation pin: a refused hold push appends the refusal to the timeout reason, with no recovery ref -> this test fails
+func TestPushRefused_HoldLeadsWithRefusalAndPinsRecoveryRef(t *testing.T) {
+	f := newPushRefusedFixture(t)
+	r := newSilentRunnerTask359()
+	result := &ExecutionResult{TaskID: "GH-9"}
+	var preserve bool
+
+	r.holdPushedBranch(context.Background(), f.task(), f.git, result, r.log, "backend timeout", "", &preserve)
+
+	assertRefusedTerminal(t, result)
+	if strings.Contains(result.Error, "backend timeout") && !strings.HasPrefix(result.Error, "push refused") {
+		t.Errorf("Error = %q, the timeout reason leads", result.Error)
+	}
+	if !strings.Contains(result.Error, "recovery_ref=refs/pilot-recovery/") {
+		t.Errorf("Error = %q, want the recovery ref named", result.Error)
+	}
+	if got := f.run("rev-parse", "refs/pilot-recovery/GH-9"); got != f.run("rev-parse", "HEAD") {
+		t.Errorf("recovery ref = %s, want HEAD", got)
+	}
+	if strings.Contains(f.ghCalls(t), "could not be pushed either") {
+		t.Errorf("the issue comment says the push merely failed:\n%s", f.ghCalls(t))
+	}
+	if !preserve {
+		t.Error("worktree not preserved after a refused hold push")
+	}
+}
+
+// mutation pin: a gate error that is not a refusal is forgiven when the remote branch exists -> this test fails
+func TestPushRefused_GateErrorIsNotForgivenByRemoteBranch(t *testing.T) {
+	f := newPushRefusedFixture(t)
+	gateErr := gateUnavailableForTest(t, f)
+	ctx := context.Background()
+
+	if !f.git.RemoteBranchExists(ctx, "pilot/GH-9") {
+		t.Fatal("setup: the branch must exist on the remote")
+	}
+	if pushFailureForgiven(ctx, f.git, "pilot/GH-9", gateErr) {
+		t.Error("a gate error was forgiven because the branch exists on the remote")
+	}
+
+	// The timeout-salvage site must hold, not go on to open a PR on the stale head.
+	r := newSilentRunnerTask359()
+	r.prCreator = f.creator
+	result := &ExecutionResult{TaskID: "GH-9"}
+	var preserve bool
+	r.pushAndCreatePRAfterTimeout(ctx, f.task(), f.git, result, nil, r.log, "", &preserve)
+	f.assertNoPR(t, result)
+	if result.Success {
+		t.Error("Success = true although nothing was pushed")
+	}
+}
+
+// countingHandler counts the log records whose message equals msg.
+type countingHandler struct {
+	msg string
+	n   *int
+}
+
+func (h countingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h countingHandler) Handle(_ context.Context, rec slog.Record) error {
+	if rec.Message == h.msg {
+		*h.n++
+	}
+	return nil
+}
+func (h countingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h countingHandler) WithGroup(string) slog.Handler      { return h }
+
+// mutation pin: pushBranchWithRetry classifies a gate stop with IsPushRefused alone instead of the shared helper, so a gate error is retried -> this test fails
+func TestPushRefused_PushBranchWithRetryDoesNotRetryGateError(t *testing.T) {
+	f := newPushRefusedFixture(t)
+	_ = gateUnavailableForTest(t, f)
+
+	var scans int
+	prev := slog.Default()
+	slog.SetDefault(slog.New(countingHandler{msg: "Secret gate could not scan the push range", n: &scans}))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	r := &Runner{}
+	err := r.pushBranchWithRetry(context.Background(), f.git, f.task(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if !IsSecretGateUnavailable(err) {
+		t.Fatalf("got %v, want the gate error", err)
+	}
+	if scans != 1 {
+		t.Errorf("the gate ran %d times, want 1: the same stop is not retried", scans)
+	}
+}

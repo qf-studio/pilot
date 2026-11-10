@@ -190,6 +190,17 @@ func CheckPush(ctx context.Context, dir, head string, opts PushOptions) error {
 	if parent, perr := gitOutput(ctx, dir, "rev-parse", "--verify", "--quiet", oldest+"^"); perr == nil {
 		diffBase = strings.TrimSpace(string(parent))
 	}
+	// Decision: a merge in the unpushed range may bring in a branch that is
+	// already on a remote, and the net diff from the oldest unpushed commit's
+	// parent would then hold that branch's old changes and refuse them as new.
+	// With a merge in the range the net diff is skipped; the per-commit pass
+	// reads every merge as a combined diff (--cc), which shows only what the
+	// merge itself introduced.
+	if merges, merr := gitOutput(ctx, dir, "rev-list", "--merges", "-n", "1", head, "--not", "--remotes"); merr != nil {
+		return &PushScanError{Reason: "the push base could not be computed: the merge commits not on a remote could not be listed"}
+	} else if strings.TrimSpace(string(merges)) != "" {
+		diffBase = ""
+	}
 	return checkRange(ctx, dir, diffBase, []string{head, "--not", "--remotes"}, head, opts)
 }
 
@@ -209,19 +220,24 @@ func CheckPushRange(ctx context.Context, dir, base, head string) error {
 }
 
 // checkRange scans the net diff diffBase..head, the messages and every commit
-// selected by logArgs (git log revision arguments).
+// selected by logArgs (git log revision arguments). diffBase "" skips the net
+// diff.
 //
 // Decision: besides the net diff and the messages, every commit is scanned on
 // its own. A token committed and removed again by a later commit is gone from
 // the net diff but still reaches the remote, which is exactly how the
 // 2026-04-07 token was published.
 func checkRange(ctx context.Context, dir, diffBase string, logArgs []string, head string, opts PushOptions) error {
-	diff, err := gitOutputMax(ctx, dir, int64(netDiffScanFactor*maxCommitScanBytes), "diff", "--no-color", "--text", diffBase+".."+head)
-	if errors.Is(err, errScanTooLarge) {
-		return &PushScanError{Reason: fmt.Sprintf("the diff of the push is larger than %d bytes, too large to scan", netDiffScanFactor*maxCommitScanBytes)}
-	}
-	if err != nil {
-		return fmt.Errorf("secret gate: git diff: %w", err)
+	var diff []byte
+	if diffBase != "" {
+		var err error
+		diff, err = gitOutputMax(ctx, dir, int64(netDiffScanFactor*maxCommitScanBytes), "diff", "--no-color", "--text", diffBase+".."+head)
+		if errors.Is(err, errScanTooLarge) {
+			return &PushScanError{Reason: fmt.Sprintf("the diff of the push is larger than %d bytes, too large to scan", netDiffScanFactor*maxCommitScanBytes)}
+		}
+		if err != nil {
+			return fmt.Errorf("secret gate: git diff: %w", err)
+		}
 	}
 	msgs, err := gitOutput(ctx, dir, append([]string{"log", "--format=%B"}, logArgs...)...)
 	if err != nil {
@@ -263,7 +279,7 @@ func scanCommits(ctx context.Context, dir string, logArgs []string, opts PushOpt
 	start, msgMark, patchMark := []byte(mark+"S\n"), []byte("\n"+mark+"M\n"), []byte("\n"+mark+"P\n")
 	format := "--format=" + mark + "S%n%H%n" + mark + "M%n%B%n" + mark + "P"
 
-	args := append([]string{"-c", "core.quotepath=false", "log", "-p", "--text", "--reverse", "--no-color", format}, logArgs...)
+	args := append([]string{"-c", "core.quotepath=false", "log", "-p", "--cc", "--text", "--reverse", "--no-color", format}, logArgs...)
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	var stderr bytes.Buffer
@@ -387,7 +403,7 @@ func scanPatch(patch []byte, opts PushOptions) (file, kind string, hit bool) {
 	}
 	for _, line := range bytes.Split(patch, []byte{'\n'}) {
 		switch {
-		case bytes.HasPrefix(line, []byte("diff --git ")):
+		case bytes.HasPrefix(line, []byte("diff --git ")), bytes.HasPrefix(line, []byte("diff --cc ")):
 			if flush() {
 				return file, kind, true
 			}
