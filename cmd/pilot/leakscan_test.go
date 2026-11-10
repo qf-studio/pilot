@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,5 +98,28 @@ func TestSecretAlertRepos(t *testing.T) {
 	got := secretAlertRepos(cfg)
 	if len(got) != 2 || got[0].String() != "o/a" || got[1].String() != "o/default" {
 		t.Errorf("repos = %v, want [o/a o/default]", got)
+	}
+}
+
+// TestWarnLogNotScanned: a headless daemon logs to the terminal, so the scanner
+// has no file to read; the start-up line says so and why.
+func TestWarnLogNotScanned(t *testing.T) {
+	tests := []struct {
+		name      string
+		dashboard bool
+		want      string
+	}{
+		{"headless", false, "logging.output"},
+		{"dashboard", true, "logging.dashboard_log"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			warnLogNotScanned(slog.New(slog.NewTextHandler(&buf, nil)), tt.dashboard)
+			out := buf.String()
+			if strings.Count(out, "level=WARN") != 1 || !strings.Contains(out, "daemon log is not scanned") || !strings.Contains(out, tt.want) {
+				t.Errorf("unexpected output:\n%s", out)
+			}
+		})
 	}
 }

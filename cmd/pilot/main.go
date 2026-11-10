@@ -1625,6 +1625,12 @@ Examples:
 				return fmt.Errorf("failed to start Pilot: %w", err)
 			}
 
+			// GH-6268: runtime leak scan in gateway-only mode too, when an
+			// alerts engine exists to carry the alert.
+			if gwAlertsEngine != nil {
+				startLeakScan(context.Background(), cfg, dashboardMode, gwAlertsEngine)
+			}
+
 			// Start tunnel if enabled
 			if cfg.Tunnel != nil && cfg.Tunnel.Enabled {
 				if cfg.Tunnel.Port == 0 {

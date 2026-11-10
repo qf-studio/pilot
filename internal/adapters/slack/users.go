@@ -107,7 +107,7 @@ func (c *Client) GetUserInfo(ctx context.Context, userID string) (*UserInfo, err
 	}
 
 	if !result.OK {
-		return nil, fmt.Errorf("slack API error: %s", result.Error)
+		return nil, fmt.Errorf("slack API error: %s", redact.Text(result.Error, c.botToken))
 	}
 
 	// Build UserInfo from response

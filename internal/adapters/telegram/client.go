@@ -240,7 +240,7 @@ func (c *Client) CheckSingleton(ctx context.Context) error {
 		if result.ErrorCode == 409 {
 			return ErrConflict
 		}
-		return fmt.Errorf("telegram API error: %s (code: %d)", result.Description, result.ErrorCode)
+		return fmt.Errorf("telegram API error: %s (code: %d)", redact.Text(result.Description, c.botToken), result.ErrorCode)
 	}
 
 	return nil
@@ -280,7 +280,7 @@ func (c *Client) GetMe(ctx context.Context) (*User, error) {
 	}
 
 	if !result.OK {
-		return nil, fmt.Errorf("telegram API error: %s (code: %d)", result.Description, result.ErrorCode)
+		return nil, fmt.Errorf("telegram API error: %s (code: %d)", redact.Text(result.Description, c.botToken), result.ErrorCode)
 	}
 
 	return result.Result, nil
@@ -312,7 +312,7 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]*
 	}
 
 	if !result.OK {
-		return nil, fmt.Errorf("telegram API error: %s (code: %d)", result.Description, result.ErrorCode)
+		return nil, fmt.Errorf("telegram API error: %s (code: %d)", redact.Text(result.Description, c.botToken), result.ErrorCode)
 	}
 
 	return result.Result, nil
@@ -367,7 +367,7 @@ func (c *Client) SendMessage(ctx context.Context, chatID, text, parseMode string
 	}
 
 	if !result.OK {
-		return nil, fmt.Errorf("telegram API error: %s (code: %d)", result.Description, result.ErrorCode)
+		return nil, fmt.Errorf("telegram API error: %s (code: %d)", redact.Text(result.Description, c.botToken), result.ErrorCode)
 	}
 
 	return &result, nil
@@ -415,7 +415,7 @@ func (c *Client) SendMessageWithKeyboard(ctx context.Context, chatID, text, pars
 	}
 
 	if !result.OK {
-		return nil, fmt.Errorf("telegram API error: %s (code: %d)", result.Description, result.ErrorCode)
+		return nil, fmt.Errorf("telegram API error: %s (code: %d)", redact.Text(result.Description, c.botToken), result.ErrorCode)
 	}
 
 	return &result, nil
@@ -467,7 +467,7 @@ func (c *Client) EditMessage(ctx context.Context, chatID string, messageID int64
 	}
 
 	if !result.OK {
-		return fmt.Errorf("telegram API error: %s (code: %d)", result.Description, result.ErrorCode)
+		return fmt.Errorf("telegram API error: %s (code: %d)", redact.Text(result.Description, c.botToken), result.ErrorCode)
 	}
 
 	return nil
@@ -533,7 +533,7 @@ func (c *Client) GetFile(ctx context.Context, fileID string) (*File, error) {
 	}
 
 	if !result.OK {
-		return nil, fmt.Errorf("telegram API error: %s (code: %d)", result.Description, result.ErrorCode)
+		return nil, fmt.Errorf("telegram API error: %s (code: %d)", redact.Text(result.Description, c.botToken), result.ErrorCode)
 	}
 
 	return result.Result, nil

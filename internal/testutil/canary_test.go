@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -98,5 +99,51 @@ func TestCanary_EchoServerAnswersStatusAndEchoesHeadersAndBody(t *testing.T) {
 				t.Errorf("echo lacks %q: %s", want, body)
 			}
 		}
+	}
+}
+
+func TestCanary_EchoServerJSONFieldsCarryTheEcho(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields []string
+	}{
+		{"one field", []string{"error"}},
+		{"two fields", []string{"error", "description"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := EchoServer(t, http.StatusUnauthorized, EchoJSONFields(tt.fields...))
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+				srv.URL+"/x", strings.NewReader("request-body-text"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+CanaryToken)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("status = %d", resp.StatusCode)
+			}
+			if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+				t.Errorf("content type = %q", ct)
+			}
+			var got map[string]string
+			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+				t.Fatalf("body is not a JSON object of strings: %v", err)
+			}
+			if len(got) != len(tt.fields) {
+				t.Errorf("fields = %v, want %v", got, tt.fields)
+			}
+			for _, f := range tt.fields {
+				for _, want := range []string{"POST /x", "Authorization: Bearer " + CanaryToken, "request-body-text"} {
+					if !strings.Contains(got[f], want) {
+						t.Errorf("field %q lacks %q: %s", f, want, got[f])
+					}
+				}
+			}
+		})
 	}
 }

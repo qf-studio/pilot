@@ -205,10 +205,11 @@ func TestScanFile_SecretAcrossChunkBoundary(t *testing.T) {
 	pad := strings.Repeat("x", chunkSize-10)
 	appendTo(t, path, pad+tokenShape+"\n")
 
-	hits, _, err := scanFile(path, 0, true)
+	res, err := scanFile(path, 0, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	hits := res.hits
 	if len(hits) != 1 || hits[0].count != 1 || hits[0].offset != int64(chunkSize-10) {
 		t.Fatalf("hits = %+v, want one at offset %d", hits, chunkSize-10)
 	}

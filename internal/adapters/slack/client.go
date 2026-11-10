@@ -83,10 +83,10 @@ func (c *Client) AuthTest(ctx context.Context) (*AuthTestResponse, error) {
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("slack API error (401): %s", result.Error)
+		return nil, fmt.Errorf("slack API error (401): %s", redact.Text(result.Error, c.botToken))
 	}
 	if !result.OK {
-		return nil, fmt.Errorf("slack API error: %s", result.Error)
+		return nil, fmt.Errorf("slack API error: %s", redact.Text(result.Error, c.botToken))
 	}
 
 	return &result, nil
@@ -191,7 +191,7 @@ func (c *Client) PostMessage(ctx context.Context, msg *Message) (*PostMessageRes
 	}
 
 	if !result.OK {
-		return nil, fmt.Errorf("slack API error: %s", result.Error)
+		return nil, fmt.Errorf("slack API error: %s", redact.Text(result.Error, c.botToken))
 	}
 
 	return &result, nil
@@ -240,7 +240,7 @@ func (c *Client) UpdateMessage(ctx context.Context, channel, ts string, msg *Mes
 	}
 
 	if !result.OK {
-		return fmt.Errorf("slack API error: %s", result.Error)
+		return fmt.Errorf("slack API error: %s", redact.Text(result.Error, c.botToken))
 	}
 
 	return nil
@@ -285,7 +285,7 @@ func (c *Client) PostInteractiveMessage(ctx context.Context, msg *InteractiveMes
 	}
 
 	if !result.OK {
-		return nil, fmt.Errorf("slack API error: %s", result.Error)
+		return nil, fmt.Errorf("slack API error: %s", redact.Text(result.Error, c.botToken))
 	}
 
 	return &result, nil
@@ -327,7 +327,7 @@ func (c *Client) PostEphemeral(ctx context.Context, responseURL, text string) er
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("slack response_url returned status %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("slack response_url returned status %d: %s", resp.StatusCode, redact.Text(string(respBody), c.botToken))
 	}
 
 	return nil
@@ -376,7 +376,7 @@ func (c *Client) PostEphemeralToUser(ctx context.Context, channel, user, text st
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 	if !result.OK {
-		return fmt.Errorf("slack API error: %s", result.Error)
+		return fmt.Errorf("slack API error: %s", redact.Text(result.Error, c.botToken))
 	}
 
 	return nil
@@ -425,7 +425,7 @@ func (c *Client) UpdateInteractiveMessage(ctx context.Context, channel, ts strin
 	}
 
 	if !result.OK {
-		return fmt.Errorf("slack API error: %s", result.Error)
+		return fmt.Errorf("slack API error: %s", redact.Text(result.Error, c.botToken))
 	}
 
 	return nil

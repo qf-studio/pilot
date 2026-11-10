@@ -116,9 +116,9 @@ func (s *SocketModeClient) OpenConnection(ctx context.Context) (string, error) {
 		// Slack returns specific error codes for auth issues
 		switch result.Error {
 		case "invalid_auth", "not_authed", "account_inactive", "token_revoked":
-			return "", fmt.Errorf("%w: %s", ErrAuthFailure, result.Error)
+			return "", fmt.Errorf("%w: %s", ErrAuthFailure, redact.Text(result.Error, s.appToken))
 		default:
-			return "", fmt.Errorf("%w: %s", ErrConnectionOpen, result.Error)
+			return "", fmt.Errorf("%w: %s", ErrConnectionOpen, redact.Text(result.Error, s.appToken))
 		}
 	}
 

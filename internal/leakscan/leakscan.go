@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,14 +42,25 @@ const (
 	// secret that straddles a chunk boundary is still matched. It exceeds the
 	// longest pattern match and any realistic configured secret.
 	overlap = 4096
-	// maxPerTick bounds the bytes scanned per file per tick, keeping a huge
-	// backlog from stalling the loop; the remainder is scanned next tick.
-	maxPerTick = 64 << 20
 	// maxPartialLine is how long an unterminated log tail may grow before it
 	// is scanned anyway. Normally the tail is held back until its newline
 	// arrives so a line being written is not split across two ticks.
 	maxPartialLine = 1 << 20
+	// tickOverlap is how much of the previous read is kept and scanned again
+	// together with the next one, so a value split across two reads (a
+	// recording appended mid-token, a log line over maxPartialLine) is found.
+	tickOverlap = 512
+	// activeGrace is how long a recording directory is still visited after
+	// its last change. An append to an existing file does not touch the
+	// directory's mtime, so a directory with recent activity stays on the
+	// list even when its own mtime is old.
+	activeGrace = time.Hour
 )
+
+// maxPerTick bounds the bytes scanned per file per tick, keeping a huge
+// backlog from stalling the loop; the remainder is scanned next tick. A var so
+// a test can use a small cap.
+var maxPerTick int64 = 64 << 20
 
 // mtimeSlack widens the "modified since the last tick" test. Filesystem
 // timestamps are coarser than the wall clock and can trail it, so a file
@@ -87,13 +99,32 @@ type LeakScanner struct {
 	// logOffset is the next unread byte of the daemon log. In memory only: a
 	// restart begins at the file end, so old content is not re-alerted.
 	logOffset int64
-	// lastTick is when recordings were last scanned; only files modified
-	// after it (less mtimeSlack) are visited.
+	// logIno identifies the file logOffset belongs to, so a replaced file
+	// (rotation) is noticed even when the new one is already longer.
+	logIno   uint64
+	logIDSet bool
+	// logTail is the last tickOverlap bytes the log scan read, scanned again
+	// in front of the next read.
+	logTail []byte
+	// lastTick is when recordings were last scanned; only directories and new
+	// files modified after it (less mtimeSlack) are visited.
 	lastTick time.Time
 	// recOffsets is the scanned size per recording file, so an append-only
 	// stream.jsonl is scanned incrementally and an old hit is not re-alerted
-	// on every tick.
+	// on every tick. A file with an entry is finished on later ticks whatever
+	// its mtime says.
 	recOffsets map[string]int64
+	// recTails is the overlap per recording file, like logTail.
+	recTails map[string][]byte
+	// activeDirs is when a recording directory last had a file change or
+	// leave bytes unscanned.
+	activeDirs map[string]time.Time
+	// walkAll makes the first scan visit every directory: a recording that is
+	// still being appended to when the daemon starts has an old directory
+	// mtime and no recorded activity yet.
+	walkAll bool
+	// warnedRoot keeps the missing-recordings-root warning to one line.
+	warnedRoot bool
 }
 
 // NewLeakScanner builds a scanner. The log offset starts at the current end of
@@ -112,10 +143,14 @@ func NewLeakScanner(cfg Config) *LeakScanner {
 		log:        log.With(slog.String("component", "leakscan")),
 		lastTick:   time.Now(),
 		recOffsets: make(map[string]int64),
+		recTails:   make(map[string][]byte),
+		activeDirs: make(map[string]time.Time),
+		walkAll:    true,
 	}
 	if cfg.LogPath != "" {
 		if st, err := os.Stat(cfg.LogPath); err == nil {
 			s.logOffset = st.Size()
+			s.logIno, s.logIDSet = fileID(st)
 		}
 	}
 	return s
@@ -130,7 +165,7 @@ func (s *LeakScanner) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s.ScanOnce()
+			s.scanOnce(ctx)
 		}
 	}
 }
@@ -145,9 +180,13 @@ type hit struct {
 
 // ScanOnce runs one scan of the log and the recordings and sends the alerts.
 func (s *LeakScanner) ScanOnce() {
+	s.scanOnce(context.Background())
+}
+
+func (s *LeakScanner) scanOnce(ctx context.Context) {
 	tickStart := time.Now()
 	s.scanLog()
-	s.scanRecordings()
+	s.scanRecordings(ctx, tickStart)
 	s.lastTick = tickStart
 }
 
@@ -160,56 +199,185 @@ func (s *LeakScanner) scanLog() {
 	if err != nil {
 		return
 	}
-	if st.Size() < s.logOffset {
-		// Truncated or rotated: start over from the top of the new file.
+	ino, idSet := fileID(st)
+	replaced := idSet && s.logIDSet && ino != s.logIno
+	if st.Size() < s.logOffset || replaced {
+		// Truncated or rotated. internal/logging renames the live file to a
+		// backup: the bytes written to it after the last tick are only there.
+		s.scanRotatedBackup(path)
 		s.logOffset = 0
+		s.logTail = nil
 	}
+	s.logIno, s.logIDSet = ino, idSet
 	if st.Size() == s.logOffset {
 		return
 	}
-	hits, next, err := scanFile(path, s.logOffset, true)
+	res, err := scanFile(path, s.logOffset, true, s.logTail)
 	if err != nil {
 		s.log.Warn("leak scan: read log failed", slog.String("file", path), slog.Any("error", err))
 		return
 	}
-	s.logOffset = next
-	s.report(path, hits)
+	s.logOffset, s.logTail = res.next, res.tail
+	s.report(path, res.hits)
 }
 
-func (s *LeakScanner) scanRecordings() {
+// scanRotatedBackup scans the rest of the file the log was before it was
+// rotated away: from the stored offset to its end.
+func (s *LeakScanner) scanRotatedBackup(path string) {
+	if s.logOffset == 0 {
+		return
+	}
+	backup := s.findRotatedBackup(path)
+	if backup == "" {
+		return
+	}
+	res, err := scanFile(backup, s.logOffset, false, s.logTail)
+	if err != nil {
+		s.log.Warn("leak scan: read rotated log failed", slog.String("file", backup), slog.Any("error", err))
+		return
+	}
+	s.report(backup, res.hits)
+}
+
+// findRotatedBackup returns the backup the live log was renamed to: the one
+// that still carries the inode the offset belongs to, else the newest backup
+// modified since the last tick. "" when there is none.
+func (s *LeakScanner) findRotatedBackup(path string) string {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	ext := filepath.Ext(base)
+	prefix := strings.TrimSuffix(base, ext) + "."
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	var (
+		newest     string
+		newestTime time.Time
+	)
+	for _, e := range entries {
+		name := e.Name()
+		if name == base || e.IsDir() || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ext) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.Size() < s.logOffset {
+			continue
+		}
+		full := filepath.Join(dir, name)
+		if ino, ok := fileID(info); ok && s.logIDSet && ino == s.logIno {
+			return full
+		}
+		if info.ModTime().After(s.lastTick.Add(-mtimeSlack)) && (newest == "" || info.ModTime().After(newestTime)) {
+			newest, newestTime = full, info.ModTime()
+		}
+	}
+	return newest
+}
+
+// resolveRecordingsRoot resolves symlinks in the recordings root: WalkDir does
+// not follow a symlink as the root, so a symlinked directory would otherwise
+// be walked as a single entry and never scanned. "" when the root is missing.
+func (s *LeakScanner) resolveRecordingsRoot() string {
 	root := s.cfg.RecordingsPath
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		if !s.warnedRoot {
+			s.warnedRoot = true
+			s.log.Warn("leak scan: recordings directory not readable, recordings are not scanned",
+				slog.String("path", root), slog.Any("error", err))
+		}
+		return ""
+	}
+	s.warnedRoot = false
+	return resolved
+}
+
+func (s *LeakScanner) scanRecordings(ctx context.Context, tickStart time.Time) {
+	if s.cfg.RecordingsPath == "" {
+		return
+	}
+	root := s.resolveRecordingsRoot()
 	if root == "" {
 		return
 	}
-	seen := make(map[string]bool)
+	since := s.lastTick.Add(-mtimeSlack)
+	seenFiles := make(map[string]bool)
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !recordingFiles[d.Name()] {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		if err != nil {
 			return nil
 		}
-		seen[path] = true
+		if d.IsDir() {
+			if path == root {
+				return nil
+			}
+			// A new file bumps the directory's mtime; an append to an old
+			// file does not, so a recently active directory stays listed.
+			info, ierr := d.Info()
+			if ierr != nil {
+				return fs.SkipDir
+			}
+			if !s.walkAll && !info.ModTime().After(since) && tickStart.Sub(s.activeDirs[path]) > activeGrace {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !recordingFiles[d.Name()] {
+			return nil
+		}
+		seenFiles[path] = true
 		info, err := d.Info()
 		if err != nil {
 			return nil
 		}
-		off := s.recOffsets[path]
+		dir := filepath.Dir(path)
+		off, known := s.recOffsets[path]
 		if info.Size() < off {
 			off = 0
+			delete(s.recTails, path)
 		}
-		if !info.ModTime().After(s.lastTick.Add(-mtimeSlack)) || info.Size() == off {
+		// A file seen before is finished whatever its mtime says: a recording
+		// larger than maxPerTick takes several ticks. A new file must have
+		// been modified since the last tick, which skips old content that
+		// predates startup.
+		if !known && !info.ModTime().After(since) {
 			return nil
 		}
-		hits, next, err := scanFile(path, off, false)
+		if info.ModTime().After(since) {
+			s.activeDirs[dir] = tickStart
+		}
+		if info.Size() == off {
+			return nil
+		}
+		s.activeDirs[dir] = tickStart
+		res, err := scanFile(path, off, false, s.recTails[path])
 		if err != nil {
 			s.log.Warn("leak scan: read recording failed", slog.String("file", path), slog.Any("error", err))
 			return nil
 		}
-		s.recOffsets[path] = next
-		s.report(path, hits)
+		s.recOffsets[path], s.recTails[path] = res.next, res.tail
+		s.report(path, res.hits)
 		return nil
 	})
+	if ctx.Err() != nil {
+		return
+	}
+	s.walkAll = false
+	// Forget files that are gone and files in directories past their grace
+	// (those were skipped above, so they are not in seenFiles).
 	for p := range s.recOffsets {
-		if !seen[p] {
-			delete(s.recOffsets, p)
+		if seenFiles[p] {
+			continue
+		}
+		delete(s.recOffsets, p)
+		delete(s.recTails, p)
+	}
+	for dir, at := range s.activeDirs {
+		if tickStart.Sub(at) > activeGrace {
+			delete(s.activeDirs, dir)
 		}
 	}
 }
@@ -274,40 +442,49 @@ func holdBackPartialLine(f *os.File, offset, end int64) int64 {
 	return end
 }
 
-// scanFile scans path from offset and returns the folded hits (sorted by
-// offset) and the offset to resume from. With holdPartial an unterminated last
-// line is left for the next scan.
-func scanFile(path string, offset int64, holdPartial bool) ([]hit, int64, error) {
+// scanResult is what one scanFile call found.
+type scanResult struct {
+	hits []hit  // folded, sorted by offset
+	next int64  // offset to resume from
+	tail []byte // last tickOverlap bytes read, for the next call's prefix
+}
+
+// scanFile scans path from offset. prefix is the tail of the previous read, the
+// bytes just before offset; it is matched together with the new bytes so a
+// value split across two reads is found, and a match wholly inside it (already
+// reported) is not counted again. With holdPartial an unterminated last line
+// is left for the next scan.
+func scanFile(path string, offset int64, holdPartial bool, prefix []byte) (scanResult, error) {
+	unchanged := scanResult{next: offset, tail: prefix}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, offset, err
+		return unchanged, err
 	}
 	defer func() { _ = f.Close() }()
 	st, err := f.Stat()
 	if err != nil {
-		return nil, offset, err
+		return unchanged, err
 	}
 	end := st.Size()
 	if end-offset > maxPerTick {
 		end = offset + maxPerTick
 	}
 	if end <= offset {
-		return nil, offset, nil
+		return unchanged, nil
 	}
 	if holdPartial {
 		end = holdBackPartialLine(f, offset, end)
 	}
 	if end <= offset {
-		return nil, offset, nil
+		return unchanged, nil
 	}
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return nil, offset, err
+		return unchanged, err
 	}
 
 	var (
 		folded = make(map[string]*hit)
-		carry  []byte // last bytes of the previous chunk
-		base   = offset
+		carry  = append([]byte(nil), prefix...) // bytes just before pos
 		pos    = offset
 		buf    = make([]byte, chunkSize)
 	)
@@ -320,9 +497,17 @@ func scanFile(path string, offset int64, holdPartial bool) ([]hit, int64, error)
 		if n > 0 {
 			window := append(append(make([]byte, 0, len(carry)+n), carry...), buf[:n]...)
 			windowStart := pos - int64(len(carry))
+			// A variable-length match that ended inside the carry and now
+			// runs on into the new bytes was reported once already.
+			reported := make(map[matchKey]bool)
+			if len(carry) > 0 {
+				for _, m := range secretpatterns.FindMatches(carry) {
+					reported[matchKey{m.Kind, m.Start}] = true
+				}
+			}
 			for _, m := range secretpatterns.FindMatches(window) {
-				if m.End <= len(carry) {
-					continue // wholly inside the overlap: seen last chunk
+				if m.End <= len(carry) || reported[matchKey{m.Kind, m.Start}] {
+					continue // seen in the previous chunk or read
 				}
 				h := folded[m.Kind]
 				if h == nil {
@@ -342,17 +527,26 @@ func scanFile(path string, offset int64, holdPartial bool) ([]hit, int64, error)
 			if errors.Is(rerr, io.EOF) || errors.Is(rerr, io.ErrUnexpectedEOF) {
 				break
 			}
-			return nil, base, rerr
+			return unchanged, rerr
 		}
 	}
 
-	next := pos
 	out := make([]hit, 0, len(folded))
 	for _, h := range folded {
 		out = append(out, *h)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].offset < out[j].offset })
-	return out, next, nil
+	tail := carry
+	if len(tail) > tickOverlap {
+		tail = tail[len(tail)-tickOverlap:]
+	}
+	return scanResult{hits: out, next: pos, tail: append([]byte(nil), tail...)}, nil
+}
+
+// matchKey identifies a match inside one window.
+type matchKey struct {
+	kind  string
+	start int
 }
 
 var (

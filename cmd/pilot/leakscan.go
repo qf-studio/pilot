@@ -39,6 +39,16 @@ func daemonLogPath(cfg *config.Config, dashboardMode bool) string {
 	return lc.Output
 }
 
+// warnLogNotScanned logs the one line that says why daemonLogPath came back
+// empty and the daemon log is left out of the scan.
+func warnLogNotScanned(log *slog.Logger, dashboardMode bool) {
+	reason := "logging.output is the terminal (stdout or stderr), so the daemon log is not written to disk; set it to a file path to scan it"
+	if dashboardMode {
+		reason = "logging.dashboard_log is off, so the daemon log is not written to disk"
+	}
+	log.Warn("leak scan: daemon log is not scanned, only recordings are", slog.String("reason", reason))
+}
+
 // startLeakScan runs the runtime leak scanner in the background (GH-6250). It
 // is the net under value redaction: it reads the raw log and recordings on
 // disk, so it still catches a writer that bypassed redaction. A nil alerts
@@ -55,6 +65,9 @@ func startLeakScan(ctx context.Context, cfg *config.Config, dashboardMode bool, 
 	}
 	if alertsEngine != nil {
 		lcfg.Sink = alertsEngine // keep a nil engine out of the interface
+	}
+	if lcfg.LogPath == "" {
+		warnLogNotScanned(logging.WithComponent("start"), dashboardMode)
 	}
 	scanner := leakscan.NewLeakScanner(lcfg)
 	logging.SafeGo("leakscan", func() { scanner.Run(ctx) })
