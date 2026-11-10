@@ -1629,6 +1629,8 @@ Examples:
 			// alerts engine exists to carry the alert.
 			if gwAlertsEngine != nil {
 				startLeakScan(context.Background(), cfg, dashboardMode, gwAlertsEngine)
+				// GH-6273: the secret-scanning alert watcher too.
+				startSecretAlertWatch(context.Background(), cfg, gwAlertsEngine)
 			}
 
 			// Start tunnel if enabled

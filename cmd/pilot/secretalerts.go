@@ -50,8 +50,15 @@ func secretAlertSeenPath(cfg *config.Config) string {
 // startSecretAlertWatch runs the GitHub secret-scanning alert watcher in the
 // background (GH-6264). GitHub kept the alert for a leaked bot token open for
 // seven months because nothing routed it to a person.
+//
+// The watcher needs the GitHub adapter and an alerts engine: without an engine
+// every event would be lost, so it does not start and says why in one Warn line
+// (GH-6273).
 func startSecretAlertWatch(ctx context.Context, cfg *config.Config, alertsEngine *alerts.Engine) {
 	if !cfg.GitHubAlertWatchEnabled() {
+		return
+	}
+	if cfg.Adapters == nil || cfg.Adapters.GitHub == nil || !cfg.Adapters.GitHub.Enabled {
 		return
 	}
 	repos := secretAlertRepos(cfg)
@@ -61,19 +68,29 @@ func startSecretAlertWatch(ctx context.Context, cfg *config.Config, alertsEngine
 	if token, _ := resolveGitHubToken(cfg); token == "" {
 		return
 	}
-	wcfg := secretalerts.Config{
-		Lister:   newGitHubClient(cfg),
-		Repos:    repos,
-		SeenPath: secretAlertSeenPath(cfg),
-		Interval: cfg.GitHubAlertWatchInterval(),
-		Logger:   logging.WithComponent("secretalerts"),
+	if alertsEngine == nil {
+		logging.WithComponent("secretalerts").Warn("github secret alert watch not started: no alerts engine (alerts disabled or the engine failed to start), so an alert could not be delivered",
+			slog.Int("repos", len(repos)))
+		return
 	}
-	if alertsEngine != nil {
-		wcfg.Sink = alertsEngine // keep a nil engine out of the interface
+	// One client per repo, resolved the way the poller resolves its own
+	// (newGitHubClient re-reads the token on every request). Config holds one
+	// GitHub credential today, so every client resolves the same token; the
+	// per-repo seam keeps a future per-project credential out of the watcher.
+	clients := make(map[secretalerts.Repo]secretalerts.Lister, len(repos))
+	for _, r := range repos {
+		clients[r] = newGitHubClient(cfg)
 	}
-	watcher := secretalerts.NewWatcher(wcfg)
+	watcher := secretalerts.NewWatcher(secretalerts.Config{
+		ListerFor: func(r secretalerts.Repo) secretalerts.Lister { return clients[r] },
+		Sink:      alertsEngine,
+		Repos:     repos,
+		SeenPath:  secretAlertSeenPath(cfg),
+		Interval:  cfg.GitHubAlertWatchInterval(),
+		Logger:    logging.WithComponent("secretalerts"),
+	})
 	logging.SafeGo("secretalerts", func() { watcher.Run(ctx) })
 	logging.WithComponent("start").Info("github secret alert watch started",
-		slog.Duration("interval", wcfg.Interval),
+		slog.Duration("interval", cfg.GitHubAlertWatchInterval()),
 		slog.Int("repos", len(repos)))
 }

@@ -679,12 +679,31 @@ func (e *Engine) Stop() {
 	close(e.done)
 }
 
+// securityEnqueueTimeout bounds how long ProcessEvent waits for room on the
+// priority queue for a security event (GH-6273).
+const securityEnqueueTimeout = 10 * time.Second
+
 // ProcessEvent adds an event to the processing queue. High-severity events
 // (escalation / OOM / budget / security) go on a dedicated priority queue so a
-// flood of ordinary events that fills eventCh cannot drop them (E1).
+// flood of ordinary events that fills eventCh cannot drop them (E1). A security
+// event waits up to securityEnqueueTimeout for room instead of being dropped.
 func (e *Engine) ProcessEvent(event Event) {
+	ctx := context.Background()
+	if event.Type == EventTypeSecurityEvent {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, securityEnqueueTimeout)
+		defer cancel()
+	}
+	e.SubmitEvent(ctx, event)
+}
+
+// SubmitEvent is ProcessEvent that reports whether the event was queued, so a
+// caller that must not lose it (the secret-scanning watcher) can retry. A
+// security event blocks until ctx is done when the priority queue is full; any
+// other event is dropped on a full queue. Accepted means queued, not delivered.
+func (e *Engine) SubmitEvent(ctx context.Context, event Event) bool {
 	if !e.config.Enabled {
-		return
+		return false
 	}
 
 	event = redactEvent(event)
@@ -692,26 +711,36 @@ func (e *Engine) ProcessEvent(event Event) {
 	if isHighPriorityEvent(event.Type) {
 		select {
 		case e.priorityCh <- event:
+			return true
 		default:
-			// The priority queue is independent of eventCh, so this only happens
-			// under a sustained critical-event storm. Log loudly and count it.
-			e.logger.Error("CRITICAL alert event dropped — priority queue full",
-				"type", event.Type,
-				"task_id", event.TaskID,
-			)
-			e.metrics.RecordDropped()
 		}
-		return
+		if event.Type == EventTypeSecurityEvent {
+			select {
+			case e.priorityCh <- event:
+				return true
+			case <-ctx.Done():
+			}
+		}
+		// The priority queue is independent of eventCh, so this only happens
+		// under a sustained critical-event storm. Log loudly and count it.
+		e.logger.Error("CRITICAL alert event dropped — priority queue full",
+			"type", event.Type,
+			"task_id", event.TaskID,
+		)
+		e.metrics.RecordDropped()
+		return false
 	}
 
 	select {
 	case e.eventCh <- event:
+		return true
 	default:
 		e.logger.Warn("alert event queue full, dropping event",
 			"type", event.Type,
 			"task_id", event.TaskID,
 		)
 		e.metrics.RecordDropped()
+		return false
 	}
 }
 
@@ -1012,22 +1041,25 @@ func (e *Engine) handleSecurityEvent(ctx context.Context, event Event) {
 
 		switch rule.Type {
 		case AlertTypeSecretLeak:
-			if e.shouldFire(rule) {
-				// The byte offset keeps a second leak of the same kind in the
-				// same file from collapsing into the first under
-				// SuppressDuplicates (GH-6268).
-				msg := fmt.Sprintf("Possible secret in %s (%s, sample %s, offset %s)",
-					event.Metadata["file"], event.Metadata["kind"], event.Metadata["sample"], event.Metadata["offset"])
-				if gate {
-					msg = event.Error
-				}
-				if event.Source == SecurityEventSourceGitHubSecretScanning {
-					msg = fmt.Sprintf("GitHub secret scanning alert #%s in %s (%s): %s",
-						event.Metadata["number"], event.Metadata["repo"], event.Metadata["type"], event.Metadata["html_url"])
-				}
-				alert := e.createAlert(rule, event, msg)
-				e.fireAlert(ctx, rule, alert)
+			// Decision: leak events bypass the rule cooldown (GH-6273). A
+			// cooldown on secret_leak held the next leak back, and the sources
+			// that raised it never learn the alert was held. SuppressDuplicates
+			// in fireAlert still collapses an identical repeat.
+			//
+			// The byte offset keeps a second leak of the same kind in the same
+			// file from collapsing into the first under SuppressDuplicates
+			// (GH-6268).
+			msg := fmt.Sprintf("Possible secret in %s (%s, sample %s, offset %s)",
+				event.Metadata["file"], event.Metadata["kind"], event.Metadata["sample"], event.Metadata["offset"])
+			if gate || (event.Source == SecurityEventSourceGitHubSecretScanning && event.Metadata["number"] == "") {
+				msg = event.Error
 			}
+			if event.Source == SecurityEventSourceGitHubSecretScanning && event.Metadata["number"] != "" {
+				msg = fmt.Sprintf("GitHub secret scanning alert #%s in %s (%s): %s",
+					event.Metadata["number"], event.Metadata["repo"], event.Metadata["type"], event.Metadata["html_url"])
+			}
+			alert := e.createAlert(rule, event, msg)
+			e.fireAlert(ctx, rule, alert)
 		case AlertTypeUnauthorizedAccess:
 			if e.shouldFire(rule) {
 				alert := e.createAlert(rule, event, "Unauthorized access attempt detected")

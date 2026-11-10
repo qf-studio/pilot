@@ -468,9 +468,13 @@ type SecretScanningAlert struct {
 	SecretType             string    `json:"secret_type"`
 	SecretTypeDisplayName  string    `json:"secret_type_display_name"`
 	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
 	HTMLURL                string    `json:"html_url"`
 	PushProtectionBypassed bool      `json:"push_protection_bypassed"`
 }
+
+// maxSecretScanningPages caps ListSecretScanningAlerts pagination (100 per page).
+const maxSecretScanningPages = 50
 
 // ListSecretScanningAlerts returns a repository's secret-scanning alerts in the
 // given state ("open", "resolved"; empty means all), paginated at 100 per page.
@@ -478,11 +482,18 @@ type SecretScanningAlert struct {
 // (secret_scanning_alerts: read for a GitHub App, security_events or repo scope
 // for a token) or scanning is off for the repository.
 func (c *Client) ListSecretScanningAlerts(ctx context.Context, owner, repo, state string) ([]*SecretScanningAlert, error) {
+	alerts, _, err := c.ListSecretScanningAlertsCapped(ctx, owner, repo, state)
+	return alerts, err
+}
+
+// ListSecretScanningAlertsCapped is ListSecretScanningAlerts that also reports
+// whether pagination stopped at the page cap with more pages left, so the
+// returned list is partial (GH-6273).
+func (c *Client) ListSecretScanningAlertsCapped(ctx context.Context, owner, repo, state string) ([]*SecretScanningAlert, bool, error) {
 	const perPage = 100
-	const maxPages = 50
 
 	var alerts []*SecretScanningAlert
-	for page := 1; page <= maxPages; page++ {
+	for page := 1; page <= maxSecretScanningPages; page++ {
 		path := fmt.Sprintf("/repos/%s/%s/secret-scanning/alerts?", owner, repo)
 		if state != "" {
 			path += "state=" + url.QueryEscape(state) + "&"
@@ -490,14 +501,14 @@ func (c *Client) ListSecretScanningAlerts(ctx context.Context, owner, repo, stat
 		path += fmt.Sprintf("per_page=%d&page=%d", perPage, page)
 		var batch []*SecretScanningAlert
 		if err := c.doRequest(ctx, http.MethodGet, path, nil, &batch); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		alerts = append(alerts, batch...)
 		if len(batch) < perPage {
-			break
+			return alerts, false, nil
 		}
 	}
-	return alerts, nil
+	return alerts, true, nil
 }
 
 // ListIssueEvents returns an issue's timeline events (labeled, unlabeled,
