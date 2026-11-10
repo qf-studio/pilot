@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 )
 
 // defaultExcludeDirs are top-level directory prefixes whose contents are never
@@ -1124,6 +1126,9 @@ func (g *GitOperations) stripCoAuthorBeforePush(ctx context.Context, branchName,
 // Covers every push call site. taskID is only used to name the task in logs.
 func (g *GitOperations) Push(ctx context.Context, branchName, taskID string) error {
 	g.stripCoAuthorBeforePush(ctx, branchName, taskID)
+	if err := CheckSecretGate(ctx, g.projectPath, branchName, taskID); err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, "git", "push", "-u", "origin", branchName)
 	cmd.Dir = g.projectPath
 	withGitCredentials(ctx, cmd)
@@ -1141,6 +1146,9 @@ func (g *GitOperations) Push(ctx context.Context, branchName, taskID string) err
 // was recorded. A plain --force is never used.
 func (g *GitOperations) PushForceWithLease(ctx context.Context, branchName, expectedRemoteSHA, taskID string) error {
 	g.stripCoAuthorBeforePush(ctx, branchName, taskID)
+	if err := CheckSecretGate(ctx, g.projectPath, branchName, taskID); err != nil {
+		return err
+	}
 	lease := fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", branchName, expectedRemoteSHA)
 	cmd := exec.CommandContext(ctx, "git", "push", "-u", lease, "origin", branchName)
 	cmd.Dir = g.projectPath
@@ -1159,6 +1167,8 @@ func (g *GitOperations) PushForceWithLease(ctx context.Context, branchName, expe
 // which matches what the squash-merge path strips back to a conventional
 // commit message.
 func (g *GitOperations) CreatePR(ctx context.Context, title, body, baseBranch string) (string, error) {
+	// GH-6263: a registered value or secret shape never reaches a public PR.
+	title, body = secretpatterns.Redact(title), secretpatterns.Redact(body)
 	if err := validatePRTitle(title); err != nil {
 		return "", err
 	}
@@ -1425,6 +1435,9 @@ func (g *GitOperations) PushToMain(ctx context.Context) error {
 	defaultBranch, err := g.GetDefaultBranch(ctx)
 	if err != nil {
 		defaultBranch = "main"
+	}
+	if err := CheckSecretGate(ctx, g.projectPath, defaultBranch, ""); err != nil {
+		return err
 	}
 	cmd := exec.CommandContext(ctx, "git", "push", "origin", defaultBranch)
 	cmd.Dir = g.projectPath

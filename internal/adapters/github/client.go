@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/redact"
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 )
 
 const (
@@ -478,7 +479,8 @@ func (c *Client) ListIssueTimeline(ctx context.Context, owner, repo string, numb
 // AddComment adds a comment to an issue
 func (c *Client) AddComment(ctx context.Context, owner, repo string, number int, body string) (*Comment, error) {
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number)
-	reqBody := map[string]string{"body": body}
+	// GH-6263: a registered value or secret shape never reaches a public comment.
+	reqBody := map[string]string{"body": secretpatterns.Redact(body)}
 	var comment Comment
 	if err := c.doRequest(ctx, http.MethodPost, path, reqBody, &comment); err != nil {
 		return nil, err
