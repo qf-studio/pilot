@@ -554,9 +554,13 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 		if pushErr == nil {
 			break
 		}
+		if IsPushRefused(pushErr) {
+			// GH-6272: terminal; no retry, no sleep, no forgiving.
+			break
+		}
 		// GH-1389: a worktree push may report a chdir error even though the
 		// data reached the remote.
-		if git.RemoteBranchExists(ctx, task.Branch) {
+		if pushFailureForgiven(ctx, git, task.Branch, pushErr) {
 			log.Warn("Decomposed-parent push reported error but branch exists on remote, continuing",
 				slog.String("task_id", task.ID),
 				slog.String("branch", task.Branch),
@@ -574,6 +578,10 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 			)
 			time.Sleep(gitPushRetryDelay)
 		}
+	}
+	if IsPushRefused(pushErr) {
+		r.failPushRefused(ctx, task, git, result, log, pushErr)
+		return
 	}
 	if pushErr != nil {
 		result.Success = false

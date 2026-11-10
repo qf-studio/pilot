@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"github.com/qf-studio/pilot/internal/retryladder"
 )
 
@@ -356,7 +357,7 @@ func (r *Runner) postTitleRejectionEscalation(ctx context.Context, task *Task) e
 }
 
 func ghIssueComment(ctx context.Context, dir, issueID, body string) error {
-	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "issue", "comment", issueID, "--body", body))
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "issue", "comment", issueID, "--body", secretpatterns.Redact(body)))
 	if dir != "" {
 		cmd.Dir = dir
 	}

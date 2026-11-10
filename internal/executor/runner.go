@@ -30,6 +30,9 @@ import (
 // GH-2402: terminal-classify these so the poller stops the retry loop.
 var permanentFailurePatterns = []string{
 	"PR creation refused",
+	// GH-6272: the secret gate refused the push; the same commits hold the same
+	// secret on every retry.
+	pushRefusedMarker,
 	// GH-3224: a no-op run (ghost-SHA guard tripped — both the worktree-HEAD and
 	// post-push variants begin with this prefix) is deterministic: retrying the
 	// identical prompt reproduces it (observed 4× on GH-3228). Classify terminal
@@ -565,6 +568,10 @@ func TerminalStatus(result *ExecutionResult) string {
 		// Genuine failure; its Error quotes gate output, which must not be
 		// scanned for the non-failure signatures below (GH-5622).
 		return "failed"
+	}
+	// GH-6272: a push the secret gate refused is held for a human, never infra.
+	if strings.HasPrefix(strings.TrimSpace(result.Error), pushRefusedMarker) {
+		return "needs_human"
 	}
 	// GH-5762: the error still reads "push failed" (an infra signature), but a
 	// non-fast-forward against the task branch is deterministic, not infra: the
@@ -2615,7 +2622,14 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	if err := git.Push(ctx, task.Branch, task.ID); err != nil {
 		// GH-1389: a worktree push may report a chdir error even though the data
 		// reached the remote. Treat the branch existing on the remote as success.
-		if git.RemoteBranchExists(ctx, task.Branch) {
+		if IsPushRefused(err) {
+			// GH-6272: the gate refused the commits; an older head on the remote
+			// does not make this push a success.
+			r.failPushRefused(ctx, task, git, result, r.log, err)
+			r.sweepEpicChildrenOnAbort(task, result.Error)
+			return
+		}
+		if pushFailureForgiven(ctx, git, task.Branch, err) {
 			r.log.Warn("Epic push reported error but branch exists on remote, continuing",
 				slog.String("task_id", task.ID),
 				slog.String("branch", task.Branch),
@@ -3279,7 +3293,7 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 	result.BranchPushed = nil
 	if git != nil && task.Branch != "" {
 		if pushErr := git.Push(pushCtx, task.Branch, task.ID); pushErr != nil {
-			if git.RemoteBranchExists(pushCtx, task.Branch) {
+			if pushFailureForgiven(pushCtx, git, task.Branch, pushErr) {
 				pushed = true
 			} else {
 				pushFailed = true
@@ -3594,7 +3608,11 @@ func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, gi
 	}
 
 	if err := git.Push(ctx, task.Branch, task.ID); err != nil {
-		if !git.RemoteBranchExists(ctx, task.Branch) {
+		if IsPushRefused(err) {
+			r.failPushRefused(ctx, task, git, result, log, err)
+			return
+		}
+		if !pushFailureForgiven(ctx, git, task.Branch, err) {
 			// GH-5720: no raw Push error here — it is git's multi-line stderr and
 			// holdPushedBranch re-pushes and appends the single one-line reason.
 			r.holdPushedBranch(ctx, task, git, result, log,
@@ -6803,6 +6821,10 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			r.reportProgress(task.ID, "Pushing", 96, "Pushing to main...")
 
 			if err := git.PushToMain(ctx); err != nil {
+				if IsPushRefused(err) {
+					r.failPushRefused(ctx, task, git, result, log, err)
+					return result, nil
+				}
 				result.Success = false
 				result.Error = fmt.Sprintf("push to main failed: %v", err)
 				r.reportProgress(task.ID, "Push Failed", 100, result.Error)
@@ -6997,6 +7019,19 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				Timestamp: time.Now(),
 			})
 			pushErr := r.pushBranchWithRetry(ctx, git, task, log)
+			if IsPushRefused(pushErr) {
+				// GH-6272: a refusal is terminal and not an infra failure: the
+				// push machinery worked, the commits were held back. The tracker
+				// counts retry exhaustion only.
+				r.emitAlertEvent(AlertEvent{
+					Type:      AlertEventTypeDeadManSuccess,
+					TaskID:    task.ID,
+					Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
+					Timestamp: time.Now(),
+				})
+				r.failPushRefused(ctx, task, git, result, log, pushErr)
+				return result, nil
+			}
 			if pushErr != nil {
 				r.emitAlertEvent(AlertEvent{
 					Type:      AlertEventTypeDeadManFailure,

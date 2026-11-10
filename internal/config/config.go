@@ -72,6 +72,22 @@ type Config struct {
 type SecurityConfig struct {
 	LeakScan         *LeakScanConfig         `yaml:"leak_scan"`
 	GitHubAlertWatch *GitHubAlertWatchConfig `yaml:"github_alert_watch"`
+	SecretGate       *SecretGateConfig       `yaml:"secret_gate"`
+}
+
+// SecretGateConfig tunes the push secret gate (GH-6263, GH-6272). It is read
+// under security.secret_gate (every project) and projects[].security.secret_gate
+// (that project only); the two lists add up.
+type SecretGateConfig struct {
+	// AllowPaths are globs ("docs/**/*.md", "fixtures/*.txt", "tokens.go") of
+	// files that show secret shapes on purpose. They come on top of the built-in
+	// list; a registered secret value is still refused in them.
+	AllowPaths []string `yaml:"allow_paths,omitempty"`
+}
+
+// ProjectSecurityConfig is the per-project security block.
+type ProjectSecurityConfig struct {
+	SecretGate *SecretGateConfig `yaml:"secret_gate,omitempty"`
 }
 
 // GitHubAlertWatchConfig controls the GitHub secret-scanning alert watcher
@@ -361,6 +377,9 @@ type ProjectConfig struct {
 	Path          string `yaml:"path"`
 	Navigator     bool   `yaml:"navigator"`
 	DefaultBranch string `yaml:"default_branch"`
+	// Security holds the project's security settings, e.g.
+	// security.secret_gate.allow_paths (GH-6272).
+	Security *ProjectSecurityConfig `yaml:"security,omitempty"`
 	// BranchFrom is an alias for DefaultBranch. When both are set, BranchFrom wins.
 	// Lets users express "branch from (and PR target) this branch" more intuitively
 	// in workflows like main → dev → feature, where dev is the integration branch (GH-2290).

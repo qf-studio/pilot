@@ -1317,6 +1317,19 @@ security:
     enabled: true
     interval: 1h
 
+  # Push secret gate (GH-6263, GH-6272): every push Pilot makes is refused when
+  # a commit it would publish adds a registered secret value or a known secret
+  # shape. The gate has a built-in list of files that show shapes on purpose;
+  # allow_paths adds globs ("*" stays in one path segment, "**" spans segments,
+  # a pattern without "/" matches the file name at any depth). A registered
+  # value is refused even in an allowed file. The same block may sit under a
+  # project (projects[].security.secret_gate.allow_paths) to apply to it alone.
+  # The scan base is the merge base with origin/<project default_branch>.
+  # secret_gate:
+  #   allow_paths:
+  #     - "fixtures/**"
+  #     - "docs/examples/*.md"
+
 # Dashboard settings
 dashboard:
   refresh_interval: 1000     # ms

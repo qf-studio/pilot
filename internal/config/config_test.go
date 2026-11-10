@@ -3087,3 +3087,33 @@ func TestPrePRReviewConfig_OnUnfixedValidation(t *testing.T) {
 		})
 	}
 }
+
+// GH-6272: security.secret_gate.allow_paths loads globally and per project.
+func TestSecretGateAllowPathsLoad(t *testing.T) {
+	const doc = `
+security:
+  secret_gate:
+    allow_paths: ["fixtures/**"]
+projects:
+  - name: a
+    path: /tmp/a
+    default_branch: trunk
+    security:
+      secret_gate:
+        allow_paths: ["docs/*.md", "tokens.go"]
+`
+	var cfg Config
+	if err := yamlv3.Unmarshal([]byte(doc), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Security.SecretGate.AllowPaths; len(got) != 1 || got[0] != "fixtures/**" {
+		t.Errorf("global allow_paths = %v", got)
+	}
+	p := cfg.Projects[0]
+	if got := p.Security.SecretGate.AllowPaths; len(got) != 2 || got[1] != "tokens.go" {
+		t.Errorf("project allow_paths = %v", got)
+	}
+	if p.ResolveBaseBranch() != "trunk" {
+		t.Errorf("default branch = %q", p.ResolveBaseBranch())
+	}
+}
