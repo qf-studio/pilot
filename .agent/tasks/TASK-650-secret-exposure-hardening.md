@@ -1,6 +1,6 @@
 # TASK-650: Secret exposure hardening — value-based redaction, leak detection, adapter canary tests, agent isolation
 
-**Status**: 🚀 **L1–L6 DISPATCHED** (`pilot` + `no-decompose`) — 11-09: L1 [#6249](https://github.com/qf-studio/pilot/issues/6249) value-based redaction · L2 [#6250](https://github.com/qf-studio/pilot/issues/6250) leak scan (after L1) · L3 [#6251](https://github.com/qf-studio/pilot/issues/6251) adapter canary tests · L4 [#6252](https://github.com/qf-studio/pilot/issues/6252) read guard. 11-10: L5 [#6263](https://github.com/qf-studio/pilot/issues/6263) push/PR/comment secret gate (after L1) · L6 [#6264](https://github.com/qf-studio/pilot/issues/6264) GitHub secret-scanning alert watcher. GitHub settings 11-10: validity checks + non-provider patterns on; alert #2 (real Telegram token, open since 2026-04-07) resolved as revoked. SOP `sops/operations/secret-leak-response.md`. **H1 (separate agent uid + secrets resolved from SSM) held for a design pass** (founder decision 2026-11-09; reverses TASK-491).
+**Status**: 🚀 **L1–L6 ALL MERGED 2026-11-10, unreleased (box on v2.317.0; next tag ships them); review follow-ups in flight.** Merged: L1 [#6249](https://github.com/qf-studio/pilot/issues/6249) → PR#6254 · L2 [#6250](https://github.com/qf-studio/pilot/issues/6250) → PR#6259 · L3 [#6251](https://github.com/qf-studio/pilot/issues/6251) → PR#6256 · L4 [#6252](https://github.com/qf-studio/pilot/issues/6252) → PR#6257 + fix [#6258](https://github.com/qf-studio/pilot/issues/6258) → PR#6260 · L5 [#6263](https://github.com/qf-studio/pilot/issues/6263) → PR#6269 · L6 [#6264](https://github.com/qf-studio/pilot/issues/6264) → PR#6270 (hand merge of main after an L5 conflict in `handleSecurityEvent`). Follow-ups from the Navigator reviews: [#6266](https://github.com/qf-studio/pilot/issues/6266) L1 gaps → PR#6271 merged · [#6268](https://github.com/qf-studio/pilot/issues/6268) L2/L3 gaps → PR#6275 merged · [#6267](https://github.com/qf-studio/pilot/issues/6267) read guard precision (held 13× by the base-presence check on a backticked example path; body fixed 12:38Z, retry pending) · [#6272](https://github.com/qf-studio/pilot/issues/6272) L5 gaps (running) · [#6273](https://github.com/qf-studio/pilot/issues/6273) L6 delivery (queued) · [#6276](https://github.com/qf-studio/pilot/issues/6276) stale `failed` row + Telegram escape (queued). **H1 (separate agent uid + secrets from SSM) held for a design pass.** Founder: Anthropic key + Slack bot/app tokens rotation pending; SOP `sops/operations/secret-leak-response.md`.
 **Created**: 2026-11-09
 **Assignee**: Navigator (plan, H1 design, reviews) → Pilot (legs)
 
@@ -231,6 +231,21 @@ GitHub found the leaked Telegram token on 2026-04-07 and kept the alert open for
 
 - TASK-650 · GitHub secret scanning alert #2
 
+## Reviews 2026-11-10 (Navigator, four review agents; § = follow-up issue)
+
+| Leg | PR | Verdict | Confirmed gaps |
+|---|---|---|---|
+| L1 value redaction | #6254 | REQUEST-CHANGES → #6266 (PR#6271 merged) | recorder stream is double-escaped, so a value with a quote, backslash or newline passed unmasked; key regex missed `pat`, `webhook_url`, `headers`, `api_key_command` output; only `pilot start` registered values; overlap tail; URL-encoded forms |
+| L2 leak scan | #6259 | APPROVE-WITH-NOTES → #6268 (PR#6275 merged) | rotated-log tail never scanned; value split across ticks; recordings over the cap half-scanned; symlinked root skipped; alert dedup can drop a repeat; headless log not scanned |
+| L3 canary tests | #6256 | APPROVE-WITH-NOTES → #6268 | CI check satisfied by a comment; GitHub App token exchange and one Slack body path unredacted; Slack/Telegram echo legs vacuous |
+| L4 read guard | #6257 + #6260 | APPROVE-WITH-NOTES → #6267 | every spawn site guarded and the incident command blocked; substring match blocks harmless commands in this repo (203 files mention the path, e.g. a commit message); ancestor-recursive reads and some `$HOME` forms pass; no preflight for realpath / jq / python3 |
+| L5 push gate | #6269 | REQUEST-CHANGES → #6272 | a refused push is forgiven when the remote branch exists (four sites); most GitHub text paths unmasked (`AddPRComment`, `CreateIssue`, `CreatePullRequest`, releases, `gh` CLI paths); an uncomputable base scans the whole history and refuses every push; refusal classified as retryable infra |
+| L6 alert watcher | #6270 | APPROVE-WITH-NOTES → #6273 | an alert is marked seen before delivery is known; reopened alerts never re-fire; one credential for all repos |
+
+**Live checks after the next tag (box):** the startup line with the registered-value count · recordings 0700/0600 · leak scan start line with `log=true` · secret-alert watcher start and whether the box credential can read the secret-scanning API (403/404 Warn) · first `read blocked` lines (kill switch `executor.claude_code.read_guard: false` until #6267 ships if they stall a run).
+
+**Not covered by any leg:** a `git push` that the agent runs itself inside a session (bash guard blocks only force pushes) → H1.
+
 ## Held
 
 ### LEG H1 — agent sessions under a separate Unix uid (design first)
@@ -256,6 +271,7 @@ Held for a Navigator design pass; filed after the design doc lands in `.agent/sy
 - L4 → https://github.com/qf-studio/pilot/issues/6252
 - L5 → https://github.com/qf-studio/pilot/issues/6263
 - L6 → https://github.com/qf-studio/pilot/issues/6264
+- Follow-ups: #6258 · #6266 · #6267 · #6268 · #6272 · #6273 · #6276
 
 ---
 

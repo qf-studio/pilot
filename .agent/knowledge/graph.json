@@ -3169,7 +3169,7 @@
       "TASK-650": {
         "path": ".agent/tasks/TASK-650-secret-exposure-hardening.md",
         "title": "Secret exposure hardening — value-based redaction, leak detection, adapter canary tests, agent isolation",
-        "status": "dispatched",
+        "status": "merged",
         "concepts": [
           "security",
           "secrets",
@@ -3183,7 +3183,14 @@
           "https://github.com/qf-studio/pilot/issues/6251",
           "https://github.com/qf-studio/pilot/issues/6252",
           "https://github.com/qf-studio/pilot/issues/6263",
-          "https://github.com/qf-studio/pilot/issues/6264"
+          "https://github.com/qf-studio/pilot/issues/6264",
+          "https://github.com/qf-studio/pilot/issues/6258",
+          "https://github.com/qf-studio/pilot/issues/6266",
+          "https://github.com/qf-studio/pilot/issues/6267",
+          "https://github.com/qf-studio/pilot/issues/6268",
+          "https://github.com/qf-studio/pilot/issues/6272",
+          "https://github.com/qf-studio/pilot/issues/6273",
+          "https://github.com/qf-studio/pilot/issues/6276"
         ]
       }
     },
