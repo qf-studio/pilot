@@ -80,3 +80,19 @@ func TestListSecretScanningAlerts_ForbiddenIsAPIError(t *testing.T) {
 		t.Fatalf("err = %v, want *APIError 403", err)
 	}
 }
+
+func TestListSecretScanningAlertsCapped_ReportsCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(secretScanningPage(1, 100)))
+	}))
+	defer srv.Close()
+
+	c := NewClientWithBaseURL("test-github-token", srv.URL)
+	got, capped, err := c.ListSecretScanningAlertsCapped(context.Background(), "o", "r", "open")
+	if err != nil {
+		t.Fatalf("ListSecretScanningAlertsCapped: %v", err)
+	}
+	if !capped || len(got) != maxSecretScanningPages*100 {
+		t.Errorf("capped=%v len=%d, want capped with %d alerts", capped, len(got), maxSecretScanningPages*100)
+	}
+}

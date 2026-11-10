@@ -5237,3 +5237,98 @@ func TestEngine_SecurityEvent_SecretGate(t *testing.T) {
 		t.Errorf("message %q, want %q", got[0].Message, text)
 	}
 }
+
+// TestEngine_SecurityEvent_BypassesLeakCooldown verifies a cooldown on the
+// secret_leak rule holds none of the leak sources: each distinct event still
+// fires (GH-6273).
+func TestEngine_SecurityEvent_BypassesLeakCooldown(t *testing.T) {
+	sources := []string{SecurityEventSourceLeakScan, SecurityEventSourceSecretGate, SecurityEventSourceGitHubSecretScanning}
+	for _, source := range sources {
+		t.Run(source, func(t *testing.T) {
+			config := &AlertConfig{
+				Enabled:  true,
+				Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+				Rules: []AlertRule{
+					{Name: "secret_leak", Type: AlertTypeSecretLeak, Enabled: true, Severity: SeverityCritical, Cooldown: time.Hour, Channels: []string{"test-channel"}},
+				},
+			}
+			mockCh := newMockChannel("test-channel", "webhook")
+			dispatcher := NewDispatcher(config)
+			dispatcher.RegisterChannel(mockCh)
+			engine := NewEngine(config, WithDispatcher(dispatcher))
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			_ = engine.Start(ctx)
+
+			for i := 1; i <= 2; i++ {
+				engine.ProcessEvent(Event{
+					Type:   EventTypeSecurityEvent,
+					Source: source,
+					Error:  fmt.Sprintf("leak %d", i),
+					Metadata: map[string]string{
+						"file": "daemon.log", "kind": "k", "sample": "s", "offset": fmt.Sprint(i),
+						"repo": "o/r", "number": fmt.Sprint(i),
+					},
+					Timestamp: time.Now(),
+				})
+			}
+
+			waitForAlerts(t, mockCh, 2, 2*time.Second)
+		})
+	}
+}
+
+// TestEngine_SecurityEvent_SubmitEventBlocksNotDrops verifies a security event
+// waits for room on a full priority queue instead of being dropped, reports
+// false when the caller's context ends first, and that an ordinary event on a
+// full queue is still dropped (GH-6273).
+func TestEngine_SecurityEvent_SubmitEventBlocksNotDrops(t *testing.T) {
+	engine := NewEngine(&AlertConfig{Enabled: true}) // not Started: nothing drains
+	for i := 0; i < cap(engine.priorityCh); i++ {
+		if !engine.SubmitEvent(context.Background(), Event{Type: EventTypeSecurityEvent}) {
+			t.Fatalf("event %d refused with room in the queue", i)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if engine.SubmitEvent(ctx, Event{Type: EventTypeSecurityEvent}) {
+		t.Fatal("full queue and expired context: SubmitEvent returned true")
+	}
+
+	accepted := make(chan bool, 1)
+	go func() {
+		accepted <- engine.SubmitEvent(context.Background(), Event{Type: EventTypeSecurityEvent, TaskID: "late"})
+	}()
+	select {
+	case <-accepted:
+		t.Fatal("SubmitEvent returned while the queue was full")
+	case <-time.After(50 * time.Millisecond):
+	}
+	<-engine.priorityCh // make room
+	select {
+	case ok := <-accepted:
+		if !ok {
+			t.Error("security event refused after room opened")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked SubmitEvent never returned after room opened")
+	}
+
+	for i := 0; i < cap(engine.eventCh); i++ {
+		engine.SubmitEvent(context.Background(), Event{Type: EventTypeTaskProgress})
+	}
+	if engine.SubmitEvent(context.Background(), Event{Type: EventTypeTaskProgress}) {
+		t.Error("ordinary event accepted on a full queue")
+	}
+}
+
+// TestEngine_SecurityEvent_SubmitEventDisabled verifies a disabled engine
+// refuses, so the caller keeps the event unsent.
+func TestEngine_SecurityEvent_SubmitEventDisabled(t *testing.T) {
+	engine := NewEngine(&AlertConfig{Enabled: false})
+	if engine.SubmitEvent(context.Background(), Event{Type: EventTypeSecurityEvent}) {
+		t.Error("disabled engine accepted the event")
+	}
+}
