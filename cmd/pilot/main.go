@@ -560,9 +560,6 @@ Examples:
 				claudeCode = cfg.Executor.ClaudeCode
 			}
 			applyReadGuardConfig(claudeCode, configPath)
-			// GH-6267: a guard that cannot run blocks every call, so turn it off
-			// (one Error line) when realpath, or both jq and python3, are missing.
-			executor.PreflightReadGuard(claudeCode)
 
 			// GH-6249: register configured secret values for redaction before
 			// any adapter starts or anything is logged.
@@ -620,6 +617,12 @@ Examples:
 			if dashboardMode {
 				setupDashboardLogging(cfg)
 			}
+
+			// GH-6267: a guard that cannot run blocks every call, so turn it off
+			// (one Error line) when realpath, or both jq and python3, are missing.
+			// After logging.Init and the dashboard log redirect, so the line lands
+			// in the daemon log.
+			executor.PreflightReadGuard(claudeCode)
 
 			// Count only: the values themselves never reach the log.
 			logging.WithComponent("start").Info("secret values registered for redaction",

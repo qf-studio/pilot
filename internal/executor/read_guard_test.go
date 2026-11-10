@@ -130,7 +130,7 @@ func testReadGuardScript(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	t.Cleanup(cleanup)
 	script := filepath.Join(filepath.Dir(settings), readGuardName)
 
 	// Claude Code only runs the hook for tools the settings matcher covers, so
@@ -240,6 +240,37 @@ func testReadGuardScript(t *testing.T, mode string) {
 		{"bash cd home then grep -r dot", bashHook("cd ~ && grep -rn bot_token ."), 2},
 		{"bash cd home then star", bashHook("cd " + home + " && cat *"), 2},
 
+		// Bash: text arguments are per command, so a word after a flag is a path
+		// for every command but git commit and grep/rg (GH-6267 item 9).
+		{"bash ls -t is a flag not text", bashHook("ls -t ~/.pilot/logs"), 2},
+		{"bash cat -A is a flag not text", bashHook("cat -A ~/.pilot/config.yaml"), 2},
+		{"bash ls -C is a flag not text", bashHook("ls -C ~/.pilot"), 2},
+		{"bash tail -n then config", bashHook("tail -n 5 ~/.pilot/config.yaml"), 2},
+		{"bash echo -e then config", bashHook("echo -e ~/.pilot/config.yaml"), 2},
+		{"bash grep -A then file in home", bashHook("grep -A 3 bot_token ~/.pilot/config.yaml"), 2},
+		{"bash git commit -m then more", bashHook(`git commit -m "ok" ~/.pilot/config.yaml`), 2},
+		// Bash: nested commands are commands (item 10).
+		{"nested: substitution in double quotes", bashHook(`echo "$(cat ~/.pilot/config.yaml)"`), 2},
+		{"nested: substitution in env assignment", bashHook(`x="$(cat ~/.pilot/config.yaml)" true`), 2},
+		{"nested: bash -c", bashHook(`bash -c "cat ~/.pilot/config.yaml"`), 2},
+		{"nested: sh -c single quotes", bashHook(`sh -c 'cat ~/.pilot/config.yaml'`), 2},
+		{"nested: zsh -c", bashHook(`zsh -c "cat ~/.pilot/config.yaml"`), 2},
+		{"nested: bash -lc", bashHook(`bash -lc "cat ~/.pilot/config.yaml"`), 2},
+		{"nested: bash --norc -c", bashHook(`bash --norc -c "cat ~/.pilot/config.yaml"`), 2},
+		{"nested: eval one word", bashHook(`eval "cat ~/.pilot/config.yaml"`), 2},
+		{"nested: eval words", bashHook(`eval cat ~/.pilot/config.yaml`), 2},
+		{"nested: backtick", bashHook("echo \x60cat ~/.pilot/config.yaml\x60"), 2},
+		{"nested: backtick in double quotes", bashHook("echo \"\x60cat ~/.pilot/config.yaml\x60\""), 2},
+		{"nested: substitution in substitution", bashHook(`echo "$(echo "$(cat ~/.pilot/config.yaml)")"`), 2},
+		{"nested: bash -c in substitution", bashHook(`echo "$(bash -c 'cat ~/.pilot/config.yaml')"`), 2},
+		{"nested: after a commit message", bashHook(`git commit -m "docs" && echo "$(cat ~/.pilot/config.yaml)"`), 2},
+		{"nested: keeps the cwd", bashHook(`cd ~ && bash -c "cat .pilot/config.yaml"`), 2},
+		{"nested: unquoted here-document body runs substitutions", bashHook("cat <<EOF\n$(cat ~/.pilot/config.yaml)\nEOF\n"), 2},
+		{"nested: command after a here-document", bashHook("cat <<'EOF'\ntext\nEOF\ncat ~/.pilot/config.yaml"), 2},
+		{"env assignment value is a path", bashHook("FOO=~/.pilot/config.yaml true"), 2},
+		{"env assignment value after env", bashHook("env FOO=$HOME/.pilot/logs true"), 2},
+		{"bash glob deeper than the home", bashHook("cat ~/*/config.yaml"), 2},
+
 		// Bash: text that only mentions the path.
 		{"bash grep -rn dotpilot config pattern", bashHook(`grep -rn ".pilot/config" internal/`), 0},
 		{"bash grep -rn tilde pattern", bashHook(`grep -rn "~/.pilot" docs/`), 0},
@@ -275,9 +306,24 @@ func testReadGuardScript(t *testing.T, mode string) {
 		{"bash cd dash", bashHook("cd - && ls"), 0},
 		{"bash redirect to repo file", bashHook("echo ok > out.txt 2>&1"), 0},
 		{"bash comment", bashHook("ls # cat ~/.pilot/config.yaml"), 0},
+		// Bash: a glob matches one path segment per star (item 11); nested
+		// commands and here-documents that only carry text.
+		{"bash glob star with extension in home", bashHook("cat ~/*.yaml"), 0},
+		{"bash rg -g glob text", bashHook(`rg -g "~/.pilot/*" func internal/`), 0},
+		{"bash git commit -am tilde", bashHook(`git commit -am "docs: explain ~/.pilot layout"`), 0},
+		{"nested: harmless substitution", bashHook(`echo "$(date)"`), 0},
+		{"nested: harmless env substitution", bashHook(`x="$(date)" true`), 0},
+		{"nested: harmless bash -c", bashHook(`bash -c "go test ./..."`), 0},
+		{"nested: harmless backtick", bashHook("echo \x60date\x60"), 0},
+		{"nested: harmless eval", bashHook(`eval "go vet ./..."`), 0},
+		{"nested: commit message heredoc mentioning a substitution", bashHook("git commit -m \"$(cat <<'EOF'\nuse $(cat ~/.pilot/config.yaml) in docs\nEOF\n)\""), 0},
+		{"here-document body is text", bashHook("cat > notes.txt <<'EOF'\nsee ~/.pilot/config.yaml\nEOF\n"), 0},
+		{"unquoted here-document body is text", bashHook("cat > notes.txt <<EOF\nsee ~/.pilot/config.yaml\nEOF\n"), 0},
+		{"here-string is not a here-document", bashHook("cat <<< hello"), 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel() // each case spawns its own guard process; the fixtures are read-only
 			got, stderr := run(t, tt.hook, spec.Home, spec.ConfigPath)
 			if got != tt.want {
 				t.Fatalf("exit = %d, want %d (stderr %q)", got, tt.want, stderr)
@@ -537,12 +583,12 @@ func TestReadGuardPreflight(t *testing.T) {
 		{"no realpath", nil, has("jq", "python3"), []string{"realpath"}, true},
 		{"neither jq nor python3", nil, has("realpath"), []string{"jq or python3"}, true},
 		{"nothing", nil, has(), []string{"realpath", "jq or python3"}, true},
-		{"guard off in config", &ClaudeCodeConfig{ReadGuard: &off}, has(), nil, false},
+		{"guard off in config", &ClaudeCodeConfig{ReadGuard: &off}, has(), []string{"realpath", "jq or python3"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			readGuardOffForProcess.Store(false)
-			if got := readGuardMissingTools(tt.lookPath); strings.Join(got, ",") != strings.Join(tt.wantMissing, ",") && tt.cfg == nil {
+			if got := readGuardMissingTools(tt.lookPath); strings.Join(got, ",") != strings.Join(tt.wantMissing, ",") {
 				t.Errorf("missing = %v, want %v", got, tt.wantMissing)
 			}
 			if got := preflightReadGuard(tt.cfg, tt.lookPath); got != tt.wantOff {
