@@ -1,6 +1,6 @@
 # TASK-650: Secret exposure hardening — value-based redaction, leak detection, adapter canary tests, agent isolation
 
-**Status**: 🚀 **L1–L4 DISPATCHED 2026-11-09** (`pilot` + `no-decompose`) — L1 [#6249](https://github.com/qf-studio/pilot/issues/6249) value-based redaction · L2 [#6250](https://github.com/qf-studio/pilot/issues/6250) leak scan (depends on L1) · L3 [#6251](https://github.com/qf-studio/pilot/issues/6251) adapter canary tests · L4 [#6252](https://github.com/qf-studio/pilot/issues/6252) read guard. **H1 (separate agent uid) held for a design pass** (founder decision 2026-11-09: isolate agent sessions; reverses TASK-491 "sandboxing out of scope").
+**Status**: 🚀 **L1–L6 DISPATCHED** (`pilot` + `no-decompose`) — 11-09: L1 [#6249](https://github.com/qf-studio/pilot/issues/6249) value-based redaction · L2 [#6250](https://github.com/qf-studio/pilot/issues/6250) leak scan (after L1) · L3 [#6251](https://github.com/qf-studio/pilot/issues/6251) adapter canary tests · L4 [#6252](https://github.com/qf-studio/pilot/issues/6252) read guard. 11-10: L5 [#6263](https://github.com/qf-studio/pilot/issues/6263) push/PR/comment secret gate (after L1) · L6 [#6264](https://github.com/qf-studio/pilot/issues/6264) GitHub secret-scanning alert watcher. GitHub settings 11-10: validity checks + non-provider patterns on; alert #2 (real Telegram token, open since 2026-04-07) resolved as revoked. SOP `sops/operations/secret-leak-response.md`. **H1 (separate agent uid + secrets resolved from SSM) held for a design pass** (founder decision 2026-11-09; reverses TASK-491).
 **Created**: 2026-11-09
 **Assignee**: Navigator (plan, H1 design, reviews) → Pilot (legs)
 
@@ -166,6 +166,71 @@ On 2026-08-03 an agent session (GH-4669, a ticket that cited live box evidence) 
 
 - TASK-650 · TASK-551 (write guard) · `allowedtools-inert-under-dangerously-skip-permissions`
 
+### LEG L5 — repo: qf-studio/pilot — title: feat(security): secret gate before every push, PR and comment — refuse a push whose new commits hold a registered secret value or a known secret shape, and mask PR titles, PR bodies and issue comments
+probe: present qf-studio/pilot func[[:space:]]\(g[[:space:]]\*GitOperations\)[[:space:]]Push\(
+probe: present qf-studio/pilot func[[:space:]]\(g[[:space:]]\*GitHubPRCreator\)[[:space:]]CreatePR\(
+probe: absent  qf-studio/pilot ^func[[:space:]]CheckPushRange\(
+
+Depends on: #{{L1}}
+
+## Context
+
+On 2026-04-07 a Pilot executor run committed the live Telegram bot token into a doc under `.agent/system/`, and Pilot pushed it to this public repo. GitHub secret scanning raised an alert the same day (alert #2), push protection did not block the push, and nobody saw the alert for seven months; the 2026-09-24 history rewrite took the file off main, but GitHub still serves the commit by SHA and 58 forks exist. A gate based only on shapes misses secrets with unknown formats; the daemon knows the exact values (L1 registry), so it can refuse them whatever their shape. Push sites: `GitOperations.Push` and the lease push in `internal/executor/git.go`, the default-branch push in the same file, and the pushes in `internal/autopilot/conflict_gomod.go` and `internal/autopilot/conflict_stacked.go`. PR creation: `GitOperations.CreatePR` (`internal/executor/git.go`) and `GitHubPRCreator.CreatePR` (`internal/adapters/sdkshim/github_pr_creator.go`). Comments: `Client.AddComment` in `internal/adapters/github/client.go`.
+
+## Scope
+
+1. In `internal/executor/secretpatterns`: `CheckPushRange(ctx, dir, base, head string) error`. It runs `git diff --no-color base..head` and `git log --format=%B base..head` in `dir` and returns an error that names the commit and the file (never the value) when the output holds a registered value (L1) or a pattern hit. `base` is the merge base with the remote default branch; for a new branch use `git merge-base head origin/<default>`.
+2. Call it before every push site listed above. A hit fails the push with a clear error (`push refused: commit <sha> adds a secret value in <file>`), sends an `alerts.EventTypeSecurityEvent` with the same text, and leaves the branch local. No retry loop pushes it anyway.
+3. Apply `secretpatterns.Redact` to the title and body in both `CreatePR` implementations and to the body in `Client.AddComment`.
+4. Tests in a temp git repo with a bare remote: a commit that adds a registered value → push refused, nothing reaches the remote; a commit that adds a Telegram-shaped token → refused; a clean commit → pushed; the error text does not hold the value; a PR body with a registered value is masked.
+
+## Acceptance
+
+- `go test -race ./internal/executor/secretpatterns/ ./internal/executor/ ./internal/autopilot/ -run 'PushRange|SecretGate'` passes; paste the output into the PR body.
+- remove the gate call in GitOperations.Push -> the "push refused" test fails
+- drop the registered-value check in CheckPushRange -> the registered-value test fails
+
+## Out of scope
+
+- Rewriting existing history or forks.
+- Pushes made by humans outside Pilot (the repo pre-commit and pre-push hooks cover those).
+
+## Refs
+
+- TASK-650 · GitHub secret scanning alert #2 (resolved as revoked 2026-11-10)
+
+### LEG L6 — repo: qf-studio/pilot — title: feat(security): watch GitHub secret-scanning alerts — poll open alerts for every configured GitHub repo and send a security_event for each new one
+probe: present qf-studio/pilot func[[:space:]]\(c[[:space:]]\*Client\)[[:space:]]ListIssueComments\(
+probe: present qf-studio/pilot EventTypeSecurityEvent[[:space:]]+EventType
+probe: absent  qf-studio/pilot ^func[[:space:]]\(c[[:space:]]\*Client\)[[:space:]]ListSecretScanningAlerts\(
+
+## Context
+
+GitHub found the leaked Telegram token on 2026-04-07 and kept the alert open for seven months, because nothing routes secret-scanning alerts to a person. Pilot already polls GitHub for every configured project and has a Slack alert channel; `internal/adapters/github/client.go` (`ListIssueComments`, `GetPullRequest`) shows the client style, and `internal/alerts/engine.go` has `EventTypeSecurityEvent`.
+
+## Scope
+
+1. `ListSecretScanningAlerts(ctx, owner, repo, state string)` on the GitHub client in `internal/adapters/github/client.go`: `GET /repos/{owner}/{repo}/secret-scanning/alerts?state=open&per_page=100` with pagination. Decode only `number`, `secret_type`, `secret_type_display_name`, `created_at`, `html_url`, `push_protection_bypassed`; never decode or log the `secret` field.
+2. A watcher (new package internal/secretalerts, plain text, new) with `Run(ctx)`: every `interval` (default 1h) for each configured project with a GitHub repo, list open alerts; for each alert number not seen before, send one `alerts.Event` of type `EventTypeSecurityEvent` (source `github_secret_scanning`, metadata repo, number, type, created_at, html_url). Seen numbers persist per repo in a 0600 JSON file under the Pilot data directory, so a restart does not resend. On the first run every currently open alert counts as new.
+3. A 403 or 404 (missing permission, scanning off) logs one Warn per repo per day with the permission hint (`secret_scanning_alerts: read` for a GitHub App, `security_events` or repo scope for a token) and does not fail the loop.
+4. Config `security.github_alert_watch` (`enabled` default true, `interval`) in `internal/config/config.go` and `configs/pilot.example.yaml`; wired in `cmd/pilot` beside the other background loops.
+5. Tests with `httptest`: two open alerts → two events, then no event on the next tick; a restart with the seen file → no event; a new alert → one event; a 403 → one Warn and no event; the response `secret` field never appears in an event or log line.
+
+## Acceptance
+
+- `go test -race ./internal/secretalerts/ ./internal/adapters/github/ -run 'SecretScanning|SecretAlert'` passes; paste the output into the PR body.
+- remove the seen-file write -> the restart test fails
+- log the raw alert JSON -> the "secret field never appears" test fails
+
+## Out of scope
+
+- Resolving alerts automatically.
+- GitLab and Azure DevOps equivalents.
+
+## Refs
+
+- TASK-650 · GitHub secret scanning alert #2
+
 ## Held
 
 ### LEG H1 — agent sessions under a separate Unix uid (design first)
@@ -178,7 +243,8 @@ Held for a Navigator design pass; filed after the design doc lands in `.agent/sy
 4. **Process control.** Killing a different-uid process group, the `/proc`-based liveness checks, and the cgroup memory leaf all need the privilege path or delegation.
 5. **`/proc`.** `/proc/<daemon>/environ` is closed to another uid by default; `hidepid=2` is optional. `start-pilot.sh` exports `CLAUDE_CODE_OAUTH_TOKEN`, which the agent still receives by design.
 6. **Local gateway.** The agent reached the daemon gateway on `localhost:9091` (metrics). Check which gateway endpoints return config or secrets, and whether an agent uid must be refused there.
-7. **Gate.** `executor.claude_code.run_as_user`, default empty (off); macOS and local dev keep today's behaviour.
+7. **Secret values out of files.** The config holds references (for example `ssm:/pilot/box/slack_bot_token`); the daemon resolves them from SSM SecureString at startup and keeps the values in memory. Then `config.yaml` and its backups hold no secret, and an agent `cat` shows references only. This needs the agent uid blocked from the instance metadata service (iptables owner match), or the agent could read SSM with the instance role itself.
+8. **Gate.** `executor.claude_code.run_as_user`, default empty (off); macOS and local dev keep today's behaviour.
 
 ## Refs
 
@@ -188,6 +254,8 @@ Held for a Navigator design pass; filed after the design doc lands in `.agent/sy
 - L2 → https://github.com/qf-studio/pilot/issues/6250
 - L3 → https://github.com/qf-studio/pilot/issues/6251
 - L4 → https://github.com/qf-studio/pilot/issues/6252
+- L5 → https://github.com/qf-studio/pilot/issues/6263
+- L6 → https://github.com/qf-studio/pilot/issues/6264
 
 ---
 

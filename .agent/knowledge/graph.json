@@ -3181,7 +3181,9 @@
           "https://github.com/qf-studio/pilot/issues/6249",
           "https://github.com/qf-studio/pilot/issues/6250",
           "https://github.com/qf-studio/pilot/issues/6251",
-          "https://github.com/qf-studio/pilot/issues/6252"
+          "https://github.com/qf-studio/pilot/issues/6252",
+          "https://github.com/qf-studio/pilot/issues/6263",
+          "https://github.com/qf-studio/pilot/issues/6264"
         ]
       }
     },
@@ -8913,7 +8915,7 @@
       },
       "mem-300": {
         "type": "pitfall",
-        "summary": "A secret in a URL path leaks through every *url.Error (Telegram bot token: 134 daemon.log lines, 2026-10-09 → 11-08); and an agent session with the daemon's uid reads every daemon secret (2026-08-03: diagnosis ticket GH-4669 led an agent to cat ~/.pilot/config.yaml; the recording kept it). Send credentials in headers or redact the URL in one request helper; redact by configured value, not only by known shape; isolate agent sessions by uid (TASK-650). Never ask an executor ticket to diagnose the live box.",
+        "summary": "A secret in a URL path leaks through every *url.Error (Telegram bot token: 134 daemon.log lines, 2026-10-09 → 11-08); and an agent session with the daemon's uid reads every daemon secret (2026-08-03: diagnosis ticket GH-4669 led an agent to cat ~/.pilot/config.yaml; the recording kept it). Send credentials in headers or redact the URL in one request helper; redact by configured value, not only by known shape; isolate agent sessions by uid (TASK-650). Never ask an executor ticket to diagnose the live box. GitHub secret scanning flagged the Telegram token on 2026-04-07; the alert stayed open 7 months because nothing routed it.",
         "path": "memories/pitfalls/mem-300.md",
         "confidence": 0.95,
         "concepts": [
