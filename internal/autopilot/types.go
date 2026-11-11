@@ -35,6 +35,9 @@ const (
 	ApprovalSourceSlack ApprovalSource = "slack"
 	// ApprovalSourceGitHubReview uses GitHub PR reviews for approval.
 	ApprovalSourceGitHubReview ApprovalSource = "github-review"
+	// ApprovalSourceConsole stores the request for the gateway approval routes
+	// (hosted console) and sends nothing.
+	ApprovalSourceConsole ApprovalSource = "console"
 )
 
 // GitHubReviewConfig holds configuration for GitHub PR review approval.
@@ -56,7 +59,7 @@ type EnvironmentConfig struct {
 	branchIsDefault bool
 	// RequireApproval gates merge on human approval.
 	RequireApproval bool `yaml:"require_approval"`
-	// ApprovalSource specifies which channel for approvals (telegram, slack, github-review).
+	// ApprovalSource specifies which channel for approvals (telegram, slack, github-review, console).
 	ApprovalSource ApprovalSource `yaml:"approval_source,omitempty"`
 	// ApprovalTimeout is how long to wait for human approval.
 	ApprovalTimeout time.Duration `yaml:"approval_timeout,omitempty"`
@@ -116,7 +119,7 @@ type Config struct {
 	activeEnvConfig *EnvironmentConfig
 
 	// Approval
-	// ApprovalSource specifies which channel to use for approvals (telegram, slack, github-review).
+	// ApprovalSource specifies which channel to use for approvals (telegram, slack, github-review, console).
 	ApprovalSource ApprovalSource `yaml:"approval_source"`
 	// GitHubReview holds configuration for GitHub PR review approval.
 	GitHubReview *GitHubReviewConfig `yaml:"github_review"`

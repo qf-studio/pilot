@@ -44,9 +44,10 @@ const githubReviewAlias = "github-review"
 // be registered under (i.e. every Handler.Name() value), used to scope the
 // expiry sweep's orphan fallback (see ownedChannels / PruneExpired). The
 // raw config alias is included too so a row persisted with the unnormalized
-// "github-review" string is never mistaken for an orphan. Update this list
-// when a new Handler type is added.
-var knownChannelNames = []string{"telegram", "slack", "github", githubReviewAlias}
+// "github-review" string is never mistaken for an orphan. "console" must be
+// listed or the default channel's orphan sweep would delete the hosted
+// console's pending rows. Update this list when a new Handler type is added.
+var knownChannelNames = []string{"telegram", "slack", "github", githubReviewAlias, consoleChannelName}
 
 // ApprovalSourceValues is the canonical, exported vocabulary of accepted
 // `approval_source` config values (TASK-459 Phase 4 task 2). This used to
@@ -64,10 +65,11 @@ var knownChannelNames = []string{"telegram", "slack", "github", githubReviewAlia
 // NormalizeChannelName at dispatch time. Update this map (and
 // knownChannelNames above) together when a new Handler type is added.
 var ApprovalSourceValues = map[string]bool{
-	"":                true,
-	"telegram":        true,
-	"slack":           true,
-	githubReviewAlias: true,
+	"":                 true,
+	"telegram":         true,
+	"slack":            true,
+	githubReviewAlias:  true,
+	consoleChannelName: true,
 }
 
 // NormalizeChannelName maps a channel name as it appears on a Request or a

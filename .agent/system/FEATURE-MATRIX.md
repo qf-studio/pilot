@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-11-10 (GH-5217)
+**Last Updated:** 2026-11-11 (GH-5217)
 
 ## Legend
 
@@ -411,6 +411,7 @@
 | Approval engine | ✅ | approval | `--env=prod` | `approval` | Wired to autopilot controller |
 | Slack approval | ✅ | approval | - | `adapters.slack.approval` | Interactive messages, registered in main.go; Socket Mode clicks routed via `slack.ApprovalCallbackHandler` in `adapters/slack/handler.go` (GH-4431, HTTP-webhook-only wiring was the sole path before). `SlackHandler.resolveChannel` is channel-first (GH-4808): a configured `adapters.slack.approval.channel` always wins over `Approvers[0]`, which is now only a DM fallback when no channel is configured — before this, any request with an approver silently landed in an unwatched Pilot-bot DM even with a channel configured (incident: PR#4806's ask sat unseen ~50 min). When the destination is a channel and an approver is set, the message `<@U…>`-mentions them; the "async approval request submitted" log line (`internal/approval/manager.go`) now also carries the resolved `destination` field via the handler's optional `ResolvedDestination` method, so the send target is visible from `daemon.log` alone |
 | Telegram approval | ✅ | approval | - | - | Inline keyboards, registered in main.go |
+| Console approval | ✅ | approval | - | `approval_source: console` | `ConsoleHandler` stores the pending-approval row and sends nothing; the hosted console lists and decides it through the Approvals HTTP API (`Manager.RecordDecision`). Registered at both `cmd/pilot/main.go` start paths when the gateway runs, with the store and expiry sweep (GH-6290) |
 | Rule-based triggers | ✅ | approval | - | `approval.rules[]` | RuleEvaluator with 4 matchers wired into Manager (GH-636) |
 | Non-blocking async approval | ✅ | autopilot | - | `approval.async_dispatch` | handleAwaitApproval tick-handler; PR-A stall no longer blocks PR-B (GH-2685) |
 | Approval persistence in executions | ✅ | autopilot/memory | - | - | approval_request_id + decision written to executions table (GH-2712) |

@@ -854,6 +854,7 @@ Examples:
 			var gwTgApprovalHandler *approval.TelegramHandler
 			var gwSlackApprovalHandler *approval.SlackHandler
 			var gwGitHubApprovalHandler *approval.GitHubHandler
+			var gwConsoleApprovalHandler *approval.ConsoleHandler
 			// GH-4748: hoisted so it's still in scope after the needsPollingInfra
 			// block closes, where it's wired into p.Gateway().SetDecisionRecorder
 			// (nil when needsPollingInfra is false — mirrors gwAutopilotController
@@ -1016,6 +1017,16 @@ Examples:
 						// pending forever.
 						startApprovalExpirySweep(context.Background(), gwSlackApprovalHandler)
 					}
+				}
+
+				// GH-6290: console approval channel — stores the request for the
+				// gateway approval routes and sends nothing. Gateway mode always
+				// serves the routes, so only a missing gateway block skips it.
+				if gwConsoleApprovalHandler = registerConsoleApprovalHandler(cfg, false, approvalMgr); gwConsoleApprovalHandler != nil {
+					if gwStore != nil {
+						gwConsoleApprovalHandler.WithStore(gwStore)
+					}
+					startApprovalExpirySweep(context.Background(), gwConsoleApprovalHandler)
 				}
 
 				// Create autopilot controller if enabled
@@ -1968,14 +1979,29 @@ func setupDashboardLogging(cfg *config.Config) {
 	}
 }
 
+// registerConsoleApprovalHandler registers the console approval channel
+// (GH-6290) on mgr and returns it, or returns nil when no gateway serves the
+// approval routes (cfg.Gateway unset, or --no-gateway in polling mode). It has
+// no config switch of its own: a request only reaches it when approval_source
+// is "console". The caller attaches the store and starts the expiry sweep.
+func registerConsoleApprovalHandler(cfg *config.Config, noGateway bool, mgr *approval.Manager) *approval.ConsoleHandler {
+	if noGateway || cfg.Gateway == nil {
+		return nil
+	}
+	handler := approval.NewConsoleHandler()
+	mgr.RegisterHandler(handler)
+	logging.WithComponent("start").Info("registered console approval handler")
+	return handler
+}
+
 // approvalExpirySweepInterval is how often startApprovalExpirySweep checks
 // for pending approvals past their expires_at.
 const approvalExpirySweepInterval = 1 * time.Minute
 
 // expirablePendingHandler is satisfied by any approval handler that persists
 // pending requests and needs its own timeout sweep post-restart (currently
-// *approval.TelegramHandler, *approval.SlackHandler and *approval.GitHubHandler;
-// GH-3825, GH-4411, GH-5757).
+// *approval.TelegramHandler, *approval.SlackHandler, *approval.GitHubHandler and
+// *approval.ConsoleHandler; GH-3825, GH-4411, GH-5757, GH-6290).
 type expirablePendingHandler interface {
 	PruneExpired(ctx context.Context) (int, error)
 }
@@ -2498,6 +2524,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		}
 	}
 
+	// GH-6290: console approval channel (the store is attached once the memory
+	// store opens below).
+	consoleApprovalHandlerImpl := registerConsoleApprovalHandler(cfg, noGateway, approvalMgr)
+
 	// GH-929: Create autopilot controllers map (one per repo) if enabled
 	autopilotControllers := make(map[string]*autopilot.Controller)
 	// GH-6050: wired to the alert processor once the polling alert engine runs.
@@ -2826,6 +2856,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		}
 	}
 	startApprovalExpirySweep(ctx, ghApprovalHandlerImpl)
+
+	// GH-6290: the console handler's store is the only state it has.
+	if store != nil && consoleApprovalHandlerImpl != nil {
+		consoleApprovalHandlerImpl.WithStore(store)
+	}
+	startApprovalExpirySweep(ctx, consoleApprovalHandlerImpl)
 
 	// GH-726: Initialize autopilot state store for crash recovery
 	var autopilotStateStore *autopilot.StateStore

@@ -189,6 +189,10 @@ No additional configuration needed — Pilot monitors PR reviews on any PR it cr
 
 </Tabs>
 
+### Console
+
+The `console` channel (`approval_source: "console"`) is for the hosted console. It sends nothing: Pilot stores the request, and the console lists the pending requests with `GET /api/v1/approvals` and decides each one with `POST /api/v1/approvals/{requestId}/decision`. It is registered whenever the gateway is running (a `gateway` block in the config, no `--no-gateway`), and needs no other setting.
+
 ## Autopilot Integration
 
 Approval workflows integrate directly with the autopilot environment system:

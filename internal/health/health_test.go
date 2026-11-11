@@ -16,6 +16,7 @@ import (
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/gateway"
 	"github.com/qf-studio/pilot/internal/transcription"
 )
 
@@ -1538,6 +1539,38 @@ func TestCheckConfig_ApprovalSourceUnregistered_NotReported_WhenRegistered(t *te
 		if c.Name == "approval-source-unregistered" {
 			t.Errorf("unexpected approval-source-unregistered check when both sources have registered handlers: %+v", c)
 		}
+	}
+}
+
+// GH-6290: approval_source "console" is registered whenever a gateway is configured.
+func TestCheckConfig_ApprovalSourceConsole(t *testing.T) {
+	tests := []struct {
+		name    string
+		gateway *gateway.Config
+		want    bool // approval-source-unregistered expected
+	}{
+		{"gateway configured", &gateway.Config{Host: "127.0.0.1", Port: 9090}, false},
+		{"no gateway", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Gateway = tt.gateway
+			cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
+			cfg.Orchestrator.Autopilot.Enabled = true
+			cfg.Orchestrator.Autopilot.ApprovalSource = autopilot.ApprovalSourceConsole
+			cfg.Orchestrator.Autopilot.Environments = nil // the default prod env names telegram
+
+			got := false
+			for _, c := range checkConfig(cfg) {
+				if c.Name == "approval-source-unregistered" {
+					got = true
+				}
+			}
+			if got != tt.want {
+				t.Errorf("approval-source-unregistered reported = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

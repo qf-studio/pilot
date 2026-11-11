@@ -1051,6 +1051,9 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 		slackRegistered := cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.BotToken != "" &&
 			cfg.Adapters.Slack.Approval != nil && cfg.Adapters.Slack.Approval.Enabled
 		githubRegistered := cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Approval != nil && cfg.Adapters.GitHub.Approval.Enabled
+		// The console handler registers whenever a gateway is configured (it
+		// cannot see --no-gateway, same approximation as the rest of this check).
+		consoleRegistered := cfg.Gateway != nil
 
 		// registeredByChannel maps each approval.NormalizeChannelName-normalized
 		// channel name to whether this process would register a handler for
@@ -1062,6 +1065,7 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 			approval.DefaultChannelName: telegramRegistered,
 			"slack":                     slackRegistered,
 			"github":                    githubRegistered,
+			"console":                   consoleRegistered,
 		}
 
 		sourceRegistered := func(source string) bool {
@@ -1087,7 +1091,7 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 				Name:    "approval-source-unregistered",
 				Status:  StatusError,
 				Message: fmt.Sprintf("%s resolves to approval_source %q but no matching approval handler would be registered (adapter disabled, token missing, or its approval block isn't enabled) — approval requests on this path will be undeliverable", pathPrefix, source),
-				Fix:     "Enable and configure the adapter for this approval_source (adapters.telegram/slack/github + its approval block), or change approval_source to a channel you have configured",
+				Fix:     "Enable and configure the adapter for this approval_source (adapters.telegram/slack/github + its approval block, or a configured gateway for console), or change approval_source to a channel you have configured",
 			})
 		}
 

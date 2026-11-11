@@ -460,6 +460,10 @@ func testReadGuardScript(t *testing.T, mode string) {
 		// GH-6287 item 4: the proc environ file through a glob or a variable.
 		{"proc environ glob", bashHook("cat /proc/*/environ"), 2},
 		{"proc environ digits glob", bashHook("cat /proc/[0-9]*/environ"), 2},
+		// From the post-merge review of the substring matcher (PR #6303): the
+		// same globbed reads stay denied by the token matcher.
+		{"proc environ question glob", bashHook("cat /proc/?/environ"), 2},
+		{"proc environ trailing star", bashHook("cat /proc/*/environ*"), 2},
 		{"proc environ PPID", bashHook("cat /proc/$PPID/environ"), 2},
 		{"proc environ braced pid", bashHook("cat /proc/${PPID}/environ"), 2},
 		{"proc environ double dollar", bashHook("cat /proc/$$/environ"), 2},
