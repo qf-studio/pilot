@@ -421,6 +421,41 @@ func TestManager_SubmitApprovalRequest_PreferredChannelRouting(t *testing.T) {
 	}
 }
 
+// TestManager_SubmitApprovalRequest_RoutesToConsoleByApprovalSource verifies
+// approval_source "console" reaches the console handler and no other (GH-6290).
+func TestManager_SubmitApprovalRequest_RoutesToConsoleByApprovalSource(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 5 * time.Second
+
+	m := NewManager(config)
+
+	telegram := &mockHandler{name: "telegram"}
+	console := &mockHandler{name: NewConsoleHandler().Name()}
+	m.RegisterHandler(telegram)
+	m.RegisterHandler(console)
+
+	req := &Request{
+		ID:               "async-console-1",
+		TaskID:           "TASK-01",
+		Stage:            StagePreExecution,
+		Title:            "Test task",
+		CreatedAt:        time.Now(),
+		PreferredChannel: "console",
+	}
+
+	if _, err := m.SubmitApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(console.sentReqs) != 1 {
+		t.Errorf("expected 1 request sent to console handler, got %d", len(console.sentReqs))
+	}
+	if len(telegram.sentReqs) != 0 {
+		t.Errorf("expected 0 requests sent to telegram handler, got %d", len(telegram.sentReqs))
+	}
+}
+
 // TestManager_SubmitApprovalRequest_PreferredChannelMissing_FailsExplicitly
 // verifies that when PreferredChannel names a handler that isn't registered,
 // SubmitApprovalRequest returns a named error instead of silently falling

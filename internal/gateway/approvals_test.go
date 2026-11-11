@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/approval"
+	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -837,5 +838,159 @@ func TestHandleApprovals_WireContractFixture(t *testing.T) {
 	}
 	if !bytes.Equal(pretty.Bytes(), want) {
 		t.Errorf("fixture out of date (regenerate with -update-approvals-fixture)\n got: %s\nwant: %s", pretty.Bytes(), want)
+	}
+}
+
+// --- GH-6290: requests stored by the console approval handler ---------------
+
+// consoleApprovalFixture is a real store + manager + ConsoleHandler behind the
+// approval routes: the request is stored the way a hosted tenant's controller
+// stores it, with nothing delivered anywhere else.
+type consoleApprovalFixture struct {
+	server *Server
+	store  *memory.Store
+	ks     *memory.KnowledgeStore
+	mgr    *approval.Manager
+}
+
+const consoleFixtureProject = "/work/console-proj"
+
+func newConsoleApprovalFixture(t *testing.T) *consoleApprovalFixture {
+	t.Helper()
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ks := memory.NewKnowledgeStore(store.DB())
+	if err := ks.InitSchema(); err != nil {
+		t.Fatalf("InitSchema: %v", err)
+	}
+
+	cfg := approval.DefaultConfig()
+	cfg.Enabled = true
+	cfg.PreMerge.Enabled = true
+	cfg.PreMerge.Timeout = time.Hour
+	mgr := approval.NewManager(cfg).WithStateWriter(store)
+	mgr.RegisterHandler(approval.NewConsoleHandler().WithStore(store))
+
+	s := NewServer(&Config{Host: "127.0.0.1", Port: 9090})
+	s.SetDashboardStore(store)
+	s.SetDecisionRecorder(mgr)
+	s.SetLearningStore(ks, fakeProjects{list: []*comms.ProjectInfo{{Name: "console-proj", Path: consoleFixtureProject}}})
+	return &consoleApprovalFixture{server: s, store: store, ks: ks, mgr: mgr}
+}
+
+// submit stores one pre_merge request through the console channel, linked to
+// an execution row so a decision persists.
+func (f *consoleApprovalFixture) submit(t *testing.T, reqID string) {
+	t.Helper()
+	if err := f.store.SaveExecution(&memory.Execution{
+		ID:                "exec-" + reqID,
+		TaskID:            "GH-" + reqID,
+		ProjectPath:       consoleFixtureProject,
+		Status:            "running",
+		ApprovalRequestID: reqID,
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if _, err := f.mgr.SubmitApprovalRequest(context.Background(), &approval.Request{
+		ID:               reqID,
+		TaskID:           "GH-" + reqID,
+		Stage:            approval.StagePreMerge,
+		Title:            "Merge PR " + reqID,
+		PreferredChannel: "console",
+		Project:          consoleFixtureProject,
+		CreatedAt:        time.Now(),
+	}); err != nil {
+		t.Fatalf("SubmitApprovalRequest: %v", err)
+	}
+}
+
+func (f *consoleApprovalFixture) decide(t *testing.T, reqID, body string) *testResponseRecorder {
+	t.Helper()
+	req := httpTestRequestWithPathValue(t, http.MethodPost, "/api/v1/approvals/"+reqID+"/decision",
+		bytes.NewBufferString(body), "requestId", reqID)
+	w := newTestResponseRecorder()
+	f.server.handleApprovalDecision(w, req)
+	return w
+}
+
+func (f *consoleApprovalFixture) listed(t *testing.T) []approvalResponse {
+	t.Helper()
+	w := newTestResponseRecorder()
+	f.server.handleApprovals(w, httpTestRequest(t, http.MethodGet, "/api/v1/approvals", nil))
+	if w.status != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200 (body=%s)", w.status, w.body.String())
+	}
+	var out []approvalResponse
+	if err := json.Unmarshal(w.body.Bytes(), &out); err != nil {
+		t.Fatalf("decode GET body: %v", err)
+	}
+	return out
+}
+
+func TestConsoleApproval_ListedAndApproved_SecondDecision409(t *testing.T) {
+	f := newConsoleApprovalFixture(t)
+	f.submit(t, "req-console-1")
+
+	got := f.listed(t)
+	if len(got) != 1 || got[0].RequestID != "req-console-1" || got[0].TaskID != "GH-req-console-1" {
+		t.Fatalf("listed = %+v, want the console request", got)
+	}
+
+	if w := f.decide(t, "req-console-1", `{"decision":"approve","by":"alice"}`); w.status != http.StatusOK {
+		t.Fatalf("approve status = %d, want 200 (body=%s)", w.status, w.body.String())
+	}
+	exec, err := f.store.GetExecution("exec-req-console-1")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.ApprovalDecision != "approved" || exec.ApprovalDecisionBy != "alice" {
+		t.Errorf("decision = %q by %q, want approved by alice", exec.ApprovalDecision, exec.ApprovalDecisionBy)
+	}
+	if got := f.listed(t); len(got) != 0 {
+		t.Errorf("listed after decision = %+v, want none", got)
+	}
+
+	if w := f.decide(t, "req-console-1", `{"decision":"reject","by":"bob"}`); w.status != http.StatusConflict {
+		t.Errorf("second decision status = %d, want 409 (body=%s)", w.status, w.body.String())
+	}
+	exec, _ = f.store.GetExecution("exec-req-console-1")
+	if exec.ApprovalDecision != "approved" {
+		t.Errorf("decision flipped to %q by the second POST, want approved", exec.ApprovalDecision)
+	}
+}
+
+func TestConsoleApproval_RejectWithReasonWritesLearning(t *testing.T) {
+	f := newConsoleApprovalFixture(t)
+	f.submit(t, "req-console-2")
+
+	if w := f.decide(t, "req-console-2", `{"decision":"reject","by":"bob","reason":"use the existing helper"}`); w.status != http.StatusOK {
+		t.Fatalf("reject status = %d, want 200 (body=%s)", w.status, w.body.String())
+	}
+	exec, err := f.store.GetExecution("exec-req-console-2")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.ApprovalDecision != "rejected" || exec.ApprovalDecisionBy != "bob" {
+		t.Errorf("decision = %q by %q, want rejected by bob", exec.ApprovalDecision, exec.ApprovalDecisionBy)
+	}
+
+	learnings, err := f.ks.QueryBySource(memory.MemoryTypeLearning, memory.SourceConsoleReview, "console-proj", 10)
+	if err != nil {
+		t.Fatalf("QueryBySource: %v", err)
+	}
+	if len(learnings) != 1 {
+		t.Fatalf("learnings = %d, want 1", len(learnings))
+	}
+	m := learnings[0]
+	if !containsTag(m.Tags, "review_reject") || !strings.HasSuffix(m.Content, "\nuse the existing helper") {
+		t.Errorf("learning tags=%v content=%q, want a review_reject carrying the reason", m.Tags, m.Content)
+	}
+
+	if w := f.decide(t, "req-console-2", `{"decision":"reject","by":"bob","reason":"use the existing helper"}`); w.status != http.StatusConflict {
+		t.Errorf("second decision status = %d, want 409", w.status)
 	}
 }

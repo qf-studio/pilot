@@ -45,6 +45,10 @@ func TestOwnsChannel(t *testing.T) {
 		{"telegram does not own slack rows", "telegram", "slack", false},
 		{"slack does not own telegram rows", "slack", "telegram", false},
 		{"telegram does not own unknown-channel rows", "telegram", "webhook", false},
+		{"console owns its own explicit rows", "console", "console", true},
+		{"console does not own legacy empty rows", "console", "", false},
+		{"telegram does not own console rows", "telegram", "console", false},
+		{"console does not own telegram rows", "console", "telegram", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -61,6 +65,9 @@ func TestOwnedChannels(t *testing.T) {
 	}
 	if got := ownedChannels("github"); len(got) != 2 || got[0] != "github" || got[1] != "github-review" {
 		t.Errorf("ownedChannels(github) = %v, want [github github-review]", got)
+	}
+	if got := ownedChannels("console"); len(got) != 1 || got[0] != "console" {
+		t.Errorf("ownedChannels(console) = %v, want [console]", got)
 	}
 	if got := ownedChannels("slack"); len(got) != 1 || got[0] != "slack" {
 		t.Errorf("ownedChannels(slack) = %v, want [slack]", got)
