@@ -132,7 +132,7 @@ func TestApplyApprovalDecision_ObservesApprovalWait(t *testing.T) {
 		ApprovalDecision:    string(approval.DecisionApproved),
 	}
 
-	if err := c.applyApprovalDecision(prState); err != nil {
+	if err := c.applyApprovalDecision(context.Background(), prState); err != nil {
 		t.Fatalf("applyApprovalDecision: %v", err)
 	}
 
@@ -162,7 +162,7 @@ func TestApplyApprovalDecision_ZeroRequestedAt_SkipsObservation(t *testing.T) {
 		ApprovalDecision: string(approval.DecisionApproved),
 	}
 
-	if err := c.applyApprovalDecision(prState); err != nil {
+	if err := c.applyApprovalDecision(context.Background(), prState); err != nil {
 		t.Fatalf("applyApprovalDecision: %v", err)
 	}
 

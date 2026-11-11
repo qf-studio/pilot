@@ -127,6 +127,20 @@ type DecisionRecorder interface {
 	RecordDecision(ctx context.Context, requestID string, decision Decision, by string) error
 }
 
+// ReasonedPRStateWriter is the optional extension of PRStateWriter for a writer
+// that also records the free-text reason given with a reject (GH-6305). Manager
+// uses it only when a reason is present; any other writer gets the plain call.
+type ReasonedPRStateWriter interface {
+	SetApprovalDecisionWithReason(ctx context.Context, requestID string, decision string, by string, reason string) error
+}
+
+// ReasonedDecisionRecorder is the optional extension of DecisionRecorder for a
+// recorder that carries a reject reason through to the PR state (GH-6305).
+// *Manager satisfies it via RecordDecisionWithReason.
+type ReasonedDecisionRecorder interface {
+	RecordDecisionWithReason(ctx context.Context, requestID string, decision Decision, by string, reason string) error
+}
+
 // Handler is the interface for approval channel handlers
 // Each channel (Telegram, Slack, etc.) implements this interface
 type Handler interface {
