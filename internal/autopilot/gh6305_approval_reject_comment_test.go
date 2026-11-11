@@ -103,8 +103,8 @@ func TestApplyApprovalDecision_RejectPostsOneCommentAndLabels(t *testing.T) {
 	if len(labels) != 1 || labels[0] != "/repos/owner/repo/issues/70/labels "+github.LabelFailed {
 		t.Errorf("labels = %q, want one %s on issue 70", labels, github.LabelFailed)
 	}
-	if prState.TerminalLabel != github.LabelFailed {
-		t.Errorf("TerminalLabel = %q, want %q", prState.TerminalLabel, github.LabelFailed)
+	if prState.TerminalLabel != "" {
+		t.Errorf("TerminalLabel = %q, want empty so closing the PR marks the issue retry-ready", prState.TerminalLabel)
 	}
 
 	// A second tick re-enters the same path: reject comment is posted once.

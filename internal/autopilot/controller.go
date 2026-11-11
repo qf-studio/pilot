@@ -5724,14 +5724,14 @@ const approvalReasonMaxRunes = 500
 // never looks at it again. It posts one PR comment (ApprovalRejectNotified is the
 // persisted dedup flag) and labels the issue pilot-failed through
 // mutateIssueLabels, the helper the other terminal-failure paths use. TerminalLabel
-// is set to the same label so a later external close of the PR keeps the failed
-// designation instead of defaulting to retry-ready.
+// is deliberately left unset: the comment tells the reader that closing the PR
+// lets Pilot retry, and notifyExternalClose only does that (retry-ready, stale
+// pilot-failed removed) when no TerminalLabel is designated.
 func (c *Controller) notifyApprovalNotGranted(ctx context.Context, prState *PRState) {
 	if prState.ApprovalRejectNotified {
 		return
 	}
 	prState.ApprovalRejectNotified = true
-	prState.TerminalLabel = github.LabelFailed
 
 	var head string
 	if approval.Decision(prState.ApprovalDecision) == approval.DecisionTimeout ||
