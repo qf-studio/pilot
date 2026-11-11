@@ -103,6 +103,8 @@ func TestReadGuardScript(t *testing.T) {
 		{"bash ls home", bashHook("ls " + pilotHome), 2},
 		{"bash proc environ", bashHook("cat /proc/123/environ"), 2},
 		{"bash proc self environ", bashHook("tr '\\0' '\\n' < /proc/self/environ"), 2},
+		{"bash proc star environ", bashHook("cat /proc/*/environ"), 2},
+		{"bash proc digit glob environ", bashHook("cat /proc/[0-9]*/environ"), 2},
 		{"read in worktree", writeHook("Read", "file_path", filepath.Join(worktree, "main.go")), 0},
 		{"read relative", writeHook("Read", "file_path", "main.go"), 0},
 		{"grep without path", map[string]any{"tool_name": "Grep", "tool_input": map[string]any{"pattern": "func main"}}, 0},
