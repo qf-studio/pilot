@@ -4191,6 +4191,8 @@ func (c *Controller) resetApprovalForReescalation(ctx context.Context, prState *
 	prState.ApprovalRequestID = ""
 	prState.ApprovalDecision = ""
 	prState.ApprovalDecisionBy = ""
+	prState.ApprovalDecisionReason = ""
+	prState.ApprovalRejectNotified = false
 	prState.ApprovalRequestedAt = time.Time{}
 	if c.approvalMgr != nil && staleRequestID != "" {
 		taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
@@ -5492,7 +5494,7 @@ func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) 
 
 	// Path 2: decision already recorded — advance the state machine.
 	if prState.ApprovalDecision != "" {
-		return c.applyApprovalDecision(prState)
+		return c.applyApprovalDecision(ctx, prState)
 	}
 
 	// Path 3: still waiting — check wall-clock expiry as a guard for post-restart
@@ -5516,7 +5518,7 @@ func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) 
 			"default_action", defaultAction)
 		prState.ApprovalDecision = string(defaultAction)
 		prState.ApprovalDecisionBy = approvalDecisionSourceWallClockExpiryDefault
-		return c.applyApprovalDecision(prState)
+		return c.applyApprovalDecision(ctx, prState)
 	}
 
 	// Still waiting for user input — stay in StageAwaitApproval.
@@ -5661,7 +5663,7 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 }
 
 // applyApprovalDecision advances the state machine based on the recorded decision.
-func (c *Controller) applyApprovalDecision(prState *PRState) error {
+func (c *Controller) applyApprovalDecision(ctx context.Context, prState *PRState) error {
 	// GH-4130: observe pilot_approval_wait_seconds from when the async approval
 	// request was submitted (functionally the awaiting_approval entry point) to
 	// this merge decision being applied — covers both the SetApprovalDecision
@@ -5700,6 +5702,7 @@ func (c *Controller) applyApprovalDecision(prState *PRState) error {
 		prState.Error = fmt.Sprintf("merge rejected: approval %s", prState.ApprovalDecision)
 		c.metrics.RecordPRFailed()
 		c.metrics.RecordIssueProcessed("failed")
+		c.notifyApprovalNotGranted(ctx, prState)
 	default:
 		c.log.Warn("unknown approval decision — failing PR",
 			"pr", prState.PRNumber, "decision", prState.ApprovalDecision, "decided_by", decidedBy)
@@ -5709,6 +5712,67 @@ func (c *Controller) applyApprovalDecision(prState *PRState) error {
 		c.metrics.RecordIssueProcessed("failed")
 	}
 	return nil
+}
+
+// approvalReasonMaxRunes caps the reject reason quoted in the PR comment; the
+// gateway accepts up to 2 KB and a PR comment should stay readable.
+const approvalReasonMaxRunes = 500
+
+// notifyApprovalNotGranted tells the people watching the pull request that the
+// merge approval was rejected or expired (GH-6305). Before it, applyApprovalDecision
+// failed the PR silently: an open green PR with no explanation, and the daemon
+// never looks at it again. It posts one PR comment (ApprovalRejectNotified is the
+// persisted dedup flag) and labels the issue pilot-failed through
+// mutateIssueLabels, the helper the other terminal-failure paths use. TerminalLabel
+// is set to the same label so a later external close of the PR keeps the failed
+// designation instead of defaulting to retry-ready.
+func (c *Controller) notifyApprovalNotGranted(ctx context.Context, prState *PRState) {
+	if prState.ApprovalRejectNotified {
+		return
+	}
+	prState.ApprovalRejectNotified = true
+	prState.TerminalLabel = github.LabelFailed
+
+	var head string
+	if approval.Decision(prState.ApprovalDecision) == approval.DecisionTimeout ||
+		prState.ApprovalDecisionBy == approvalDecisionSourceWallClockExpiryDefault ||
+		prState.ApprovalDecisionBy == "system" {
+		head = "No decision in " + c.approvalTimeoutText() + "; the request expired."
+	} else {
+		head = fmt.Sprintf("Merge rejected by %s.", prState.ApprovalDecisionBy)
+		if reason := approvalReasonText(prState.ApprovalDecisionReason); reason != "" {
+			head += " Reason: " + reason + "."
+		}
+	}
+	comment := head + "\n\nPilot stops work on this pull request. Close it to let Pilot retry the issue, or merge it by hand."
+
+	if c.ghClient != nil {
+		if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); err != nil {
+			c.log.Warn("failed to post approval-not-granted comment", "pr", prState.PRNumber, "error", err)
+		}
+	}
+	if c.labeler != nil {
+		c.mutateIssueLabels(ctx, prState.IssueNumber, []string{github.LabelFailed}, nil)
+	}
+}
+
+// approvalTimeoutText renders the pre-merge stage timeout for the expiry comment.
+func (c *Controller) approvalTimeoutText() string {
+	if c.approvalMgr == nil {
+		return "the configured time"
+	}
+	return c.approvalMgr.PreMergeTimeout().Round(time.Second).String()
+}
+
+// approvalReasonText flattens a reject reason to one trimmed line of at most
+// approvalReasonMaxRunes runes, with a trailing period removed so the comment's
+// own period does not double.
+func approvalReasonText(reason string) string {
+	reason = strings.Join(strings.Fields(reason), " ")
+	if r := []rune(reason); len(r) > approvalReasonMaxRunes {
+		reason = string(r[:approvalReasonMaxRunes]) + "…"
+	}
+	return strings.TrimRight(reason, ".")
 }
 
 // SetApprovalDecision implements approval.PRStateWriter. It finds the in-memory
@@ -5728,6 +5792,13 @@ func (c *Controller) applyApprovalDecision(prState *PRState) error {
 // up through Manager.RecordDecision to the gateway's 409 and the channel
 // handlers' race-loss branch.
 func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, decision string, by string) error {
+	return c.SetApprovalDecisionWithReason(ctx, requestID, decision, by, "")
+}
+
+// SetApprovalDecisionWithReason implements approval.ReasonedPRStateWriter:
+// SetApprovalDecision plus the free-text reason given with a reject (GH-6305),
+// kept on the PRState so applyApprovalDecision can say it in the PR comment.
+func (c *Controller) SetApprovalDecisionWithReason(ctx context.Context, requestID string, decision string, by string, reason string) error {
 	if requestID == "" {
 		return nil
 	}
@@ -5765,6 +5836,7 @@ func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, 
 			// since it's the same in-process PRState object.
 			pr.ApprovalDecision = decision
 			pr.ApprovalDecisionBy = by
+			pr.ApprovalDecisionReason = reason
 			if c.stateStore != nil {
 				_ = c.stateStore.SavePRState(c.repoKey(), pr)
 			}
@@ -5803,6 +5875,7 @@ func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, 
 		pr.mu.Lock()
 		pr.ApprovalDecision = decision
 		pr.ApprovalDecisionBy = by
+		pr.ApprovalDecisionReason = reason
 		if c.stateStore != nil {
 			_ = c.stateStore.SavePRState(c.repoKey(), pr)
 		}
@@ -11852,6 +11925,17 @@ func NewMultiControllerStateWriter(controllers ...*Controller) *MultiControllerS
 func (w *MultiControllerStateWriter) SetApprovalDecision(ctx context.Context, requestID string, decision string, by string) error {
 	for _, c := range w.controllers {
 		if err := c.SetApprovalDecision(ctx, requestID, decision, by); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SetApprovalDecisionWithReason implements approval.ReasonedPRStateWriter with
+// the same first-owner-wins semantics as SetApprovalDecision (GH-6305).
+func (w *MultiControllerStateWriter) SetApprovalDecisionWithReason(ctx context.Context, requestID string, decision string, by string, reason string) error {
+	for _, c := range w.controllers {
+		if err := c.SetApprovalDecisionWithReason(ctx, requestID, decision, by, reason); err != nil {
 			return err
 		}
 	}

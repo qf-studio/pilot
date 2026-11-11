@@ -283,7 +283,14 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request) 
 	}
 
 	now := time.Now()
-	recErr := recorder.RecordDecision(r.Context(), requestID, decision, body.By)
+	var recErr error
+	if rr, ok := recorder.(approval.ReasonedDecisionRecorder); ok && decision == approval.DecisionRejected && body.Reason != "" {
+		// GH-6305: the reject reason also goes onto the PR state so the daemon
+		// can say it in the PR comment it leaves.
+		recErr = rr.RecordDecisionWithReason(r.Context(), requestID, decision, body.By, body.Reason)
+	} else {
+		recErr = recorder.RecordDecision(r.Context(), requestID, decision, body.By)
+	}
 	switch {
 	case recErr == nil:
 		// Recorded successfully — fall through to cleanup + 200 below.

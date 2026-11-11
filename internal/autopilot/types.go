@@ -1307,6 +1307,15 @@ type PRState struct {
 	// gate (applyApprovalDecision) and its logs to consume so a decision is
 	// never applied with zero visibility into who/what made it.
 	ApprovalDecisionBy string
+	// ApprovalDecisionReason is the free-text reason given with a reject
+	// (GH-6305). Empty for an approve, for a timeout, and for a channel that
+	// carries no reason. Persisted with ApprovalDecisionBy so the PR comment
+	// written when the decision is applied survives a restart.
+	ApprovalDecisionReason string
+	// ApprovalRejectNotified is set once the reject/expiry PR comment has been
+	// posted (GH-6305), so a tick that re-enters applyApprovalDecision never
+	// reposts it. Persisted.
+	ApprovalRejectNotified bool
 	// ApprovalRequestedAt is when the async approval request was first submitted.
 	ApprovalRequestedAt time.Time
 	// PostMergeSHA is the main branch SHA captured on first entry to StagePostMergeCI.
@@ -1645,6 +1654,8 @@ func (ps *PRState) snapshot() *PRState {
 		ApprovalRequestID:            ps.ApprovalRequestID,
 		ApprovalDecision:             ps.ApprovalDecision,
 		ApprovalDecisionBy:           ps.ApprovalDecisionBy,
+		ApprovalDecisionReason:       ps.ApprovalDecisionReason,
+		ApprovalRejectNotified:       ps.ApprovalRejectNotified,
 		ApprovalRequestedAt:          ps.ApprovalRequestedAt,
 		PostMergeSHA:                 ps.PostMergeSHA,
 		PostMergeCIStartedAt:         ps.PostMergeCIStartedAt,

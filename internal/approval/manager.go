@@ -562,6 +562,14 @@ func (m *Manager) NotifyMerged(ctx context.Context, requestID, shortSHA string) 
 //   - any other writer error (persistence failure): the entry stays pending so
 //     the decision can be retried, and the error is returned.
 func (m *Manager) RecordDecision(ctx context.Context, requestID string, decision Decision, by string) error {
+	return m.RecordDecisionWithReason(ctx, requestID, decision, by, "")
+}
+
+// RecordDecisionWithReason is RecordDecision plus the free-text reason given
+// with a reject (GH-6305). The reason reaches the PR state only when the
+// writer implements ReasonedPRStateWriter and reason is non-empty; every other
+// path behaves exactly as RecordDecision.
+func (m *Manager) RecordDecisionWithReason(ctx context.Context, requestID string, decision Decision, by string, reason string) error {
 	if m.IsCancelled(requestID) {
 		m.log.Info("approval decision ignored: request was cancelled (PR closed)",
 			slog.String("request_id", requestID),
@@ -571,7 +579,13 @@ func (m *Manager) RecordDecision(ctx context.Context, requestID string, decision
 	}
 	var writerErr error
 	if m.stateWriter != nil {
-		if err := m.stateWriter.SetApprovalDecision(ctx, requestID, string(decision), by); err != nil {
+		var err error
+		if rw, ok := m.stateWriter.(ReasonedPRStateWriter); ok && reason != "" {
+			err = rw.SetApprovalDecisionWithReason(ctx, requestID, string(decision), by, reason)
+		} else {
+			err = m.stateWriter.SetApprovalDecision(ctx, requestID, string(decision), by)
+		}
+		if err != nil {
 			writerErr = fmt.Errorf("record decision: %w", err)
 		}
 	}
