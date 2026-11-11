@@ -2878,6 +2878,12 @@ func (c *Controller) RestoreState() (int, error) {
 				heldBy = "HoldActive"
 			case pr.RebaseHoldActive:
 				heldBy = "RebaseHoldActive"
+			case pr.ApprovalRejectNotified:
+				// GH-6316: a PR failed by a rejected/expired merge approval
+				// told its readers "close it to let Pilot retry"; that only
+				// happens on a tracked PR (processOnePR → notifyExternalClose),
+				// so a close after a restart left the issue pilot-failed.
+				heldBy = "ApprovalRejectNotified"
 			default:
 				continue
 			}
@@ -4311,6 +4317,7 @@ func (c *Controller) resetApprovalForReescalation(ctx context.Context, prState *
 	prState.ApprovalDecisionReason = ""
 	prState.ApprovalRejectNotified = false
 	prState.ApprovalRequestedAt = time.Time{}
+	prState.ApprovalTimeout = 0
 	if c.approvalMgr != nil && staleRequestID != "" {
 		taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
 		if prState.IssueNumber == 0 {
@@ -5755,6 +5762,12 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 
 	prState.ApprovalRequestID = requestID
 	prState.ApprovalRequestedAt = time.Now()
+	// GH-6316: keep the timeout the Manager actually armed for this request
+	// (it set req.ExpiresAt from the stage config), so an expiry comment
+	// never quotes a different duration than the one that expired.
+	if !req.ExpiresAt.IsZero() {
+		prState.ApprovalTimeout = req.ExpiresAt.Sub(prState.ApprovalRequestedAt).Round(time.Second)
+	}
 	// Stage intentionally stays at StageAwaitApproval.
 
 	if c.stateStore != nil {
@@ -5854,7 +5867,7 @@ func (c *Controller) notifyApprovalNotGranted(ctx context.Context, prState *PRSt
 	if approval.Decision(prState.ApprovalDecision) == approval.DecisionTimeout ||
 		prState.ApprovalDecisionBy == approvalDecisionSourceWallClockExpiryDefault ||
 		prState.ApprovalDecisionBy == "system" {
-		head = "No decision in " + c.approvalTimeoutText() + "; the request expired."
+		head = "No decision in " + c.approvalTimeoutText(prState) + "; the request expired."
 	} else {
 		head = fmt.Sprintf("Merge rejected by %s.", prState.ApprovalDecisionBy)
 		if reason := approvalReasonText(prState.ApprovalDecisionReason); reason != "" {
@@ -5873,8 +5886,14 @@ func (c *Controller) notifyApprovalNotGranted(ctx context.Context, prState *PRSt
 	}
 }
 
-// approvalTimeoutText renders the pre-merge stage timeout for the expiry comment.
-func (c *Controller) approvalTimeoutText() string {
+// approvalTimeoutText renders the timeout that expired for the expiry comment:
+// the one the Manager armed for this request when known (ApprovalTimeout, held
+// in memory), else the pre-merge stage default — the only source left after a
+// daemon restart, and the one the wall-clock guard itself measures against.
+func (c *Controller) approvalTimeoutText(prState *PRState) string {
+	if prState.ApprovalTimeout > 0 {
+		return prState.ApprovalTimeout.Round(time.Second).String()
+	}
 	if c.approvalMgr == nil {
 		return "the configured time"
 	}

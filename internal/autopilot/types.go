@@ -1318,6 +1318,11 @@ type PRState struct {
 	ApprovalRejectNotified bool
 	// ApprovalRequestedAt is when the async approval request was first submitted.
 	ApprovalRequestedAt time.Time
+	// ApprovalTimeout is the timeout approval.Manager armed for this request
+	// (GH-6316), so the expiry comment quotes the duration that really
+	// expired. In memory only: zero after a restart, where the comment falls
+	// back to the pre-merge stage timeout.
+	ApprovalTimeout time.Duration
 	// PostMergeSHA is the main branch SHA captured on first entry to StagePostMergeCI.
 	// Persisted so a daemon restart resumes monitoring the same commit.
 	PostMergeSHA string
@@ -1660,6 +1665,7 @@ func (ps *PRState) snapshot() *PRState {
 		ApprovalDecisionReason:       ps.ApprovalDecisionReason,
 		ApprovalRejectNotified:       ps.ApprovalRejectNotified,
 		ApprovalRequestedAt:          ps.ApprovalRequestedAt,
+		ApprovalTimeout:              ps.ApprovalTimeout,
 		PostMergeSHA:                 ps.PostMergeSHA,
 		PostMergeCIStartedAt:         ps.PostMergeCIStartedAt,
 		ReleasingAttempts:            ps.ReleasingAttempts,
