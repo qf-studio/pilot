@@ -3798,18 +3798,22 @@ func nextAPIOutageBackoff(cur time.Duration) time.Duration {
 // the API, is the cause, so the PR is held at once, told about once, and never
 // failed for it (handleCIUnreadable).
 func (c *Controller) handleCIPollError(ctx context.Context, prState *PRState, sha string, err error) {
+	var unreadable *ErrCIUnreadable
+	if errors.As(err, &unreadable) {
+		// The token problem is not an API outage: it does not feed the
+		// ordinary failure counter, so a later 5xx starts a fresh count.
+		prState.ConsecutiveAPIFailures = 0
+		c.log.Warn("CI status check failed", "pr", prState.PRNumber, "sha", ShortSHA(sha), "error", err)
+		c.handleCIUnreadable(ctx, prState, sha, unreadable)
+		return
+	}
+
 	prState.ConsecutiveAPIFailures++
 	c.log.Warn("CI status check failed",
 		"pr", prState.PRNumber,
 		"sha", ShortSHA(sha),
 		"consecutive_failures", prState.ConsecutiveAPIFailures,
 		"error", err)
-
-	var unreadable *ErrCIUnreadable
-	if errors.As(err, &unreadable) {
-		c.handleCIUnreadable(ctx, prState, sha, unreadable)
-		return
-	}
 
 	if prState.ConsecutiveAPIFailures < apiOutageFailureThreshold {
 		// Don't fail the PR on transient errors, will retry next poll cycle
@@ -3881,9 +3885,11 @@ func (c *Controller) handleCIUnreadable(ctx context.Context, prState *PRState, s
 	}
 
 	now := c.ciNow()
+	// APIOutageSince rolls forward on every unreadable poll so the outage
+	// budget never counts token time against a later ordinary error.
+	prState.APIOutageSince = now
 	if !prState.APIOutageHoldActive {
 		prState.APIOutageHoldActive = true
-		prState.APIOutageSince = now
 		prState.apiOutageBackoff = apiOutageBackoffFloor
 		c.log.Warn("CI unreadable with the configured token: holding PR",
 			"pr", prState.PRNumber,

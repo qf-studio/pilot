@@ -48,12 +48,13 @@ func TestWaitingCI_TokenCannotReadCI_CommentsOnceAndHolds(t *testing.T) {
 
 	// Many more polls, well past the outage budget: still one comment, still
 	// waiting for CI, never labelled pilot-failed.
+	start := f.now
 	for i := 0; i < 60; i++ {
 		f.now = f.pr.APIOutageNextPoll
 		f.tick()
 	}
-	if f.now.Sub(f.pr.APIOutageSince) <= f.c.apiOutageBudget() {
-		t.Fatalf("test did not run past the %s budget (ran %s)", f.c.apiOutageBudget(), f.now.Sub(f.pr.APIOutageSince))
+	if f.now.Sub(start) <= f.c.apiOutageBudget() {
+		t.Fatalf("test did not run past the %s budget (ran %s)", f.c.apiOutageBudget(), f.now.Sub(start))
 	}
 	if got := f.comments.Load(); got != 1 {
 		t.Errorf("comments after many polls = %d, want 1", got)
@@ -170,6 +171,30 @@ func TestWaitingCI_TokenCannotReadCI_CommentRetriedAfterFailedPost(t *testing.T)
 
 // An ordinary outage (5xx) keeps the GH-6056 behaviour: no hold before the
 // fifth error, no comment, no degraded adapter, and the PR fails at the budget.
+func TestWaitingCI_TokenCannotReadCI_ThenTransient5xxDoesNotFailPR(t *testing.T) {
+	f, _ := newCIUnreadableFixture(t)
+	start := f.now
+	if err := f.c.ProcessPR(f.ctx, 42, nil); err != nil {
+		t.Fatalf("ProcessPR: %v", err)
+	}
+	for i := 0; i < 60 && f.now.Sub(start) <= f.c.apiOutageBudget(); i++ {
+		f.now = f.pr.APIOutageNextPoll
+		f.tick()
+	}
+	if f.now.Sub(start) <= f.c.apiOutageBudget() {
+		t.Fatal("did not run past the outage budget")
+	}
+
+	// The API now fails with 500: a transient error after a long token hold
+	// must not fail the PR.
+	f.setMode(ciOutageFallback5xx)
+	f.now = f.pr.APIOutageNextPoll
+	f.tick()
+	if f.pr.Stage != StageWaitingCI || f.pr.TerminalLabel != "" {
+		t.Fatalf("Stage = %s, TerminalLabel = %q after one 5xx following an unreadable hold", f.pr.Stage, f.pr.TerminalLabel)
+	}
+}
+
 func TestWaitingCI_OrdinaryOutageUnchangedByUnreadableHandling(t *testing.T) {
 	f := newCIOutageFixture(t, nil)
 	reg := adapterhealth.NewRegistry()

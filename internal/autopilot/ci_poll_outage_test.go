@@ -21,11 +21,12 @@ import (
 type ciOutageMode int32
 
 const (
-	ciOutageDown       ciOutageMode = iota // HTTP 500
-	ciOutageGreen                          // one completed, successful check
-	ciOutagePending                        // one in-progress check
-	ciOutageForbidden                      // 403 on check-runs, one green Actions run (GH-6283)
-	ciOutageUnreadable                     // 403 on check-runs, Actions runs and commit statuses (GH-6304)
+	ciOutageDown        ciOutageMode = iota // HTTP 500
+	ciOutageGreen                           // one completed, successful check
+	ciOutagePending                         // one in-progress check
+	ciOutageForbidden                       // 403 on check-runs, one green Actions run (GH-6283)
+	ciOutageUnreadable                      // 403 on check-runs, Actions runs and commit statuses (GH-6304)
+	ciOutageFallback5xx                     // 403 on check-runs, HTTP 500 on Actions runs and statuses (GH-6304)
 )
 
 // ciOutageFixture is a controller wired to a fake GitHub whose check-runs
@@ -63,6 +64,9 @@ func newCIOutageFixture(t *testing.T, mutate func(*Config)) *ciOutageFixture {
 			(strings.Contains(r.URL.Path, "/actions/runs") || strings.HasSuffix(r.URL.Path, "/status")):
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(forbiddenCheckRunsBody))
+		case ciOutageMode(f.mode.Load()) == ciOutageFallback5xx &&
+			(strings.Contains(r.URL.Path, "/actions/runs") || strings.HasSuffix(r.URL.Path, "/status")):
+			w.WriteHeader(http.StatusInternalServerError)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues/42/comments") && f.commentFail.Load():
 			w.WriteHeader(http.StatusInternalServerError)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues/42/comments"):
@@ -85,7 +89,7 @@ func newCIOutageFixture(t *testing.T, mutate func(*Config)) *ciOutageFixture {
 			f.ciCalls.Add(1)
 			var checks []map[string]interface{}
 			switch ciOutageMode(f.mode.Load()) {
-			case ciOutageForbidden, ciOutageUnreadable:
+			case ciOutageForbidden, ciOutageUnreadable, ciOutageFallback5xx:
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte(forbiddenCheckRunsBody))
 				return
