@@ -1650,7 +1650,7 @@ func (c *Config) Validate() error {
 		}
 		source := string(*p.Approval.ApprovalSource)
 		if !approval.ApprovalSourceValues[source] {
-			return fmt.Errorf("projects[%d].approval.approval_source must be \"telegram\", \"slack\", or \"github-review\", got %q", i, source)
+			return fmt.Errorf("projects[%d].approval.approval_source must be \"telegram\", \"slack\", \"github-review\", or \"console\", got %q", i, source)
 		}
 	}
 
@@ -1851,7 +1851,7 @@ func (c *Config) validateApprovers() error {
 			}
 			for key, ids := range sc.ApproversByChannel {
 				if key == "" || !approval.ApprovalSourceValues[key] {
-					return fmt.Errorf("approval.%s.approvers_by_channel key must be \"telegram\", \"slack\", or \"github-review\", got %q", name, key)
+					return fmt.Errorf("approval.%s.approvers_by_channel key must be \"telegram\", \"slack\", \"github-review\", or \"console\", got %q", name, key)
 				}
 				warn(fmt.Sprintf("approval.%s.approvers_by_channel.%s", name, key), key, ids)
 			}

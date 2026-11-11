@@ -24,6 +24,7 @@ import (
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/gateway"
 	"github.com/qf-studio/pilot/internal/quality"
 	"github.com/qf-studio/pilot/internal/testutil"
 )
@@ -1235,5 +1236,76 @@ func TestLogNavigatorDisabledProjects(t *testing.T) {
 	cfg.Projects[1].Navigator = true
 	if names := logNavigatorDisabledProjects(cfg, log); len(names) != 0 || buf.Len() != 0 {
 		t.Errorf("all enabled: names=%v log=%q, want none", names, buf.String())
+	}
+}
+
+// GH-6290: the console approval channel is registered at both start paths
+// (gateway mode and polling mode), each attaching the store and starting the
+// expiry sweep. A path without it leaves approval_source: console unregistered,
+// so SubmitApprovalRequest fails on every tick.
+func TestConsoleApprovalHandlerRegisteredInBothStartPaths(t *testing.T) {
+	mainContent, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	src := string(mainContent)
+
+	t.Run("console approval handler is registered in both start paths", func(t *testing.T) {
+		for _, want := range []string{
+			"registerConsoleApprovalHandler(cfg, false, approvalMgr)",
+			"registerConsoleApprovalHandler(cfg, noGateway, approvalMgr)",
+			"gwConsoleApprovalHandler.WithStore(gwStore)",
+			"consoleApprovalHandlerImpl.WithStore(store)",
+			"startApprovalExpirySweep(context.Background(), gwConsoleApprovalHandler)",
+			"startApprovalExpirySweep(ctx, consoleApprovalHandlerImpl)",
+		} {
+			if got := strings.Count(src, want); got != 1 {
+				t.Errorf("%q occurs %d times in main.go, want 1", want, got)
+			}
+		}
+		if got := strings.Count(src, "registerConsoleApprovalHandler("); got != 3 { // 2 call sites + the definition
+			t.Errorf("registerConsoleApprovalHandler( occurs %d times in main.go, want 3 (definition + gateway-mode + polling-mode)", got)
+		}
+	})
+}
+
+func TestRegisterConsoleApprovalHandler(t *testing.T) {
+	gw := &gateway.Config{Host: "127.0.0.1", Port: 9090}
+	tests := []struct {
+		name      string
+		cfg       *config.Config
+		noGateway bool
+		want      bool
+	}{
+		{"gateway configured", &config.Config{Gateway: gw}, false, true},
+		{"gateway block absent", &config.Config{}, false, false},
+		{"--no-gateway", &config.Config{Gateway: gw}, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			acfg := approval.DefaultConfig()
+			acfg.Enabled = true
+			acfg.PreMerge.Enabled = true
+			mgr := approval.NewManager(acfg)
+
+			h := registerConsoleApprovalHandler(tt.cfg, tt.noGateway, mgr)
+			if (h != nil) != tt.want {
+				t.Fatalf("handler returned = %v, want %v", h != nil, tt.want)
+			}
+
+			// Registered on the manager iff returned: a console request is either
+			// routed to the handler (which refuses: no store attached) or fails
+			// as an unregistered channel.
+			_, err := mgr.SubmitApprovalRequest(context.Background(), &approval.Request{
+				ID: "r1", Stage: approval.StagePreMerge, PreferredChannel: "console",
+			})
+			if err == nil {
+				t.Fatal("want an error from a store-less console handler or an unregistered channel")
+			}
+			unregistered := strings.Contains(err.Error(), "is not registered")
+			if unregistered == tt.want {
+				t.Errorf("unregistered = %v, want %v (err: %v)", unregistered, !tt.want, err)
+			}
+		})
 	}
 }

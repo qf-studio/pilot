@@ -808,6 +808,16 @@ func TestConfig_Validate_ProjectApprovalSource(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "valid console approval_source overlay",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				source := autopilot.ApprovalSourceConsole
+				cfg.Projects[0].Approval = &autopilot.ProjectApprovalOverride{ApprovalSource: &source}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
 			name: "valid github-review alias approval_source overlay",
 			buildCfg: func() *Config {
 				cfg := baseValidConfig()
@@ -826,7 +836,7 @@ func TestConfig_Validate_ProjectApprovalSource(t *testing.T) {
 				return cfg
 			},
 			wantErr:   true,
-			errSubstr: `projects[0].approval.approval_source must be "telegram", "slack", or "github-review"`,
+			errSubstr: `projects[0].approval.approval_source must be "telegram", "slack", "github-review", or "console"`,
 		},
 	}
 
