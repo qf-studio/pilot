@@ -21,10 +21,11 @@ import (
 type ciOutageMode int32
 
 const (
-	ciOutageDown      ciOutageMode = iota // HTTP 500
-	ciOutageGreen                         // one completed, successful check
-	ciOutagePending                       // one in-progress check
-	ciOutageForbidden                     // 403 on check-runs, one green Actions run (GH-6283)
+	ciOutageDown       ciOutageMode = iota // HTTP 500
+	ciOutageGreen                          // one completed, successful check
+	ciOutagePending                        // one in-progress check
+	ciOutageForbidden                      // 403 on check-runs, one green Actions run (GH-6283)
+	ciOutageUnreadable                     // 403 on check-runs, Actions runs and commit statuses (GH-6304)
 )
 
 // ciOutageFixture is a controller wired to a fake GitHub whose check-runs
@@ -40,8 +41,12 @@ type ciOutageFixture struct {
 	now     time.Time
 	mode    atomic.Int32
 	ciCalls atomic.Int32
-	ctx     context.Context
-	srvURL  string
+	// comments counts POSTs to the PR's issue-comments endpoint (GH-6304).
+	comments    atomic.Int32
+	commentBody atomic.Value // string: body of the last comment
+	commentFail atomic.Bool  // answer the comment POST with HTTP 500
+	ctx         context.Context
+	srvURL      string
 }
 
 func newCIOutageFixture(t *testing.T, mutate func(*Config)) *ciOutageFixture {
@@ -54,6 +59,21 @@ func newCIOutageFixture(t *testing.T, mutate func(*Config)) *ciOutageFixture {
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case ciOutageMode(f.mode.Load()) == ciOutageUnreadable &&
+			(strings.Contains(r.URL.Path, "/actions/runs") || strings.HasSuffix(r.URL.Path, "/status")):
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(forbiddenCheckRunsBody))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues/42/comments") && f.commentFail.Load():
+			w.WriteHeader(http.StatusInternalServerError)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues/42/comments"):
+			var in struct {
+				Body string `json:"body"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&in)
+			f.commentBody.Store(in.Body)
+			f.comments.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":1}`))
 		case strings.Contains(r.URL.Path, "/actions/runs"):
 			w.Header().Set("Content-Type", "application/json")
 			runs := []map[string]interface{}{{
@@ -65,7 +85,7 @@ func newCIOutageFixture(t *testing.T, mutate func(*Config)) *ciOutageFixture {
 			f.ciCalls.Add(1)
 			var checks []map[string]interface{}
 			switch ciOutageMode(f.mode.Load()) {
-			case ciOutageForbidden:
+			case ciOutageForbidden, ciOutageUnreadable:
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte(forbiddenCheckRunsBody))
 				return

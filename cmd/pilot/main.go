@@ -1403,6 +1403,10 @@ Examples:
 			// state so one adapter's panic can't crash the daemon; wired into the
 			// gateway status endpoint once p.Gateway() exists below.
 			adapterHealthRegistry := adapterhealth.NewRegistry()
+			// GH-6304: a token that cannot read CI shows as an unhealthy github adapter.
+			if gwAutopilotController != nil {
+				gwAutopilotController.SetAdapterHealth(adapterHealthRegistry)
+			}
 			gwPollerDeps := &PollerDeps{
 				Cfg:                 cfg,
 				ProjectPath:         projectPath,
@@ -2976,6 +2980,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// state so one adapter's panic can't crash the daemon; wired into
 	// pollingDeps below and, when the gateway runs, into /api/v1/status.
 	adapterHealthRegistry := adapterhealth.NewRegistry()
+	// GH-6304: a token that cannot read CI shows as an unhealthy github adapter.
+	for _, ctrl := range autopilotControllers {
+		ctrl.SetAdapterHealth(adapterHealthRegistry)
+	}
 
 	// GH-1662: Start gateway in background so desktop app can reach /health
 	var gwServer *gateway.Server // hoisted so TASK-332 alert-metrics wiring can run after alerts engine is created

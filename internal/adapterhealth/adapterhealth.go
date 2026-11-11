@@ -56,23 +56,60 @@ type Registry struct {
 	// up (GH-5588). Separate from statuses: a poller whose Start returns an
 	// error never panics, so panic health says nothing about it.
 	pollers map[string]map[string]bool
+	// degraded[adapter] is the reason an adapter that is running fine cannot do
+	// its job (GH-6304), e.g. a token that cannot read CI. Kept apart from
+	// statuses so a clean goroutine return (runOnce) cannot wipe it.
+	degraded map[string]string
 }
 
 // NewRegistry creates an empty adapter health registry.
 func NewRegistry() *Registry {
-	return &Registry{statuses: make(map[string]*Status), pollers: make(map[string]map[string]bool)}
+	return &Registry{statuses: make(map[string]*Status), pollers: make(map[string]map[string]bool), degraded: make(map[string]string)}
 }
 
 // Snapshot returns a stable-ordered copy of every tracked adapter's status.
+// A degraded adapter (SetDegraded) reports Healthy=false and LastError=its
+// message; RestartCount and the panic fields are left as they are.
 func (r *Registry) Snapshot() []Status {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]Status, 0, len(r.statuses))
-	for _, st := range r.statuses {
-		out = append(out, *st)
+	out := make([]Status, 0, len(r.statuses)+len(r.degraded))
+	for name, st := range r.statuses {
+		cp := *st
+		if msg, ok := r.degraded[name]; ok {
+			cp.Healthy = false
+			cp.LastError = msg
+		}
+		out = append(out, cp)
+	}
+	for name, msg := range r.degraded {
+		if _, ok := r.statuses[name]; !ok {
+			out = append(out, Status{Name: name, Healthy: false, LastError: msg})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// SetDegraded marks an adapter unhealthy with a reason until ClearDegraded
+// (GH-6304). It does not count as a restart. Safe on a nil Registry.
+func (r *Registry) SetDegraded(name, message string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.degraded[name] = message
+}
+
+// ClearDegraded removes a SetDegraded mark. Safe on a nil Registry.
+func (r *Registry) ClearDegraded(name string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.degraded, name)
 }
 
 // SetPollerUp records whether one poller instance (e.g. a Linear workspace) of
