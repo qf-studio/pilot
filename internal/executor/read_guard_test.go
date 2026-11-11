@@ -138,6 +138,98 @@ func TestReadGuardScript(t *testing.T) {
 	})
 }
 
+// mutation pin: the `*/proc/*environ*` branch of the read guard (read_guard.go:115) denies globbed process-environment reads -> this test fails
+// when that branch is removed or narrowed to literal PIDs. It pins the current substring matcher, not a glob-reach fix (#6287).
+func TestReadGuardProcEnvironGlob(t *testing.T) {
+	readGuardPrereqs(t)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	spec := &readGuardSpec{Home: filepath.Join(home, ".pilot"), ConfigPath: filepath.Join(home, ".pilot", "config.yaml")}
+	settings, cleanup, err := setupRunGuards(t.TempDir(), "", spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	script := filepath.Join(filepath.Dir(settings), readGuardName)
+
+	for _, command := range []string{
+		"cat /proc/*/environ",
+		"cat /proc/[0-9]*/environ",
+		"cat /proc/?/environ",
+		"cat /proc/*/environ*",
+	} {
+		got, stderr := runGuard(t, script, spec.Home, spec.ConfigPath, bashHook(command))
+		if got != 2 || !strings.Contains(stderr, "process environment") {
+			t.Errorf("%q: exit = %d, stderr %q; want exit 2 naming the process environment", command, got, stderr)
+		}
+	}
+	if got, stderr := runGuard(t, script, spec.Home, spec.ConfigPath, bashHook("cat /proc/*/status")); got != 0 {
+		t.Errorf("/proc/*/status: exit = %d, want 0 (stderr %q)", got, stderr)
+	}
+}
+
+// mutation pin: the python3 fallback of the read guard (read_guard.go:50-55) parses hook input when jq is missing -> this test fails
+// when the elif python3 branch is removed (every call then dies with "neither jq nor python3").
+func TestReadGuardScriptPython3Fallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("guard script is POSIX sh")
+	}
+	// A PATH holding only what the script needs, minus jq.
+	bin := t.TempDir()
+	for _, name := range []string{"python3", "realpath", "cat"} {
+		src, err := exec.LookPath(name)
+		if err != nil {
+			t.Skipf("%s not installed", name)
+		}
+		if err := os.Symlink(src, filepath.Join(bin, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	pilotHome := filepath.Join(home, ".pilot")
+	if err := os.MkdirAll(pilotHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(pilotHome, "config.yaml")
+	worktree := t.TempDir()
+	spec := &readGuardSpec{Home: pilotHome, ConfigPath: cfgPath}
+	settings, cleanup, err := setupRunGuards(worktree, "", spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	script := filepath.Join(filepath.Dir(settings), readGuardName)
+	t.Setenv("PATH", bin)
+
+	tests := []struct {
+		name string
+		hook map[string]any
+		want int
+		msg  string
+	}{
+		{"read config", writeHook("Read", "file_path", cfgPath), 2, "inside the Pilot home"},
+		{"bash cat config", bashHook("cat " + cfgPath), 2, "touches the Pilot home"},
+		{"glob pattern into home", map[string]any{"tool_name": "Glob", "tool_input": map[string]any{"pattern": pilotHome + "/*"}}, 2, "points into the Pilot home"},
+		{"bash proc star environ", bashHook("cat /proc/*/environ"), 2, "process environment"},
+		{"read in worktree", writeHook("Read", "file_path", filepath.Join(worktree, "main.go")), 0, ""},
+		{"bash go test", bashHook("go test ./..."), 0, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, stderr := runGuard(t, script, spec.Home, spec.ConfigPath, tt.hook)
+			if got != tt.want {
+				t.Fatalf("exit = %d, want %d (stderr %q)", got, tt.want, stderr)
+			}
+			if tt.msg != "" && !strings.Contains(stderr, tt.msg) {
+				t.Errorf("stderr %q does not contain %q", stderr, tt.msg)
+			}
+		})
+	}
+}
+
 func asExit(err error, target **exec.ExitError) bool {
 	ee, ok := err.(*exec.ExitError)
 	if ok {
