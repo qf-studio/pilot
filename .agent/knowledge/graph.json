@@ -3197,7 +3197,8 @@
           "https://github.com/qf-studio/pilot/issues/6287",
           "https://github.com/qf-studio/pilot/issues/6286",
           "https://github.com/qf-studio/pilot/issues/6288",
-          "https://github.com/qf-studio/pilot/issues/6301"
+          "https://github.com/qf-studio/pilot/issues/6301",
+          "https://github.com/qf-studio/pilot/issues/6310"
         ]
       }
     },
@@ -8992,6 +8993,19 @@
         ],
         "created": "2026-11-11",
         "last_validated": "2026-11-11"
+      },
+      "mem-305": {
+        "type": "decision",
+        "summary": "Read guard stays a substring matcher (founder decision 2026-11-11). Three attempts at a token-aware matcher (PR #6285 reverted, PR #6299 closed) each failed a black-box review: reads through another program passed (runner outside a wrapper list, full-path wrappers, here-strings), some inputs were superlinear, and the ancestor rule blocked usual commands. A shell-command parser in sh/awk finds a new bypass family in every round, while a false block of the substring matcher costs the agent one retry. The boundary against reads of Pilot data is the separate agent uid (TASK-650 H1); do not reopen the precision work before H1 ships.",
+        "path": "memories/decisions/mem-305.md",
+        "confidence": 0.9,
+        "concepts": [
+          "security",
+          "review"
+        ],
+        "created": "2026-11-11",
+        "last_validated": "2026-11-11",
+        "contradiction": "fewer false blocks of the read guard vs more reads of Pilot data that pass undetected"
       }
     }
   },
@@ -13055,6 +13069,11 @@
       "from": "mem-304",
       "to": "TASK-650",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-305",
+      "to": "TASK-650",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -14754,7 +14773,8 @@
       "mem-300",
       "TASK-650",
       "mem-302",
-      "mem-304"
+      "mem-304",
+      "mem-305"
     ],
     "ship-test": [],
     "shipped-check": [
@@ -15308,7 +15328,8 @@
       "declined-run-repicked-and-evidence-fail-files-false-fix-issue",
       "TASK-634",
       "mem-301",
-      "mem-302"
+      "mem-302",
+      "mem-305"
     ],
     "operations": [
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid"
@@ -15659,11 +15680,11 @@
       "mem-303"
     ]
   },
-  "last_updated": "2026-11-11T14:05:06.116821+00:00",
+  "last_updated": "2026-11-11T19:22:31.341864+00:00",
   "stats": {
-    "total_nodes": 779,
-    "total_edges": 812,
-    "memory_count": 429
+    "total_nodes": 780,
+    "total_edges": 813,
+    "memory_count": 430
   },
   "metadata": {
     "last_updated": null
