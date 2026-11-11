@@ -182,7 +182,16 @@ echo ""
 
 # 2. LINT
 echo -e "${BLUE}[2/8] Lint${NC}"
+# GH-6310: CI (.github/workflows/ci.yml, both golangci-lint steps) pins this
+# same version. Bump them together; a mismatch lets findings pass one gate
+# and fail the other.
+GOLANGCI_LINT_VERSION="2.14.0"
 if command -v golangci-lint >/dev/null 2>&1; then
+    lint_have=$(golangci-lint --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -1)
+    if [ -n "$lint_have" ] && [ "$lint_have" != "$GOLANGCI_LINT_VERSION" ]; then
+        echo -e "  [golangci-lint] ${YELLOW}warning: installed $lint_have, CI pins $GOLANGCI_LINT_VERSION${NC}"
+        WARNINGS=$((WARNINGS + 1))
+    fi
     if ! run_check "golangci-lint" "golangci-lint run --timeout 60s"; then
         FAILURES=$((FAILURES + 1))
     fi

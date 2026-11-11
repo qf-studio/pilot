@@ -50,7 +50,7 @@ func TestCollectKeyedStrings_OrdinaryHeaderValuesNotCollected(t *testing.T) {
 
 // yamlKeys adds to out every yaml key the struct tree of t can produce.
 func yamlKeys(t reflect.Type, out map[string]bool, seen map[reflect.Type]bool) {
-	for t.Kind() == reflect.Ptr || t.Kind() == reflect.Slice || t.Kind() == reflect.Array || t.Kind() == reflect.Map {
+	for t.Kind() == reflect.Pointer || t.Kind() == reflect.Slice || t.Kind() == reflect.Array || t.Kind() == reflect.Map {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct || seen[t] {
