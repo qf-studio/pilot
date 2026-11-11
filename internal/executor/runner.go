@@ -3409,6 +3409,63 @@ func isNonFastForwardPush(err error) bool {
 	return strings.Contains(msg, "non-fast-forward") || strings.Contains(msg, "(fetch first)")
 }
 
+// pushDirectCommit pushes the default branch of a direct-commit task. It
+// returns false when the run ended here: a secret-gate refusal parks the task
+// needs_human, any other failure fails it.
+func (r *Runner) pushDirectCommit(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger) bool {
+	if err := git.PushToMain(ctx); err != nil {
+		if IsPushRefused(err) {
+			r.failPushRefused(ctx, task, git, result, log, err)
+			return false
+		}
+		result.Success = false
+		result.Error = fmt.Sprintf("push to main failed: %v", err)
+		r.reportProgress(task.ID, "Push Failed", 100, result.Error)
+		return false
+	}
+	return true
+}
+
+// pushTaskBranch pushes task.Branch for the PR path, retrying transient
+// failures, and keeps the push-retry dead-man tracker (GH-4866). It returns
+// false when the run ended here, with result set.
+func (r *Runner) pushTaskBranch(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger) bool {
+	pushErr := r.pushBranchWithRetry(ctx, git, task, log)
+	if IsPushRefused(pushErr) {
+		// GH-6272: a refusal is terminal and not an infra failure: the
+		// push machinery worked, the commits were held back. The tracker
+		// counts retry exhaustion only.
+		r.emitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeDeadManSuccess,
+			TaskID:    task.ID,
+			Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
+			Timestamp: time.Now(),
+		})
+		r.failPushRefused(ctx, task, git, result, log, pushErr)
+		return false
+	}
+	if pushErr != nil {
+		r.emitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeDeadManFailure,
+			TaskID:    task.ID,
+			Error:     pushErr.Error(),
+			Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
+			Timestamp: time.Now(),
+		})
+		result.Success = false
+		result.Error = formatGitStepFailureWithRecovery(ctx, git, "push", gitPushRetryAttempts, pushErr, task.ID, task.Branch, result.CommitSHA)
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		return false
+	}
+	r.emitAlertEvent(AlertEvent{
+		Type:      AlertEventTypeDeadManSuccess,
+		TaskID:    task.ID,
+		Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
+		Timestamp: time.Now(),
+	})
+	return true
+}
+
 // pushBranchWithRetry pushes task.Branch, retrying transient failures
 // (GH-3785). A failed push is only forgiven when origin's branch head equals
 // the local HEAD — the GH-1389 chdir false positive, where the data had
@@ -3473,9 +3530,16 @@ func (r *Runner) pushBranchWithRetry(ctx context.Context, git *GitOperations, ta
 			}
 			// GH-5864: origin sits on the head a previous run of this task left
 			// behind without a PR. Replace it once, leased on that SHA.
-			if remoteOK && task.inheritedHeadSHA != "" && remoteHead == task.inheritedHeadSHA &&
-				r.leasePushInheritedHead(ctx, git, task, log, localHead) {
-				return nil
+			if remoteOK && task.inheritedHeadSHA != "" && remoteHead == task.inheritedHeadSHA {
+				replaced, leaseErr := r.leasePushInheritedHead(ctx, git, task, log, localHead)
+				if replaced {
+					return nil
+				}
+				if pushNeverForgiven(leaseErr) {
+					// GH-6284: the gate stopped the lease push; escalating as a
+					// non-fast-forward would hide that.
+					return leaseErr
+				}
 			}
 			// Deterministic: re-running from origin/main cannot fast-forward a
 			// remote head this run did not push, so escalate instead of re-picking.
@@ -3562,10 +3626,12 @@ func (r *Runner) recordReplaceableBranchHead(ctx context.Context, task *Task) {
 // open PR now has the branch as its head (that is the autopilot continuation
 // path, not an abandoned run) or when the PR lookup fails, and the caller then
 // escalates as before. On success it posts one issue comment naming the
-// replaced SHA so that run's work stays recoverable, and returns true.
+// replaced SHA so that run's work stays recoverable, and returns true. A secret
+// gate stop of the lease push comes back as the error (GH-6284) so the caller
+// ends the run on it; any other failure returns (false, nil) and the caller escalates.
 // Decision: the lease pins the recorded SHA, so a push that landed on the
 // branch since the dispatcher looked is rejected rather than overwritten.
-func (r *Runner) leasePushInheritedHead(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger, localHead string) bool {
+func (r *Runner) leasePushInheritedHead(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger, localHead string) (bool, error) {
 	if url, err := inheritedHeadOpenPRCheck(ctx, git, task.Branch); err != nil || url != "" {
 		log.Warn("Push rejected against an inherited head but the branch has an open PR (or the PR lookup failed) — not leasing",
 			slog.String("task_id", task.ID),
@@ -3573,7 +3639,7 @@ func (r *Runner) leasePushInheritedHead(ctx context.Context, git *GitOperations,
 			slog.String("open_pr", url),
 			slog.Any("error", err),
 		)
-		return false
+		return false, nil
 	}
 	log.Warn("Push rejected as non-fast-forward against the head a previous run left without a PR — retrying with lease (option: lease)",
 		slog.String("task_id", task.ID),
@@ -3584,13 +3650,16 @@ func (r *Runner) leasePushInheritedHead(ctx context.Context, git *GitOperations,
 	if err := git.PushForceWithLease(ctx, task.Branch, task.inheritedHeadSHA, task.ID); err != nil {
 		log.Warn("Lease push over the inherited head failed — escalating",
 			slog.String("task_id", task.ID), slog.Any("error", err))
-		return false
+		if pushNeverForgiven(err) {
+			return false, err
+		}
+		return false, nil
 	}
 	replaced := task.inheritedHeadSHA
 	task.inheritedHeadSHA = ""
 	task.pushedWIPSHA = localHead
 	r.commentInheritedHeadReplaced(ctx, task, replaced, log)
-	return true
+	return true, nil
 }
 
 // commentInheritedHeadReplaced posts the one issue comment that names the
@@ -6876,14 +6945,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		if task.DirectCommit {
 			r.reportProgress(task.ID, "Pushing", 96, "Pushing to main...")
 
-			if err := git.PushToMain(ctx); err != nil {
-				if IsPushRefused(err) {
-					r.failPushRefused(ctx, task, git, result, log, err)
-					return result, nil
-				}
-				result.Success = false
-				result.Error = fmt.Sprintf("push to main failed: %v", err)
-				r.reportProgress(task.ID, "Push Failed", 100, result.Error)
+			if !r.pushDirectCommit(ctx, task, git, result, log) {
 				return result, nil
 			}
 
@@ -7074,39 +7136,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
 				Timestamp: time.Now(),
 			})
-			pushErr := r.pushBranchWithRetry(ctx, git, task, log)
-			if IsPushRefused(pushErr) {
-				// GH-6272: a refusal is terminal and not an infra failure: the
-				// push machinery worked, the commits were held back. The tracker
-				// counts retry exhaustion only.
-				r.emitAlertEvent(AlertEvent{
-					Type:      AlertEventTypeDeadManSuccess,
-					TaskID:    task.ID,
-					Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
-					Timestamp: time.Now(),
-				})
-				r.failPushRefused(ctx, task, git, result, log, pushErr)
+			if !r.pushTaskBranch(ctx, task, git, result, log) {
 				return result, nil
 			}
-			if pushErr != nil {
-				r.emitAlertEvent(AlertEvent{
-					Type:      AlertEventTypeDeadManFailure,
-					TaskID:    task.ID,
-					Error:     pushErr.Error(),
-					Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
-					Timestamp: time.Now(),
-				})
-				result.Success = false
-				result.Error = formatGitStepFailureWithRecovery(ctx, git, "push", gitPushRetryAttempts, pushErr, task.ID, task.Branch, result.CommitSHA)
-				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
-				return result, nil
-			}
-			r.emitAlertEvent(AlertEvent{
-				Type:      AlertEventTypeDeadManSuccess,
-				TaskID:    task.ID,
-				Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
-				Timestamp: time.Now(),
-			})
 
 			// GH-457: Use actual pushed HEAD as CommitSHA source of truth.
 			// Self-review or quality retries may push new commits after

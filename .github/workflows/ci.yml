@@ -121,8 +121,11 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           # v2.0.2 was built with go1.24 and refuses the go 1.25 target
-          # (TASK-390 bumped the toolchain for grot); 2.8.0 matches local.
-          version: v2.8.0
+          # (TASK-390 bumped the toolchain for grot). GH-6310: keep this equal
+          # to GOLANGCI_LINT_VERSION in scripts/pre-push-gate.sh — a CI
+          # linter older than the local gate let a reflect.Ptr `inline`
+          # finding pass CI and fail every local push.
+          version: v2.14.0
           args: --timeout=5m
           # 2026-08-18 incident: the action's analysis cache poisons itself —
           # every green run saves a cache whose NEXT restore yields 6 phantom
@@ -241,6 +244,6 @@ jobs:
         if: steps.changed.outputs.changed == 'true'
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.8.0
+          version: v2.14.0 # GH-6310: same as the lint job and the pre-push gate
           args: --timeout=5m
           skip-cache: true

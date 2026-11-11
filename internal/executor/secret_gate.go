@@ -88,6 +88,20 @@ func ResetSecretGateConfigForTest() {
 	secretGatePending = map[string]SecretGateProject{}
 	secretGateAllowPath = nil
 	secretGateProjMu.Unlock()
+	resetAlertedCommits()
+}
+
+func resetAlertedCommits() {
+	alertedMu.Lock()
+	alertedCommits = map[string]struct{}{}
+	alertedMu.Unlock()
+}
+
+// SecretGateOptionsFor returns the scan options the gate would use for a push
+// from dir: the registered default branch and allow_paths of the project that
+// dir belongs to, plus the global allow_paths.
+func SecretGateOptionsFor(ctx context.Context, dir string) secretpatterns.PushOptions {
+	return secretGateOptions(ctx, dir)
 }
 
 // gateRepoKey identifies the repository dir belongs to: its common git dir,
@@ -172,14 +186,51 @@ func IsSecretGateUnavailable(err error) bool {
 	return errors.As(err, &u)
 }
 
+// alertedCommits remembers the (task, commit) pairs already alerted, so the
+// auto-preserve push and the final push of one task raise one alert for one
+// refused commit (GH-6284). Reset by ResetSecretGateConfigForTest; bounded by
+// maxAlertedCommits.
+var (
+	alertedMu      sync.Mutex
+	alertedCommits = map[string]struct{}{}
+)
+
+const maxAlertedCommits = 4096
+
+// firstAlertFor reports whether the (task, commit) pair has not alerted yet and
+// records it. A call without a task ID is never deduplicated: the autopilot
+// sites have no task to key on, and each of their runs is its own event.
+func firstAlertFor(taskID, commit string) bool {
+	if taskID == "" {
+		return true
+	}
+	alertedMu.Lock()
+	defer alertedMu.Unlock()
+	key := taskID + "\x00" + commit
+	if _, seen := alertedCommits[key]; seen {
+		return false
+	}
+	if len(alertedCommits) >= maxAlertedCommits {
+		alertedCommits = map[string]struct{}{}
+	}
+	alertedCommits[key] = struct{}{}
+	return true
+}
+
+// checkPushForGate is the scan CheckSecretGate runs; a var so a test can make
+// the gate fail the way a broken git does, or refuse on the second push only.
+var checkPushForGate = secretpatterns.CheckPush
+
 // CheckSecretGate refuses a push of head from dir when the commits it would
 // publish add a registered secret value or a known secret shape (GH-6263). On a
 // hit it raises a security_event alert and returns an error that satisfies
-// IsPushRefused; the branch stays local. Any other error means the gate could
-// not run, and the caller must not push either. taskID only names the task in
-// the alert and may be empty.
+// IsPushRefused; the branch stays local. A scan refusal (base not computable,
+// size cap) satisfies IsPushRefused too but raises no alert: nothing was found.
+// Any other error means the gate could not run, and the caller must not push
+// either. taskID names the task in the alert and may be empty; one task alerts
+// once per commit.
 func CheckSecretGate(ctx context.Context, dir, head, taskID string) error {
-	err := secretpatterns.CheckPush(ctx, dir, head, secretGateOptions(ctx, dir))
+	err := checkPushForGate(ctx, dir, head, secretGateOptions(ctx, dir))
 	if err == nil {
 		return nil
 	}
@@ -200,7 +251,7 @@ func CheckSecretGate(ctx context.Context, dir, head, taskID string) error {
 	secretGateMu.RLock()
 	sink := secretGateAlerts
 	secretGateMu.RUnlock()
-	if sink != nil {
+	if sink != nil && firstAlertFor(taskID, pre.Commit) {
 		sink.ProcessEvent(AlertEvent{
 			Type:   AlertEventTypeSecurityEvent,
 			Source: SecurityEventSourceSecretGate,
@@ -244,11 +295,35 @@ func pushFailureForgiven(ctx context.Context, git *GitOperations, branch string,
 	return git.RemoteBranchExists(ctx, branch)
 }
 
+// refusalComment is the issue comment of a refused push. The text follows the
+// cause: a secret hit asks to remove and rotate it, a scan refusal (the push base
+// could not be computed, the size cap) names the cause and says no secret was
+// found (GH-6284). It says "no PR was opened" only for a task that opens one: a
+// continuation of an existing PR (FromPR) has its PR already.
+func refusalComment(task *Task, pushErr error, recoveryRef string) string {
+	body := fmt.Sprintf("Pilot parked this task under `pilot-needs-human`: %s.\n\n", pushErr.Error())
+	nothingPushed := "Nothing was pushed"
+	if task.FromPR == 0 {
+		nothingPushed += " and no PR was opened"
+	}
+	var scan *secretpatterns.PushScanError
+	if errors.As(pushErr, &scan) {
+		body += "No secret was found: the secret gate could not check the commits, so it held them back. " + nothingPushed +
+			". Fix the cause above (for a missing push base, fetch the default branch or set the project's `default_branch`; for the size cap, split the change), then clear the label to let Pilot retry."
+	} else {
+		body += nothingPushed + ". Remove the secret from the commit (and rotate it if it is real), then clear the label to let Pilot retry."
+	}
+	if recoveryRef != "" {
+		body += fmt.Sprintf("\n\nThe commits are kept on the Pilot host under `%s`.", recoveryRef)
+	}
+	return body
+}
+
 // failPushRefused ends the run on a secret-gate refusal: needs_human, never
 // infra and never re-picked. It pins the commits under a recovery ref (the
 // worktree is wiped on restart), applies pilot-needs-human and posts one issue
 // comment naming the commit and the file, never the value (GH-6272). Nothing
-// was pushed, so no PR is opened.
+// was pushed.
 func (r *Runner) failPushRefused(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger, pushErr error) {
 	holdCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
@@ -271,10 +346,7 @@ func (r *Runner) failPushRefused(ctx context.Context, task *Task, git *GitOperat
 
 	if task.SourceAdapter == "" || task.SourceAdapter == "github" {
 		if issueNum := task.GHIssueRef(); issueNum != "" {
-			body := fmt.Sprintf("Pilot parked this task under `pilot-needs-human`: %s.\n\nNothing was pushed and no PR was opened. Remove the secret from the commit (and rotate it if it is real), then clear the label to let Pilot retry.", pushErr.Error())
-			if recoveryRef != "" {
-				body += fmt.Sprintf("\n\nThe commits are kept on the Pilot host under `%s`.", recoveryRef)
-			}
+			body := refusalComment(task, pushErr, recoveryRef)
 			if err := ghIssueComment(holdCtx, task.ProjectPath, issueNum, body); err != nil {
 				log.Warn("push refused: failed to post the issue comment", slog.String("task_id", task.ID), slog.Any("error", err))
 			}

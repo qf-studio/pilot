@@ -1529,6 +1529,9 @@ type PRState struct {
 	// apiOutageBackoff is the current backoff interval. In-memory only: after a
 	// restart the backoff simply restarts at its floor.
 	apiOutageBackoff time.Duration
+	// CIUnreadableNotified is true once the "token cannot read CI" comment was
+	// posted on this PR (GH-6304), so many polls leave one comment. Persisted.
+	CIUnreadableNotified bool
 	// SizeGuardHoldActive and SizeGuardHoldHeadSHA are the GH-5378 size-guard
 	// hold pair, superseded by HoldActive/HoldHeadSHA (GH-5643).
 	//
@@ -1682,6 +1685,7 @@ func (ps *PRState) snapshot() *PRState {
 		APIOutageSince:               ps.APIOutageSince,
 		APIOutageNextPoll:            ps.APIOutageNextPoll,
 		apiOutageBackoff:             ps.apiOutageBackoff,
+		CIUnreadableNotified:         ps.CIUnreadableNotified,
 		SizeGuardHoldActive:          ps.SizeGuardHoldActive,
 		SizeGuardHoldHeadSHA:         ps.SizeGuardHoldHeadSHA,
 		HoldActive:                   ps.HoldActive,
