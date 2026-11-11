@@ -80,9 +80,14 @@ func newCIOutageFixture(t *testing.T, mutate func(*Config)) *ciOutageFixture {
 			_, _ = w.Write([]byte(`{"id":1}`))
 		case strings.Contains(r.URL.Path, "/actions/runs"):
 			w.Header().Set("Content-Type", "application/json")
+			status, conclusion := "completed", "success"
+			if ciOutageMode(f.mode.Load()) == ciOutagePending {
+				// A token that cannot read check runs reads CI from the runs.
+				status, conclusion = "in_progress", ""
+			}
 			runs := []map[string]interface{}{{
-				"id": 1, "workflow_id": 10, "name": "CI", "status": "completed",
-				"conclusion": "success", "head_sha": "abc1234", "run_attempt": 1,
+				"id": 1, "workflow_id": 10, "name": "CI", "status": status,
+				"conclusion": conclusion, "head_sha": "abc1234", "run_attempt": 1,
 			}}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"total_count": len(runs), "workflow_runs": runs})
 		case strings.Contains(r.URL.Path, "check-runs"):
