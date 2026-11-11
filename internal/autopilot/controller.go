@@ -32,6 +32,17 @@ type alertSink interface {
 	ProcessEvent(alerts.Event)
 }
 
+// adapterDegrader marks an adapter unhealthy with a reason in the daemon's
+// adapter health registry (GH-6304). Satisfied by *adapterhealth.Registry.
+type adapterDegrader interface {
+	SetDegraded(name, message string)
+	ClearDegraded(name string)
+}
+
+// githubAdapterName is the adapter health entry the autopilot degrades when the
+// configured GitHub token cannot read CI.
+const githubAdapterName = "github"
+
 // IssueLabeler is the minimal GitHub client surface the controller needs for
 // the pilot-* label lifecycle (TASK-441 Leg 6): applying and removing labels
 // on issues/PRs. The pilot-* label vocabulary is a frozen cross-repo
@@ -667,6 +678,13 @@ type Controller struct {
 	// verification (GH-3927). GH-3954: every controller must receive this via
 	// main.go, not just the default one.
 	alertsEngine alertSink
+
+	// adapterHealth receives the github adapter's degraded mark while the token
+	// cannot read CI (GH-6304). Optional; nil = not reported. ciUnreadable is
+	// true while this controller holds that mark, so a successful read clears
+	// only a mark it set.
+	adapterHealth adapterDegrader
+	ciUnreadable  atomic.Bool
 
 	// alertedMissingReleases deduplicates release_missing alerts per
 	// "owner/repo@tag", guarded by mu. Needed because the alerts engine's
@@ -2929,6 +2947,20 @@ func (c *Controller) SetOnIssueDone(fn func(issueNumber int)) {
 	c.onIssueDone = fn
 }
 
+// SetAdapterHealth wires the adapter health registry so a token that cannot
+// read CI shows on the status route as an unhealthy github adapter (GH-6304).
+func (c *Controller) SetAdapterHealth(h adapterDegrader) {
+	c.adapterHealth = h
+}
+
+// markCIReadable clears the degraded github adapter mark this controller set
+// for ErrCIUnreadable, after a successful CI read (GH-6304).
+func (c *Controller) markCIReadable() {
+	if c.adapterHealth != nil && c.ciUnreadable.CompareAndSwap(true, false) {
+		c.adapterHealth.ClearDegraded(githubAdapterName)
+	}
+}
+
 // SetAlertsEngine wires an alert sink into the controller so future work
 // (post-tag release verification, GH-3927) can call c.alertsEngine.ProcessEvent
 // instead of silently dropping alert-worthy events. Nil disables alerting for
@@ -3583,12 +3615,13 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 	// Non-blocking CI status check
 	status, err := c.ciMonitor.CheckCI(ctx, sha)
 	if err != nil {
-		c.handleCIPollError(prState, sha, err)
+		c.handleCIPollError(ctx, prState, sha, err)
 		return nil
 	}
 
 	// Reset failure counter on successful API call
 	prState.ConsecutiveAPIFailures = 0
+	c.markCIReadable()
 
 	// GH-862: Capture discovered checks for PR state (only once, when first seen)
 	if discovered := c.ciMonitor.GetDiscoveredChecks(sha); len(discovered) > 0 && len(prState.DiscoveredChecks) == 0 {
@@ -3760,7 +3793,21 @@ func nextAPIOutageBackoff(cur time.Duration) time.Duration {
 // warning alert). Errors seen while already held back the poll off and, once
 // the outage budget has elapsed, fail the PR exactly as the pre-GH-6056 fifth
 // error did.
-func (c *Controller) handleCIPollError(prState *PRState, sha string, err error) {
+//
+// ErrCIUnreadable (GH-6304) skips the threshold and the budget: the token, not
+// the API, is the cause, so the PR is held at once, told about once, and never
+// failed for it (handleCIUnreadable).
+func (c *Controller) handleCIPollError(ctx context.Context, prState *PRState, sha string, err error) {
+	var unreadable *ErrCIUnreadable
+	if errors.As(err, &unreadable) {
+		// The token problem is not an API outage: it does not feed the
+		// ordinary failure counter, so a later 5xx starts a fresh count.
+		prState.ConsecutiveAPIFailures = 0
+		c.log.Warn("CI status check failed", "pr", prState.PRNumber, "sha", ShortSHA(sha), "error", err)
+		c.handleCIUnreadable(ctx, prState, sha, unreadable)
+		return
+	}
+
 	prState.ConsecutiveAPIFailures++
 	c.log.Warn("CI status check failed",
 		"pr", prState.PRNumber,
@@ -3819,25 +3866,85 @@ func (c *Controller) handleCIPollError(prState *PRState, sha string, err error) 
 	prState.APIOutageNextPoll = now.Add(prState.apiOutageBackoff)
 }
 
+// ciUnreadableComment is the one PR comment posted when the configured token
+// cannot read CI at all (GH-6304); %s is the list of unreadable sources.
+const ciUnreadableComment = "Pilot cannot read the CI result for this pull request with the configured GitHub token (missing: %s). " +
+	"Add Actions (Read) and Commit statuses (Read) to the fine-grained token, or use a classic token with the repo scope. " +
+	"Pilot checks again when the token changes."
+
+// handleCIUnreadable is handleCIPollError for ErrCIUnreadable: no outage
+// budget and no pilot-failed label, since the PR is not at fault. It marks the
+// github adapter degraded, holds the PR at waiting_ci on the usual doubling
+// backoff, emits the outage alert once with reason=token_cannot_read_ci and
+// posts one PR comment (CIUnreadableNotified dedups it across polls and
+// restarts; a failed post is retried on the next poll).
+func (c *Controller) handleCIUnreadable(ctx context.Context, prState *PRState, sha string, unreadable *ErrCIUnreadable) {
+	if c.adapterHealth != nil {
+		c.adapterHealth.SetDegraded(githubAdapterName, unreadable.Error())
+		c.ciUnreadable.Store(true)
+	}
+
+	now := c.ciNow()
+	// APIOutageSince rolls forward on every unreadable poll so the outage
+	// budget never counts token time against a later ordinary error.
+	prState.APIOutageSince = now
+	if !prState.APIOutageHoldActive {
+		prState.APIOutageHoldActive = true
+		prState.apiOutageBackoff = apiOutageBackoffFloor
+		c.log.Warn("CI unreadable with the configured token: holding PR",
+			"pr", prState.PRNumber,
+			"sha", ShortSHA(sha),
+			"sources", unreadable.Sources,
+			"error", unreadable)
+		c.emitCIPollAPIOutageAlertReason(prState, "hold", 0, unreadable, ciUnreadableReason)
+	} else {
+		prState.apiOutageBackoff = nextAPIOutageBackoff(prState.apiOutageBackoff)
+	}
+	prState.APIOutageNextPoll = now.Add(prState.apiOutageBackoff)
+
+	if prState.CIUnreadableNotified || c.ghClient == nil {
+		return
+	}
+	body := fmt.Sprintf(ciUnreadableComment, strings.Join(unreadable.Sources, ", "))
+	if _, postErr := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, body); postErr != nil {
+		c.log.Warn("failed to post token-cannot-read-CI comment", "pr", prState.PRNumber, "error", postErr)
+		return
+	}
+	prState.CIUnreadableNotified = true
+}
+
+// ciUnreadableReason is the alert metadata reason for ErrCIUnreadable.
+const ciUnreadableReason = "token_cannot_read_ci"
+
 // emitCIPollAPIOutageAlert sends the ci_poll_api_outage event: once when the
 // hold starts and once more if the budget elapses and the PR is failed.
 func (c *Controller) emitCIPollAPIOutageAlert(prState *PRState, outcome string, elapsed time.Duration, cause error) {
+	c.emitCIPollAPIOutageAlertReason(prState, outcome, elapsed, cause, "")
+}
+
+// emitCIPollAPIOutageAlertReason is emitCIPollAPIOutageAlert with an optional
+// metadata "reason" naming a cause that is not the API itself.
+func (c *Controller) emitCIPollAPIOutageAlertReason(prState *PRState, outcome string, elapsed time.Duration, cause error, reason string) {
 	if c.alertsEngine == nil {
 		return
+	}
+	meta := map[string]string{
+		"repo":     c.repoKey(),
+		"pr":       strconv.Itoa(prState.PRNumber),
+		"outcome":  outcome,
+		"failures": strconv.Itoa(prState.ConsecutiveAPIFailures),
+		"since":    prState.APIOutageSince.Format(time.RFC3339),
+		"elapsed":  elapsed.Round(time.Second).String(),
+		"budget":   c.apiOutageBudget().String(),
+	}
+	if reason != "" {
+		meta["reason"] = reason
 	}
 	c.alertsEngine.ProcessEvent(alerts.Event{
 		Type:      alerts.EventTypeCIPollAPIOutage,
 		Error:     cause.Error(),
 		Timestamp: c.ciNow(),
-		Metadata: map[string]string{
-			"repo":     c.repoKey(),
-			"pr":       strconv.Itoa(prState.PRNumber),
-			"outcome":  outcome,
-			"failures": strconv.Itoa(prState.ConsecutiveAPIFailures),
-			"since":    prState.APIOutageSince.Format(time.RFC3339),
-			"elapsed":  elapsed.Round(time.Second).String(),
-			"budget":   c.apiOutageBudget().String(),
-		},
+		Metadata:  meta,
 	})
 }
 
@@ -3873,7 +3980,7 @@ func (c *Controller) redriveAPIOutageHeldPR(ctx context.Context, prState *PRStat
 		return
 	}
 	if _, err := c.ciMonitor.CheckCI(ctx, sha); err != nil {
-		c.handleCIPollError(prState, sha, err)
+		c.handleCIPollError(ctx, prState, sha, err)
 		if prState.Stage == StageFailed {
 			// Decision: the budget failure happens here, before ProcessPR, which
 			// returns early on StageFailed and so never reaches its tail persist,
@@ -3884,6 +3991,7 @@ func (c *Controller) redriveAPIOutageHeldPR(ctx context.Context, prState *PRStat
 		return
 	}
 
+	c.markCIReadable()
 	outage := now.Sub(prState.APIOutageSince)
 	if !prState.CIWaitStartedAt.IsZero() && outage > 0 {
 		prState.CIWaitStartedAt = prState.CIWaitStartedAt.Add(outage)

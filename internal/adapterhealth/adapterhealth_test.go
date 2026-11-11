@@ -218,3 +218,50 @@ func TestRegistry_Go_NilOnPanicIsSafe(t *testing.T) {
 
 	waitFor(t, time.Second, func() bool { return calls.Load() == 2 })
 }
+
+func TestRegistry_SetDegraded(t *testing.T) {
+	r := NewRegistry()
+
+	// A degraded adapter without a goroutine of its own still shows up.
+	r.SetDegraded("github", "token cannot read CI")
+	snap := r.Snapshot()
+	if len(snap) != 1 || snap[0].Name != "github" || snap[0].Healthy || snap[0].LastError != "token cannot read CI" {
+		t.Fatalf("Snapshot = %+v, want one unhealthy github entry with the message", snap)
+	}
+	if snap[0].RestartCount != 0 || snap[0].Disabled {
+		t.Errorf("RestartCount = %d, Disabled = %v, want 0 and false", snap[0].RestartCount, snap[0].Disabled)
+	}
+
+	r.ClearDegraded("github")
+	if got := r.Snapshot(); len(got) != 0 {
+		t.Fatalf("Snapshot after ClearDegraded = %+v, want empty", got)
+	}
+}
+
+func TestRegistry_SetDegraded_OverlaysTrackedAdapter(t *testing.T) {
+	r := NewRegistry()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	r.Go(ctx, "github", nil, func() { close(done) })
+	<-done
+	waitFor(t, time.Second, func() bool { return r.Snapshot()[0].Healthy })
+
+	r.SetDegraded("github", "degraded")
+	st := r.Snapshot()[0]
+	if st.Healthy || st.LastError != "degraded" || st.RestartCount != 0 {
+		t.Fatalf("degraded status = %+v, want unhealthy, LastError=degraded, RestartCount=0", st)
+	}
+
+	r.ClearDegraded("github")
+	st = r.Snapshot()[0]
+	if !st.Healthy || st.LastError != "" {
+		t.Fatalf("status after ClearDegraded = %+v, want healthy with no error", st)
+	}
+}
+
+func TestRegistry_SetDegraded_NilSafe(t *testing.T) {
+	var r *Registry
+	r.SetDegraded("github", "x")
+	r.ClearDegraded("github")
+}
