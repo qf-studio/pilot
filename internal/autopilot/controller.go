@@ -3886,7 +3886,16 @@ func (c *Controller) handleCIUnreadable(ctx context.Context, prState *PRState, s
 
 	now := c.ciNow()
 	// APIOutageSince rolls forward on every unreadable poll so the outage
-	// budget never counts token time against a later ordinary error.
+	// budget never counts token time against a later ordinary error. That
+	// would also shrink the span redriveAPIOutageHeldPR adds to
+	// CIWaitStartedAt on recovery to the last backoff interval, so each
+	// interval is banked here instead: the whole hold stays out of the CI
+	// timeout and a good read after a long hold cannot fail the PR for it.
+	if prState.APIOutageHoldActive && !prState.APIOutageSince.IsZero() && !prState.CIWaitStartedAt.IsZero() {
+		if interval := now.Sub(prState.APIOutageSince); interval > 0 {
+			prState.CIWaitStartedAt = prState.CIWaitStartedAt.Add(interval)
+		}
+	}
 	prState.APIOutageSince = now
 	if !prState.APIOutageHoldActive {
 		prState.APIOutageHoldActive = true

@@ -3,6 +3,7 @@ package autopilot
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/adapterhealth"
 	ghadapter "github.com/qf-studio/pilot/internal/adapters/github"
@@ -259,5 +260,43 @@ func TestPRState_CIUnreadableNotifiedPersists(t *testing.T) {
 	}
 	if !got.snapshot().CIUnreadableNotified {
 		t.Error("snapshot() dropped CIUnreadableNotified")
+	}
+}
+
+// A token hold that outlasts the CI timeout must not fail the PR when the
+// first good read after it still shows CI running: the whole hold, not just
+// the last backoff interval, stays out of the CI timeout.
+func TestWaitingCI_TokenCannotReadCI_HoldDoesNotCountTowardCITimeout(t *testing.T) {
+	f, _ := newCIUnreadableFixture(t)
+	f.c.config.CIWaitTimeout = 5 * time.Minute
+	started := f.pr.CIWaitStartedAt
+
+	if err := f.c.ProcessPR(f.ctx, 42, nil); err != nil {
+		t.Fatalf("ProcessPR: %v", err)
+	}
+	holdStart := f.now
+	for i := 0; i < 60; i++ {
+		f.now = f.pr.APIOutageNextPoll
+		f.tick()
+	}
+	hold := f.now.Sub(holdStart)
+	if hold <= f.c.config.CIWaitTimeout {
+		t.Fatalf("hold lasted %s, want longer than the %s CI timeout", hold, f.c.config.CIWaitTimeout)
+	}
+
+	// The token is fixed; CI is still running at the first good read.
+	f.setMode(ciOutagePending)
+	f.now = f.pr.APIOutageNextPoll
+	f.tick()
+
+	if f.pr.APIOutageHoldActive {
+		t.Fatal("hold not cleared by the good read")
+	}
+	if f.pr.Stage != StageWaitingCI || f.pr.TerminalLabel != "" {
+		t.Fatalf("Stage = %s, TerminalLabel = %q (error %q), want %s with no label",
+			f.pr.Stage, f.pr.TerminalLabel, f.pr.Error, StageWaitingCI)
+	}
+	if got, want := f.pr.CIWaitStartedAt.Sub(started), f.now.Sub(holdStart); got != want {
+		t.Errorf("CIWaitStartedAt moved by %s, want the hold length %s", got, want)
 	}
 }
