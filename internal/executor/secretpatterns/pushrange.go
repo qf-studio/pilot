@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path"
 	"strings"
@@ -174,21 +175,44 @@ func PushBase(ctx context.Context, dir, head, defaultBranch string) string {
 // measured from PushBase. When no base resolves (a default branch with another
 // name and no origin/HEAD, a shallow clone) it scans only the commits that are
 // on no remote ref, and refuses with a *PushScanError when it cannot list them.
+//
+// A cancelled or expired ctx is returned as the context error, never as a
+// refusal: git failed because the caller gave up, not because the push cannot be
+// cleared (GH-6284).
 func CheckPush(ctx context.Context, dir, head string, opts PushOptions) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("secret gate: %w", err)
+	}
 	if base := PushBase(ctx, dir, head, opts.DefaultBranch); base != "" {
 		return checkRange(ctx, dir, base, []string{base + ".." + head}, head, opts)
 	}
+	// PushBase swallows git errors, so a context that ended during it shows up here.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("secret gate: %w", err)
+	}
 	out, err := gitOutput(ctx, dir, "rev-list", "--reverse", head, "--not", "--remotes")
 	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return fmt.Errorf("secret gate: %w", cerr)
+		}
 		return &PushScanError{Reason: "the push base could not be computed: no merge base with the default branch and the commits not on a remote could not be listed"}
 	}
 	oldest, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 	if oldest == "" {
 		return nil // every commit is already on a remote ref: nothing to publish
 	}
-	diffBase := emptyTree
+	diffBase, logArgs := emptyTree, []string{head, "--not", "--remotes"}
 	if parent, perr := gitOutput(ctx, dir, "rev-parse", "--verify", "--quiet", oldest+"^"); perr == nil {
 		diffBase = strings.TrimSpace(string(parent))
+	} else if isShallowBoundary(ctx, dir, oldest) {
+		// Decision: the oldest unpushed commit is the shallow boundary of a clone
+		// whose remote branch moved on, so it came from the remote and its parent
+		// is only missing because of the depth. Measuring from the empty tree (or
+		// scanning it as a root commit) would show every file it holds as added
+		// and raise a false alert on old published content. Diff against the
+		// boundary commit itself and leave it out of the per-commit scan (GH-6284).
+		diffBase = oldest
+		logArgs = append(logArgs, oldest) // after --not: excluded (a "^" would flip it back)
 	}
 	// Decision: a merge in the unpushed range may bring in a branch that is
 	// already on a remote, and the net diff from the oldest unpushed commit's
@@ -201,7 +225,30 @@ func CheckPush(ctx context.Context, dir, head string, opts PushOptions) error {
 	} else if strings.TrimSpace(string(merges)) != "" {
 		diffBase = ""
 	}
-	return checkRange(ctx, dir, diffBase, []string{head, "--not", "--remotes"}, head, opts)
+	return checkRange(ctx, dir, diffBase, logArgs, head, opts)
+}
+
+// isShallowBoundary reports whether sha is a shallow boundary of the repository
+// at dir: a commit whose parents were cut off by a shallow fetch, listed in
+// git's shallow file. A genuine root commit is not.
+func isShallowBoundary(ctx context.Context, dir, sha string) bool {
+	if out, err := gitOutput(ctx, dir, "rev-parse", "--is-shallow-repository"); err != nil || strings.TrimSpace(string(out)) != "true" {
+		return false
+	}
+	out, err := gitOutput(ctx, dir, "rev-parse", "--path-format=absolute", "--git-path", "shallow")
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(strings.TrimSpace(string(out)))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == sha {
+			return true
+		}
+	}
+	return false
 }
 
 // CheckPushRange refuses the commits in base..head when their diff or messages

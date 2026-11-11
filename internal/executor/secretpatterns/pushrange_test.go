@@ -448,3 +448,84 @@ func TestCheckPushRange_NoBaseMergeOfPushedBranchIsNotNew(t *testing.T) {
 		t.Fatalf("secret in a merge's conflict resolution: got %v, want a hit in c.txt", err)
 	}
 }
+
+// GH-6284: a cancelled or expired context is the caller giving up, not a
+// secret refusal. Both routes through CheckPush (a base that resolves, and the
+// fallback with no base) return the context error and never errors.Is
+// ErrPushRefused.
+func TestCheckPushRange_CancelledContextIsNotARefusal(t *testing.T) {
+	f := newPushFixture(t)
+	f.commit("new.go", "package x\n", "feat: new")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for _, tc := range []struct{ name, head string }{
+		{"head with a base", "pilot/GH-1"},
+		{"unresolvable head, no base", "no-such-ref"},
+	} {
+		err := CheckPush(ctx, f.local, tc.head, PushOptions{})
+		if err == nil {
+			t.Fatalf("%s: got nil, want the context error", tc.name)
+		}
+		if errors.Is(err, ErrPushRefused) {
+			t.Errorf("%s: a cancelled context became a refusal: %v", tc.name, err)
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("%s: got %v, want context.Canceled", tc.name, err)
+		}
+	}
+}
+
+// GH-6284: a depth-1 clone whose remote default branch advanced. The oldest
+// unpushed commit is the shallow boundary and its parent is missing, so the diff
+// base must be the boundary itself and not the empty tree: a file published long
+// ago must not raise a secret alert for a clean commit.
+func TestCheckPushRange_ShallowBoundaryIsNotMeasuredFromEmptyTree(t *testing.T) {
+	const old = "hunter2-not-a-known-shape"
+	ResetSecretValuesForTest()
+	t.Cleanup(ResetSecretValuesForTest)
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", remote).CombinedOutput(); err != nil {
+		t.Fatalf("init bare: %v\n%s", err, out)
+	}
+	seed := &pushFixture{t: t, local: filepath.Join(root, "seed"), remote: remote}
+	if err := os.MkdirAll(seed.local, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed.git("init", "-b", "main")
+	seed.git("remote", "add", "origin", remote)
+	seed.commit("README.md", "hello\n", "init")
+	seed.commit("old.md", "token "+old+"\n", "docs: old, long published")
+	seed.git("push", "-u", "origin", "main")
+	RegisterSecretValues(old)
+
+	f := &pushFixture{t: t, local: filepath.Join(root, "local"), remote: remote}
+	if out, err := exec.Command("git", "clone", "--depth", "1", "file://"+remote, f.local).CombinedOutput(); err != nil {
+		t.Fatalf("shallow clone: %v\n%s", err, out)
+	}
+	f.git("checkout", "-b", "pilot/GH-1")
+	f.commit("new.go", "package x\n", "feat: clean")
+
+	// The default branch advances, and the clone fetches it shallowly again.
+	seed.commit("later.go", "package later\n", "feat: later")
+	seed.git("push", "origin", "main")
+	f.git("fetch", "--depth", "1", "origin", "main")
+
+	if got := f.git("rev-parse", "--is-shallow-repository"); got != "true" {
+		t.Fatalf("setup: clone is not shallow (%s)", got)
+	}
+	if base := PushBase(context.Background(), f.local, "pilot/GH-1", "main"); base != "" {
+		t.Fatalf("setup: PushBase = %q, want no merge base for the diverged shallow history", base)
+	}
+	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", PushOptions{DefaultBranch: "main"}); err != nil {
+		t.Fatalf("clean commit on a shallow clone: got %v, want no refusal", err)
+	}
+
+	// A secret in the unpushed commit is still found.
+	f.commit("leak.md", "token "+old+"\n", "docs: leak")
+	var pre *PushRangeError
+	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", PushOptions{DefaultBranch: "main"}); !errors.As(err, &pre) || pre.File != "leak.md" {
+		t.Fatalf("secret in an unpushed commit: got %v, want a hit in leak.md", err)
+	}
+}

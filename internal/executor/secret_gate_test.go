@@ -57,6 +57,7 @@ func (f *secretGateFixture) remoteBranches() string {
 func newSecretGateFixture(t *testing.T) *secretGateFixture {
 	t.Helper()
 	secretpatterns.ResetSecretValuesForTest()
+	resetAlertedCommits()
 	sink := &fakeAlertProcessor{}
 	SetSecretGateAlertProcessor(sink)
 	t.Cleanup(func() {
