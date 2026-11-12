@@ -39,7 +39,8 @@
 #   NOLOGIN_SHELL        default /usr/sbin/nologin
 #
 # Exit status: 0 when every step is done or skipped, 1 when a step failed (the
-# run stops at the first failed step), 2 on bad arguments.
+# run stops at the first failed step; the steps after it are listed in the
+# summary as skipped), 2 on bad arguments.
 
 set -euo pipefail
 
@@ -202,18 +203,36 @@ step_directories() {
     return 0
 }
 
+# shared_read_ok PATH — true when every entry under PATH (symlinks aside) is in
+# the shared group, readable and not writable by it; directories and files the
+# owner can execute also traversable/executable by it (the chmod g+rX rule).
+# Files made later with a restrictive umask or another group fail the check.
+shared_read_ok() {
+    local entry cur mode gbits ubits need
+    while IFS= read -r -d '' entry; do
+        cur="$(stat -c '%G:%a' "$entry" 2>/dev/null)" || return 1
+        mode=$((8#${cur#*:}))
+        gbits=$(((mode >> 3) & 7))
+        ubits=$(((mode >> 6) & 7))
+        need=4
+        if [ -d "$entry" ] || [ $((ubits & 1)) -eq 1 ]; then
+            need=5
+        fi
+        [ "${cur%%:*}" = "$GROUP" ] || return 1
+        [ $((gbits & need)) -eq "$need" ] || return 1
+        [ $((gbits & 2)) -eq 0 ] || return 1
+    done < <(find "$1" ! -type l -print0)
+}
+
 step_shared_read() {
-    local path cur gbits changed=0 present=0
+    local path changed=0 present=0
     for path in "${DATA_DIR}/repos" "${DATA_DIR}/bin"; do
         if [ ! -d "$path" ]; then
             echo "absent, left alone: ${path}"
             continue
         fi
         present=1
-        cur="$(stat -c '%G:%a' "$path")"
-        gbits=$(((8#${cur#*:} >> 3) & 7))
-        # r and x set, w clear for the group, and the group is the shared one.
-        if [ "${cur%%:*}" = "$GROUP" ] && [ $((gbits & 5)) -eq 5 ] && [ $((gbits & 2)) -eq 0 ]; then
+        if shared_read_ok "$path"; then
             continue
         fi
         # ":GROUP" changes the group only; the owner stays.
@@ -243,7 +262,11 @@ step_sudoers_rule() {
         echo "sudoers directory missing: ${SUDOERS_DIR}" >&2
         return 1
     fi
-    rm -f "$SUDOERS_TMP"
+    # A leftover of an interrupted run; through run, so a dry run prints it and
+    # leaves it in place.
+    if [ -e "$SUDOERS_TMP" ]; then
+        run rm -f "$SUDOERS_TMP" || return 1
+    fi
     write_file "$SUDOERS_TMP" 0440 "$rule" || return 1
     # Validate the candidate BEFORE it takes the name sudo reads; a failed
     # validation leaves nothing behind.
@@ -260,6 +283,15 @@ step_sudoers_rule() {
 # preceding % means a group of that name and does not count).
 daemon_line_re() {
     printf '(^|[^[:alnum:]_.%%-])%s([^[:alnum:]_.-]|$)' "$DAEMON_USER"
+}
+
+# restore_cloud_init — put the backup back with the mode and owner the file has
+# now (sed -i kept the original ones); 0440 root:root only when it is gone.
+restore_cloud_init() {
+    local meta
+    meta="$(stat -c '%a:%U:%G' "$CLOUD_INIT_SUDOERS" 2>/dev/null || echo 440:root:root)"
+    run install -m "${meta%%:*}" -o "$(cut -d: -f2 <<<"$meta")" -g "$(cut -d: -f3 <<<"$meta")" \
+        "$CLOUD_INIT_BACKUP" "$CLOUD_INIT_SUDOERS"
 }
 
 step_cloud_init_sudoers() {
@@ -284,26 +316,31 @@ step_cloud_init_sudoers() {
         echo "refusing to edit ${CLOUD_INIT_SUDOERS}: the agent rule is not installed" >&2
         return 1
     fi
-    if [ ! -e "$CLOUD_INIT_BACKUP" ]; then
-        run install -m 0600 -o root -g root "$CLOUD_INIT_SUDOERS" "$CLOUD_INIT_BACKUP" || return 1
-    fi
+    # The file still has an active daemon line, so it is the one to restore: a
+    # backup from an earlier apply may be stale and is replaced.
+    run install -m 0600 -o root -g root "$CLOUD_INIT_SUDOERS" "$CLOUD_INIT_BACKUP" || return 1
     run sed -i -E "/^[[:space:]]*#/! { /${re}/ s/^/# disabled by setup-agent-user: / }" \
         "$CLOUD_INIT_SUDOERS" || return 1
     if ! run visudo -c; then
         echo "sudoers validation failed; restoring ${CLOUD_INIT_SUDOERS}" >&2
-        run install -m 0440 -o root -g root "$CLOUD_INIT_BACKUP" "$CLOUD_INIT_SUDOERS" || true
+        restore_cloud_init || true
         return 1
     fi
 }
 
 # firewall_rules FAMILY — one rule per line, as arguments for the chain.
+# The gateway port is rejected on the loopback address and, through the
+# addrtype match, on every address of the host: the gateway can listen on
+# 0.0.0.0 or ::.
 firewall_rules() {
+    local loopback=127.0.0.1 meta="$METADATA_V4"
     if [ "$1" = ip6tables ]; then
-        echo "-d ${METADATA_V6} -j REJECT"
-    else
-        echo "-d ${METADATA_V4} -j REJECT"
-        echo "-p tcp -d 127.0.0.1 --dport ${GATEWAY_PORT} -j REJECT --reject-with tcp-reset"
+        loopback=::1
+        meta="$METADATA_V6"
     fi
+    echo "-d ${meta} -j REJECT"
+    echo "-p tcp -d ${loopback} --dport ${GATEWAY_PORT} -j REJECT --reject-with tcp-reset"
+    echo "-p tcp --dport ${GATEWAY_PORT} -m addrtype --dst-type LOCAL -j REJECT --reject-with tcp-reset"
 }
 
 jump_rule() {
@@ -395,7 +432,12 @@ undo_cloud_init_sudoers() {
         NOTE="no backup at ${CLOUD_INIT_BACKUP}"
         return 0
     fi
-    run install -m 0440 -o root -g root "$CLOUD_INIT_BACKUP" "$CLOUD_INIT_SUDOERS" || return 1
+    restore_cloud_init || return 1
+    # The backup stays until the restored file is validated.
+    if ! run visudo -c; then
+        echo "sudoers validation failed after the restore of ${CLOUD_INIT_SUDOERS}; backup kept" >&2
+        return 1
+    fi
     run rm -f "$CLOUD_INIT_BACKUP" || return 1
 }
 
@@ -472,7 +514,22 @@ run_step() {
         state="${state} - ${NOTE}"
     fi
     SUMMARY+=("${name}: ${state}")
-    if [ "${state%% *}" = failed ]; then
+    [ "${state%% *}" != failed ]
+}
+
+# run_plan NAME:FUNCTION ... — runs the steps in order. After a failed step the
+# rest are not run; each still gets a summary line, so the summary has one per
+# step.
+run_plan() {
+    local entry failed=""
+    for entry in "$@"; do
+        if [ -n "$failed" ]; then
+            SUMMARY+=("${entry%%:*}: skipped - not run, ${failed} failed")
+        elif ! run_step "${entry%%:*}" "${entry#*:}"; then
+            failed="${entry%%:*}"
+        fi
+    done
+    if [ -n "$failed" ]; then
         print_summary
         exit 1
     fi
@@ -493,24 +550,24 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 if [ "$UNDO" = 1 ]; then
-    run_step cloud-init-sudoers undo_cloud_init_sudoers
-    run_step firewall-ipv4 undo_firewall_ipv4
-    run_step firewall-ipv6 undo_firewall_ipv6
-    run_step firewall-unit undo_firewall_unit
-    run_step sudoers-rule undo_sudoers_rule
+    run_plan cloud-init-sudoers:undo_cloud_init_sudoers \
+        firewall-ipv4:undo_firewall_ipv4 \
+        firewall-ipv6:undo_firewall_ipv6 \
+        firewall-unit:undo_firewall_unit \
+        sudoers-rule:undo_sudoers_rule
     print_summary
     print_manual_cleanup
     exit 0
 fi
 
-run_step group step_group
-run_step agent-user step_agent_user
-run_step daemon-membership step_daemon_membership
-run_step directories step_directories
-run_step shared-read step_shared_read
-run_step sudoers-rule step_sudoers_rule
-run_step cloud-init-sudoers step_cloud_init_sudoers
-run_step firewall-ipv4 step_firewall_ipv4
-run_step firewall-ipv6 step_firewall_ipv6
-run_step firewall-unit step_firewall_unit
+run_plan group:step_group \
+    agent-user:step_agent_user \
+    daemon-membership:step_daemon_membership \
+    directories:step_directories \
+    shared-read:step_shared_read \
+    sudoers-rule:step_sudoers_rule \
+    cloud-init-sudoers:step_cloud_init_sudoers \
+    firewall-ipv4:step_firewall_ipv4 \
+    firewall-ipv6:step_firewall_ipv6 \
+    firewall-unit:step_firewall_unit
 print_summary
