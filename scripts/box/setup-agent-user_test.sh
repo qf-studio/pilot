@@ -1,0 +1,388 @@
+#!/bin/bash
+# Plain-bash test suite for setup-agent-user.sh — no bats dependency, no root,
+# no real host. The script runs against a temp root with a PATH of mock
+# commands (scripts/box/testdata/mock-host-cmds.sh, linked under the names
+# useradd, groupadd, usermod, visudo, iptables, ip6tables, systemctl, install,
+# chown, chmod, id, getent and stat) that record their arguments; the sudoers
+# and systemd directories are pointed at the temp root through
+# SUDOERS_DIR / SYSTEMD_DIR.
+#
+# Usage: ./scripts/box/setup-agent-user_test.sh
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SETUP_SCRIPT="${SCRIPT_DIR}/setup-agent-user.sh"
+MOCK_CMDS="${SCRIPT_DIR}/testdata/mock-host-cmds.sh"
+MOCKED="useradd groupadd usermod visudo iptables ip6tables systemctl install chown chmod id getent stat"
+
+PASS=0
+FAIL=0
+
+pass() {
+    echo "  PASS: $1"
+    PASS=$((PASS + 1))
+}
+
+fail_test() {
+    echo "  FAIL: $1"
+    FAIL=$((FAIL + 1))
+}
+
+CLOUD_INIT_ORIGINAL='# Created by cloud-init
+# User rules for ec2-user
+ec2-user ALL=(ALL) NOPASSWD:ALL
+%ec2-user-admins ALL=(ALL) NOPASSWD:ALL
+admin ALL=(ALL) NOPASSWD:ALL'
+
+CLOUD_INIT_APPLIED='# Created by cloud-init
+# User rules for ec2-user
+# disabled by setup-agent-user: ec2-user ALL=(ALL) NOPASSWD:ALL
+%ec2-user-admins ALL=(ALL) NOPASSWD:ALL
+admin ALL=(ALL) NOPASSWD:ALL'
+
+EXPECTED_RULE='ec2-user ALL=(pilot-agent) NOPASSWD: SETENV: ALL'
+
+setup_sandbox() {
+    SANDBOX="$(mktemp -d)"
+    DATA_DIR="${SANDBOX}/data"
+    SUDOERS_DIR="${SANDBOX}/sudoers.d"
+    SYSTEMD_DIR="${SANDBOX}/systemd"
+    STATE_DIR="${SANDBOX}/state"
+    STUB_BIN="${SANDBOX}/bin"
+    CALL_LOG="${SANDBOX}/calls.log"
+    MUT_LOG="${SANDBOX}/mutations.log"
+    OUT="${SANDBOX}/stdout.log"
+
+    mkdir -p "${DATA_DIR}/repos" "${DATA_DIR}/bin" "$SUDOERS_DIR" "$SYSTEMD_DIR" "$STUB_BIN" "${STATE_DIR}/users"
+    chmod 775 "${DATA_DIR}/repos" "${DATA_DIR}/bin"
+    : >"$CALL_LOG"
+    : >"$MUT_LOG"
+    touch "${STATE_DIR}/users/ec2-user"
+    printf '%s\n' "$CLOUD_INIT_ORIGINAL" >"${SUDOERS_DIR}/90-cloud-init-users"
+
+    local c
+    for c in $MOCKED; do
+        ln -s "$MOCK_CMDS" "${STUB_BIN}/${c}"
+    done
+}
+
+teardown_sandbox() {
+    rm -rf "$SANDBOX"
+}
+
+# run_setup [VAR=value ...] -- [script args ...]  (stdout+stderr go to $OUT)
+run_setup() {
+    local envs=()
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+        envs+=("$1")
+        shift
+    done
+    shift
+    env \
+        PATH="${STUB_BIN}:${PATH}" \
+        MOCK_REAL_PATH="$PATH" \
+        MOCK_STATE_DIR="$STATE_DIR" \
+        MOCK_CALL_LOG="$CALL_LOG" \
+        MOCK_MUT_LOG="$MUT_LOG" \
+        SUDOERS_DIR="$SUDOERS_DIR" \
+        SYSTEMD_DIR="$SYSTEMD_DIR" \
+        "${envs[@]}" \
+        "$SETUP_SCRIPT" --data-dir "$DATA_DIR" "$@" >"$OUT" 2>&1
+}
+
+# Every file the script may write, as one comparable listing. The mocks' own
+# state directory is left out: it is bookkeeping, and the mutation log covers it.
+tree_listing() {
+    find "$DATA_DIR" "$SUDOERS_DIR" "$SYSTEMD_DIR" -printf '%p %m\n' | sort
+    cat "${SUDOERS_DIR}/90-cloud-init-users"
+}
+
+# first_line PATTERN — line number of the first call that matches.
+first_line() {
+    grep -n -m1 -E -- "$1" "$CALL_LOG" | cut -d: -f1
+}
+
+step_state() {
+    grep -E "^step $1: " "$OUT" | head -1 | sed -E "s/^step $1: //"
+}
+
+expect_step() {
+    local name="$1" want="$2" got
+    got="$(step_state "$name")"
+    if [ "${got%% *}" = "$want" ]; then
+        pass "step ${name}: ${want}"
+    else
+        fail_test "step ${name}: want ${want}, got '${got}'"
+    fi
+}
+
+ALL_STEPS="group agent-user daemon-membership directories shared-read sudoers-rule cloud-init-sudoers firewall-ipv4 firewall-ipv6 firewall-unit"
+
+echo "=== test: dry run — prints every command, changes nothing ==="
+setup_sandbox
+before="$(tree_listing)"
+if run_setup -- --dry-run; then
+    pass "dry run exits 0"
+else
+    cat "$OUT"
+    fail_test "dry run exited non-zero"
+fi
+if [ ! -s "$MUT_LOG" ]; then
+    pass "no mutating command was run"
+else
+    cat "$MUT_LOG"
+    fail_test "dry run ran mutating commands"
+fi
+if [ "$before" = "$(tree_listing)" ]; then
+    pass "files, modes and the cloud-init file are unchanged"
+else
+    fail_test "dry run changed the temp root"
+fi
+for want in "+ groupadd --system pilot" "+ useradd --system" "+ usermod -aG pilot ec2-user" \
+    "+ visudo -cf" "+ visudo -c" "+ iptables -w -N PILOT_AGENT_EGRESS" "+ ip6tables -w -N PILOT_AGENT_EGRESS" \
+    "+ systemctl enable pilot-agent-firewall.service" "$EXPECTED_RULE"; do
+    if grep -qF -- "$want" "$OUT"; then
+        pass "prints: ${want}"
+    else
+        fail_test "dry run output lacks: ${want}"
+    fi
+done
+teardown_sandbox
+
+echo "=== test: apply — steps run in order and leave the host as designed ==="
+setup_sandbox
+if run_setup -- ; then
+    pass "apply exits 0"
+else
+    cat "$OUT"
+    fail_test "apply exited non-zero"
+fi
+prev=0
+for pattern in '^groupadd ' '^useradd ' '^usermod ' '^install -d ' '^chown -R :pilot ' '^visudo -cf ' '^visudo -c$' '^iptables -w -N ' '^ip6tables -w -N ' '^systemctl enable '; do
+    n="$(first_line "$pattern" || true)"
+    if [ -n "$n" ] && [ "$n" -gt "$prev" ]; then
+        pass "in order: ${pattern}"
+        prev="$n"
+    else
+        fail_test "out of order or missing: ${pattern} (line '${n}', after ${prev})"
+    fi
+done
+if [ "$(cat "${SUDOERS_DIR}/90-pilot-agent-runas")" = "$EXPECTED_RULE" ]; then
+    pass "sudoers file holds exactly the run-as rule"
+else
+    fail_test "sudoers file content: $(cat "${SUDOERS_DIR}/90-pilot-agent-runas" 2>&1)"
+fi
+if [ "$(stat -c %a "${SUDOERS_DIR}/90-pilot-agent-runas")" = "440" ]; then
+    pass "sudoers file mode is 0440"
+else
+    fail_test "sudoers file mode is not 0440"
+fi
+if [ -z "$(find "$SUDOERS_DIR" -name '.*' -type f)" ]; then
+    pass "no temporary sudoers file is left"
+else
+    fail_test "temporary sudoers file left behind"
+fi
+if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_APPLIED" ]; then
+    pass "cloud-init file: only the daemon-user line is commented out"
+else
+    fail_test "cloud-init file content: $(cat "${SUDOERS_DIR}/90-cloud-init-users")"
+fi
+if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak")" = "$CLOUD_INIT_ORIGINAL" ]; then
+    pass "backup holds the original cloud-init file"
+else
+    fail_test "backup missing or different"
+fi
+if [ "$(stat -c %a "${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak")" = "600" ]; then
+    pass "backup is root-only (0600)"
+else
+    fail_test "backup mode is not 0600"
+fi
+for want in "install -d -o pilot-agent -g pilot -m 750 ${DATA_DIR}/agent-home" \
+    "install -d -o pilot-agent -g pilot -m 2770 ${DATA_DIR}/agent-workspaces" \
+    "install -d -o pilot-agent -g pilot -m 750 ${DATA_DIR}/agent-home/go/cache" \
+    "install -d -o pilot-agent -g pilot -m 750 ${DATA_DIR}/agent-home/go/mod" \
+    "useradd --system --gid pilot --home-dir ${DATA_DIR}/agent-home --no-create-home --shell /usr/sbin/nologin pilot-agent" \
+    "chown -R :pilot ${DATA_DIR}/repos" "chown -R :pilot ${DATA_DIR}/bin" \
+    "chmod -R g+rX,g-w ${DATA_DIR}/repos"; do
+    if grep -qF -- "$want" "$CALL_LOG"; then
+        pass "ran: ${want}"
+    else
+        fail_test "missing call: ${want}"
+    fi
+done
+if [ "$(stat -c %a "${DATA_DIR}/agent-workspaces")" = "2770" ] && [ "$(stat -c %a "${DATA_DIR}/agent-home")" = "750" ]; then
+    pass "workspace mode 2770, home mode 750"
+else
+    fail_test "directory modes wrong"
+fi
+if [ "$(stat -c %a "${DATA_DIR}/repos")" = "755" ] && [ "$(stat -c %a "${DATA_DIR}/bin")" = "755" ]; then
+    pass "repos and bin: group read and traverse, no group write"
+else
+    fail_test "repos/bin modes: $(stat -c %a "${DATA_DIR}/repos") $(stat -c %a "${DATA_DIR}/bin")"
+fi
+if grep -q -- "-m owner --uid-owner pilot-agent -j PILOT_AGENT_EGRESS" "${STATE_DIR}/iptables.rules" \
+    && grep -q -- "-d 169.254.169.254 -j REJECT" "${STATE_DIR}/iptables.rules" \
+    && grep -q -- "-p tcp -d 127.0.0.1 --dport 9091 -j REJECT" "${STATE_DIR}/iptables.rules" \
+    && grep -q -- "-d fd00:ec2::254 -j REJECT" "${STATE_DIR}/ip6tables.rules"; then
+    pass "firewall: chain, jump on the agent user, metadata v4/v6 and port 9091"
+else
+    fail_test "firewall rules missing"
+fi
+UNIT="${SYSTEMD_DIR}/pilot-agent-firewall.service"
+if grep -q '^Type=oneshot' "$UNIT" && grep -q -- "--uid-owner pilot-agent -j PILOT_AGENT_EGRESS" "$UNIT" \
+    && [ -e "${STATE_DIR}/enabled/pilot-agent-firewall.service" ]; then
+    pass "oneshot unit written and enabled"
+else
+    fail_test "unit missing, not oneshot or not enabled"
+fi
+for s in $ALL_STEPS; do
+    expect_step "$s" "done"
+done
+
+echo "=== test: second apply skips every step ==="
+: >"$MUT_LOG"
+if run_setup -- ; then
+    pass "second apply exits 0"
+else
+    cat "$OUT"
+    fail_test "second apply exited non-zero"
+fi
+for s in $ALL_STEPS; do
+    expect_step "$s" skipped
+done
+if [ ! -s "$MUT_LOG" ]; then
+    pass "second apply ran no mutating command"
+else
+    cat "$MUT_LOG"
+    fail_test "second apply ran mutating commands"
+fi
+
+echo "=== test: undo removes what apply added, keeps user/group/directories ==="
+: >"$MUT_LOG"
+if run_setup -- --undo; then
+    pass "undo exits 0"
+else
+    cat "$OUT"
+    fail_test "undo exited non-zero"
+fi
+if [ ! -e "${SUDOERS_DIR}/90-pilot-agent-runas" ]; then pass "sudoers file removed"; else fail_test "sudoers file still there"; fi
+if [ ! -e "$UNIT" ] && [ ! -e "${STATE_DIR}/enabled/pilot-agent-firewall.service" ]; then pass "unit removed and disabled"; else fail_test "unit still there"; fi
+if ! grep -q PILOT_AGENT_EGRESS "${STATE_DIR}/iptables.rules" "${STATE_DIR}/ip6tables.rules"; then
+    pass "firewall chain and jump removed (v4 and v6)"
+else
+    fail_test "firewall rules left"
+fi
+if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL" ] && [ ! -e "${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak" ]; then
+    pass "cloud-init file restored from the backup"
+else
+    fail_test "cloud-init file not restored"
+fi
+if ! grep -qE '^(userdel|groupdel|gpasswd|rm -rf)' "$CALL_LOG" && [ -d "${DATA_DIR}/agent-home/go/mod" ] && [ -e "${STATE_DIR}/users/pilot-agent" ]; then
+    pass "user, group and directories are left in place"
+else
+    fail_test "undo removed the user, the group or a directory"
+fi
+for want in "userdel pilot-agent" "groupdel pilot" "rm -rf ${DATA_DIR}/agent-home ${DATA_DIR}/agent-workspaces"; do
+    if grep -qF -- "  ${want}" "$OUT"; then
+        pass "prints the manual command: ${want}"
+    else
+        fail_test "no manual command printed: ${want}"
+    fi
+done
+: >"$MUT_LOG"
+if run_setup -- --undo && [ ! -s "$MUT_LOG" ]; then
+    pass "a second undo changes nothing"
+else
+    fail_test "second undo failed or changed something"
+fi
+teardown_sandbox
+
+echo "=== test: failing visudo — no sudoers file, non-zero exit, nothing after it ==="
+setup_sandbox
+if run_setup MOCK_VISUDO_FAIL=1 -- ; then
+    fail_test "apply should exit non-zero when visudo rejects the rule"
+else
+    pass "apply exits non-zero when visudo rejects the rule"
+fi
+if [ ! -e "${SUDOERS_DIR}/90-pilot-agent-runas" ] && [ -z "$(find "$SUDOERS_DIR" -name '*pilot-agent*' ! -name '*.bak')" ]; then
+    pass "no sudoers file and no temporary file"
+else
+    find "$SUDOERS_DIR"
+    fail_test "a sudoers file exists after a failed validation"
+fi
+if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL" ]; then
+    pass "the cloud-init file is untouched"
+else
+    fail_test "cloud-init file changed after a failed validation"
+fi
+if ! grep -qE '^(iptables|ip6tables|systemctl)' "$MUT_LOG"; then
+    pass "the run stopped: no firewall or unit change"
+else
+    fail_test "steps after the failed validation ran"
+fi
+expect_step sudoers-rule failed
+teardown_sandbox
+
+echo "=== test: cloud-init validation fails — backup is restored, non-zero exit ==="
+setup_sandbox
+if run_setup MOCK_VISUDO_C_FAIL=1 -- ; then
+    fail_test "apply should exit non-zero when visudo -c fails"
+else
+    pass "apply exits non-zero when visudo -c fails"
+fi
+if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL" ]; then
+    pass "cloud-init file restored from the backup"
+else
+    fail_test "cloud-init file left edited: $(cat "${SUDOERS_DIR}/90-cloud-init-users")"
+fi
+expect_step cloud-init-sudoers failed
+teardown_sandbox
+
+echo "=== test: --keep-daemon-sudo leaves the cloud-init file untouched ==="
+setup_sandbox
+if run_setup -- --keep-daemon-sudo; then
+    pass "apply --keep-daemon-sudo exits 0"
+else
+    cat "$OUT"
+    fail_test "apply --keep-daemon-sudo exited non-zero"
+fi
+if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL" ] && [ ! -e "${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak" ]; then
+    pass "cloud-init file unchanged, no backup made"
+else
+    fail_test "cloud-init file touched despite --keep-daemon-sudo"
+fi
+if [ -e "${SUDOERS_DIR}/90-pilot-agent-runas" ]; then
+    pass "the run-as rule is still installed"
+else
+    fail_test "run-as rule missing"
+fi
+expect_step cloud-init-sudoers skipped
+teardown_sandbox
+
+echo "=== test: not root, bad arguments ==="
+setup_sandbox
+if run_setup MOCK_UID=1000 -- ; then
+    fail_test "must refuse to run as a non-root user"
+else
+    pass "refuses to run as a non-root user"
+fi
+if [ ! -s "$MUT_LOG" ]; then pass "nothing mutated as non-root"; else fail_test "mutations as non-root"; fi
+if run_setup -- --agent-user ec2-user; then
+    fail_test "agent user equal to daemon user must be refused"
+else
+    pass "agent user equal to daemon user is refused"
+fi
+if run_setup -- --bogus; then
+    fail_test "unknown argument must be refused"
+else
+    pass "unknown argument is refused"
+fi
+teardown_sandbox
+
+echo ""
+echo "=== summary: ${PASS} passed, ${FAIL} failed ==="
+if [ "$FAIL" -gt 0 ]; then
+    exit 1
+fi
+exit 0
