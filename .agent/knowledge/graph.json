@@ -3200,6 +3200,25 @@
           "https://github.com/qf-studio/pilot/issues/6301",
           "https://github.com/qf-studio/pilot/issues/6310"
         ]
+      },
+      "TASK-651": {
+        "path": ".agent/tasks/TASK-651-agent-uid-isolation.md",
+        "title": "Agent isolation \u2014 agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM",
+        "status": "dispatched",
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6320",
+          "https://github.com/qf-studio/pilot/issues/6321"
+        ],
+        "concepts": [
+          "testing",
+          "database",
+          "deployment",
+          "context",
+          "api",
+          "theory of mind",
+          "authentication",
+          "skills"
+        ]
       }
     },
     "memories": {
@@ -9006,6 +9025,18 @@
         "created": "2026-11-11",
         "last_validated": "2026-11-11",
         "contradiction": "fewer false blocks of the read guard vs more reads of Pilot data that pass undetected"
+      },
+      "mem-306": {
+        "type": "pitfall",
+        "summary": "The daemon user on the box had (ALL) NOPASSWD: ALL from cloud-init, so every agent session could become root for months; no guard covered it (the bash guard blocks only a sudo rm substring) and one agent run did call sudo. Found 2026-11-12 during the TASK-651 design, removed the same day (operator step O1, backup in /root). Before any reasoning about what an agent can or cannot read or do on a host, run sudo -l -U for the daemon user and read the sudo journal; on a new host remove the cloud-init rule before the daemon starts.",
+        "path": "memories/pitfalls/mem-306.md",
+        "confidence": 0.95,
+        "concepts": [
+          "security",
+          "pilot-aws"
+        ],
+        "created": "2026-11-12",
+        "last_validated": "2026-11-12"
       }
     }
   },
@@ -13074,6 +13105,46 @@
       "from": "mem-305",
       "to": "TASK-650",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-651",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "skills",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "mem-306",
+      "to": "TASK-651",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -13258,7 +13329,8 @@
       "TASK-643",
       "TASK-646",
       "TASK-647",
-      "TASK-649"
+      "TASK-649",
+      "TASK-651"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -13342,7 +13414,8 @@
       "TASK-628",
       "TASK-631",
       "TASK-633",
-      "TASK-649"
+      "TASK-649",
+      "TASK-651"
     ],
     "auto-merge": [
       "mem-103",
@@ -13663,7 +13736,8 @@
       "TASK-643",
       "TASK-646",
       "TASK-647",
-      "TASK-649"
+      "TASK-649",
+      "TASK-651"
     ],
     "conversational-bot": [
       "mem-036",
@@ -13766,7 +13840,8 @@
       "TASK-589",
       "TASK-631",
       "TASK-633",
-      "TASK-647"
+      "TASK-647",
+      "TASK-651"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -13959,7 +14034,8 @@
       "TASK-643",
       "TASK-646",
       "TASK-647",
-      "TASK-649"
+      "TASK-649",
+      "TASK-651"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -14774,7 +14850,8 @@
       "TASK-650",
       "mem-302",
       "mem-304",
-      "mem-305"
+      "mem-305",
+      "mem-306"
     ],
     "ship-test": [],
     "shipped-check": [
@@ -14808,7 +14885,8 @@
       "mem-249",
       "mem-250",
       "TASK-581",
-      "TASK-646"
+      "TASK-646",
+      "TASK-651"
     ],
     "social-engineering": [
       "mem-125"
@@ -15031,7 +15109,8 @@
       "TASK-646",
       "TASK-647",
       "TASK-649",
-      "TASK-650"
+      "TASK-650",
+      "TASK-651"
     ],
     "testing-quality": [
       "TASK-384",
@@ -15268,7 +15347,8 @@
       "TASK-633",
       "TASK-632",
       "TASK-634",
-      "TASK-646"
+      "TASK-646",
+      "TASK-651"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -15677,14 +15757,15 @@
     ],
     "pilot-aws": [
       "mem-291",
-      "mem-303"
+      "mem-303",
+      "mem-306"
     ]
   },
-  "last_updated": "2026-11-11T19:22:31.341864+00:00",
+  "last_updated": "2026-11-12T09:30:48.728438+00:00",
   "stats": {
-    "total_nodes": 780,
-    "total_edges": 813,
-    "memory_count": 430
+    "total_nodes": 782,
+    "total_edges": 821,
+    "memory_count": 431
   },
   "metadata": {
     "last_updated": null
