@@ -34,9 +34,16 @@ func (f *secretGateFixture) remoteState() string {
 	return string(refs) + "commits=" + string(count)
 }
 
-// assertPushRefusedNothingPublished pushes pilot/GH-9 and requires a refusal
-// that left the remote as it was.
-func (f *secretGateFixture) assertPushRefusedNothingPublished(before string) error {
+// assertPushRefusedNothingPublished is pushRefusedNothingPublished for a test
+// that does not read the error.
+func (f *secretGateFixture) assertPushRefusedNothingPublished(before string) {
+	f.t.Helper()
+	_ = f.pushRefusedNothingPublished(before)
+}
+
+// pushRefusedNothingPublished pushes pilot/GH-9 and requires a refusal that
+// left the remote as it was; it returns the refusal.
+func (f *secretGateFixture) pushRefusedNothingPublished(before string) error {
 	f.t.Helper()
 	err := f.git.Push(context.Background(), "pilot/GH-9", "GH-9")
 	if err == nil {
@@ -240,7 +247,7 @@ func TestSecretGate_SecretInFileNameAloneIsRefused(t *testing.T) {
 	f.commit("token-"+secretGateValue+".txt", "clean\n", "docs: file")
 	before := f.remoteState()
 
-	err := f.assertPushRefusedNothingPublished(before)
+	err := f.pushRefusedNothingPublished(before)
 	if strings.Contains(err.Error(), secretGateValue) {
 		t.Errorf("error holds the value: %v", err)
 	}
@@ -258,7 +265,7 @@ func TestSecretGate_SecretInFileNameAndContentIsNotPrinted(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
-	err := f.assertPushRefusedNothingPublished(before)
+	err := f.pushRefusedNothingPublished(before)
 	if strings.Contains(err.Error(), secretGateValue) {
 		t.Errorf("error holds the value: %v", err)
 	}
