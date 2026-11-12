@@ -1430,13 +1430,14 @@ func (g *GitOperations) HasUncommittedChanges(ctx context.Context) (bool, error)
 	return len(strings.TrimSpace(string(output))) > 0, nil
 }
 
-// PushToMain pushes changes directly to the main/default branch
-func (g *GitOperations) PushToMain(ctx context.Context) error {
+// PushToMain pushes changes directly to the main/default branch. taskID names
+// the task for the secret gate's alert, which alerts once per (task, commit).
+func (g *GitOperations) PushToMain(ctx context.Context, taskID string) error {
 	defaultBranch, err := g.GetDefaultBranch(ctx)
 	if err != nil {
 		defaultBranch = "main"
 	}
-	if err := CheckSecretGate(ctx, g.projectPath, defaultBranch, ""); err != nil {
+	if err := CheckSecretGate(ctx, g.projectPath, defaultBranch, taskID); err != nil {
 		return err
 	}
 	cmd := exec.CommandContext(ctx, "git", "push", "origin", defaultBranch)

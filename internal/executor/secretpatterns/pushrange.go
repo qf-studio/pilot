@@ -8,10 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 )
 
 // ErrPushRefused is matched (errors.Is) by every *PushRangeError. A retry loop
@@ -151,24 +155,49 @@ const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 // origin/HEAD, origin/main and origin/master. It returns "" when none resolves;
 // CheckPush then scans only the commits that are on no remote ref.
 func PushBase(ctx context.Context, dir, head, defaultBranch string) string {
+	base, _ := pushBase(ctx, dir, head, defaultBranch)
+	return base
+}
+
+// pushBase is PushBase that also returns the context error. git failures stay
+// swallowed (a candidate that does not resolve is the normal case), so the
+// context is checked after every call: a context that ended must not look like
+// "no base" and turn into a scan refusal (GH-6318).
+func pushBase(ctx context.Context, dir, head, defaultBranch string) (string, error) {
 	var candidates []string
 	if b := strings.TrimPrefix(strings.TrimSpace(defaultBranch), "origin/"); b != "" {
 		candidates = append(candidates, "origin/"+b)
 	}
-	if out, err := gitOutput(ctx, dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+	out, err := gitOutput(ctx, dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	if cerr := ctxError(ctx); cerr != nil {
+		return "", cerr
+	}
+	if err == nil {
 		if ref := strings.TrimSpace(string(out)); ref != "" {
 			candidates = append(candidates, ref)
 		}
 	}
 	candidates = append(candidates, "origin/main", "origin/master")
 	for _, ref := range candidates {
-		if out, err := gitOutput(ctx, dir, "merge-base", head, ref); err == nil {
+		out, err := gitOutput(ctx, dir, "merge-base", head, ref)
+		if cerr := ctxError(ctx); cerr != nil {
+			return "", cerr
+		}
+		if err == nil {
 			if sha := strings.TrimSpace(string(out)); sha != "" {
-				return sha
+				return sha, nil
 			}
 		}
 	}
-	return ""
+	return "", nil
+}
+
+// ctxError is the context error of ctx as the gate reports it, or nil.
+func ctxError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("secret gate: %w", err)
+	}
+	return nil
 }
 
 // CheckPush is CheckPushRange for the commits a push of head would publish,
@@ -178,23 +207,24 @@ func PushBase(ctx context.Context, dir, head, defaultBranch string) string {
 //
 // A cancelled or expired ctx is returned as the context error, never as a
 // refusal: git failed because the caller gave up, not because the push cannot be
-// cleared (GH-6284).
+// cleared (GH-6284). The context is checked after every git call of the no-base
+// path, so no further git call starts once it has ended (GH-6318).
 func CheckPush(ctx context.Context, dir, head string, opts PushOptions) error {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("secret gate: %w", err)
+	if err := ctxError(ctx); err != nil {
+		return err
 	}
-	if base := PushBase(ctx, dir, head, opts.DefaultBranch); base != "" {
+	base, err := pushBase(ctx, dir, head, opts.DefaultBranch)
+	if err != nil {
+		return err
+	}
+	if base != "" {
 		return checkRange(ctx, dir, base, []string{base + ".." + head}, head, opts)
 	}
-	// PushBase swallows git errors, so a context that ended during it shows up here.
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("secret gate: %w", err)
-	}
 	out, err := gitOutput(ctx, dir, "rev-list", "--reverse", head, "--not", "--remotes")
+	if cerr := ctxError(ctx); cerr != nil {
+		return cerr
+	}
 	if err != nil {
-		if cerr := ctx.Err(); cerr != nil {
-			return fmt.Errorf("secret gate: %w", cerr)
-		}
 		return &PushScanError{Reason: "the push base could not be computed: no merge base with the default branch and the commits not on a remote could not be listed"}
 	}
 	oldest, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
@@ -202,17 +232,27 @@ func CheckPush(ctx context.Context, dir, head string, opts PushOptions) error {
 		return nil // every commit is already on a remote ref: nothing to publish
 	}
 	diffBase, logArgs := emptyTree, []string{head, "--not", "--remotes"}
-	if parent, perr := gitOutput(ctx, dir, "rev-parse", "--verify", "--quiet", oldest+"^"); perr == nil {
+	parent, perr := gitOutput(ctx, dir, "rev-parse", "--verify", "--quiet", oldest+"^")
+	if cerr := ctxError(ctx); cerr != nil {
+		return cerr
+	}
+	if perr == nil {
 		diffBase = strings.TrimSpace(string(parent))
-	} else if isShallowBoundary(ctx, dir, oldest) {
-		// Decision: the oldest unpushed commit is the shallow boundary of a clone
-		// whose remote branch moved on, so it came from the remote and its parent
-		// is only missing because of the depth. Measuring from the empty tree (or
-		// scanning it as a root commit) would show every file it holds as added
-		// and raise a false alert on old published content. Diff against the
-		// boundary commit itself and leave it out of the per-commit scan (GH-6284).
-		diffBase = oldest
-		logArgs = append(logArgs, oldest) // after --not: excluded (a "^" would flip it back)
+	} else {
+		boundary, berr := isShallowBoundary(ctx, dir, oldest)
+		if berr != nil {
+			return berr
+		}
+		if boundary {
+			// Decision: the oldest unpushed commit is the shallow boundary of a clone
+			// whose remote branch moved on, so it came from the remote and its parent
+			// is only missing because of the depth. Measuring from the empty tree (or
+			// scanning it as a root commit) would show every file it holds as added
+			// and raise a false alert on old published content. Diff against the
+			// boundary commit itself and leave it out of the per-commit scan (GH-6284).
+			diffBase = oldest
+			logArgs = append(logArgs, oldest) // after --not: excluded (a "^" would flip it back)
+		}
 	}
 	// Decision: a merge in the unpushed range may bring in a branch that is
 	// already on a remote, and the net diff from the oldest unpushed commit's
@@ -220,9 +260,14 @@ func CheckPush(ctx context.Context, dir, head string, opts PushOptions) error {
 	// With a merge in the range the net diff is skipped; the per-commit pass
 	// reads every merge as a combined diff (--cc), which shows only what the
 	// merge itself introduced.
-	if merges, merr := gitOutput(ctx, dir, "rev-list", "--merges", "-n", "1", head, "--not", "--remotes"); merr != nil {
+	merges, merr := gitOutput(ctx, dir, "rev-list", "--merges", "-n", "1", head, "--not", "--remotes")
+	if cerr := ctxError(ctx); cerr != nil {
+		return cerr
+	}
+	if merr != nil {
 		return &PushScanError{Reason: "the push base could not be computed: the merge commits not on a remote could not be listed"}
-	} else if strings.TrimSpace(string(merges)) != "" {
+	}
+	if strings.TrimSpace(string(merges)) != "" {
 		diffBase = ""
 	}
 	return checkRange(ctx, dir, diffBase, logArgs, head, opts)
@@ -230,22 +275,102 @@ func CheckPush(ctx context.Context, dir, head string, opts PushOptions) error {
 
 // isShallowBoundary reports whether sha is a shallow boundary of the repository
 // at dir: a commit whose parents were cut off by a shallow fetch, listed in
-// git's shallow file. A genuine root commit is not.
-func isShallowBoundary(ctx context.Context, dir, sha string) bool {
-	if out, err := gitOutput(ctx, dir, "rev-parse", "--is-shallow-repository"); err != nil || strings.TrimSpace(string(out)) != "true" {
-		return false
+// git's shallow file. A genuine root commit is not. The error is the context
+// error, when the context ended during a git call.
+func isShallowBoundary(ctx context.Context, dir, sha string) (bool, error) {
+	out, err := gitOutput(ctx, dir, "rev-parse", "--is-shallow-repository")
+	if cerr := ctxError(ctx); cerr != nil {
+		return false, cerr
 	}
-	out, err := gitOutput(ctx, dir, "rev-parse", "--path-format=absolute", "--git-path", "shallow")
-	if err != nil {
-		return false
+	if err != nil || strings.TrimSpace(string(out)) != "true" {
+		return false, nil
 	}
-	data, err := os.ReadFile(strings.TrimSpace(string(out)))
+	out, err = gitOutput(ctx, dir, "rev-parse", "--path-format=absolute", "--git-path", "shallow")
+	if cerr := ctxError(ctx); cerr != nil {
+		return false, cerr
+	}
+	// Decision: a git before 2.31 does not fail on --path-format. rev-parse prints
+	// an option it does not know back as output and exits 0, so the answer is
+	// told apart by its shape: a path that is not absolute means the option was
+	// not understood and the boundary check is off on this host.
+	shallowPath := strings.TrimSpace(string(out))
+	if err != nil || !filepath.IsAbs(shallowPath) {
+		warnOldGit(ctx, dir)
+		return false, ctxError(ctx)
+	}
+	data, err := os.ReadFile(shallowPath)
 	if err != nil {
-		return false
+		return false, nil
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.TrimSpace(line) == sha {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// minAbsolutePathGit is the first git release with rev-parse --path-format.
+const minAbsolutePathGit = "2.31"
+
+var (
+	warnOldGitMu   sync.Mutex
+	warnOldGitDone bool
+)
+
+// gitVersionOutput is `git --version`; a var so a test can stand in an old git.
+var gitVersionOutput = func(ctx context.Context, dir string) (string, error) {
+	out, err := gitOutput(ctx, dir, "--version")
+	return string(out), err
+}
+
+// warnOldGit logs once per process when the host's git predates --path-format
+// (2.31). The shallow-boundary check needs it to find the shallow file and is
+// silently off without it, so a depth-limited clone is refused for its old
+// published content instead of recognised. The once-guard is spent only by a
+// version that was read: a failed call or an ended context leaves it for the
+// next push.
+func warnOldGit(ctx context.Context, dir string) {
+	warnOldGitMu.Lock()
+	defer warnOldGitMu.Unlock()
+	if warnOldGitDone {
+		return
+	}
+	out, err := gitVersionOutput(ctx, dir)
+	if err != nil || ctx.Err() != nil {
+		return
+	}
+	warnOldGitDone = true
+	if v, ok := parseGitVersion(out); ok && versionLess(v, minAbsolutePathGit) {
+		slog.Warn("git is older than 2.31: the push secret gate cannot recognise the boundary of a shallow clone and scans its published history as new",
+			slog.String("git_version", v), slog.String("minimum", minAbsolutePathGit))
+	}
+}
+
+// parseGitVersion extracts "2.39.5" from "git version 2.39.5 (Apple Git-154)".
+func parseGitVersion(out string) (string, bool) {
+	f := strings.Fields(out)
+	if len(f) < 3 || f[0] != "git" || f[1] != "version" {
+		return "", false
+	}
+	return f[2], true
+}
+
+// versionLess reports whether the dotted version v is below min, comparing the
+// numeric parts; a non-numeric part ends the comparison as "not less".
+func versionLess(v, min string) bool {
+	vp, mp := strings.Split(v, "."), strings.Split(min, ".")
+	for i := range mp {
+		if i >= len(vp) {
 			return true
+		}
+		a, aerr := strconv.Atoi(vp[i])
+		b, _ := strconv.Atoi(mp[i])
+		if aerr != nil {
+			return false
+		}
+		if a != b {
+			return a < b
 		}
 	}
 	return false
@@ -279,6 +404,9 @@ func checkRange(ctx context.Context, dir, diffBase string, logArgs []string, hea
 	if diffBase != "" {
 		var err error
 		diff, err = gitOutputMax(ctx, dir, int64(netDiffScanFactor*maxCommitScanBytes), "diff", "--no-color", "--text", diffBase+".."+head)
+		if cerr := ctxError(ctx); cerr != nil {
+			return cerr
+		}
 		if errors.Is(err, errScanTooLarge) {
 			return &PushScanError{Reason: fmt.Sprintf("the diff of the push is larger than %d bytes, too large to scan", netDiffScanFactor*maxCommitScanBytes)}
 		}
@@ -287,6 +415,9 @@ func checkRange(ctx context.Context, dir, diffBase string, logArgs []string, hea
 		}
 	}
 	msgs, err := gitOutput(ctx, dir, append([]string{"log", "--format=%B"}, logArgs...)...)
+	if cerr := ctxError(ctx); cerr != nil {
+		return cerr
+	}
 	if err != nil {
 		return fmt.Errorf("secret gate: git log: %w", err)
 	}
@@ -295,19 +426,30 @@ func checkRange(ctx context.Context, dir, diffBase string, logArgs []string, hea
 
 	// Per-commit pass: oldest first, so the error names the first offender.
 	if err := scanCommits(ctx, dir, logArgs, opts); err != nil {
+		// A hit stays a hit; any other failure of a context that ended is the context's.
+		if cerr := ctxError(ctx); cerr != nil && !errors.Is(err, ErrPushRefused) {
+			return cerr
+		}
 		return err
 	}
 
 	// Hits the per-commit pass cannot see (a merge's conflict resolution).
 	if netHit || msgHit {
-		sha, _ := gitOutput(ctx, dir, "rev-parse", "--short=12", head)
-		e := &PushRangeError{Commit: strings.TrimSpace(string(sha)), File: netFile, Kind: netKind}
+		// The hit stands even when the context has ended; the commit is then named
+		// by the ref, since no further git call may start.
+		commit := head
+		if ctx.Err() == nil {
+			if sha, serr := gitOutput(ctx, dir, "rev-parse", "--short=12", head); serr == nil {
+				commit = strings.TrimSpace(string(sha))
+			}
+		}
+		e := &PushRangeError{Commit: commit, File: netFile, Kind: netKind}
 		if !netHit {
 			e.File, e.Kind = CommitMessageFile, msgKind
 		}
 		return e
 	}
-	return nil
+	return ctxError(ctx)
 }
 
 // scanCommits scans every selected commit on its own, streaming git's output so
@@ -327,8 +469,8 @@ func scanCommits(ctx context.Context, dir string, logArgs []string, opts PushOpt
 	format := "--format=" + mark + "S%n%H%n" + mark + "M%n%B%n" + mark + "P"
 
 	args := append([]string{"-c", "core.quotepath=false", "log", "-p", "--cc", "--text", "--reverse", "--no-color", format}, logArgs...)
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
+	defer gitCallDone(args)
+	cmd := gitCommand(ctx, dir, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, perr := cmd.StdoutPipe()
@@ -472,9 +614,24 @@ func scanPatch(patch []byte, opts PushOptions) (file, kind string, hit bool) {
 	return "", "", false
 }
 
-func gitOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.quotepath=false"}, args...)...)
+// gitCallDone is called after every git call of the gate with its arguments. A
+// test seam: it lets a test end the context between two calls.
+var gitCallDone = func(args []string) {}
+
+// gitCommand is the one way the gate starts git. Decision: it runs with
+// GIT_NO_REPLACE_OBJECTS=1. A replace ref or a graft made by the session maps a
+// commit to another one for every reading command, so the scan would see the
+// replacement while git push sends the real objects (GH-6318).
+func gitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
+	return cmd
+}
+
+func gitOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	defer gitCallDone(args)
+	cmd := gitCommand(ctx, dir, append([]string{"-c", "core.quotepath=false"}, args...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -489,8 +646,8 @@ var errScanTooLarge = errors.New("git output too large to scan")
 
 // gitOutputMax is gitOutput that stops reading, and kills git, past max bytes.
 func gitOutputMax(ctx context.Context, dir string, max int64, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.quotepath=false"}, args...)...)
-	cmd.Dir = dir
+	defer gitCallDone(args)
+	cmd := gitCommand(ctx, dir, append([]string{"-c", "core.quotepath=false"}, args...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()

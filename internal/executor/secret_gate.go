@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -110,6 +111,7 @@ func SecretGateOptionsFor(ctx context.Context, dir string) secretpatterns.PushOp
 func gateRepoKey(ctx context.Context, dir string) string {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
 	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1") // like every git call of the gate
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -200,8 +202,12 @@ const maxAlertedCommits = 4096
 // firstAlertFor reports whether the (task, commit) pair has not alerted yet and
 // records it. A call without a task ID is never deduplicated: the autopilot
 // sites have no task to key on, and each of their runs is its own event.
+//
+// Decision: a commit that is not a SHA is not a key either (GH-6318). The gate
+// names the ref instead of a commit when its context ended before it could
+// resolve the head, and a ref name would stand for different commits over time.
 func firstAlertFor(taskID, commit string) bool {
-	if taskID == "" {
+	if taskID == "" || !looksLikeCommitID(commit) {
 		return true
 	}
 	alertedMu.Lock()
@@ -214,6 +220,20 @@ func firstAlertFor(taskID, commit string) bool {
 		alertedCommits = map[string]struct{}{}
 	}
 	alertedCommits[key] = struct{}{}
+	return true
+}
+
+// looksLikeCommitID reports whether s is a commit SHA as the gate prints it:
+// 12 to 64 hex digits (the short form of 12 up to a full SHA-256 id).
+func looksLikeCommitID(s string) bool {
+	if len(s) < 12 || len(s) > 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
 	return true
 }
 

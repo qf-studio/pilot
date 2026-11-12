@@ -1,8 +1,10 @@
 package secretpatterns
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -476,12 +478,12 @@ func TestCheckPushRange_CancelledContextIsNotARefusal(t *testing.T) {
 	}
 }
 
-// GH-6284: a depth-1 clone whose remote default branch advanced. The oldest
-// unpushed commit is the shallow boundary and its parent is missing, so the diff
-// base must be the boundary itself and not the empty tree: a file published long
-// ago must not raise a secret alert for a clean commit.
-func TestCheckPushRange_ShallowBoundaryIsNotMeasuredFromEmptyTree(t *testing.T) {
-	const old = "hunter2-not-a-known-shape"
+// shallowFixture is a depth-1 clone of a remote main that publishes old (a
+// registered value) in its first commits. The clone holds a clean local commit
+// on pilot/GH-1, and the remote then advanced and the clone fetched it at depth
+// 1, so the local history no longer meets origin/main and PushBase finds nothing.
+func shallowFixture(t *testing.T, old string) *pushFixture {
+	t.Helper()
 	ResetSecretValuesForTest()
 	t.Cleanup(ResetSecretValuesForTest)
 	root := t.TempDir()
@@ -518,6 +520,16 @@ func TestCheckPushRange_ShallowBoundaryIsNotMeasuredFromEmptyTree(t *testing.T) 
 	if base := PushBase(context.Background(), f.local, "pilot/GH-1", "main"); base != "" {
 		t.Fatalf("setup: PushBase = %q, want no merge base for the diverged shallow history", base)
 	}
+	return f
+}
+
+// GH-6284: a depth-1 clone whose remote default branch advanced. The oldest
+// unpushed commit is the shallow boundary and its parent is missing, so the diff
+// base must be the boundary itself and not the empty tree: a file published long
+// ago must not raise a secret alert for a clean commit.
+func TestCheckPushRange_ShallowBoundaryIsNotMeasuredFromEmptyTree(t *testing.T) {
+	const old = "hunter2-not-a-known-shape"
+	f := shallowFixture(t, old)
 	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", PushOptions{DefaultBranch: "main"}); err != nil {
 		t.Fatalf("clean commit on a shallow clone: got %v, want no refusal", err)
 	}
@@ -527,5 +539,214 @@ func TestCheckPushRange_ShallowBoundaryIsNotMeasuredFromEmptyTree(t *testing.T) 
 	var pre *PushRangeError
 	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", PushOptions{DefaultBranch: "main"}); !errors.As(err, &pre) || pre.File != "leak.md" {
 		t.Fatalf("secret in an unpushed commit: got %v, want a hit in leak.md", err)
+	}
+}
+
+// GH-6318: ending the context between two git calls of the no-base path returns
+// the context error and starts no further git call, wherever it ends. The
+// cancel comes through the git seam, so each call has its own point; removing
+// the context check after any one of them lets another call start.
+func TestCheckPushRange_ContextEndedBetweenGitCallsStopsTheNoBasePath(t *testing.T) {
+	f := shallowFixture(t, "hunter2-not-a-known-shape")
+	opts := PushOptions{DefaultBranch: "main"}
+
+	var calls [][]string
+	var cancelAfter int
+	var cancel context.CancelFunc
+	prev := gitCallDone
+	gitCallDone = func(args []string) {
+		calls = append(calls, args)
+		if cancel != nil && len(calls) == cancelAfter {
+			cancel()
+		}
+	}
+	t.Cleanup(func() { gitCallDone = prev })
+
+	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", opts); err != nil {
+		t.Fatalf("setup: clean run: %v", err)
+	}
+	total := len(calls)
+	if total < 10 {
+		t.Fatalf("setup: the no-base path made %d git calls, want the whole boundary path (%v)", total, calls)
+	}
+
+	// The last call is the scan itself: ending the context after it has nothing left to stop.
+	for k := 1; k < total; k++ {
+		calls, cancelAfter = nil, k
+		var ctx context.Context
+		ctx, cancel = context.WithCancel(context.Background())
+		err := CheckPush(ctx, f.local, "pilot/GH-1", opts)
+		cancel()
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("context ended after git call %d (%v): got %v, want context.Canceled", k, calls[k-1], err)
+			continue
+		}
+		if errors.Is(err, ErrPushRefused) {
+			t.Errorf("context ended after git call %d (%v): became a refusal: %v", k, calls[k-1], err)
+		}
+		if len(calls) != k {
+			t.Errorf("context ended after git call %d (%v): %d git calls ran, next was %v", k, calls[k-1], len(calls), calls[k:])
+		}
+	}
+}
+
+// GH-6318: a replace ref or a graft made in the session hides a commit from
+// every reading git command, while git push sends the real objects. The gate
+// reads with GIT_NO_REPLACE_OBJECTS=1, so what it scans is what is pushed.
+// mutation pin: the gate's git calls run without GIT_NO_REPLACE_OBJECTS -> both tests fail
+func TestCheckPushRange_ReplaceRefDoesNotHideACommit(t *testing.T) {
+	f := newPushFixture(t)
+	const secret = "hunter2-not-a-known-shape"
+	RegisterSecretValues(secret)
+	f.git("checkout", "-b", "clean-twin")
+	f.commit("notes.md", "nothing here\n", "docs: notes")
+	twin := f.git("rev-parse", "HEAD")
+	f.git("checkout", "pilot/GH-1")
+	f.commit("notes.md", "token = "+secret+"\n", "docs: notes")
+	leaking := f.git("rev-parse", "HEAD")
+	f.git("replace", leaking, twin)
+
+	var pre *PushRangeError
+	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", PushOptions{}); !errors.As(err, &pre) || pre.File != "notes.md" {
+		t.Fatalf("registered value in a commit a replace ref maps to a clean one: got %v, want a hit in notes.md", err)
+	}
+}
+
+func TestCheckPushRange_ReplaceGraftDoesNotHideAnAddThenRemovePair(t *testing.T) {
+	f := newPushFixture(t)
+	const secret = "hunter2-not-a-known-shape"
+	RegisterSecretValues(secret)
+	base := f.git("rev-parse", "HEAD")
+	f.commit("notes.md", "token = "+secret+"\n", "docs: add notes")
+	f.commit("notes.md", "nothing here\n", "docs: clean notes")
+	// The graft cuts the adding commit out of the history the session sees.
+	f.git("replace", "--graft", "HEAD", base)
+
+	var pre *PushRangeError
+	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", PushOptions{}); !errors.As(err, &pre) || pre.File != "notes.md" {
+		t.Fatalf("add-then-remove pair hidden by a replace graft: got %v, want a hit in notes.md", err)
+	}
+}
+
+// GH-6318: a git older than 2.31 has no rev-parse --path-format, so the shallow
+// boundary is silently not recognised there; the gate says so once.
+func TestCheckPushRange_WarnOldGit(t *testing.T) {
+	tests := []struct {
+		out      string
+		wantWarn bool
+	}{
+		{"git version 2.30.9\n", true},
+		{"git version 2.25.1\n", true},
+		{"git version 1.8.3.1\n", true},
+		{"git version 2.31.0\n", false},
+		{"git version 2.50.1 (Apple Git-155)\n", false},
+		{"git version 3.0.0\n", false},
+		{"unparsable\n", false},
+	}
+	prev := gitVersionOutput
+	t.Cleanup(func() {
+		gitVersionOutput = prev
+		resetWarnOldGit()
+	})
+	for _, tt := range tests {
+		var buf bytes.Buffer
+		old := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+		gitVersionOutput = func(context.Context, string) (string, error) { return tt.out, nil }
+		resetWarnOldGit()
+		warnOldGit(context.Background(), "")
+		warnOldGit(context.Background(), "") // once per process
+		slog.SetDefault(old)
+
+		got := strings.Count(buf.String(), "level=WARN")
+		if tt.wantWarn && got != 1 {
+			t.Errorf("%q: %d warnings, want exactly 1", tt.out, got)
+		}
+		if !tt.wantWarn && got != 0 {
+			t.Errorf("%q: %d warnings, want none", tt.out, got)
+		}
+	}
+}
+
+// GH-6318: a version call that fails, or an ended context, must not spend the
+// once-guard: the next push still gets its warning.
+func TestCheckPushRange_WarnOldGit_FailedVersionCallDoesNotSpendTheGuard(t *testing.T) {
+	prev := gitVersionOutput
+	t.Cleanup(func() {
+		gitVersionOutput = prev
+		resetWarnOldGit()
+	})
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(oldLogger)
+	resetWarnOldGit()
+
+	gitVersionOutput = func(context.Context, string) (string, error) { return "", errors.New("git: not found") }
+	warnOldGit(context.Background(), "")
+
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	gitVersionOutput = func(context.Context, string) (string, error) { return "git version 2.30.2\n", nil }
+	warnOldGit(ended, "")
+	if got := strings.Count(buf.String(), "level=WARN"); got != 0 {
+		t.Fatalf("%d warnings from a failed call or an ended context, want none", got)
+	}
+
+	warnOldGit(context.Background(), "")
+	warnOldGit(context.Background(), "")
+	if got := strings.Count(buf.String(), "level=WARN"); got != 1 {
+		t.Errorf("%d warnings after the guard was kept, want exactly 1:\n%s", got, buf.String())
+	}
+}
+
+// resetWarnOldGit re-arms the once-guard of warnOldGit.
+func resetWarnOldGit() {
+	warnOldGitMu.Lock()
+	warnOldGitDone = false
+	warnOldGitMu.Unlock()
+}
+
+// GH-6318: an old git does not fail on --path-format, it prints the option back
+// and exits 0. The warning must come from that answer, through the real
+// shallow-file lookup, not only from a direct call of warnOldGit.
+func TestCheckPushRange_OldGitWarnsOnceThroughTheLookup(t *testing.T) {
+	f := newPushFixture(t)
+	sha := f.git("rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(f.local, ".git", "shallow"), []byte(sha+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A git 2.30: --version says so, and rev-parse echoes the option it does not know.
+	shim := "#!/bin/sh\n" +
+		"case \"$*\" in\n" +
+		"  *--path-format=absolute*) printf '%s\\n%s\\n' --path-format=absolute .git/shallow; exit 0 ;;\n" +
+		"  *--version*) echo 'git version 2.30.2'; exit 0 ;;\n" +
+		"esac\n" +
+		"exec " + realGit + " \"$@\"\n"
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	resetWarnOldGit()
+	t.Cleanup(resetWarnOldGit)
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	for i := 0; i < 2; i++ {
+		listed, err := isShallowBoundary(context.Background(), f.local, sha)
+		if err != nil || listed {
+			t.Fatalf("old git: got listed=%v err=%v, want the boundary check off", listed, err)
+		}
+	}
+	if got := strings.Count(buf.String(), "level=WARN"); got != 1 {
+		t.Errorf("%d warnings through the lookup, want exactly 1:\n%s", got, buf.String())
 	}
 }
