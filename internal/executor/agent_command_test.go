@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/qf-studio/pilot/internal/executor/ghguard"
 )
 
 // TASK-651 leg U1: run_as_user. None of these tests needs root: sudo is a mock
@@ -207,7 +209,7 @@ func TestRunAsUserEnvAllowlist(t *testing.T) {
 		"HOME=/home/daemon", "CLAUDE_CONFIG_DIR=/home/daemon/.claude",
 		// dropped
 		"GITHUB_TOKEN=g", "GH_TOKEN=g", "AWS_ACCESS_KEY_ID=a", "AWS_SECRET_ACCESS_KEY=a",
-		"AWS_SESSION_TOKEN=a", "FOO_TOKEN=f", "SSH_AUTH_SOCK=/s", "PILOT_GH_REAL=/gh", "XDG_RUNTIME_DIR=/r",
+		"AWS_SESSION_TOKEN=a", "FOO_TOKEN=f", "SSH_AUTH_SOCK=/s", "XDG_RUNTIME_DIR=/r",
 	}
 	got := map[string]string{}
 	for _, kv := range s.agentEnvFor(in) {
@@ -225,7 +227,7 @@ func TestRunAsUserEnvAllowlist(t *testing.T) {
 	}
 	for _, name := range []string{
 		"GITHUB_TOKEN", "GH_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-		"FOO_TOKEN", "SSH_AUTH_SOCK", "PILOT_GH_REAL", "XDG_RUNTIME_DIR",
+		"FOO_TOKEN", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR",
 	} {
 		if _, ok := got[name]; ok {
 			t.Errorf("%s reached the agent, the allowlist drops it", name)
@@ -535,4 +537,54 @@ func fileGID(t *testing.T, p string) int {
 		t.Skip("no stat_t on this platform")
 	}
 	return int(st.Gid)
+}
+
+// The gh guard shim leads PATH, so the names the guard process reads must
+// survive the allowlist: with the shim directory lost, the fallback search of
+// ghguard.ResolveFallbackGh finds the shim's own gh and recurses.
+func TestRunAsUserEnvKeepsGhGuardNames(t *testing.T) {
+	s := testRunAsSettings(t)
+	shimDir := t.TempDir()
+	realDir := t.TempDir()
+	for _, d := range []string{shimDir, realDir} {
+		if err := os.WriteFile(filepath.Join(d, "gh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	journal := filepath.Join(shimDir, "journal.jsonl")
+	env := prependPathEnv([]string{"PATH=" + realDir, "GITHUB_TOKEN=g"}, shimDir)
+	env = append(env, ghGuardTaskEnv(ExecuteOptions{SourceIssueID: "42", SourceRepo: "o/r", Branch: "pilot/GH-42"},
+		filepath.Join(realDir, "gh"), shimDir, journal)...)
+
+	got := map[string]string{}
+	for _, kv := range s.agentEnvFor(env) {
+		name, value, _ := strings.Cut(kv, "=")
+		got[name] = value
+	}
+	if _, ok := got["GITHUB_TOKEN"]; ok {
+		t.Error("GITHUB_TOKEN reached the agent")
+	}
+	getenv := func(k string) string { return got[k] }
+
+	id := ghguard.IdentityFromEnv(getenv)
+	if id.TaskIssue != "42" || id.TaskRepo != "o/r" || id.TaskBranch != "pilot/GH-42" || id.RealGh != filepath.Join(realDir, "gh") {
+		t.Errorf("identity lost through the allowlist: %+v", id)
+	}
+	if getenv(ghguard.EnvJournalPath) != journal {
+		t.Errorf("journal path = %q, want %q", getenv(ghguard.EnvJournalPath), journal)
+	}
+	if getenv(ghguard.EnvShimDir) != shimDir {
+		t.Fatalf("shim dir = %q, want %q", getenv(ghguard.EnvShimDir), shimDir)
+	}
+
+	// Real counterpart: the fallback search the guard runs when RealGh is
+	// empty must skip the shim directory that leads the agent's PATH.
+	t.Setenv("PATH", got["PATH"])
+	fallback, err := ghguard.ResolveFallbackGh(getenv(ghguard.EnvShimDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(realDir, "gh"); fallback != want {
+		t.Errorf("fallback gh = %q, want %q (the shim must be skipped)", fallback, want)
+	}
 }
