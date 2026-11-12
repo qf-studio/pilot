@@ -1,6 +1,6 @@
 # TASK-650: Secret exposure hardening — value-based redaction, leak detection, adapter canary tests, agent isolation
 
-**Status**: 🚀 **L1–L6 and the follow-ups released (v2.318.0 on 11-10, v2.319.0 on 11-11 15:03Z). One follow-up in the queue; read guard precision stopped by decision; H1 is the next step.** v2.318.0: L1 [#6249](https://github.com/qf-studio/pilot/issues/6249) → PR#6254 · L2 [#6250](https://github.com/qf-studio/pilot/issues/6250) → PR#6259 · L3 [#6251](https://github.com/qf-studio/pilot/issues/6251) → PR#6256 · L4 [#6252](https://github.com/qf-studio/pilot/issues/6252) → PR#6257 + [#6258](https://github.com/qf-studio/pilot/issues/6258) → PR#6260 · L5 [#6263](https://github.com/qf-studio/pilot/issues/6263) → PR#6269 · L6 [#6264](https://github.com/qf-studio/pilot/issues/6264) → PR#6270 · [#6266](https://github.com/qf-studio/pilot/issues/6266) → PR#6271 · [#6268](https://github.com/qf-studio/pilot/issues/6268) → PR#6275 · [#6273](https://github.com/qf-studio/pilot/issues/6273) → PR#6278. v2.319.0: [#6272](https://github.com/qf-studio/pilot/issues/6272) L5 gaps → PR#6282 (+ [#6286](https://github.com/qf-studio/pilot/issues/6286) → PR#6298) · [#6276](https://github.com/qf-studio/pilot/issues/6276) → PR#6293 · [#6279](https://github.com/qf-studio/pilot/issues/6279) → PR#6294 · [#6281](https://github.com/qf-studio/pilot/issues/6281) → PR#6295. **Read guard precision: not planned (founder decision 11-11, mem-305).** [#6267](https://github.com/qf-studio/pilot/issues/6267) → PR#6285 reverted by PR#6289; [#6287](https://github.com/qf-studio/pilot/issues/6287) → PR#6299 closed after a NO-GO black-box review (runner and full-path wrapper bypasses, superlinear deep paths and cd chains, ancestor rule blocks usual commands). main and the box run the substring matcher; the substring pin tests of PR#6300/#6303 stay. Queue: [#6284](https://github.com/qf-studio/pilot/issues/6284) push gate follow-ups, fresh run from main with a base note (first PR#6297 closed: conflicts with PR#6298 and one red test) · [#6310](https://github.com/qf-studio/pilot/issues/6310) `reflect.Ptr` lint that fails the local pre-push gate. **H1 moved to TASK-651 (design accepted 11-12).** PR#6312 (#6284) reviewed after the merge: safe to ship, residuals in [#6318](https://github.com/qf-studio/pilot/issues/6318): first PR#6323 closed 11-12 after a NO-GO review (its shallow-clone part trusted the reflog of local remote-tracking refs: a forged entry got a secret past the gate); the issue runs again with those two items withdrawn and a new item (gate git calls ignore replace refs). Pipeline defects found on the way: [#6326](https://github.com/qf-studio/pilot/issues/6326) held task re-check between task runs · [#6327](https://github.com/qf-studio/pilot/issues/6327) PR that failed on a CI timeout re-enters on a new head or green checks. Founder: Anthropic key + Slack bot/app tokens rotation pending; paid secret scanning for five private repos undecided; SOP `sops/operations/secret-leak-response.md`. Memories mem-300 to mem-305.
+**Status**: 🚀 **11-12: [#6318](https://github.com/qf-studio/pilot/issues/6318) → PR#6331 merged after a run-it review (GO-WITH-NOTES, 35 tamper cases: replace refs now blocked, no case worse than main). The review found five more gate bypasses on main (textconv driver, `log.showRoot=false`, a file that shadows the branch name, `push.followTags`, a secret in a file path) → L7 [#6334](https://github.com/qf-studio/pilot/issues/6334) dispatched (`pilot` + `no-decompose`).** Earlier: **L1–L6 and the follow-ups released (v2.318.0 on 11-10, v2.319.0 on 11-11 15:03Z). One follow-up in the queue; read guard precision stopped by decision; H1 is the next step.** v2.318.0: L1 [#6249](https://github.com/qf-studio/pilot/issues/6249) → PR#6254 · L2 [#6250](https://github.com/qf-studio/pilot/issues/6250) → PR#6259 · L3 [#6251](https://github.com/qf-studio/pilot/issues/6251) → PR#6256 · L4 [#6252](https://github.com/qf-studio/pilot/issues/6252) → PR#6257 + [#6258](https://github.com/qf-studio/pilot/issues/6258) → PR#6260 · L5 [#6263](https://github.com/qf-studio/pilot/issues/6263) → PR#6269 · L6 [#6264](https://github.com/qf-studio/pilot/issues/6264) → PR#6270 · [#6266](https://github.com/qf-studio/pilot/issues/6266) → PR#6271 · [#6268](https://github.com/qf-studio/pilot/issues/6268) → PR#6275 · [#6273](https://github.com/qf-studio/pilot/issues/6273) → PR#6278. v2.319.0: [#6272](https://github.com/qf-studio/pilot/issues/6272) L5 gaps → PR#6282 (+ [#6286](https://github.com/qf-studio/pilot/issues/6286) → PR#6298) · [#6276](https://github.com/qf-studio/pilot/issues/6276) → PR#6293 · [#6279](https://github.com/qf-studio/pilot/issues/6279) → PR#6294 · [#6281](https://github.com/qf-studio/pilot/issues/6281) → PR#6295. **Read guard precision: not planned (founder decision 11-11, mem-305).** [#6267](https://github.com/qf-studio/pilot/issues/6267) → PR#6285 reverted by PR#6289; [#6287](https://github.com/qf-studio/pilot/issues/6287) → PR#6299 closed after a NO-GO black-box review (runner and full-path wrapper bypasses, superlinear deep paths and cd chains, ancestor rule blocks usual commands). main and the box run the substring matcher; the substring pin tests of PR#6300/#6303 stay. Queue: [#6284](https://github.com/qf-studio/pilot/issues/6284) push gate follow-ups, fresh run from main with a base note (first PR#6297 closed: conflicts with PR#6298 and one red test) · [#6310](https://github.com/qf-studio/pilot/issues/6310) `reflect.Ptr` lint that fails the local pre-push gate. **H1 moved to TASK-651 (design accepted 11-12).** PR#6312 (#6284) reviewed after the merge: safe to ship, residuals in [#6318](https://github.com/qf-studio/pilot/issues/6318): first PR#6323 closed 11-12 after a NO-GO review (its shallow-clone part trusted the reflog of local remote-tracking refs: a forged entry got a secret past the gate); the issue runs again with those two items withdrawn and a new item (gate git calls ignore replace refs). Pipeline defects found on the way: [#6326](https://github.com/qf-studio/pilot/issues/6326) held task re-check between task runs · [#6327](https://github.com/qf-studio/pilot/issues/6327) PR that failed on a CI timeout re-enters on a new head or green checks. Founder: Anthropic key + Slack bot/app tokens rotation pending; paid secret scanning for five private repos undecided; SOP `sops/operations/secret-leak-response.md`. Memories mem-300 to mem-305.
 **Created**: 2026-11-09
 **Assignee**: Navigator (plan, H1 design, reviews) → Pilot (legs)
 
@@ -231,6 +231,50 @@ GitHub found the leaked Telegram token on 2026-04-07 and kept the alert open for
 
 - TASK-650 · GitHub secret scanning alert #2
 
+### LEG L7 — repo: qf-studio/pilot — title: fix(security): push secret gate — ignore textconv and external diff drivers, show root commits, scan the exact branch ref, no followed tags, scan file paths
+
+probe: present qf-studio/pilot func[[:space:]]CheckPushRange\(
+probe: present qf-studio/pilot GIT_NO_REPLACE_OBJECTS
+probe: absent  qf-studio/pilot "--no-textcon[v]"
+
+## Context
+
+Navigator TASK-650. The push secret gate is CheckSecretGate in `internal/executor/secret_gate.go`; the scan is CheckPush and CheckPushRange in `internal/executor/secretpatterns/pushrange.go`; the push methods are Push, PushForceWithLease and PushToMain in `internal/executor/git.go`. The gate runs in a repository that the model session can write. The run-it review of PR #6331 found five ways to publish a secret past the gate; each one works on main and none came from that PR:
+
+1. A textconv driver. A config value diff.NAME.textconv plus an attribute line (in the info/attributes file of the .git directory, in a committed .gitattributes file, or through core.attributesFile) makes git log print converted text. The gate scans the converted text, and git runs a command that the session chose.
+2. The config value log.showRoot set to false. An orphan root commit that holds the secret, merged and then deleted in a later commit, shows no patch.
+3. A shadow of the branch name. A file with the branch name inside the .git directory (for example a path pilot/GH-9 there) that holds a clean SHA makes the gate scan that commit, while git push sends the branch under refs/heads.
+4. The config value push.followTags set to true. The message of an annotated tag is published and is not scanned.
+5. A secret in a file path. Paths are not scanned. When the content also matches, the refusal error and the log line print the path.
+
+## Scope
+
+1. Every git log, git show and git diff command of the gate passes --no-textconv and --no-ext-diff, and sets log.showRoot to true with a -c argument.
+2. The gate resolves the branch to scan as the full ref name under refs/heads, never as a short name. Every push of the three push methods uses a full refspec with refs/heads on both sides, so that the commit that the gate scans is the commit that git sends. A test compares both SHAs.
+3. Every push of the three push methods passes --no-follow-tags and sets push.followTags to false with a -c argument.
+4. The gate scans the path of each file that the pushed range adds, changes or renames, with the same patterns and registered values as the content scan. A match refuses the push.
+5. The refusal error, the log line and the alert text pass the file path through the same mask as other text, so that a path that holds a secret value is not printed.
+6. Tests with real temporary repositories through the push method (the fixture newPushRefusedFixture shows the pattern). Use the fake secret shape that the present gate tests use. One test per case of Context, each one must end with a refused push and no new commit on the bare remote: the textconv driver through each of the three attribute places; log.showRoot false with the orphan root; the shadow file; an annotated tag message with push.followTags true (the tag must be absent on the remote; the branch push itself may pass when the commits are clean); a secret in a file name alone; a secret in a file name and in the content (assert that the error text and the captured log do not hold the value). One more test: the textconv command must not run (it would create a marker file).
+7. Put a comment `// mutation pin: <case> -> this test fails` above each test.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/... -run 'SecretGate|PushRange|PushRefused'` passes; paste the output into the PR body.
+- [ ] Remove --no-textconv -> the three textconv tests and the marker test fail.
+- [ ] Remove the log.showRoot argument -> the orphan root test fails.
+- [ ] Scan the short branch name again -> the shadow test fails.
+- [ ] Remove --no-follow-tags -> the tag test fails.
+- [ ] A clean push still passes: the gate tests that exist today pass without a change to their assertions.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The trust in remote-tracking refs that the session can write (TASK-651 moves the gate to a repository that the daemon owns). A scan of tag messages. Any change to the secret patterns.
+
+## Refs
+
+- Navigator TASK-650 in this repo · review of PR #6331
+
 ## Reviews 2026-11-10 (Navigator, four review agents; § = follow-up issue)
 
 | Leg | PR | Verdict | Confirmed gaps |
@@ -283,6 +327,7 @@ Held for a Navigator design pass; filed after the design doc lands in `.agent/sy
 - L4 → https://github.com/qf-studio/pilot/issues/6252
 - L5 → https://github.com/qf-studio/pilot/issues/6263
 - L6 → https://github.com/qf-studio/pilot/issues/6264
+- L7 → https://github.com/qf-studio/pilot/issues/6334
 - Follow-ups: #6258 · #6266 · #6267 · #6268 · #6272 · #6273 · #6276
 
 ---
