@@ -166,7 +166,7 @@ func TestSecretGate_LeasePushAndPushToMainRefused(t *testing.T) {
 	}
 	f.run("checkout", "main")
 	f.run("merge", "--ff-only", "pilot/GH-9")
-	if err := f.git.PushToMain(context.Background()); !IsPushRefused(err) {
+	if err := f.git.PushToMain(context.Background(), "GH-9"); !IsPushRefused(err) {
 		t.Errorf("default-branch push: got %v, want a push refusal", err)
 	}
 	if got := f.run("--git-dir", f.remote, "rev-list", "--count", "main"); got != "1" {

@@ -1,12 +1,16 @@
 package secretpatterns
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -527,5 +531,184 @@ func TestCheckPushRange_ShallowBoundaryIsNotMeasuredFromEmptyTree(t *testing.T) 
 	var pre *PushRangeError
 	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", PushOptions{DefaultBranch: "main"}); !errors.As(err, &pre) || pre.File != "leak.md" {
 		t.Fatalf("secret in an unpushed commit: got %v, want a hit in leak.md", err)
+	}
+}
+
+// shallowDepthFixture is a clone of depth `depth` of a remote main that holds
+// commits c1..c5, with old (a registered value) published in c4: the middle of a
+// depth 3 window. The clone has a clean local commit on pilot/GH-1, and the
+// remote then advanced by `advance` commits that the clone fetched at the same
+// depth, so the local history no longer meets origin/main.
+func shallowDepthFixture(t *testing.T, depth, advance int, old string) *pushFixture {
+	t.Helper()
+	ResetSecretValuesForTest()
+	t.Cleanup(ResetSecretValuesForTest)
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", remote).CombinedOutput(); err != nil {
+		t.Fatalf("init bare: %v\n%s", err, out)
+	}
+	seed := &pushFixture{t: t, local: filepath.Join(root, "seed"), remote: remote}
+	if err := os.MkdirAll(seed.local, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seed.git("init", "-b", "main")
+	seed.git("remote", "add", "origin", remote)
+	seed.commit("c1.txt", "1\n", "c1")
+	seed.commit("c2.txt", "2\n", "c2")
+	seed.commit("c3.txt", "3\n", "c3")
+	seed.commit("old.md", "token "+old+"\n", "docs: old, long published")
+	seed.commit("c5.txt", "5\n", "c5")
+	seed.git("push", "-u", "origin", "main")
+	RegisterSecretValues(old)
+
+	f := &pushFixture{t: t, local: filepath.Join(root, "local"), remote: remote}
+	if out, err := exec.Command("git", "clone", "--depth", strconv.Itoa(depth), "file://"+remote, f.local).CombinedOutput(); err != nil {
+		t.Fatalf("shallow clone: %v\n%s", err, out)
+	}
+	f.git("checkout", "-b", "pilot/GH-1")
+	f.commit("new.go", "package x\n", "feat: clean")
+	for i := 0; i < advance; i++ {
+		seed.commit("later"+strconv.Itoa(i)+".go", "package later\n", "feat: later")
+	}
+	seed.git("push", "origin", "main")
+	f.git("fetch", "--depth", strconv.Itoa(depth), "origin", "main")
+	if got := f.git("rev-parse", "--is-shallow-repository"); got != "true" {
+		t.Fatalf("setup: clone is not shallow (%s)", got)
+	}
+	if base := PushBase(context.Background(), f.local, "pilot/GH-1", "main"); base != "" {
+		t.Fatalf("setup: PushBase = %q, want no merge base for the diverged shallow history", base)
+	}
+	return f
+}
+
+// GH-6318: a depth 3 window holds more than the boundary commit. A secret that
+// was published in the middle of it is not new; one in an unpushed commit is.
+func TestCheckPushRange_ShallowDepth3ExcludesPublishedWindow(t *testing.T) {
+	const old = "hunter2-not-a-known-shape"
+	f := shallowDepthFixture(t, 3, 4, old)
+	opts := PushOptions{DefaultBranch: "main"}
+
+	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", opts); err != nil {
+		t.Fatalf("old secret in the middle of a depth 3 window: got %v, want no refusal", err)
+	}
+	f.commit("leak.md", "token "+old+"\n", "docs: leak")
+	var pre *PushRangeError
+	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", opts); !errors.As(err, &pre) || pre.File != "leak.md" {
+		t.Fatalf("secret in an unpushed commit of the same repo: got %v, want a hit in leak.md", err)
+	}
+}
+
+// GH-6318: the shallow file is writable by anyone with the repository. A commit
+// listed there that no remote-tracking ref has held is not a boundary.
+// mutation pin: the gate trusts the shallow file alone, without asking whether a remote-tracking ref has held the commit -> this test fails
+func TestCheckPushRange_ShallowFileAloneDoesNotExemptACommit(t *testing.T) {
+	f := newPushFixture(t)
+	f.git("checkout", "--orphan", "forged")
+	f.commit("forged.md", "token "+telegramShaped()+"\n", "docs: forged")
+	sha := f.git("rev-parse", "HEAD")
+	shallow := filepath.Join(f.local, ".git", "shallow")
+	if err := os.WriteFile(shallow, []byte(sha+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.git("rev-parse", "--is-shallow-repository"); got != "true" {
+		t.Fatalf("setup: repository is not shallow (%s)", got)
+	}
+	if base := PushBase(context.Background(), f.local, "forged", ""); base != "" {
+		t.Fatalf("setup: a base resolved (%q); the fallback is not under test", base)
+	}
+
+	var pre *PushRangeError
+	if err := CheckPush(context.Background(), f.local, "forged", PushOptions{}); !errors.As(err, &pre) || pre.File != "forged.md" {
+		t.Fatalf("secret in a commit listed only in the shallow file: got %v, want a hit in forged.md", err)
+	}
+}
+
+// GH-6318: ending the context between two git calls of the no-base path returns
+// the context error and starts no further git call, wherever it ends. The
+// cancel comes through the git seam, so each call has its own point; removing
+// the context check after any one of them lets another call start.
+func TestCheckPushRange_ContextEndedBetweenGitCallsStopsTheNoBasePath(t *testing.T) {
+	const old = "hunter2-not-a-known-shape"
+	f := shallowDepthFixture(t, 3, 4, old)
+	opts := PushOptions{DefaultBranch: "main"}
+
+	var calls [][]string
+	var cancelAfter int
+	var cancel context.CancelFunc
+	prev := gitCallDone
+	gitCallDone = func(args []string) {
+		calls = append(calls, args)
+		if cancel != nil && len(calls) == cancelAfter {
+			cancel()
+		}
+	}
+	t.Cleanup(func() { gitCallDone = prev })
+
+	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", opts); err != nil {
+		t.Fatalf("setup: clean run: %v", err)
+	}
+	total := len(calls)
+	if total < 10 {
+		t.Fatalf("setup: the no-base path made %d git calls, want the whole boundary path (%v)", total, calls)
+	}
+
+	// The last call is the scan itself: ending the context after it has nothing left to stop.
+	for k := 1; k < total; k++ {
+		calls, cancelAfter = nil, k
+		var ctx context.Context
+		ctx, cancel = context.WithCancel(context.Background())
+		err := CheckPush(ctx, f.local, "pilot/GH-1", opts)
+		cancel()
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("context ended after git call %d (%v): got %v, want context.Canceled", k, calls[k-1], err)
+			continue
+		}
+		if errors.Is(err, ErrPushRefused) {
+			t.Errorf("context ended after git call %d (%v): became a refusal: %v", k, calls[k-1], err)
+		}
+		if len(calls) != k {
+			t.Errorf("context ended after git call %d (%v): %d git calls ran, next was %v", k, calls[k-1], len(calls), calls[k:])
+		}
+	}
+}
+
+// GH-6318: a git older than 2.31 has no rev-parse --path-format, so the shallow
+// boundary is silently not recognised there; the gate says so once.
+func TestWarnOldGit(t *testing.T) {
+	tests := []struct {
+		out      string
+		wantWarn bool
+	}{
+		{"git version 2.30.9\n", true},
+		{"git version 2.25.1\n", true},
+		{"git version 1.8.3.1\n", true},
+		{"git version 2.31.0\n", false},
+		{"git version 2.50.1 (Apple Git-155)\n", false},
+		{"git version 3.0.0\n", false},
+		{"unparsable\n", false},
+	}
+	prev := gitVersionOutput
+	t.Cleanup(func() {
+		gitVersionOutput = prev
+		warnOldGitOnce = sync.Once{}
+	})
+	for _, tt := range tests {
+		var buf bytes.Buffer
+		old := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+		gitVersionOutput = func(context.Context, string) (string, error) { return tt.out, nil }
+		warnOldGitOnce = sync.Once{}
+		warnOldGit(context.Background(), "")
+		warnOldGit(context.Background(), "") // once per process
+		slog.SetDefault(old)
+
+		got := strings.Count(buf.String(), "level=WARN")
+		if tt.wantWarn && got != 1 {
+			t.Errorf("%q: %d warnings, want exactly 1", tt.out, got)
+		}
+		if !tt.wantWarn && got != 0 {
+			t.Errorf("%q: %d warnings, want none", tt.out, got)
+		}
 	}
 }

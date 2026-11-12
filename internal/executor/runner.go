@@ -3413,7 +3413,7 @@ func isNonFastForwardPush(err error) bool {
 // returns false when the run ended here: a secret-gate refusal parks the task
 // needs_human, any other failure fails it.
 func (r *Runner) pushDirectCommit(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger) bool {
-	if err := git.PushToMain(ctx); err != nil {
+	if err := git.PushToMain(ctx, task.ID); err != nil {
 		if IsPushRefused(err) {
 			r.failPushRefused(ctx, task, git, result, log, err)
 			return false
@@ -3430,7 +3430,8 @@ func (r *Runner) pushDirectCommit(ctx context.Context, task *Task, git *GitOpera
 // failures, and keeps the push-retry dead-man tracker (GH-4866). It returns
 // false when the run ended here, with result set.
 func (r *Runner) pushTaskBranch(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger) bool {
-	pushErr := r.pushBranchWithRetry(ctx, git, task, log)
+	attempts := 0
+	pushErr := r.pushBranchCounting(ctx, git, task, log, &attempts)
 	if IsPushRefused(pushErr) {
 		// GH-6272: a refusal is terminal and not an infra failure: the
 		// push machinery worked, the commits were held back. The tracker
@@ -3453,7 +3454,7 @@ func (r *Runner) pushTaskBranch(ctx context.Context, task *Task, git *GitOperati
 			Timestamp: time.Now(),
 		})
 		result.Success = false
-		result.Error = formatGitStepFailureWithRecovery(ctx, git, "push", gitPushRetryAttempts, pushErr, task.ID, task.Branch, result.CommitSHA)
+		result.Error = formatGitStepFailureWithRecovery(ctx, git, "push", attempts, pushErr, task.ID, task.Branch, result.CommitSHA)
 		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 		return false
 	}
@@ -3485,8 +3486,17 @@ func (r *Runner) pushTaskBranch(ctx context.Context, task *Task, git *GitOperati
 // the dispatcher treats as deterministic (a re-pick from origin/main cannot
 // fast-forward it) and escalates instead of re-picking.
 func (r *Runner) pushBranchWithRetry(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger) error {
+	var attempts int
+	return r.pushBranchCounting(ctx, git, task, log, &attempts)
+}
+
+// pushBranchCounting is pushBranchWithRetry that reports in *attempts how many
+// pushes it made. A gate stop or a non-fast-forward rejection returns after the
+// first, and the failure text must say so (GH-6318).
+func (r *Runner) pushBranchCounting(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger, attempts *int) error {
 	var pushErr error
 	for attempt := 1; attempt <= gitPushRetryAttempts; attempt++ {
+		*attempts = attempt
 		pushErr = git.Push(ctx, task.Branch, task.ID)
 		if pushErr == nil {
 			return nil
