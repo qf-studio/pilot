@@ -3169,57 +3169,37 @@
       "TASK-650": {
         "path": ".agent/tasks/TASK-650-secret-exposure-hardening.md",
         "title": "Secret exposure hardening \u2014 value-based redaction, leak detection, adapter canary tests, agent isolation",
-        "status": "merged",
+        "status": "dispatched",
         "concepts": [
-          "security",
-          "secrets",
-          "adapters",
-          "executor",
-          "testing"
-        ],
-        "issues": [
-          "https://github.com/qf-studio/pilot/issues/6249",
-          "https://github.com/qf-studio/pilot/issues/6250",
-          "https://github.com/qf-studio/pilot/issues/6251",
-          "https://github.com/qf-studio/pilot/issues/6252",
-          "https://github.com/qf-studio/pilot/issues/6263",
-          "https://github.com/qf-studio/pilot/issues/6264",
-          "https://github.com/qf-studio/pilot/issues/6258",
-          "https://github.com/qf-studio/pilot/issues/6266",
-          "https://github.com/qf-studio/pilot/issues/6267",
-          "https://github.com/qf-studio/pilot/issues/6268",
-          "https://github.com/qf-studio/pilot/issues/6272",
-          "https://github.com/qf-studio/pilot/issues/6273",
-          "https://github.com/qf-studio/pilot/issues/6276",
-          "https://github.com/qf-studio/pilot/issues/6279",
-          "https://github.com/qf-studio/pilot/issues/6281",
-          "https://github.com/qf-studio/pilot/issues/6284",
-          "https://github.com/qf-studio/pilot/issues/6287",
-          "https://github.com/qf-studio/pilot/issues/6286",
-          "https://github.com/qf-studio/pilot/issues/6288",
-          "https://github.com/qf-studio/pilot/issues/6301",
-          "https://github.com/qf-studio/pilot/issues/6310",
-          "https://github.com/qf-studio/pilot/issues/6318",
-          "https://github.com/qf-studio/pilot/issues/6326",
-          "https://github.com/qf-studio/pilot/issues/6327"
+          "authentication",
+          "api",
+          "theory of mind",
+          "deployment",
+          "markers",
+          "workflow",
+          "testing",
+          "context",
+          "skills",
+          "database",
+          "knowledge"
         ]
       },
       "TASK-651": {
-        "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/d1112c/.agent/tasks/TASK-651-agent-uid-isolation.md",
+        "path": ".agent/tasks/TASK-651-agent-uid-isolation.md",
         "title": "Agent isolation \u2014 agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM",
         "status": "dispatched",
         "concepts": [
-          "frontend",
-          "theory of mind",
-          "simplification",
-          "testing",
           "deployment",
-          "context",
-          "skills",
-          "markers",
-          "authentication",
           "database",
-          "api"
+          "testing",
+          "simplification",
+          "context",
+          "markers",
+          "frontend",
+          "authentication",
+          "api",
+          "skills",
+          "theory of mind"
         ]
       }
     },
@@ -13193,6 +13173,51 @@
       "from": "TASK-651",
       "to": "markers",
       "type": "implements"
+    },
+    {
+      "from": "TASK-650",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-650",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-650",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-650",
+      "to": "markers",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-650",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-650",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-650",
+      "to": "skills",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-650",
+      "to": "database",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-650",
+      "to": "knowledge",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -13378,7 +13403,8 @@
       "TASK-646",
       "TASK-647",
       "TASK-649",
-      "TASK-651"
+      "TASK-651",
+      "TASK-650"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -13463,7 +13489,8 @@
       "TASK-631",
       "TASK-633",
       "TASK-649",
-      "TASK-651"
+      "TASK-651",
+      "TASK-650"
     ],
     "auto-merge": [
       "mem-103",
@@ -13786,7 +13813,8 @@
       "TASK-646",
       "TASK-647",
       "TASK-649",
-      "TASK-651"
+      "TASK-651",
+      "TASK-650"
     ],
     "conversational-bot": [
       "mem-036",
@@ -13890,7 +13918,8 @@
       "TASK-631",
       "TASK-633",
       "TASK-647",
-      "TASK-651"
+      "TASK-651",
+      "TASK-650"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -14084,7 +14113,8 @@
       "TASK-646",
       "TASK-647",
       "TASK-649",
-      "TASK-651"
+      "TASK-651",
+      "TASK-650"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -14598,7 +14628,8 @@
       "TASK-643",
       "TASK-646",
       "TASK-647",
-      "TASK-649"
+      "TASK-649",
+      "TASK-650"
     ],
     "labels": [
       "mem-100",
@@ -14671,7 +14702,8 @@
       "TASK-643",
       "TASK-646",
       "TASK-647",
-      "TASK-651"
+      "TASK-651",
+      "TASK-650"
     ],
     "memory": [
       "TASK-358",
@@ -14940,7 +14972,8 @@
       "mem-250",
       "TASK-581",
       "TASK-646",
-      "TASK-651"
+      "TASK-651",
+      "TASK-650"
     ],
     "social-engineering": [
       "mem-125"
@@ -15318,7 +15351,8 @@
       "mem-292",
       "mem-293",
       "mem-294",
-      "TASK-647"
+      "TASK-647",
+      "TASK-650"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -15402,7 +15436,8 @@
       "TASK-632",
       "TASK-634",
       "TASK-646",
-      "TASK-651"
+      "TASK-651",
+      "TASK-650"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -15820,10 +15855,10 @@
       "TASK-651"
     ]
   },
-  "last_updated": "2026-11-12T11:16:42.960284+00:00",
+  "last_updated": "2026-11-12T11:20:40.041927+00:00",
   "stats": {
     "total_nodes": 784,
-    "total_edges": 825,
+    "total_edges": 834,
     "memory_count": 433
   },
   "metadata": {
