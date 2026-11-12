@@ -3204,7 +3204,11 @@
       "TASK-651": {
         "path": ".agent/tasks/TASK-651-agent-uid-isolation.md",
         "title": "Agent isolation \u2014 agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM",
-        "status": "planned",
+        "status": "dispatched",
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6320",
+          "https://github.com/qf-studio/pilot/issues/6321"
+        ],
         "concepts": [
           "testing",
           "database",
@@ -9021,6 +9025,18 @@
         "created": "2026-11-11",
         "last_validated": "2026-11-11",
         "contradiction": "fewer false blocks of the read guard vs more reads of Pilot data that pass undetected"
+      },
+      "mem-306": {
+        "type": "pitfall",
+        "summary": "The daemon user on the box had (ALL) NOPASSWD: ALL from cloud-init, so every agent session could become root for months; no guard covered it (the bash guard blocks only a sudo rm substring) and one agent run did call sudo. Found 2026-11-12 during the TASK-651 design, removed the same day (operator step O1, backup in /root). Before any reasoning about what an agent can or cannot read or do on a host, run sudo -l -U for the daemon user and read the sudo journal; on a new host remove the cloud-init rule before the daemon starts.",
+        "path": "memories/pitfalls/mem-306.md",
+        "confidence": 0.95,
+        "concepts": [
+          "security",
+          "pilot-aws"
+        ],
+        "created": "2026-11-12",
+        "last_validated": "2026-11-12"
       }
     }
   },
@@ -13124,6 +13140,11 @@
       "from": "TASK-651",
       "to": "database",
       "type": "implements"
+    },
+    {
+      "from": "mem-306",
+      "to": "TASK-651",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -14829,7 +14850,8 @@
       "TASK-650",
       "mem-302",
       "mem-304",
-      "mem-305"
+      "mem-305",
+      "mem-306"
     ],
     "ship-test": [],
     "shipped-check": [
@@ -15735,14 +15757,15 @@
     ],
     "pilot-aws": [
       "mem-291",
-      "mem-303"
+      "mem-303",
+      "mem-306"
     ]
   },
-  "last_updated": "2026-11-12T09:13:00.952571+00:00",
+  "last_updated": "2026-11-12T09:30:48.728438+00:00",
   "stats": {
-    "total_nodes": 781,
-    "total_edges": 820,
-    "memory_count": 430
+    "total_nodes": 782,
+    "total_edges": 821,
+    "memory_count": 431
   },
   "metadata": {
     "last_updated": null
