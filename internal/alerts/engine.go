@@ -116,6 +116,12 @@ const minOrphanEvictionThreshold = 120 * time.Minute
 // as merely waiting in line, not stuck (GH-4416).
 const taskStuckQueuedPhase = "Queued"
 
+// taskStuckHeldPhase is the Phase string the dispatcher emits when the
+// base-presence gate holds a queued task (dispatcher.go processQueue). Like
+// taskStuckQueuedPhase, the row waits by design: the dispatcher's hold counter
+// parks it at its cap, so evaluateStuckTasks must not orphan-evict it (GH-6326).
+const taskStuckHeldPhase = "Held"
+
 type progressState struct {
 	Progress      int
 	UpdatedAt     time.Time
@@ -1655,6 +1661,14 @@ func (e *Engine) evaluateStuckTasks(ctx context.Context) {
 
 		for taskID, state := range tasks {
 			stuckDuration := now.Sub(state.UpdatedAt)
+
+			// GH-6326: a Held or Queued entry waits by design (a repeated Held
+			// event does not refresh the clock; the dispatcher's hold counter
+			// parks the row at its cap), so it is neither orphan-evicted nor
+			// is its still-queued row stalled.
+			if state.Phase == taskStuckHeldPhase || state.Phase == taskStuckQueuedPhase {
+				continue
+			}
 
 			// Orphan eviction: remove entries that have been stuck far too long (GH-2204)
 			if stuckDuration > orphanThreshold {

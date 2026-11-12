@@ -3805,7 +3805,9 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 	defer w.processing.Store(false)
 
 	// heldThisCycle maps execution ID -> task ID for rows the base-presence
-	// gate held during this processQueue call (GH-5572).
+	// gate held since the last completed run of this processQueue call
+	// (GH-5572). GH-6326: emptied after each completed run, so a held row is
+	// checked again once between two task runs, not only when the queue is empty.
 	heldThisCycle := make(map[string]string)
 	// GH-6028: execution IDs whose move to running failed during this call.
 	// The row is still queued, so without this the next iteration would
@@ -3838,10 +3840,33 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		// Held rows stay queued/pending in the store, so the next processQueue
 		// cycle (every poll / wakeHeldWorkers tick) re-checks them first —
 		// hold semantics (re-check per poll, escalation count) are unchanged.
-		tasks, err := w.store.GetQueuedTasksForProject(w.projectPath, len(heldThisCycle)+len(transitionFailed)+1)
+		limit := len(heldThisCycle) + len(transitionFailed) + 1
+		tasks, err := w.store.GetQueuedTasksForProject(w.projectPath, limit)
 		if err != nil {
 			w.log.Error("Failed to get queued tasks", slog.Any("error", err))
 			return
+		}
+
+		// GH-6326: forget held rows that are no longer queued (replaced,
+		// superseded, finished elsewhere). A short result is the whole queue, so
+		// an ID missing from it is gone; a full window may not hold every held
+		// row, so nothing is pruned there. The window still has at least one
+		// row that is not held or failed, because the limit counts both maps.
+		queuedIDs := make(map[string]struct{}, len(tasks))
+		for _, cand := range tasks {
+			queuedIDs[cand.ID] = struct{}{}
+		}
+		if len(tasks) < limit {
+			for id := range heldThisCycle {
+				if _, queued := queuedIDs[id]; !queued {
+					delete(heldThisCycle, id)
+				}
+			}
+			for id := range transitionFailed {
+				if _, queued := queuedIDs[id]; !queued {
+					delete(transitionFailed, id)
+				}
+			}
 		}
 
 		var exec *memory.Execution
@@ -3860,11 +3885,14 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		}
 		w.currentTaskID.Store(exec.TaskID)
 
-		if len(heldThisCycle) > 0 {
-			heldTaskIDs := make([]string, 0, len(heldThisCycle))
-			for _, id := range heldThisCycle {
-				heldTaskIDs = append(heldTaskIDs, id)
+		// GH-6326: name only held tasks whose rows are still queued.
+		heldTaskIDs := make([]string, 0, len(heldThisCycle))
+		for execID, taskID := range heldThisCycle {
+			if _, queued := queuedIDs[execID]; queued {
+				heldTaskIDs = append(heldTaskIDs, taskID)
 			}
+		}
+		if len(heldTaskIDs) > 0 {
 			sort.Strings(heldTaskIDs)
 			w.log.Info("Held task skipped in favour of runnable task",
 				slog.String("runnable_task_id", exec.TaskID),
@@ -4404,6 +4432,13 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		}
 
 		w.currentTaskID.Store("")
+
+		// GH-6326: a run has completed and its result is stored. Forget the
+		// held rows and failed transitions so the next pick checks them once
+		// again; the continue paths above keep them (GH-5572 starvation,
+		// GH-6028 busy loop).
+		clear(heldThisCycle)
+		clear(transitionFailed)
 	}
 }
 
