@@ -9037,6 +9037,19 @@
         ],
         "created": "2026-11-12",
         "last_validated": "2026-11-12"
+      },
+      "mem-307": {
+        "type": "pitfall",
+        "summary": "A GitHub Actions run can stay queued forever: PR #6317 got a CI run on 2026-11-11 20:41Z that never started (other PRs ran normally), autopilot hit two 30 minute CI timeouts and set the PR to failed, and it does not revive a failed PR when checks go green later. The dead run can be neither cancelled (\"completed\"), force-cancelled (\"not been queued yet\") nor re-run (\"already running\"). Fix by hand: update the PR branch with main through the API (pulls/N/update-branch), which makes a new head and a new run; then review and merge by hand, because the autopilot stage stays failed.",
+        "path": "memories/pitfalls/mem-307.md",
+        "confidence": 0.9,
+        "concepts": [
+          "autopilot",
+          "github",
+          "post-merge-ci"
+        ],
+        "created": "2026-11-12",
+        "last_validated": "2026-11-12"
       }
     }
   },
@@ -13145,6 +13158,11 @@
       "from": "mem-306",
       "to": "TASK-651",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-307",
+      "to": "TASK-650",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -13505,7 +13523,8 @@
       "declined-run-repicked-and-evidence-fail-files-false-fix-issue",
       "TASK-634",
       "mem-282",
-      "mem-290"
+      "mem-290",
+      "mem-307"
     ],
     "aws": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -14346,7 +14365,8 @@
       "github-matching-refs-ignores-per-page-and-page",
       "gh5468-unlisted-check-failure-blocks-gate-but-evidence-still-allowlist-scoped",
       "fix-issue-on-borrowed-branch-never-closes-and-blocked-by-fix-deadlocks",
-      "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal"
+      "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal",
+      "mem-307"
     ],
     "github-adapter": [
       "TASK-379",
@@ -15744,7 +15764,8 @@
       "mem-291"
     ],
     "post-merge-ci": [
-      "mem-290"
+      "mem-290",
+      "mem-307"
     ],
     "fix-issue": [
       "mem-290"
@@ -15761,11 +15782,11 @@
       "mem-306"
     ]
   },
-  "last_updated": "2026-11-12T09:30:48.728438+00:00",
+  "last_updated": "2026-11-12T10:03:57.809240+00:00",
   "stats": {
-    "total_nodes": 782,
-    "total_edges": 821,
-    "memory_count": 431
+    "total_nodes": 783,
+    "total_edges": 822,
+    "memory_count": 432
   },
   "metadata": {
     "last_updated": null
