@@ -53,7 +53,11 @@ type CIMonitor struct {
 	// Discovery state for auto mode
 	discoveredChecks map[string][]string  // sha -> check names
 	discoveryStart   map[string]time.Time // sha -> when discovery started
-	mu               sync.RWMutex
+	// noChecksWarned holds the SHAs whose "CI checks never reported" Warn was
+	// already written (GH-6327), so a PR waiting or held on a dead run logs one
+	// Warn per head, not one per poll.
+	noChecksWarned map[string]bool
+	mu             sync.RWMutex
 
 	// everSeenCheckRuns records whether this repository has produced ANY
 	// check-run, for ANY SHA, during this monitor's lifetime (GH-5233). It's
@@ -662,7 +666,17 @@ func (m *CIMonitor) checkAutoDiscoveredRuns(ctx context.Context, sha string, che
 		// same wrong answer — and let WaitForCI's existing timeout surface
 		// the anomaly instead of merging on it.
 		if m.hasEverSeenCheckRuns() {
-			m.log.Warn("CI checks never reported for this SHA on a repository with prior observed check runs on other SHAs — holding rather than treating as no-CI success",
+			logAt := m.log.Debug
+			m.mu.Lock()
+			if !m.noChecksWarned[sha] {
+				if m.noChecksWarned == nil {
+					m.noChecksWarned = make(map[string]bool)
+				}
+				m.noChecksWarned[sha] = true
+				logAt = m.log.Warn
+			}
+			m.mu.Unlock()
+			logAt("CI checks never reported for this SHA on a repository with prior observed check runs on other SHAs — holding rather than treating as no-CI success",
 				"sha", ShortSHA(sha),
 				"owner", m.owner,
 				"repo", m.repo,
@@ -1355,4 +1369,5 @@ func (m *CIMonitor) ClearDiscovery(sha string) {
 	defer m.mu.Unlock()
 	delete(m.discoveredChecks, sha)
 	delete(m.discoveryStart, sha)
+	delete(m.noChecksWarned, sha)
 }

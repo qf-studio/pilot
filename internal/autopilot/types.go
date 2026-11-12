@@ -1537,6 +1537,22 @@ type PRState struct {
 	// CIUnreadableNotified is true once the "token cannot read CI" comment was
 	// posted on this PR (GH-6304), so many polls leave one comment. Persisted.
 	CIUnreadableNotified bool
+	// CITimeoutHoldActive is true while this PR is parked at StageFailed by the
+	// confirmed CI timeout of handleWaitingCI when no check run was ever
+	// discovered (GH-6327) — a dead run on the GitHub side. It is the only key of
+	// redriveCITimeoutHeldPR; never infer the hold from the error text.
+	// Persisted.
+	CITimeoutHoldActive bool
+	// CITimeoutHoldHeadSHA is the HeadSHA when the hold was set; a different live
+	// head means a push landed since. Persisted.
+	CITimeoutHoldHeadSHA string
+	// CITimeoutRedriveCount is the lifetime count of redriveCITimeoutHeldPR
+	// re-entries, capped at maxCITimeoutRedrives. Never reset. Persisted.
+	CITimeoutRedriveCount int
+	// ciTimeoutMissingLogged is true once the Warn line about the missing checks
+	// was written for the current hold, so a PR logs it once, not once per wait
+	// cycle. In-memory only.
+	ciTimeoutMissingLogged bool
 	// SizeGuardHoldActive and SizeGuardHoldHeadSHA are the GH-5378 size-guard
 	// hold pair, superseded by HoldActive/HoldHeadSHA (GH-5643).
 	//
@@ -1692,6 +1708,10 @@ func (ps *PRState) snapshot() *PRState {
 		APIOutageNextPoll:            ps.APIOutageNextPoll,
 		apiOutageBackoff:             ps.apiOutageBackoff,
 		CIUnreadableNotified:         ps.CIUnreadableNotified,
+		CITimeoutHoldActive:          ps.CITimeoutHoldActive,
+		CITimeoutHoldHeadSHA:         ps.CITimeoutHoldHeadSHA,
+		CITimeoutRedriveCount:        ps.CITimeoutRedriveCount,
+		ciTimeoutMissingLogged:       ps.ciTimeoutMissingLogged,
 		SizeGuardHoldActive:          ps.SizeGuardHoldActive,
 		SizeGuardHoldHeadSHA:         ps.SizeGuardHoldHeadSHA,
 		HoldActive:                   ps.HoldActive,
