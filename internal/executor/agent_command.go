@@ -15,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/executor/ghguard"
 )
 
 // TASK-651 (design: .agent/system/agent-isolation-design.md, 4.1 and 4.3):
@@ -62,12 +64,24 @@ var (
 
 // runAsAllowedEnv lists the names a model process keeps when it runs as the
 // agent user. Everything else, the GitHub names included, is dropped: the
-// GitHub token for the agent comes in a later leg of TASK-651.
+// GitHub token for the agent comes in a later leg of TASK-651. The gh guard
+// names are kept separately (runAsGhGuardEnv).
 var runAsAllowedEnv = map[string]bool{
 	"PATH": true, "LANG": true, "LC_ALL": true, "TERM": true, "TZ": true, "TMPDIR": true,
 	"GOCACHE": true, "GOMODCACHE": true, "GOFLAGS": true, "GOTOOLCHAIN": true,
 	"GOPROXY": true, "GONOSUMDB": true, "GOPRIVATE": true,
 	"NODE_OPTIONS": true, "PILOT_EXECUTOR": true,
+}
+
+// runAsGhGuardEnv lists the names the gh guard shim hands to the `pilot
+// gh-guard` process inside the agent: the task identity, the real gh path, the
+// shim directory (ghguard.ResolveFallbackGh excludes it from the PATH search)
+// and the denial journal. PATH keeps the shim directory first, so dropping any
+// of these breaks the guard: with the shim directory lost the fallback search
+// finds the shim itself and every allowed gh call re-enters it.
+var runAsGhGuardEnv = map[string]bool{
+	ghguard.EnvTaskIssue: true, ghguard.EnvTaskRepo: true, ghguard.EnvTaskBranch: true,
+	ghguard.EnvRealGh: true, ghguard.EnvShimDir: true, ghguard.EnvJournalPath: true,
 }
 
 // runAsAllowedEnvPrefixes are the prefixes the allowlist keeps: how the CLI
@@ -233,7 +247,7 @@ func agentEnvNames(env []string) []string {
 }
 
 func runAsEnvAllowed(name string) bool {
-	if runAsAllowedEnv[name] {
+	if runAsAllowedEnv[name] || runAsGhGuardEnv[name] {
 		return true
 	}
 	for _, p := range runAsAllowedEnvPrefixes {
