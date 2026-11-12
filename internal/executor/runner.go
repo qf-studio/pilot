@@ -3413,7 +3413,7 @@ func isNonFastForwardPush(err error) bool {
 // returns false when the run ended here: a secret-gate refusal parks the task
 // needs_human, any other failure fails it.
 func (r *Runner) pushDirectCommit(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger) bool {
-	if err := git.PushToMain(ctx); err != nil {
+	if err := git.PushToMain(ctx, task.ID); err != nil {
 		if IsPushRefused(err) {
 			r.failPushRefused(ctx, task, git, result, log, err)
 			return false
@@ -3430,7 +3430,8 @@ func (r *Runner) pushDirectCommit(ctx context.Context, task *Task, git *GitOpera
 // failures, and keeps the push-retry dead-man tracker (GH-4866). It returns
 // false when the run ended here, with result set.
 func (r *Runner) pushTaskBranch(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger) bool {
-	pushErr := r.pushBranchWithRetry(ctx, git, task, log)
+	pushes := 0
+	pushErr := r.pushBranchCounting(ctx, git, task, log, &pushes)
 	if IsPushRefused(pushErr) {
 		// GH-6272: a refusal is terminal and not an infra failure: the
 		// push machinery worked, the commits were held back. The tracker
@@ -3453,7 +3454,7 @@ func (r *Runner) pushTaskBranch(ctx context.Context, task *Task, git *GitOperati
 			Timestamp: time.Now(),
 		})
 		result.Success = false
-		result.Error = formatGitStepFailureWithRecovery(ctx, git, "push", gitPushRetryAttempts, pushErr, task.ID, task.Branch, result.CommitSHA)
+		result.Error = formatGitStepFailureWithRecovery(ctx, git, "push", pushes, pushErr, task.ID, task.Branch, result.CommitSHA)
 		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 		return false
 	}
@@ -3485,8 +3486,18 @@ func (r *Runner) pushTaskBranch(ctx context.Context, task *Task, git *GitOperati
 // the dispatcher treats as deterministic (a re-pick from origin/main cannot
 // fast-forward it) and escalates instead of re-picking.
 func (r *Runner) pushBranchWithRetry(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger) error {
+	var pushes int
+	return r.pushBranchCounting(ctx, git, task, log, &pushes)
+}
+
+// pushBranchCounting is pushBranchWithRetry that reports in *pushes how many
+// pushes it ran, the leased ones included. A gate stop or a non-fast-forward
+// escalation returns after the first, and the failure text must say so
+// (GH-6318), not claim the retry limit.
+func (r *Runner) pushBranchCounting(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger, pushes *int) error {
 	var pushErr error
 	for attempt := 1; attempt <= gitPushRetryAttempts; attempt++ {
+		*pushes++
 		pushErr = git.Push(ctx, task.Branch, task.ID)
 		if pushErr == nil {
 			return nil
@@ -3511,7 +3522,7 @@ func (r *Runner) pushBranchWithRetry(ctx context.Context, git *GitOperations, ta
 		}
 		if isNonFastForwardPush(pushErr) {
 			if task.FromPR > 0 && task.FixFromSHA != "" {
-				return r.leasePushFixContinuation(ctx, git, task, log, pushErr, localHead, remoteHead, remoteOK)
+				return r.leasePushFixContinuation(ctx, git, task, log, pushes, pushErr, localHead, remoteHead, remoteOK)
 			}
 			// GH-5762: origin sits on the auto-preserve commit this run pushed
 			// and later steps rewrote the branch. Lease on that SHA only.
@@ -3522,6 +3533,7 @@ func (r *Runner) pushBranchWithRetry(ctx context.Context, git *GitOperations, ta
 					slog.String("remote_head", remoteHead),
 					slog.String("local_head", localHead),
 				)
+				*pushes++
 				if leaseErr := git.PushForceWithLease(ctx, task.Branch, task.pushedWIPSHA, task.ID); leaseErr != nil {
 					return leaseErr
 				}
@@ -3531,7 +3543,7 @@ func (r *Runner) pushBranchWithRetry(ctx context.Context, git *GitOperations, ta
 			// GH-5864: origin sits on the head a previous run of this task left
 			// behind without a PR. Replace it once, leased on that SHA.
 			if remoteOK && task.inheritedHeadSHA != "" && remoteHead == task.inheritedHeadSHA {
-				replaced, leaseErr := r.leasePushInheritedHead(ctx, git, task, log, localHead)
+				replaced, leaseErr := r.leasePushInheritedHead(ctx, git, task, log, pushes, localHead)
 				if replaced {
 					return nil
 				}
@@ -3631,7 +3643,7 @@ func (r *Runner) recordReplaceableBranchHead(ctx context.Context, task *Task) {
 // ends the run on it; any other failure returns (false, nil) and the caller escalates.
 // Decision: the lease pins the recorded SHA, so a push that landed on the
 // branch since the dispatcher looked is rejected rather than overwritten.
-func (r *Runner) leasePushInheritedHead(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger, localHead string) (bool, error) {
+func (r *Runner) leasePushInheritedHead(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger, pushes *int, localHead string) (bool, error) {
 	if url, err := inheritedHeadOpenPRCheck(ctx, git, task.Branch); err != nil || url != "" {
 		log.Warn("Push rejected against an inherited head but the branch has an open PR (or the PR lookup failed) — not leasing",
 			slog.String("task_id", task.ID),
@@ -3647,6 +3659,7 @@ func (r *Runner) leasePushInheritedHead(ctx context.Context, git *GitOperations,
 		slog.String("remote_head", task.inheritedHeadSHA),
 		slog.String("local_head", localHead),
 	)
+	*pushes++
 	if err := git.PushForceWithLease(ctx, task.Branch, task.inheritedHeadSHA, task.ID); err != nil {
 		log.Warn("Lease push over the inherited head failed — escalating",
 			slog.String("task_id", task.ID), slog.Any("error", err))
@@ -3685,7 +3698,7 @@ func (r *Runner) commentInheritedHeadReplaced(ctx context.Context, task *Task, r
 // leasePushFixContinuation is the single forced push an autopilot-fix
 // continuation gets after a non-fast-forward rejection (GH-5729). It only
 // fires when origin's branch is still at the footer SHA task.FixFromSHA.
-func (r *Runner) leasePushFixContinuation(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger, pushErr error, localHead, remoteHead string, remoteOK bool) error {
+func (r *Runner) leasePushFixContinuation(ctx context.Context, git *GitOperations, task *Task, log *slog.Logger, pushes *int, pushErr error, localHead, remoteHead string, remoteOK bool) error {
 	if !remoteOK || remoteHead != task.FixFromSHA {
 		remote := remoteHead
 		if !remoteOK {
@@ -3702,6 +3715,7 @@ func (r *Runner) leasePushFixContinuation(ctx context.Context, git *GitOperation
 		slog.String("old_sha", task.FixFromSHA),
 		slog.String("new_sha", localHead),
 	)
+	*pushes++
 	return git.PushForceWithLease(ctx, task.Branch, task.FixFromSHA, task.ID)
 }
 
