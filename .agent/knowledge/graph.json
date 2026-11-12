@@ -3198,7 +3198,10 @@
           "https://github.com/qf-studio/pilot/issues/6286",
           "https://github.com/qf-studio/pilot/issues/6288",
           "https://github.com/qf-studio/pilot/issues/6301",
-          "https://github.com/qf-studio/pilot/issues/6310"
+          "https://github.com/qf-studio/pilot/issues/6310",
+          "https://github.com/qf-studio/pilot/issues/6318",
+          "https://github.com/qf-studio/pilot/issues/6326",
+          "https://github.com/qf-studio/pilot/issues/6327"
         ]
       },
       "TASK-651": {
@@ -3207,7 +3210,8 @@
         "status": "dispatched",
         "issues": [
           "https://github.com/qf-studio/pilot/issues/6320",
-          "https://github.com/qf-studio/pilot/issues/6321"
+          "https://github.com/qf-studio/pilot/issues/6321",
+          "https://github.com/qf-studio/pilot/issues/6328"
         ],
         "concepts": [
           "testing",
@@ -9050,6 +9054,19 @@
         ],
         "created": "2026-11-12",
         "last_validated": "2026-11-12"
+      },
+      "mem-308": {
+        "type": "pitfall",
+        "summary": "The push secret gate decides what is already published from refs inside the repository the agent session can write. Review of PR #6323 (2026-11-12) confirmed seven shapes that publish a registered value on main: a forged remote-tracking ref (update-ref refs/remotes/origin/main HEAD), a session-added remote that points at a local bare repo, a replace ref or graft that hides the commit, and (in that PR) a forged reflog entry. Never widen the gate's trust in local refs, reflogs or the shallow file to remove a false refusal. The fix is structural: scan and push from a repository the agent cannot write (TASK-651 U2) and run the gate's git calls with GIT_NO_REPLACE_OBJECTS=1.",
+        "path": "memories/pitfalls/mem-308.md",
+        "confidence": 0.9,
+        "concepts": [
+          "security",
+          "git",
+          "git-push"
+        ],
+        "created": "2026-11-12",
+        "last_validated": "2026-11-12"
       }
     }
   },
@@ -13163,6 +13180,11 @@
       "from": "mem-307",
       "to": "TASK-650",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-308",
+      "to": "TASK-650",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -14327,7 +14349,8 @@
       "runselfreview-runs-in-repo-root-phantom-reimplementation",
       "test-asserts-on-pre-rewrite-sha-is-vacuous",
       "tag-push-runs-full-pre-push-gate",
-      "mem-299"
+      "mem-299",
+      "mem-308"
     ],
     "git-operations": [
       "mem-011",
@@ -14871,7 +14894,8 @@
       "mem-302",
       "mem-304",
       "mem-305",
-      "mem-306"
+      "mem-306",
+      "mem-308"
     ],
     "ship-test": [],
     "shipped-check": [
@@ -15669,7 +15693,8 @@
     "git-push": [
       "executor-swallowed-rejected-push-as-success-branch-exists-is-not-pushed",
       "infra-repicks-bypass-hard-cap-backoff-and-identical-failure-streak",
-      "mem-303"
+      "mem-303",
+      "mem-308"
     ],
     "continuation": [
       "executor-swallowed-rejected-push-as-success-branch-exists-is-not-pushed"
@@ -15782,11 +15807,11 @@
       "mem-306"
     ]
   },
-  "last_updated": "2026-11-12T10:03:57.809240+00:00",
+  "last_updated": "2026-11-12T10:48:51.757434+00:00",
   "stats": {
-    "total_nodes": 783,
-    "total_edges": 822,
-    "memory_count": 432
+    "total_nodes": 784,
+    "total_edges": 823,
+    "memory_count": 433
   },
   "metadata": {
     "last_updated": null
