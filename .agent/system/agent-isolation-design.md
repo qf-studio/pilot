@@ -51,9 +51,9 @@ Today the daemon creates a git worktree under the temp directory; the worktree s
 Target:
 
 1. The daemon's repository stays owned by the daemon user and is read-only for the agent user (group read).
-2. For each run the agent user creates its own clone under a workspace root that it owns: `git clone --shared` from the daemon's repository (objects are borrowed through alternates, so the clone is fast and small), then the task branch.
+2. For each run the agent user creates its own clone under a workspace root that it owns: `git init` and a fetch of the base branch from the daemon's repository, then the task branch. The clone has no alternates file (founder call 2026-11-12): alternates let the agent read every object of the daemon's repository, and a GC there can break a live clone.
 3. Every command with the workspace as its directory runs as the agent user through 4.1: git status, the auto-preserve commit, diff counts, Navigator copy, quality gates, evidence commands, workflow hooks.
-4. Hand-over: when the session ends and no agent process of the run is alive, the daemon runs `git fetch <workspace> <task branch>` inside its own repository. A fetch from a repository that another user owns is the one operation git permits there, and it runs no hook of the source.
+4. Hand-over: when the session ends and no agent process of the run is alive, the agent user writes a bundle of the task branch. The daemon copies the bundle (regular file only, no followed link) and fetches it inside its own repository into `refs/pilot/handover/<task>`, with object checks on and replace refs ignored. The daemon runs no git command with the workspace as its repository.
 5. The secret gate and the push run in the daemon's repository, as today, with the daemon's credential. Hooks are off for that push; the gates already ran in step 3.
 6. Cleanup of the workspace runs as the agent user (a read-only module cache or a mode-0555 directory would stop the daemon user).
 

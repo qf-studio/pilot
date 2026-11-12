@@ -3205,23 +3205,21 @@
         ]
       },
       "TASK-651": {
-        "path": ".agent/tasks/TASK-651-agent-uid-isolation.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/d1112c/.agent/tasks/TASK-651-agent-uid-isolation.md",
         "title": "Agent isolation \u2014 agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM",
         "status": "dispatched",
-        "issues": [
-          "https://github.com/qf-studio/pilot/issues/6320",
-          "https://github.com/qf-studio/pilot/issues/6321",
-          "https://github.com/qf-studio/pilot/issues/6328"
-        ],
         "concepts": [
+          "frontend",
+          "theory of mind",
+          "simplification",
           "testing",
-          "database",
           "deployment",
           "context",
-          "api",
-          "theory of mind",
+          "skills",
+          "markers",
           "authentication",
-          "skills"
+          "database",
+          "api"
         ]
       }
     },
@@ -13185,6 +13183,16 @@
       "from": "mem-308",
       "to": "TASK-650",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-651",
+      "to": "frontend",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "markers",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -14329,7 +14337,8 @@
       "TASK-596",
       "TASK-643",
       "TASK-647",
-      "TASK-649"
+      "TASK-649",
+      "TASK-651"
     ],
     "gateway": [
       "TASK-01",
@@ -14661,7 +14670,8 @@
       "TASK-634",
       "TASK-643",
       "TASK-646",
-      "TASK-647"
+      "TASK-647",
+      "TASK-651"
     ],
     "memory": [
       "TASK-358",
@@ -15805,12 +15815,15 @@
       "mem-291",
       "mem-303",
       "mem-306"
+    ],
+    "simplification": [
+      "TASK-651"
     ]
   },
-  "last_updated": "2026-11-12T10:48:51.757434+00:00",
+  "last_updated": "2026-11-12T11:16:42.960284+00:00",
   "stats": {
     "total_nodes": 784,
-    "total_edges": 823,
+    "total_edges": 825,
     "memory_count": 433
   },
   "metadata": {
