@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/testutil"
@@ -231,5 +232,196 @@ func TestStateStore_RoundTripsApprovalDecisionFields(t *testing.T) {
 	}
 	if got.ApprovalDecisionBy != "erin" || got.ApprovalDecisionReason != "wrong approach" || !got.ApprovalRejectNotified {
 		t.Errorf("round trip lost fields: %+v", got)
+	}
+}
+
+// restoreApprovalFixture persists pr into a fresh store and returns a new
+// controller (a daemon restart) after RestoreState, with the capturing GitHub
+// server behind it.
+func restoreApprovalFixture(t *testing.T, pr *PRState) (*Controller, *ghCapture) {
+	t.Helper()
+	cap, srv := newCapturingGHServer(t)
+	store := newTestStateStore(t)
+	if err := store.SavePRState("owner/repo", pr); err != nil {
+		t.Fatalf("SavePRState: %v", err)
+	}
+	c := NewController(DefaultConfig(), github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL), approval.NewManager(nil), "owner", "repo")
+	c.SetStateStore(store)
+	if _, err := c.RestoreState(); err != nil {
+		t.Fatalf("RestoreState: %v", err)
+	}
+	return c, cap
+}
+
+// mutation pin: RestoreState skips a StageFailed PR whose approval was rejected (no ApprovalRejectNotified case), so a close after a restart never reaches notifyExternalClose -> this test fails
+func TestRestoreState_RejectedApprovalPRStaysTrackedAndCloseMakesIssueRetryReady(t *testing.T) {
+	var mu sync.Mutex
+	var added, removed []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/repos/owner/repo/pulls/88" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(github.PullRequest{Number: 88, State: "closed", Head: github.PRRef{SHA: "sha", Ref: "pilot/GH-83"}})
+		case r.URL.Path == "/repos/owner/repo/issues/83" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(github.Issue{Number: 83, State: "open", Labels: []github.Label{{Name: "pilot"}, {Name: github.LabelFailed}}})
+		case r.URL.Path == "/repos/owner/repo/issues/83/labels" && r.Method == http.MethodPost:
+			var body struct {
+				Labels []string `json:"labels"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			added = append(added, body.Labels...)
+			_, _ = w.Write([]byte("[]"))
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/83/labels/") && r.Method == http.MethodDelete:
+			removed = append(removed, strings.TrimPrefix(r.URL.Path, "/repos/owner/repo/issues/83/labels/"))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls"):
+			_, _ = w.Write([]byte("[]"))
+		default:
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer srv.Close()
+
+	store := newTestStateStore(t)
+	if err := store.SavePRState("owner/repo", &PRState{
+		PRNumber:               88,
+		IssueNumber:            83,
+		BranchName:             "pilot/GH-83",
+		Stage:                  StageFailed,
+		ApprovalDecision:       string(approval.DecisionRejected),
+		ApprovalDecisionBy:     "alice",
+		ApprovalRejectNotified: true,
+		CreatedAt:              time.Now().Add(-48 * time.Hour),
+	}); err != nil {
+		t.Fatalf("SavePRState: %v", err)
+	}
+	c := NewController(DefaultConfig(), github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL), approval.NewManager(nil), "owner", "repo")
+	c.SetStateStore(store)
+	if _, err := c.RestoreState(); err != nil {
+		t.Fatalf("RestoreState: %v", err)
+	}
+	if _, ok := c.GetPRState(88); !ok {
+		t.Fatal("rejected-approval StageFailed PR must stay tracked after RestoreState")
+	}
+
+	// The reviewer closes the PR after the restart, as the comment invites.
+	c.processAllPRs(context.Background())
+
+	if _, ok := c.GetPRState(88); ok {
+		t.Error("closed PR is still tracked after the tick")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(strings.Join(added, ","), "pilot-retry-ready") {
+		t.Errorf("added labels = %v, want pilot-retry-ready after the close", added)
+	}
+	if !strings.Contains(strings.Join(removed, ","), github.LabelFailed) {
+		t.Errorf("removed labels = %v, want the stale %s removed", removed, github.LabelFailed)
+	}
+}
+
+// mutation pin: ApprovalRejectNotified is not persisted/honoured when a PR that crashed between posting the comment and advancing the stage is restored in awaiting_approval, so the tick reposts the reject comment -> this test fails
+func TestRestoreState_AwaitApprovalPRWithNotifiedFlagDoesNotRepostComment(t *testing.T) {
+	c, cap := restoreApprovalFixture(t, &PRState{
+		PRNumber:               84,
+		IssueNumber:            75,
+		Stage:                  StageAwaitApproval,
+		ApprovalRequestID:      "req-84",
+		ApprovalDecision:       string(approval.DecisionRejected),
+		ApprovalDecisionBy:     "alice",
+		ApprovalRejectNotified: true,
+		CreatedAt:              time.Now(),
+	})
+	prState, ok := c.GetPRState(84)
+	if !ok {
+		t.Fatal("awaiting_approval PR 84 is not tracked after RestoreState")
+	}
+	if !prState.ApprovalRejectNotified {
+		t.Fatal("ApprovalRejectNotified lost across the restart")
+	}
+
+	if err := c.handleAwaitApproval(context.Background(), prState); err != nil {
+		t.Fatalf("handleAwaitApproval: %v", err)
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+	if comments, labels := cap.snapshot(); len(comments) != 0 || len(labels) != 0 {
+		t.Errorf("restored tick reposted comments=%q labels=%q, want none", comments, labels)
+	}
+}
+
+// mutation pin: the approval.DecisionTimeout branch of the expiry check and the timeout case in applyApprovalDecision -> this test fails
+func TestApplyApprovalDecision_TimeoutDecisionPostsExpiryText(t *testing.T) {
+	c, cap := newApprovalCommentController(t)
+	prState := &PRState{
+		PRNumber:           85,
+		IssueNumber:        76,
+		ApprovalDecision:   string(approval.DecisionTimeout),
+		ApprovalDecisionBy: "alice",
+	}
+
+	if err := c.applyApprovalDecision(context.Background(), prState); err != nil {
+		t.Fatalf("applyApprovalDecision: %v", err)
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+	comments, labels := cap.snapshot()
+	if len(comments) != 1 {
+		t.Fatalf("comments = %d, want 1: %q", len(comments), comments)
+	}
+	want := "No decision in " + c.approvalMgr.PreMergeTimeout().String() + "; the request expired.\n\n" + approvalHandoff
+	if comments[0] != want {
+		t.Errorf("comment = %q, want %q", comments[0], want)
+	}
+	if len(labels) != 1 {
+		t.Errorf("labels = %q, want one pilot-failed add", labels)
+	}
+}
+
+// mutation pin: the expiry comment quotes approvalMgr.PreMergeTimeout() instead of the timeout armed for this request (PRState.ApprovalTimeout) -> this test fails
+func TestApplyApprovalDecision_ExpiryTextQuotesTheTimeoutArmedForTheRequest(t *testing.T) {
+	c, cap := newApprovalCommentController(t)
+	prState := &PRState{
+		PRNumber:           86,
+		IssueNumber:        77,
+		ApprovalDecision:   string(approval.DecisionRejected),
+		ApprovalDecisionBy: "system",
+		ApprovalTimeout:    3 * time.Hour,
+	}
+	if c.approvalMgr.PreMergeTimeout() == prState.ApprovalTimeout {
+		t.Fatal("test needs a request timeout that differs from the pre-merge default")
+	}
+
+	if err := c.applyApprovalDecision(context.Background(), prState); err != nil {
+		t.Fatalf("applyApprovalDecision: %v", err)
+	}
+	comments, _ := cap.snapshot()
+	if len(comments) != 1 {
+		t.Fatalf("comments = %d, want 1: %q", len(comments), comments)
+	}
+	if want := "No decision in 3h0m0s; the request expired.\n\n" + approvalHandoff; comments[0] != want {
+		t.Errorf("comment = %q, want %q", comments[0], want)
+	}
+}
+
+// mutation pin: submitAsyncApprovalRequest does not keep the Manager's armed timeout on PRState.ApprovalTimeout -> this test fails
+func TestSubmitAsyncApprovalRequest_RecordsTheTimeoutTheManagerArmed(t *testing.T) {
+	c, _ := newApprovalCommentController(t)
+	cfg := approval.DefaultConfig()
+	cfg.Enabled = true
+	cfg.PreMerge.Enabled = true
+	cfg.PreMerge.Timeout = 2 * time.Hour
+	mgr := approval.NewManager(cfg)
+	mgr.RegisterHandler(&mockCapturingApprovalHandler{})
+	c.approvalMgr = mgr
+
+	prState := &PRState{PRNumber: 87, IssueNumber: 78, Stage: StageAwaitApproval}
+	if err := c.submitAsyncApprovalRequest(context.Background(), prState); err != nil {
+		t.Fatalf("submitAsyncApprovalRequest: %v", err)
+	}
+	if prState.ApprovalTimeout != 2*time.Hour {
+		t.Errorf("ApprovalTimeout = %s, want 2h0m0s", prState.ApprovalTimeout)
 	}
 }

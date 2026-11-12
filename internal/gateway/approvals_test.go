@@ -15,8 +15,11 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/approval"
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/testutil"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // --- fake DecisionRecorder for unit tests ---------------------------------
@@ -992,5 +995,57 @@ func TestConsoleApproval_RejectWithReasonWritesLearning(t *testing.T) {
 
 	if w := f.decide(t, "req-console-2", `{"decision":"reject","by":"bob","reason":"use the existing helper"}`); w.status != http.StatusConflict {
 		t.Errorf("second decision status = %d, want 409", w.status)
+	}
+}
+
+// newReasonRoutingFixture is the console fixture with the Manager's state writer
+// swapped for a MultiControllerStateWriter over a real autopilot Controller that
+// tracks one PR awaiting approval — so a POSTed decision travels the whole route
+// (handler → Manager → writer → Controller → PRState).
+func newReasonRoutingFixture(t *testing.T, reqID string) (*consoleApprovalFixture, *autopilot.Controller) {
+	t.Helper()
+	f := newConsoleApprovalFixture(t)
+	f.submit(t, reqID)
+
+	stateStore, err := autopilot.NewStateStore(f.store.DB())
+	if err != nil {
+		t.Fatalf("NewStateStore: %v", err)
+	}
+	if err := stateStore.SavePRState("owner/repo", &autopilot.PRState{
+		PRNumber:          91,
+		IssueNumber:       90,
+		Stage:             autopilot.StageAwaitApproval,
+		ApprovalRequestID: reqID,
+		CreatedAt:         time.Now(),
+	}); err != nil {
+		t.Fatalf("SavePRState: %v", err)
+	}
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, "http://127.0.0.1:1")
+	c := autopilot.NewController(autopilot.DefaultConfig(), ghClient, f.mgr, "owner", "repo")
+	c.SetStateStore(stateStore)
+	if _, err := c.RestoreState(); err != nil {
+		t.Fatalf("RestoreState: %v", err)
+	}
+	f.mgr.WithStateWriter(autopilot.NewMultiControllerStateWriter(c))
+	return f, c
+}
+
+// mutation pin: gateway routing of the reject reason (ReasonedDecisionRecorder branch in handleApprovalDecision, Manager.RecordDecisionWithReason, MultiControllerStateWriter.SetApprovalDecisionWithReason) -> this test fails
+func TestHandleApprovalDecision_RejectReasonReachesPRState(t *testing.T) {
+	f, c := newReasonRoutingFixture(t, "req-reason-1")
+
+	w := f.decide(t, "req-reason-1", `{"decision":"reject","by":"bob","reason":"touches the billing path"}`)
+	if w.status != http.StatusOK {
+		t.Fatalf("reject status = %d, want 200 (body=%s)", w.status, w.body.String())
+	}
+	pr, ok := c.GetPRState(91)
+	if !ok {
+		t.Fatal("PR 91 is not tracked by the controller")
+	}
+	if pr.ApprovalDecision != "rejected" || pr.ApprovalDecisionBy != "bob" {
+		t.Errorf("decision = %q by %q, want rejected by bob", pr.ApprovalDecision, pr.ApprovalDecisionBy)
+	}
+	if pr.ApprovalDecisionReason != "touches the billing path" {
+		t.Errorf("ApprovalDecisionReason = %q, want the reason from the POST body", pr.ApprovalDecisionReason)
 	}
 }
