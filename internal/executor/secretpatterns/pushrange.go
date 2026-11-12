@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -448,11 +449,16 @@ func inShallowFile(ctx context.Context, dir, sha string) (bool, error) {
 	if cerr := ctxError(ctx); cerr != nil {
 		return false, cerr
 	}
-	if err != nil {
+	// Decision: a git before 2.31 does not fail on --path-format. rev-parse prints
+	// an option it does not know back as output and exits 0, so the answer is
+	// told apart by its shape: a path that is not absolute means the option was
+	// not understood.
+	shallowPath := strings.TrimSpace(string(out))
+	if err != nil || !filepath.IsAbs(shallowPath) {
 		warnOldGit(ctx, dir)
 		return false, ctxError(ctx)
 	}
-	data, err := os.ReadFile(strings.TrimSpace(string(out)))
+	data, err := os.ReadFile(shallowPath)
 	if err != nil {
 		return false, nil
 	}

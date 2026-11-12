@@ -712,3 +712,47 @@ func TestWarnOldGit(t *testing.T) {
 		}
 	}
 }
+
+// GH-6318: an old git does not fail on --path-format, it prints the option back
+// and exits 0. The warning must come from that answer, through the real
+// shallow-file lookup, not only from a direct call of warnOldGit.
+func TestInShallowFile_OldGitWarnsOnceThroughTheLookup(t *testing.T) {
+	f := newPushFixture(t)
+	sha := f.git("rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(f.local, ".git", "shallow"), []byte(sha+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A git 2.30: --version says so, and rev-parse echoes the option it does not know.
+	shim := "#!/bin/sh\n" +
+		"case \"$*\" in\n" +
+		"  *--path-format=absolute*) printf '%s\\n%s\\n' --path-format=absolute .git/shallow; exit 0 ;;\n" +
+		"  *--version*) echo 'git version 2.30.2'; exit 0 ;;\n" +
+		"esac\n" +
+		"exec " + realGit + " \"$@\"\n"
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	warnOldGitOnce = sync.Once{}
+	t.Cleanup(func() { warnOldGitOnce = sync.Once{} })
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	for i := 0; i < 2; i++ {
+		listed, err := inShallowFile(context.Background(), f.local, sha)
+		if err != nil || listed {
+			t.Fatalf("old git: got listed=%v err=%v, want the boundary check off", listed, err)
+		}
+	}
+	if got := strings.Count(buf.String(), "level=WARN"); got != 1 {
+		t.Errorf("%d warnings through the lookup, want exactly 1:\n%s", got, buf.String())
+	}
+}
