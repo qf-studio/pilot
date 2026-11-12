@@ -1,6 +1,6 @@
 # TASK-651: Agent isolation — agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM
 
-**Status**: 🚀 **U0 and U1 DISPATCHED 2026-11-12** (`pilot` + `no-decompose`): U0 [#6320](https://github.com/qf-studio/pilot/issues/6320) host setup script · U1 [#6321](https://github.com/qf-studio/pilot/issues/6321) run_as_user spawn mechanics, off by default. **O1 DONE 2026-11-12 09:14Z**: the general sudo rule of the daemon user is commented out on the box (backup `/root/90-cloud-init-users.bak-task651-o1`; daemon healthy). Design: `.agent/system/agent-isolation-design.md`. Planned after U1: U2 workspace clone and hand-over · U3 gates and evidence as the agent user · U4 read-only GitHub token per run · U5 per-project override. Waiting for the founder: O2 (GitHub App) and O3 (new secret values in SSM). Review every PR with a run-it agent before the approval.
+**Status**: 🚀 **U0 merged, U1 dispatched (2026-11-12).** U0 [#6320](https://github.com/qf-studio/pilot/issues/6320) → PR#6325 merged 10:29Z; run-it review in an Amazon Linux 2023 container: correct with default arguments, three major defects for a real host → follow-up [#6328](https://github.com/qf-studio/pilot/issues/6328) (argument validation, shared read on git directories only, verified sudo removal as the last step, undo from a state file). **O4 must not run on the box before #6328 merges and passes a container review.** U1 [#6321](https://github.com/qf-studio/pilot/issues/6321) run_as_user spawn mechanics: waiting for pickup. **O1 done 2026-11-12 09:14Z** (backup `/root/90-cloud-init-users.bak-task651-o1`). Planned: U2 workspace clone and hand-over · U3 gates and evidence as the agent user · U4 read-only GitHub token per run · U5 per-project override. Waiting for the founder: O2 (create the GitHub App; none is installed in the org) and O3 (new secret values in SSM). Design: `.agent/system/agent-isolation-design.md`.
 **Created**: 2026-11-12
 **Assignee**: Pilot (one leg at a time) + operator steps by a Navigator session with founder consent
 **Parent**: TASK-650 leg H1
@@ -51,8 +51,9 @@
 
 ### Phase C — code legs (Pilot), each merged with the option empty
 
-- [ ] **U0** host setup script with dry-run and undo, tested with a mocked PATH (dispatch-ready, below).
+- [x] **U0** (PR#6325 merged; fixes in #6328 before any host run) host setup script with dry-run and undo, tested with a mocked PATH (dispatch-ready, below).
 - [ ] **U1** config option, one spawn constructor for every model process, allowlist environment, kill through sudo, fail-closed preflight, group-readable guard files (dispatch-ready, below).
+- [ ] **U2 note (2026-11-12 review of PR#6323):** on main the secret gate trusts refs the session can write: a forged remote-tracking ref, a session-added remote or a replace ref gets a secret past the gate and the push publishes it (seven shapes confirmed). U2 must compute "already published" only in the daemon's repository, from refs the agent cannot write, and run the gate with replace refs ignored.
 - [ ] **U2** workspace as an agent-owned clone; every in-workspace command through the constructor; hand-over by fetch into the daemon's repository; cleanup as the agent user. Needs a focused research pass on `GitOperations` and the worktree call sites first.
 - [ ] **U3** quality gates, evidence commands, workflow hooks and the auto-preserve commit run as the agent user; the daemon push runs with hooks off.
 - [ ] **U4** read-only installation token per run, refreshed in a file that the `gh` shim and a git credential helper read; the GitHub names leave the keep list of the agent environment when the option is set. Depends on O2.
