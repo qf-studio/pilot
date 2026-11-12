@@ -1120,6 +1120,24 @@ func (g *GitOperations) stripCoAuthorBeforePush(ctx context.Context, branchName,
 		slog.Any("rewritten_shas", short))
 }
 
+// branchRefspec is the full refspec of a branch push, refs/heads on both sides:
+// git sends the commit under refs/heads/<branch>, the one the secret gate scans
+// (it qualifies the name the same way), whatever else the session wrote under
+// the same short name (GH-6334).
+func branchRefspec(branch string) string {
+	branch = strings.TrimPrefix(branch, "refs/heads/")
+	return "refs/heads/" + branch + ":refs/heads/" + branch
+}
+
+// pushArgs is the git push command line of the three push methods. Decision:
+// push.followTags is set to false on the command line and --no-follow-tags
+// repeats it, so a session that sets the config cannot make the push publish an
+// annotated tag the gate does not scan (GH-6334).
+func pushArgs(options ...string) []string {
+	args := []string{"-c", "push.followTags=false", "push", "--no-follow-tags"}
+	return append(args, options...)
+}
+
 // Push pushes the current branch to remote. Before pushing it strips the
 // Claude co-author trailer from every commit the push would publish (GH-5711,
 // GH-5719): belt and braces for backends that ignore includeCoAuthoredBy.
@@ -1129,7 +1147,7 @@ func (g *GitOperations) Push(ctx context.Context, branchName, taskID string) err
 	if err := CheckSecretGate(ctx, g.projectPath, branchName, taskID); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "git", "push", "-u", "origin", branchName)
+	cmd := exec.CommandContext(ctx, "git", pushArgs("-u", "origin", branchRefspec(branchName))...)
 	cmd.Dir = g.projectPath
 	withGitCredentials(ctx, cmd)
 	output, err := cmd.CombinedOutput()
@@ -1150,7 +1168,7 @@ func (g *GitOperations) PushForceWithLease(ctx context.Context, branchName, expe
 		return err
 	}
 	lease := fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", branchName, expectedRemoteSHA)
-	cmd := exec.CommandContext(ctx, "git", "push", "-u", lease, "origin", branchName)
+	cmd := exec.CommandContext(ctx, "git", pushArgs("-u", lease, "origin", branchRefspec(branchName))...)
 	cmd.Dir = g.projectPath
 	withGitCredentials(ctx, cmd)
 	output, err := cmd.CombinedOutput()
@@ -1440,7 +1458,7 @@ func (g *GitOperations) PushToMain(ctx context.Context, taskID string) error {
 	if err := CheckSecretGate(ctx, g.projectPath, defaultBranch, taskID); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "git", "push", "origin", defaultBranch)
+	cmd := exec.CommandContext(ctx, "git", pushArgs("origin", branchRefspec(defaultBranch))...)
 	cmd.Dir = g.projectPath
 	withGitCredentials(ctx, cmd)
 	output, err := cmd.CombinedOutput()

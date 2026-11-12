@@ -750,3 +750,23 @@ func TestCheckPushRange_OldGitWarnsOnceThroughTheLookup(t *testing.T) {
 		t.Errorf("%d warnings through the lookup, want exactly 1:\n%s", got, buf.String())
 	}
 }
+
+// GH-6334: the path of a file the range renames is scanned, and the verdict
+// prints it masked.
+// mutation pin: do not scan file paths -> this test fails
+func TestCheckPushRange_SecretInRenamedPathRefusedAndMasked(t *testing.T) {
+	f := newPushFixture(t)
+	const secret = "hunter2-not-a-known-shape"
+	RegisterSecretValues(secret)
+	f.git("mv", "README.md", "readme-"+secret+".md")
+	f.git("commit", "-m", "docs: rename")
+
+	err := CheckPush(context.Background(), f.local, "pilot/GH-1", PushOptions{})
+	var pre *PushRangeError
+	if !errors.As(err, &pre) {
+		t.Fatalf("got %T %v, want *PushRangeError for a pure rename", err, err)
+	}
+	if strings.Contains(err.Error(), secret) || strings.Contains(pre.File, secret) {
+		t.Errorf("the verdict holds the value: %v / %q", err, pre.File)
+	}
+}
