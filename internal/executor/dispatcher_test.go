@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -7199,21 +7200,186 @@ func TestProcessQueue_HeldTaskDoesNotStarveRunnableTasks(t *testing.T) {
 	if execCount != 2 {
 		t.Errorf("backend invocations = %d, want 2 (B and C)", execCount)
 	}
+	// GH-6326: A is checked at the head and once again after each completed
+	// run (B, C) — never twice in a row, so no busy loop on the held row.
 	mu.Lock()
-	if heldChecks != 1 {
-		t.Errorf("held task checked %d times in one cycle, want exactly 1", heldChecks)
+	if heldChecks != 3 {
+		t.Errorf("held task checked %d times in one cycle, want 3 (head, after B, after C)", heldChecks)
 	}
 	mu.Unlock()
 
 	// Next cycle: B and C are done, so only A remains and it is re-checked.
 	worker.processQueue(context.Background())
 	mu.Lock()
-	if heldChecks != 2 {
-		t.Errorf("held task checked %d times after second cycle, want 2 (re-checked every poll)", heldChecks)
+	if heldChecks != 4 {
+		t.Errorf("held task checked %d times after second cycle, want 4 (re-checked every poll)", heldChecks)
 	}
 	mu.Unlock()
 	if got := status("exec-gh5572-" + heldID); got != "queued" {
 		t.Errorf("held task status after re-check = %q, want still queued", got)
+	}
+}
+
+// seedGH6326Queue saves queued rows in the given order, one second apart so the
+// created_at ordering is deterministic. Only the first row carries a dependency
+// marker; the others have none.
+func seedGH6326Queue(t *testing.T, store *memory.Store, projectPath string, taskIDs ...string) {
+	t.Helper()
+	for i, id := range taskIDs {
+		exec := &memory.Execution{
+			ID:              "exec-gh6326-" + id,
+			TaskID:          id,
+			ProjectPath:     projectPath,
+			Status:          "queued",
+			TaskDescription: "No dependency markers here.",
+		}
+		if i == 0 {
+			exec.TaskDescription = "Depends on: #1"
+		}
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("SaveExecution(%s): %v", id, err)
+		}
+		if i < len(taskIDs)-1 {
+			time.Sleep(1100 * time.Millisecond)
+		}
+	}
+}
+
+// TestProcessQueue_HeldRowRunsBeforeQueueIsEmpty pins GH-6326: the hold cause
+// of A is removed while B runs, so A must be checked again and run between B
+// and C, not after the whole queue is empty.
+func TestProcessQueue_HeldRowRunsBeforeQueueIsEmpty(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	const projectPath = "/project-gh6326-held-runs-early"
+	const heldID, runnableB, runnableC = "GH-9601", "GH-9602", "GH-9603"
+	seedGH6326Queue(t, store, projectPath, heldID, runnableB, runnableC)
+
+	stubFetchIssueState(t, func(_ context.Context, _ *Runner, _ *Task, _ string) (IssueState, error) {
+		return IssueState{Closed: false}, nil
+	})
+	origMergedPR := mergedPRPreflightCheck
+	mergedPRPreflightCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	t.Cleanup(func() { mergedPRPreflightCheck = origMergedPR })
+
+	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "done"}}
+
+	var mu sync.Mutex
+	var cStatusWhenHeldReleased string
+	stubCheckBasePresence(t, func(_ context.Context, _ *Runner, task *Task, _ string, _ []int, _ []string) (BasePresenceHold, error) {
+		if task.ID != heldID {
+			return BasePresenceHold{}, nil
+		}
+		backend.mu.Lock()
+		runs := backend.execCount
+		backend.mu.Unlock()
+		if runs == 0 {
+			return BasePresenceHold{Held: true, Reason: "referenced issue #1's attached PR is still open (not merged)"}, nil
+		}
+		// The hold cause is gone (B has run): record where C is right now.
+		got, err := store.GetExecution("exec-gh6326-" + runnableC)
+		if err != nil {
+			t.Errorf("GetExecution(C): %v", err)
+			return BasePresenceHold{}, nil
+		}
+		mu.Lock()
+		cStatusWhenHeldReleased = got.Status
+		mu.Unlock()
+		return BasePresenceHold{}, nil
+	})
+
+	runner := NewRunnerWithBackend(backend)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
+	worker := NewProjectWorker(projectPath, store, runner, slog.Default())
+
+	worker.processQueue(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+	if cStatusWhenHeldReleased != "queued" {
+		t.Errorf("task C status when A was released = %q, want %q (A must run before the queue is empty)", cStatusWhenHeldReleased, "queued")
+	}
+	backend.mu.Lock()
+	execCount := backend.execCount
+	backend.mu.Unlock()
+	if execCount != 3 {
+		t.Errorf("backend invocations = %d, want 3 (B, A, C)", execCount)
+	}
+	got, err := store.GetExecution("exec-gh6326-" + heldID)
+	if err != nil {
+		t.Fatalf("GetExecution(A): %v", err)
+	}
+	if got.Status == "queued" || got.Status == "pending" {
+		t.Errorf("held task status = %q, want it run once its hold cause was removed", got.Status)
+	}
+}
+
+// TestProcessQueue_ReplacedHeldRowNotInHeldTaskIDs pins GH-6326: a held row
+// that leaves the queue (replaced, finished elsewhere) must not be named in
+// the "Held task skipped in favour of runnable task" log line.
+func TestProcessQueue_ReplacedHeldRowNotInHeldTaskIDs(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	const projectPath = "/project-gh6326-replaced-held"
+	const heldID, supersededB, runnableC = "GH-9611", "GH-9612", "GH-9613"
+	seedGH6326Queue(t, store, projectPath, heldID, supersededB, runnableC)
+
+	// B's issue is closed (superseded, a continue path that keeps the held
+	// map); while B is examined, A's row is replaced: it leaves the queue.
+	stubFetchIssueState(t, func(_ context.Context, _ *Runner, task *Task, _ string) (IssueState, error) {
+		if task.ID == supersededB {
+			if err := store.MarkExecutionCompleted("exec-gh6326-"+heldID, "", "", 0); err != nil {
+				t.Errorf("MarkExecutionCompleted(A): %v", err)
+			}
+			return IssueState{Closed: true}, nil
+		}
+		return IssueState{Closed: false}, nil
+	})
+	origMergedPR := mergedPRPreflightCheck
+	mergedPRPreflightCheck = func(_ context.Context, _, _ string) (string, error) { return "", nil }
+	t.Cleanup(func() { mergedPRPreflightCheck = origMergedPR })
+	stubCheckBasePresence(t, func(_ context.Context, _ *Runner, task *Task, _ string, _ []int, _ []string) (BasePresenceHold, error) {
+		if task.ID == heldID {
+			return BasePresenceHold{Held: true, Reason: "referenced issue #1's attached PR is still open (not merged)"}, nil
+		}
+		return BasePresenceHold{}, nil
+	})
+
+	backend := &mockFixedBackend{result: &BackendResult{Success: true, Output: "done"}}
+	runner := NewRunnerWithBackend(backend)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	worker := NewProjectWorker(projectPath, store, runner, logger)
+
+	worker.processQueue(context.Background())
+
+	var sawB bool
+	for _, line := range strings.Split(strings.TrimSpace(logBuf.String()), "\n") {
+		var rec struct {
+			Msg      string   `json:"msg"`
+			Runnable string   `json:"runnable_task_id"`
+			Held     []string `json:"held_task_ids"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil || rec.Msg != "Held task skipped in favour of runnable task" {
+			continue
+		}
+		switch rec.Runnable {
+		case supersededB:
+			sawB = true
+			if len(rec.Held) != 1 || rec.Held[0] != heldID {
+				t.Errorf("held_task_ids at B = %v, want [%s] (A still queued)", rec.Held, heldID)
+			}
+		case runnableC:
+			t.Errorf("held_task_ids at C = %v, want no held line once A left the queue", rec.Held)
+		}
+	}
+	if !sawB {
+		t.Error("expected the held-skipped log line when B was picked")
 	}
 }
 

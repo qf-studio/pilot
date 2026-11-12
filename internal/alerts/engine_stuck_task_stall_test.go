@@ -229,3 +229,73 @@ func TestEngine_EvaluateStuckTasks_OrphanEvictionOnTerminalRowIsNoOp(t *testing.
 		})
 	}
 }
+
+// TestEngine_EvaluateStuckTasks_HeldEntryNotOrphanEvicted pins GH-6326: a Held
+// or Queued entry older than the orphan threshold waits by design (a repeated
+// Held event does not refresh its clock), so it is neither evicted nor is its
+// still-queued row stalled. A Running entry of the same age is still evicted.
+func TestEngine_EvaluateStuckTasks_HeldEntryNotOrphanEvicted(t *testing.T) {
+	tests := []struct {
+		name       string
+		phase      string
+		wantEvict  bool
+		wantStatus executor.Status
+	}{
+		{name: "held is kept", phase: "Held", wantEvict: false, wantStatus: executor.ExecStatusQueued},
+		{name: "queued is kept", phase: "Queued", wantEvict: false, wantStatus: executor.ExecStatusQueued},
+		{name: "running is still evicted", phase: "Running", wantEvict: true, wantStatus: executor.ExecStatusStalled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := memory.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("memory.NewStore: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			lifecycle := executor.NewExecutionLifecycle(store)
+			task := &executor.Task{ID: "GH-9003", ProjectPath: "/proj"}
+			execID, err := lifecycle.Begin(task, executor.ExecStatusQueued)
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			if tt.phase == "Running" {
+				if err := lifecycle.Transition(execID, executor.ExecStatusRunning); err != nil {
+					t.Fatalf("Transition(running): %v", err)
+				}
+			}
+
+			config := stuckTaskStallTestConfig()
+			mockCh := newMockChannel("test-channel", "webhook")
+			dispatcher := NewDispatcher(config)
+			dispatcher.RegisterChannel(mockCh)
+			engine := NewEngine(config, WithDispatcher(dispatcher), WithExecutionLifecycle(lifecycle))
+
+			// 130 min > minOrphanEvictionThreshold (120m).
+			engine.mu.Lock()
+			engine.taskLastProgress[task.ID] = progressState{
+				Phase:     tt.phase,
+				UpdatedAt: time.Now().Add(-130 * time.Minute),
+			}
+			engine.mu.Unlock()
+
+			engine.evaluateStuckTasks(context.Background())
+
+			engine.mu.RLock()
+			_, tracked := engine.taskLastProgress[task.ID]
+			engine.mu.RUnlock()
+			if tracked == tt.wantEvict {
+				t.Errorf("entry tracked = %v, want %v", tracked, !tt.wantEvict)
+			}
+
+			got, err := store.GetExecution(execID)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if got.Status != string(tt.wantStatus) {
+				t.Errorf("execution status = %q, want %q", got.Status, tt.wantStatus)
+			}
+		})
+	}
+}

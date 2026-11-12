@@ -116,6 +116,12 @@ const minOrphanEvictionThreshold = 120 * time.Minute
 // as merely waiting in line, not stuck (GH-4416).
 const taskStuckQueuedPhase = "Queued"
 
+// taskStuckHeldPhase is the Phase string the dispatcher emits when the
+// base-presence gate holds a queued task (dispatcher.go processQueue). Like
+// taskStuckQueuedPhase, the row waits by design: the dispatcher's hold counter
+// parks it at its cap, so evaluateStuckTasks must not orphan-evict it (GH-6326).
+const taskStuckHeldPhase = "Held"
+
 type progressState struct {
 	Progress      int
 	UpdatedAt     time.Time
