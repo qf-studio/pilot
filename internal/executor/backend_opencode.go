@@ -116,12 +116,15 @@ func (b *OpenCodeBackend) startServer(ctx context.Context) error {
 		parts = []string{"opencode", "serve"}
 	}
 
-	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
+	cmd, err := agentCommand(ctx, parts[0], parts[1:]...)
+	if err != nil {
+		return err
+	}
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it. Plain scrub, not modelSubprocessEnvFor: billing
 	// mode (GH-6016) applies to the claude backend only, so OpenCode keeps the
 	// ANTHROPIC_API_KEY it reads from its process env (GH-6022).
-	cmd.Env = modelSubprocessEnv(os.Environ())
+	setAgentEnv(cmd, modelSubprocessEnv(os.Environ()))
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start OpenCode server: %w", err)
 	}

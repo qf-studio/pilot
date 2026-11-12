@@ -9285,11 +9285,14 @@ func (r *Runner) getPostExecutionSummary(ctx context.Context, dir string) (*Post
 		return nil, fmt.Errorf("read guard: %w", err)
 	}
 	defer guardCleanup()
-	cmd := exec.CommandContext(ctx, claudeCmd, args...)
+	cmd, err := agentCommand(ctx, claudeCmd, args...)
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = dir
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.
-	cmd.Env = modelSubprocessEnvFor(ctx, os.Environ())
+	setAgentEnv(cmd, modelSubprocessEnvFor(ctx, os.Environ()))
 
 	output, err := cmd.Output()
 	if err != nil {
@@ -9344,11 +9347,14 @@ func (r *Runner) getContractEvidence(ctx context.Context, dir string, fields []s
 		return nil, fmt.Errorf("read guard: %w", err)
 	}
 	defer guardCleanup()
-	cmd := exec.CommandContext(ctx, claudeCmd, args...)
+	cmd, err := agentCommand(ctx, claudeCmd, args...)
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = dir
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.
-	cmd.Env = modelSubprocessEnvFor(ctx, os.Environ())
+	setAgentEnv(cmd, modelSubprocessEnvFor(ctx, os.Environ()))
 
 	output, err := cmd.Output()
 	if err != nil {

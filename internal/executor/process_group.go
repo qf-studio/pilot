@@ -16,6 +16,12 @@ func configureProcessGroup(cmd *exec.Cmd) {
 
 // killProcessGroup signals cmd's whole process group, falling back to the
 // tracked PID (GH-4503). See procgroup.Kill.
+//
+// A command started as the run_as_user user (agentCommand) is signalled
+// through sudo: the daemon user may not signal that user or sudo (TASK-651).
 func killProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
+	if agentUser, ok := agentCmdUser(cmd); ok {
+		return killAgentProcessGroup(cmd, agentUser, sig)
+	}
 	return procgroup.Kill(cmd, sig)
 }

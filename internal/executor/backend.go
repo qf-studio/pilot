@@ -1332,6 +1332,14 @@ type ClaudeCodeConfig struct {
 	// read (unset is enabled).
 	ReadGuard *bool `yaml:"read_guard,omitempty"`
 
+	// RunAsUser starts every model process as this Unix user through sudo
+	// (TASK-651). Empty (the default) runs them as the daemon user, exactly as
+	// before. Linux only; leave empty until the agent workspace legs of
+	// TASK-651 are released. RunAsGroup is passed as `sudo -g` and is the
+	// group of the run guard files.
+	RunAsUser  string `yaml:"run_as_user,omitempty"`
+	RunAsGroup string `yaml:"run_as_group,omitempty"`
+
 	// PilotHome and ConfigPath tell the read guard what to protect. Set by the
 	// daemon from the loaded config; empty means ~/.pilot and
 	// <home>/config.yaml. Not YAML-configurable.

@@ -630,7 +630,10 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 
 	args = append(args, b.config.ExtraArgs...)
 
-	cmd := exec.CommandContext(ctx, b.config.Command, args...)
+	cmd, err := agentCommand(ctx, b.config.Command, args...)
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = opts.ProjectPath
 
 	// GH-4503: give the subprocess its own process group so every kill path
@@ -709,7 +712,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 		}
 	}
 
-	cmd.Env = env
+	setAgentEnv(cmd, env)
 
 	b.log.Debug("Starting Claude Code",
 		slog.String("command", b.config.Command),

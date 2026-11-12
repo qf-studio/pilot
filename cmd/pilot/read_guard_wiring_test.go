@@ -121,3 +121,22 @@ func TestEveryEntrypointAppliesReadGuardConfig(t *testing.T) {
 		}
 	})
 }
+
+// mutation pin: applyReadGuardConfig stops running the run_as_user preflight, so an entrypoint with a broken run_as_user spawns model processes as the daemon user -> this test fails
+func TestReadGuardConfigRunsRunAsUserPreflight(t *testing.T) {
+	t.Cleanup(func() {
+		executor.SetReadGuardConfig(nil)
+		executor.PreflightRunAsUser(nil)
+	})
+	cfgPath := filepath.Join(t.TempDir(), "custom.yaml")
+
+	applyReadGuardConfig(&executor.ClaudeCodeConfig{RunAsUser: "pilot-no-such-user-6321"}, cfgPath)
+	if err := executor.RunAsUserPreflightError(); err == nil {
+		t.Error("a run_as_user that does not exist left spawns open: the preflight is not wired into applyReadGuardConfig")
+	}
+
+	applyReadGuardConfig(&executor.ClaudeCodeConfig{}, cfgPath)
+	if err := executor.RunAsUserPreflightError(); err != nil {
+		t.Errorf("empty run_as_user: preflight error %v, want none", err)
+	}
+}

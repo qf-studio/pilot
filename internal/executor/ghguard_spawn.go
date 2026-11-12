@@ -42,6 +42,10 @@ func setupGhGuardShim(realGh string) (shimDir, journalPath string, cleanup func(
 		return "", "", func() {}, fmt.Errorf("ghguard: create shim dir: %w", err)
 	}
 	cleanup = func() { _ = os.RemoveAll(shimDir) }
+	if err := applyGuardPerm(shimDir, 0o750); err != nil {
+		cleanup()
+		return "", "", func() {}, fmt.Errorf("ghguard: shim dir permissions: %w", err)
+	}
 
 	pilotExe, err := os.Executable()
 	if err != nil {
@@ -59,6 +63,10 @@ func setupGhGuardShim(realGh string) (shimDir, journalPath string, cleanup func(
 	if err := os.WriteFile(shimPath, []byte(script), 0o755); err != nil { //nolint:gosec // shim must be executable
 		cleanup()
 		return "", "", func() {}, fmt.Errorf("ghguard: write shim script: %w", err)
+	}
+	if err := applyGuardPerm(shimPath, 0o750); err != nil {
+		cleanup()
+		return "", "", func() {}, fmt.Errorf("ghguard: shim script permissions: %w", err)
 	}
 
 	journalPath = filepath.Join(shimDir, "journal.jsonl")

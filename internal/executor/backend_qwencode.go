@@ -248,14 +248,17 @@ func (b *QwenCodeBackend) buildArgs(opts ExecuteOptions) []string {
 func (b *QwenCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
 	args := b.buildArgs(opts)
 
-	cmd := exec.CommandContext(ctx, b.config.Command, args...)
+	cmd, err := agentCommand(ctx, b.config.Command, args...)
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = opts.ProjectPath
 	// GH-5302: QwenCodeBackend spawns the same kind of model-controlled CLI
 	// (Bash-capable, --yolo == --dangerously-skip-permissions) as Claude Code
 	// and OpenCode, so it gets the same ambient-env scrub (GH-5275/GH-5278)
 	// rather than staying a silent, undocumented exception. Plain scrub: billing
 	// mode (GH-6016) applies to the claude backend only (GH-6022).
-	cmd.Env = modelSubprocessEnv(os.Environ())
+	setAgentEnv(cmd, modelSubprocessEnv(os.Environ()))
 
 	// GH-4503: same fix as the Claude Code backend — give the subprocess its
 	// own process group so every kill path below reaches any children it
