@@ -3200,6 +3200,21 @@
           "https://github.com/qf-studio/pilot/issues/6301",
           "https://github.com/qf-studio/pilot/issues/6310"
         ]
+      },
+      "TASK-651": {
+        "path": ".agent/tasks/TASK-651-agent-uid-isolation.md",
+        "title": "Agent isolation \u2014 agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM",
+        "status": "planned",
+        "concepts": [
+          "testing",
+          "database",
+          "deployment",
+          "context",
+          "api",
+          "theory of mind",
+          "authentication",
+          "skills"
+        ]
       }
     },
     "memories": {
@@ -13074,6 +13089,41 @@
       "from": "mem-305",
       "to": "TASK-650",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-651",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "skills",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "database",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -13258,7 +13308,8 @@
       "TASK-643",
       "TASK-646",
       "TASK-647",
-      "TASK-649"
+      "TASK-649",
+      "TASK-651"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -13342,7 +13393,8 @@
       "TASK-628",
       "TASK-631",
       "TASK-633",
-      "TASK-649"
+      "TASK-649",
+      "TASK-651"
     ],
     "auto-merge": [
       "mem-103",
@@ -13663,7 +13715,8 @@
       "TASK-643",
       "TASK-646",
       "TASK-647",
-      "TASK-649"
+      "TASK-649",
+      "TASK-651"
     ],
     "conversational-bot": [
       "mem-036",
@@ -13766,7 +13819,8 @@
       "TASK-589",
       "TASK-631",
       "TASK-633",
-      "TASK-647"
+      "TASK-647",
+      "TASK-651"
     ],
     "decomposition": [
       "decomposer-narrative-bullets-as-subtask-boundaries",
@@ -13959,7 +14013,8 @@
       "TASK-643",
       "TASK-646",
       "TASK-647",
-      "TASK-649"
+      "TASK-649",
+      "TASK-651"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -14808,7 +14863,8 @@
       "mem-249",
       "mem-250",
       "TASK-581",
-      "TASK-646"
+      "TASK-646",
+      "TASK-651"
     ],
     "social-engineering": [
       "mem-125"
@@ -15031,7 +15087,8 @@
       "TASK-646",
       "TASK-647",
       "TASK-649",
-      "TASK-650"
+      "TASK-650",
+      "TASK-651"
     ],
     "testing-quality": [
       "TASK-384",
@@ -15268,7 +15325,8 @@
       "TASK-633",
       "TASK-632",
       "TASK-634",
-      "TASK-646"
+      "TASK-646",
+      "TASK-651"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -15680,10 +15738,10 @@
       "mem-303"
     ]
   },
-  "last_updated": "2026-11-11T19:22:31.341864+00:00",
+  "last_updated": "2026-11-12T09:13:00.952571+00:00",
   "stats": {
-    "total_nodes": 780,
-    "total_edges": 813,
+    "total_nodes": 781,
+    "total_edges": 820,
     "memory_count": 430
   },
   "metadata": {
