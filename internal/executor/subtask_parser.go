@@ -70,10 +70,13 @@ func (p *SubtaskParser) defaultRunner(ctx context.Context, args ...string) ([]by
 		return nil, err
 	}
 	defer guardCleanup()
-	cmd := exec.CommandContext(ctx, p.claudeCmd, args...)
+	cmd, err := agentCommand(ctx, p.claudeCmd, args...)
+	if err != nil {
+		return nil, err
+	}
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.
-	cmd.Env = modelSubprocessEnvFor(ctx, os.Environ())
+	setAgentEnv(cmd, modelSubprocessEnvFor(ctx, os.Environ()))
 	return cmd.Output()
 }
 

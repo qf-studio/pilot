@@ -181,14 +181,18 @@ func (j *IntentJudge) runCmdInHome(ctx context.Context, dir, home string, args .
 	}
 	defer guardCleanup()
 
-	cmd := exec.CommandContext(ctx, j.claudeCmd, args...)
+	cmd, err := agentCommand(ctx, j.claudeCmd, args...)
+	if err != nil {
+		return nil, err
+	}
 	cmd.Dir = dir
 	// GH-5278: scrub the ambient environment before this model-controlled
 	// subprocess inherits it.
-	cmd.Env = modelSubprocessEnvFor(ctx, os.Environ())
+	env := modelSubprocessEnvFor(ctx, os.Environ())
 	if home != "" {
-		cmd.Env = postMergeReviewEnviron(ctx, cmd.Env, home)
+		env = postMergeReviewEnviron(ctx, env, home)
 	}
+	setAgentEnv(cmd, env)
 	var stdout bytes.Buffer
 	stderr := newBoundedBuffer(maxJudgeStderrCaptureBytes)
 	cmd.Stdout = &stdout

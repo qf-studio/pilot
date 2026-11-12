@@ -298,10 +298,13 @@ func (r *Runner) PlanEpic(ctx context.Context, task *Task, executionPath string)
 		args = append(args, "--settings", settingsPath)
 	}
 
-	cmd := exec.CommandContext(ctx, claudeCmd, args...)
+	cmd, err := agentCommand(ctx, claudeCmd, args...)
+	if err != nil {
+		return nil, err
+	}
 	// GH-5278: scrub the ambient environment before layering the explicit
 	// ANTHROPIC_MODEL override on top — this subprocess is model-controlled.
-	cmd.Env = append(modelSubprocessEnvFor(ctx, os.Environ()), "ANTHROPIC_MODEL="+planningModel)
+	setAgentEnv(cmd, append(modelSubprocessEnvFor(ctx, os.Environ()), "ANTHROPIC_MODEL="+planningModel))
 
 	// Set working directory - use executionPath which respects worktree isolation
 	if executionPath != "" {

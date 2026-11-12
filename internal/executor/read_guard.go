@@ -133,11 +133,17 @@ func setupRunGuards(projectPath, writeBoundary string, read *readGuardSpec) (set
 		cleanup()
 		return "", func() {}, fmt.Errorf("run guards: %s: %w", what, err)
 	}
+	if err := applyGuardPerm(dir, 0o750); err != nil {
+		return fail("set dir permissions", err)
+	}
 
 	var entries []any
 	addHook := func(matcher, scriptName, script string, args ...string) error {
 		scriptPath := filepath.Join(dir, scriptName)
 		if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil { //nolint:gosec // hook script must be executable
+			return err
+		}
+		if err := applyGuardPerm(scriptPath, 0o750); err != nil {
 			return err
 		}
 		command := shellSingleQuote(scriptPath)
@@ -168,6 +174,9 @@ func setupRunGuards(projectPath, writeBoundary string, read *readGuardSpec) (set
 	settingsPath = filepath.Join(dir, "settings.json")
 	if err := os.WriteFile(settingsPath, raw, 0o600); err != nil {
 		return fail("write settings", err)
+	}
+	if err := applyGuardPerm(settingsPath, 0o640); err != nil {
+		return fail("set settings permissions", err)
 	}
 	return settingsPath, cleanup, nil
 }

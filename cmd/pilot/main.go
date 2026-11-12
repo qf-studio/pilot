@@ -455,6 +455,9 @@ func applyReadGuardConfig(claudeCode *executor.ClaudeCodeConfig, configPath stri
 	}
 	claudeCode.ConfigPath = configPath
 	executor.SetReadGuardConfig(claudeCode)
+	// TASK-651: fail-closed check of claude_code.run_as_user at every
+	// entrypoint that can spawn a model process. Does nothing when empty.
+	executor.PreflightRunAsUser(claudeCode)
 }
 
 // applyReadGuardConfigFromFile is applyReadGuardConfig for entrypoints that do

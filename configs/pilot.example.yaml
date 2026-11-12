@@ -945,6 +945,12 @@ executor:
   #                                # the loaded config file or /proc/*/environ. Guards against accidental
   #                                # reads (an agent cat-ing config.yaml); NOT a security boundary - a
   #                                # separate uid is the real fix. Set false only to debug.
+  #   run_as_user: ""             # TASK-651 - start every model process as this Unix user through
+  #   run_as_group: ""            # `sudo -n -u <user> [-g <group>]` (run_as_group also owns the run guard
+  #                                # files). Empty (default) = run as the daemon user. Linux only; leave
+  #                                # empty until the agent workspace legs of TASK-651 are released. A failed
+  #                                # startup check (user, sudo, home) stops every model spawn; there is no
+  #                                # fallback to the daemon user.
   #   # env_passthrough (GH-5277): names of environment variables that survive
   #   # the model-subprocess env scrub (GH-5275/GH-5276) even though their name
   #   # looks secret-shaped (matches *_TOKEN/*_SECRET/*_API_KEY/etc). The scrub
