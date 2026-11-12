@@ -1,6 +1,6 @@
 # TASK-651: Agent isolation — agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM
 
-**Status**: 📝 **DESIGN ACCEPTED 2026-11-12, nothing dispatched.** Design: `.agent/system/agent-isolation-design.md`. Dispatch-ready: U0 (host setup script), U1 (start agent processes as the agent user). Planned after U1: U2 workspace clone and hand-over · U3 gates and evidence as the agent user · U4 read-only GitHub token per run · U5 per-project override. Operator steps O1–O4 and switches S1–S2 need a founder go each.
+**Status**: 🚀 **U0 and U1 DISPATCHED 2026-11-12** (`pilot` + `no-decompose`): U0 [#6320](https://github.com/qf-studio/pilot/issues/6320) host setup script · U1 [#6321](https://github.com/qf-studio/pilot/issues/6321) run_as_user spawn mechanics, off by default. **O1 DONE 2026-11-12 09:14Z**: the general sudo rule of the daemon user is commented out on the box (backup `/root/90-cloud-init-users.bak-task651-o1`; daemon healthy). Design: `.agent/system/agent-isolation-design.md`. Planned after U1: U2 workspace clone and hand-over · U3 gates and evidence as the agent user · U4 read-only GitHub token per run · U5 per-project override. Waiting for the founder: O2 (GitHub App) and O3 (new secret values in SSM). Review every PR with a run-it agent before the approval.
 **Created**: 2026-11-12
 **Assignee**: Pilot (one leg at a time) + operator steps by a Navigator session with founder consent
 **Parent**: TASK-650 leg H1
@@ -44,7 +44,7 @@
 
 ### Phase O — operator steps on the box (no Pilot ticket; founder go for each)
 
-- [ ] **O1** Remove the general sudo rule of the daemon user (file `90-cloud-init-users`); keep a root-only copy. Check before: 2 of 13,213 recordings in 14 days hold a sudo command; no daemon code calls sudo. Check after: daemon healthy, one ticket run completes. Rollback: restore the file from a root session.
+- [x] **O1** (done 2026-11-12 09:14Z) Remove the general sudo rule of the daemon user (file `90-cloud-init-users`); keep a root-only copy. Check before: 2 of 13,213 recordings in 14 days hold a sudo command; no daemon code calls sudo. Check after: daemon healthy, one ticket run completes. Rollback: restore the file from a root session.
 - [ ] **O2** GitHub App provisioning (TASK-461 operator steps): App key to SSM, `adapters.github.app` in the config, remove the personal token export from the start script, full restart, verify a poll and an autopilot action after the one-hour token boundary.
 - [ ] **O3** Secrets to SSM: for each of the seven literal keys (Slack bot and app tokens, the Slack classifier key, Telegram, Jira, Discord, the bot key) a SecureString and a `${VAR}` reference; the start script reads them; rotate the exposed values in the same step (Anthropic key, Slack tokens, second Telegram rotation). Full restart (a hot restart keeps the old environment).
 - [ ] **O4** Run the U0 script: agent user, group, home, caches, Claude plugin install for the agent user, firewall rules, sudoers rule. Inert until the option is set.
@@ -70,7 +70,7 @@
 ### LEG U0 — repo: qf-studio/pilot — title: feat(box): host setup script for the agent user — user, group, home, caches, sudoers rule, firewall rules, with dry-run, undo and a mocked-PATH test
 
 probe: present qf-studio/pilot pilot-backup-s3_test\.sh
-probe: absent  qf-studio/pilot setup-agent-use[r]\.sh
+probe: absent  qf-studio/pilot visudo[[:space:]]-cf[[:space:]]"\$
 
 ## Context
 
@@ -210,3 +210,8 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 ---
 
 **Last Updated**: 2026-11-12
+
+## Refs
+
+- U0 → https://github.com/qf-studio/pilot/issues/6320
+- U1 → https://github.com/qf-studio/pilot/issues/6321
