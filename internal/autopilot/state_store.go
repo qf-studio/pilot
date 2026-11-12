@@ -272,6 +272,12 @@ func (s *StateStore) migrate() error {
 		`ALTER TABLE autopilot_pr_state ADD COLUMN approval_decision_by TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE autopilot_pr_state ADD COLUMN approval_decision_reason TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE autopilot_pr_state ADD COLUMN approval_reject_notified INTEGER NOT NULL DEFAULT 0`,
+		// GH-6327: hold after a CI timeout with no check reported, the head SHA
+		// at that moment and the re-entry counter. Must also be added to
+		// migratePRStateRepoScoping's rebuild lists.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN ci_timeout_hold_active INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE autopilot_pr_state ADD COLUMN ci_timeout_hold_head_sha TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE autopilot_pr_state ADD COLUMN ci_timeout_redrive_count INTEGER NOT NULL DEFAULT 0`,
 		// GH-5647: backfill rows held by the pre-GH-5643 size guard into the
 		// generic hold fields (redriveHeldPR reads only those). Idempotent:
 		// the hold_active = 0 guard makes a second run a no-op and keeps the
@@ -578,6 +584,9 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			approval_decision_by TEXT NOT NULL DEFAULT '',
 			approval_decision_reason TEXT NOT NULL DEFAULT '',
 			approval_reject_notified INTEGER NOT NULL DEFAULT 0,
+			ci_timeout_hold_active INTEGER NOT NULL DEFAULT 0,
+			ci_timeout_hold_head_sha TEXT NOT NULL DEFAULT '',
+			ci_timeout_redrive_count INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (repo, pr_number)
 		)
 	`); err != nil {
@@ -602,7 +611,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			linear_done_notified, post_merge_review_posted,
 			api_outage_hold_active, api_outage_since, api_outage_next_poll,
 			ci_unreadable_notified,
-			approval_decision_by, approval_decision_reason, approval_reject_notified
+			approval_decision_by, approval_decision_reason, approval_reject_notified,
+			ci_timeout_hold_active, ci_timeout_hold_head_sha, ci_timeout_redrive_count
 		)
 		SELECT
 			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
@@ -622,7 +632,8 @@ func (s *StateStore) migratePRStateRepoScoping() error {
 			linear_done_notified, post_merge_review_posted,
 			api_outage_hold_active, api_outage_since, api_outage_next_poll,
 			ci_unreadable_notified,
-			approval_decision_by, approval_decision_reason, approval_reject_notified
+			approval_decision_by, approval_decision_reason, approval_reject_notified,
+			ci_timeout_hold_active, ci_timeout_hold_head_sha, ci_timeout_redrive_count
 		FROM autopilot_pr_state
 	`); err != nil {
 		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
@@ -777,8 +788,9 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			linear_done_notified, post_merge_review_posted,
 			api_outage_hold_active, api_outage_since, api_outage_next_poll,
 			ci_unreadable_notified,
-			approval_decision_by, approval_decision_reason, approval_reject_notified
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			approval_decision_by, approval_decision_reason, approval_reject_notified,
+			ci_timeout_hold_active, ci_timeout_hold_head_sha, ci_timeout_redrive_count
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -832,7 +844,10 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 			ci_unreadable_notified = excluded.ci_unreadable_notified,
 			approval_decision_by = excluded.approval_decision_by,
 			approval_decision_reason = excluded.approval_decision_reason,
-			approval_reject_notified = excluded.approval_reject_notified
+			approval_reject_notified = excluded.approval_reject_notified,
+			ci_timeout_hold_active = excluded.ci_timeout_hold_active,
+			ci_timeout_hold_head_sha = excluded.ci_timeout_hold_head_sha,
+			ci_timeout_redrive_count = excluded.ci_timeout_redrive_count
 	`,
 		pr.PRNumber, repo, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
@@ -853,6 +868,7 @@ func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 		pr.APIOutageHoldActive, nullTime(pr.APIOutageSince), nullTime(pr.APIOutageNextPoll),
 		pr.CIUnreadableNotified,
 		pr.ApprovalDecisionBy, pr.ApprovalDecisionReason, pr.ApprovalRejectNotified,
+		pr.CITimeoutHoldActive, pr.CITimeoutHoldHeadSHA, pr.CITimeoutRedriveCount,
 	)
 	return err
 }
@@ -878,7 +894,8 @@ func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 			linear_done_notified, post_merge_review_posted,
 			api_outage_hold_active, api_outage_since, api_outage_next_poll,
 			ci_unreadable_notified,
-			approval_decision_by, approval_decision_reason, approval_reject_notified
+			approval_decision_by, approval_decision_reason, approval_reject_notified,
+			ci_timeout_hold_active, ci_timeout_hold_head_sha, ci_timeout_redrive_count
 		FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?
 	`, repo, prNumber)
 
@@ -913,7 +930,8 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			linear_done_notified, post_merge_review_posted,
 			api_outage_hold_active, api_outage_since, api_outage_next_poll,
 			ci_unreadable_notified,
-			approval_decision_by, approval_decision_reason, approval_reject_notified
+			approval_decision_by, approval_decision_reason, approval_reject_notified,
+			ci_timeout_hold_active, ci_timeout_hold_head_sha, ci_timeout_redrive_count
 		FROM autopilot_pr_state WHERE repo = ?
 	`, repo)
 	if err != nil {
@@ -947,6 +965,7 @@ func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 			&pr.APIOutageHoldActive, &apiOutageSince, &apiOutageNextPoll,
 			&pr.CIUnreadableNotified,
 			&pr.ApprovalDecisionBy, &pr.ApprovalDecisionReason, &pr.ApprovalRejectNotified,
+			&pr.CITimeoutHoldActive, &pr.CITimeoutHoldHeadSHA, &pr.CITimeoutRedriveCount,
 		); err != nil {
 			return nil, err
 		}
@@ -1220,6 +1239,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.APIOutageHoldActive, &apiOutageSince, &apiOutageNextPoll,
 		&pr.CIUnreadableNotified,
 		&pr.ApprovalDecisionBy, &pr.ApprovalDecisionReason, &pr.ApprovalRejectNotified,
+		&pr.CITimeoutHoldActive, &pr.CITimeoutHoldHeadSHA, &pr.CITimeoutRedriveCount,
 	)
 	if err != nil {
 		return nil, err

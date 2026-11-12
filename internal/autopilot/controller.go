@@ -18,6 +18,7 @@ import (
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"github.com/qf-studio/pilot/internal/ghbudget"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -2878,6 +2879,11 @@ func (c *Controller) RestoreState() (int, error) {
 				heldBy = "HoldActive"
 			case pr.RebaseHoldActive:
 				heldBy = "RebaseHoldActive"
+			case pr.CITimeoutHoldActive:
+				// GH-6327: a PR failed by a CI timeout with no check reported
+				// is revived by redriveCITimeoutHeldPR, which only runs on
+				// tracked PRs.
+				heldBy = "CITimeoutHoldActive"
 			case pr.ApprovalRejectNotified:
 				// GH-6316: a PR failed by a rejected/expired merge approval
 				// told its readers "close it to let Pilot retry"; that only
@@ -3733,6 +3739,22 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 		// pilot-retry-ready and silently re-dispatch the issue's already-
 		// shipped work. Mirrors the iteration-limit idiom at handleCIFailed
 		// (controller.go:2619) — this branch is just as terminal.
+		//
+		// GH-6327: a timeout with NO check ever reported is a dead run on the
+		// GitHub side, not a verdict on the code (PR#6317, 2026-11-11: queued
+		// for 13 hours, then a new head and a green run that autopilot never
+		// picked up). Hold it with the purpose-built flag instead of the
+		// terminal label: redriveCITimeoutHeldPR re-enters it on a new head or
+		// on green checks, up to maxCITimeoutRedrives times. A timeout with
+		// discovered checks, or one at the cap, stays terminal as before.
+		if missingChecks && prState.CITimeoutRedriveCount < maxCITimeoutRedrives {
+			prState.CITimeoutHoldActive = true
+			prState.CITimeoutHoldHeadSHA = sha
+			if prState.CITimeoutRedriveCount == 0 {
+				c.postCITimeoutComment(ctx, prState, ciTimeoutHoldComment)
+			}
+			return nil
+		}
 		prState.TerminalLabel = github.LabelFailed
 	}
 
@@ -9333,6 +9355,96 @@ func (c *Controller) redriveSizeGuardHoldOnGreen(ctx context.Context, prState *P
 	}
 }
 
+// maxCITimeoutRedrives caps how many times redriveCITimeoutHeldPR (GH-6327)
+// may re-enter a single PR after a CI timeout with no check reported. Same
+// reasoning as maxBreakerReadoptAttempts below: a branch whose runs keep
+// dying must end up failed with the terminal label, not ping-pong.
+const maxCITimeoutRedrives = 2
+
+// ciTimeoutHoldComment is the one PR comment posted at the first CI timeout
+// hold (GH-6327).
+const ciTimeoutHoldComment = "The CI run reported no check within the wait time. " +
+	"Push a commit or use \"Update branch\" to start a new run; Pilot continues once it does."
+
+// postCITimeoutComment posts body on the PR through the secret mask; a failed
+// post is logged and dropped.
+func (c *Controller) postCITimeoutComment(ctx context.Context, prState *PRState, body string) {
+	if c.ghClient == nil {
+		return
+	}
+	if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, secretpatterns.Redact(body)); err != nil {
+		c.log.Warn("failed to post CI-timeout comment", "pr", prState.PRNumber, "error", err)
+	}
+}
+
+// redriveCITimeoutHeldPR is GH-6327: a PR failed by a CI timeout with no check
+// ever reported (CITimeoutHoldActive, set only at that site of handleWaitingCI)
+// re-enters StageWaitingCI when the branch has a new head, or when the checks
+// of the same head are now all successful. PR#6317 sat 13 hours on a dead
+// GitHub Actions run, then got a new head and a green run; StageFailed is
+// terminal in ProcessPR, so nothing picked it up and it was merged by hand.
+//
+// Re-entry clears the flag and the error, starts a fresh CI wait clock and
+// counts the redrive; maxCITimeoutRedrives bounds it. At the cap the hold is
+// dropped and the PR gets the terminal label, as every other CI timeout does.
+// Keyed on the flag, never on the error text. A closed or merged PR is left
+// alone (checkExternalMergeOrClose has already handled it).
+func (c *Controller) redriveCITimeoutHeldPR(ctx context.Context, prState *PRState, ghPR *github.PullRequest) {
+	if ghPR == nil || prState.Stage != StageFailed || !prState.CITimeoutHoldActive {
+		return
+	}
+	if ghPR.State == "closed" || ghPR.Merged || prState.PostMergeSHA != "" {
+		return
+	}
+	sha := ghPR.Head.SHA
+	if sha == "" {
+		return
+	}
+	if prState.CITimeoutHoldHeadSHA == "" {
+		prState.CITimeoutHoldHeadSHA = sha
+		return
+	}
+	if prState.CITimeoutRedriveCount >= maxCITimeoutRedrives {
+		c.log.Warn("redriveCITimeoutHeldPR: redrive cap reached, failing PR",
+			"pr", prState.PRNumber, "issue", prState.IssueNumber,
+			"ci_timeout_redrive_count", prState.CITimeoutRedriveCount, "max", maxCITimeoutRedrives)
+		prState.CITimeoutHoldActive = false
+		prState.TerminalLabel = github.LabelFailed
+		c.persistPRState(prState)
+		return
+	}
+
+	trigger := "new head"
+	if sha == prState.CITimeoutHoldHeadSHA {
+		if c.ciMonitor == nil {
+			return
+		}
+		if status, err := c.ciMonitor.CheckCI(ctx, sha); err != nil || status != CISuccess {
+			return
+		}
+		trigger = "green checks"
+	}
+
+	prevError := prState.Error
+	prState.CITimeoutRedriveCount++
+	prState.CITimeoutHoldActive = false
+	prState.CITimeoutHoldHeadSHA = ""
+	prState.HeadSHA = sha
+	prState.Stage = StageWaitingCI
+	prState.CIWaitStartedAt = c.ciNow()
+	prState.Error = ""
+
+	c.log.Info("redriveCITimeoutHeldPR: re-entering pipeline after CI timeout hold",
+		"pr", prState.PRNumber, "issue", prState.IssueNumber,
+		"sha", ShortSHA(sha), "trigger", trigger, "prior_error", prevError,
+		"ci_timeout_redrive_count", prState.CITimeoutRedriveCount, "max", maxCITimeoutRedrives)
+
+	c.postCITimeoutComment(ctx, prState, fmt.Sprintf(
+		"Pilot continues: %s on `%s` after the CI timeout, waiting for CI again (redrive %d/%d).",
+		trigger, ShortSHA(sha), prState.CITimeoutRedriveCount, maxCITimeoutRedrives))
+	c.persistPRState(prState)
+}
+
 // maxBreakerReadoptAttempts caps how many times ReDriveBreakerHeldPRs
 // (GH-4792) may revive a single PR from a platform-outage breaker hold.
 // Mirrors maxReadoptAttempts's reasoning above: a PR whose own failure
@@ -11087,6 +11199,10 @@ func (c *Controller) processOnePR(ctx context.Context, snap *PRState) (stopTick 
 	// GH-5801: same-SHA leg — revive a size-guard hold whose CI went green
 	// on the held head (flaky rerun). Also before ProcessPR.
 	c.redriveSizeGuardHoldOnGreen(ctx, pr, ghPR)
+
+	// GH-6327: revive a PR failed by a CI timeout with no check reported once
+	// it has a new head or its checks went green. Also before ProcessPR.
+	c.redriveCITimeoutHeldPR(ctx, pr, ghPR)
 
 	// Detect changes_requested reviews in polling mode (webhook mode uses OnReviewRequested).
 	// GH-5327: reviewTriggerEligible replaces the old two-stage exclusion with

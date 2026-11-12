@@ -1557,6 +1557,20 @@ type PRState struct {
 	// HoldRedriveCount is the lifetime count of redriveHeldPR revivals, capped
 	// at maxHoldRedrives. Never reset. Persisted.
 	HoldRedriveCount int
+	// CITimeoutHoldActive is true while this PR sits at StageFailed because the
+	// CI wait expired with no check ever reported (GH-6327): the run was dead
+	// on the GitHub side, which is evidence about the platform, not the code.
+	// Set only at the confirmed-timeout site of handleWaitingCI; redriveCITimeoutHeldPR
+	// keys on it, never on the error text. Persisted so the hold survives a
+	// daemon restart.
+	CITimeoutHoldActive bool
+	// CITimeoutHoldHeadSHA is the head SHA at the moment of that timeout; a
+	// different live head, or green checks on this one, re-enters the PR.
+	// Persisted.
+	CITimeoutHoldHeadSHA string
+	// CITimeoutRedriveCount is the lifetime count of re-entries from a CI
+	// timeout hold, capped at maxCITimeoutRedrives. Never reset. Persisted.
+	CITimeoutRedriveCount int
 	// GreenRedriveSHA is the head SHA redriveSizeGuardHoldOnGreen (GH-5801)
 	// last revived a size-guard hold on; it makes that revive one-shot per SHA.
 	// In-memory only.
@@ -1698,6 +1712,9 @@ func (ps *PRState) snapshot() *PRState {
 		HoldHeadSHA:                  ps.HoldHeadSHA,
 		HoldLabels:                   ps.HoldLabels,
 		HoldRedriveCount:             ps.HoldRedriveCount,
+		CITimeoutHoldActive:          ps.CITimeoutHoldActive,
+		CITimeoutHoldHeadSHA:         ps.CITimeoutHoldHeadSHA,
+		CITimeoutRedriveCount:        ps.CITimeoutRedriveCount,
 		GreenRedriveSHA:              ps.GreenRedriveSHA,
 		PostMergeInfraRerunCount:     ps.PostMergeInfraRerunCount,
 		PostMergeInfraRerunSHA:       ps.PostMergeInfraRerunSHA,
