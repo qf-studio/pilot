@@ -1662,6 +1662,14 @@ func (e *Engine) evaluateStuckTasks(ctx context.Context) {
 		for taskID, state := range tasks {
 			stuckDuration := now.Sub(state.UpdatedAt)
 
+			// GH-6326: a Held or Queued entry waits by design (a repeated Held
+			// event does not refresh the clock; the dispatcher's hold counter
+			// parks the row at its cap), so it is neither orphan-evicted nor
+			// is its still-queued row stalled.
+			if state.Phase == taskStuckHeldPhase || state.Phase == taskStuckQueuedPhase {
+				continue
+			}
+
 			// Orphan eviction: remove entries that have been stuck far too long (GH-2204)
 			if stuckDuration > orphanThreshold {
 				orphans = append(orphans, taskID)

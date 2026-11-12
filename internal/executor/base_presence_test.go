@@ -408,9 +408,10 @@ func TestProcessQueue_BasePresence_EscalatesOnceThenQueueHeadAdvances(t *testing
 	runner.skipPreflightChecks = true
 	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	worker := NewProjectWorker(projectPath, store, runner, slog.Default())
-	worker.setBasePresenceHoldMaxCycles(2)
+	worker.setBasePresenceHoldMaxCycles(3)
 
-	// Tick 1: held, not yet escalated (count reaches 1 < max=2). processQueue
+	// Tick 1: held before and (GH-6326) again after the second task ran, not
+	// yet escalated (count reaches 2 < max=3). processQueue
 	// returns after a not-yet-escalated hold to avoid busy-looping.
 	worker.processQueue(context.Background())
 
@@ -427,7 +428,7 @@ func TestProcessQueue_BasePresence_EscalatesOnceThenQueueHeadAdvances(t *testing
 		t.Fatalf("expected no escalation before the max-cycles threshold, got gh CLI log: %q", string(data))
 	}
 
-	// Tick 2: count reaches 2 == max, escalates and parks the row.
+	// Tick 2: count reaches 3 == max, escalates and parks the row.
 	worker.processQueue(context.Background())
 
 	data, err := os.ReadFile(logFile)
@@ -563,9 +564,10 @@ func TestProcessQueue_BasePresence_NeverSatisfiablePathEscalatesWithinBoundedHol
 	runner.skipPreflightChecks = true
 	runner.config = &BackendConfig{UseWorktree: boolPtr(false), SkipSelfReview: true}
 	worker := NewProjectWorker(projectPath, store, runner, slog.Default())
-	worker.setBasePresenceHoldMaxCycles(2)
+	worker.setBasePresenceHoldMaxCycles(3)
 
-	// Tick 1: held, not yet escalated (count reaches 1 < max=2).
+	// Tick 1: held before and (GH-6326) again after the second task ran, not
+	// yet escalated (count reaches 2 < max=3).
 	worker.processQueue(context.Background())
 
 	// GH-5572: the held head no longer starves the runnable task behind it —
@@ -581,7 +583,7 @@ func TestProcessQueue_BasePresence_NeverSatisfiablePathEscalatesWithinBoundedHol
 		t.Fatalf("expected no escalation before the max-cycles threshold, got gh CLI log: %q", string(data))
 	}
 
-	// Tick 2: count reaches 2 == max, escalates and parks the row — a
+	// Tick 2: count reaches 3 == max, escalates and parks the row — a
 	// never-satisfiable path must not wedge the queue head forever.
 	worker.processQueue(context.Background())
 
