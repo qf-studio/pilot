@@ -250,7 +250,8 @@ var checkPushForGate = secretpatterns.CheckPush
 // either. taskID names the task in the alert and may be empty; one task alerts
 // once per commit.
 func CheckSecretGate(ctx context.Context, dir, head, taskID string) error {
-	err := checkPushForGate(ctx, dir, head, secretGateOptions(ctx, dir))
+	// The full ref, so the commit scanned is the commit git push sends (GH-6334).
+	err := checkPushForGate(ctx, dir, secretpatterns.QualifyBranchRef(head), secretGateOptions(ctx, dir))
 	if err == nil {
 		return nil
 	}
@@ -266,7 +267,7 @@ func CheckSecretGate(ctx context.Context, dir, head, taskID string) error {
 	}
 	slog.Error("Push refused by the secret gate",
 		slog.String("task_id", taskID), slog.String("head", head),
-		slog.String("commit", pre.Commit), slog.String("file", pre.File), slog.String("kind", pre.Kind))
+		slog.String("commit", pre.Commit), slog.String("file", secretpatterns.Redact(pre.File)), slog.String("kind", pre.Kind))
 
 	secretGateMu.RLock()
 	sink := secretGateAlerts
@@ -279,7 +280,7 @@ func CheckSecretGate(ctx context.Context, dir, head, taskID string) error {
 			Error:  pre.Error(),
 			Metadata: map[string]string{
 				"commit": pre.Commit,
-				"file":   pre.File,
+				"file":   secretpatterns.Redact(pre.File),
 				"kind":   pre.Kind,
 				"branch": head,
 			},

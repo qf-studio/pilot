@@ -35,7 +35,13 @@ type PushRangeError struct {
 const CommitMessageFile = "the commit message"
 
 func (e *PushRangeError) Error() string {
-	return fmt.Sprintf("push refused: commit %s adds a secret value in %s", e.Commit, e.File)
+	return fmt.Sprintf("push refused: commit %s adds a secret value in %s", e.Commit, Redact(e.File))
+}
+
+// newPushRangeError builds the verdict with the file path masked: a path can
+// hold the secret itself, and the error, the log line and the alert print it.
+func newPushRangeError(commit, file, kind string) *PushRangeError {
+	return &PushRangeError{Commit: commit, File: Redact(file), Kind: kind}
 }
 
 // Is makes errors.Is(err, ErrPushRefused) true for a *PushRangeError.
@@ -159,6 +165,18 @@ func PushBase(ctx context.Context, dir, head, defaultBranch string) string {
 	return base
 }
 
+// QualifyBranchRef returns the full ref name of a branch under refs/heads. A
+// short name is resolved by git through $GIT_DIR/<name> before refs/heads/<name>,
+// so a file the session writes in the git dir can stand in for the branch while
+// git push sends refs/heads/<name> (GH-6334). HEAD and a name that already
+// starts with "refs/" are returned as they are.
+func QualifyBranchRef(head string) string {
+	if head == "" || head == "HEAD" || strings.HasPrefix(head, "refs/") {
+		return head
+	}
+	return "refs/heads/" + head
+}
+
 // pushBase is PushBase that also returns the context error. git failures stay
 // swallowed (a candidate that does not resolve is the normal case), so the
 // context is checked after every call: a context that ended must not look like
@@ -213,6 +231,7 @@ func CheckPush(ctx context.Context, dir, head string, opts PushOptions) error {
 	if err := ctxError(ctx); err != nil {
 		return err
 	}
+	head = QualifyBranchRef(head)
 	base, err := pushBase(ctx, dir, head, opts.DefaultBranch)
 	if err != nil {
 		return err
@@ -403,7 +422,7 @@ func checkRange(ctx context.Context, dir, diffBase string, logArgs []string, hea
 	var diff []byte
 	if diffBase != "" {
 		var err error
-		diff, err = gitOutputMax(ctx, dir, int64(netDiffScanFactor*maxCommitScanBytes), "diff", "--no-color", "--text", diffBase+".."+head)
+		diff, err = gitOutputMax(ctx, dir, int64(netDiffScanFactor*maxCommitScanBytes), "diff", "--no-color", "--text", "--no-textconv", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", diffBase+".."+head)
 		if cerr := ctxError(ctx); cerr != nil {
 			return cerr
 		}
@@ -414,7 +433,7 @@ func checkRange(ctx context.Context, dir, diffBase string, logArgs []string, hea
 			return fmt.Errorf("secret gate: git diff: %w", err)
 		}
 	}
-	msgs, err := gitOutput(ctx, dir, append([]string{"log", "--format=%B"}, logArgs...)...)
+	msgs, err := gitOutput(ctx, dir, append([]string{"log", "--no-textconv", "--no-ext-diff", "--format=%B"}, logArgs...)...)
 	if cerr := ctxError(ctx); cerr != nil {
 		return cerr
 	}
@@ -443,7 +462,7 @@ func checkRange(ctx context.Context, dir, diffBase string, logArgs []string, hea
 				commit = strings.TrimSpace(string(sha))
 			}
 		}
-		e := &PushRangeError{Commit: commit, File: netFile, Kind: netKind}
+		e := newPushRangeError(commit, netFile, netKind)
 		if !netHit {
 			e.File, e.Kind = CommitMessageFile, msgKind
 		}
@@ -468,7 +487,8 @@ func scanCommits(ctx context.Context, dir string, logArgs []string, opts PushOpt
 	start, msgMark, patchMark := []byte(mark+"S\n"), []byte("\n"+mark+"M\n"), []byte("\n"+mark+"P\n")
 	format := "--format=" + mark + "S%n%H%n" + mark + "M%n%B%n" + mark + "P"
 
-	args := append([]string{"-c", "core.quotepath=false", "log", "-p", "--cc", "--text", "--reverse", "--no-color", format}, logArgs...)
+	args := append(gitScanConfig(), "log", "-p", "--cc", "--text", "--no-textconv", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--reverse", "--no-color", format)
+	args = append(args, logArgs...)
 	defer gitCallDone(args)
 	cmd := gitCommand(ctx, dir, args...)
 	var stderr bytes.Buffer
@@ -532,13 +552,13 @@ func scanCommits(ctx context.Context, dir string, logArgs []string, opts PushOpt
 		msg, patch, _ := bytes.Cut(rest, patchMark)
 		sha := bytes.TrimSpace(shaB)
 		if kind, hit := firstHit(msg, false); hit {
-			return &PushRangeError{Commit: shortSHA(sha), File: CommitMessageFile, Kind: kind}
+			return newPushRangeError(shortSHA(sha), CommitMessageFile, kind)
 		}
 		if len(patch) > maxCommitScanBytes {
 			return &PushScanError{Reason: fmt.Sprintf("commit %s has more than %d bytes of diff, too large to scan", shortSHA(sha), maxCommitScanBytes)}
 		}
 		if file, kind, hit := scanPatch(patch, opts); hit {
-			return &PushRangeError{Commit: shortSHA(sha), File: file, Kind: kind}
+			return newPushRangeError(shortSHA(sha), file, kind)
 		}
 	}
 	done = true
@@ -570,9 +590,11 @@ func firstHit(text []byte, skipPatterns bool) (string, bool) {
 
 // scanPatch scans the added lines of a unified diff, one file at a time (so a
 // value spanning several added lines still matches), and returns the first file
-// with a hit. File headers (diff --git … +++ b/<path>) are read only in the
-// header block, before the first hunk: an added line that starts with "++ "
-// shows up in a hunk as "+++ …" and is scanned, not taken for a file name.
+// with a hit. The path of each file the diff adds, changes or renames is scanned
+// first, with the same patterns and values as its content (GH-6334). File
+// headers (diff --git … +++ b/<path>) are read only in the header block, before
+// the first hunk: an added line that starts with "++ " shows up in a hunk as
+// "+++ …" and is scanned, not taken for a file name.
 func scanPatch(patch []byte, opts PushOptions) (file, kind string, hit bool) {
 	var (
 		cur      string
@@ -580,11 +602,16 @@ func scanPatch(patch []byte, opts PushOptions) (file, kind string, hit bool) {
 		added    bytes.Buffer
 	)
 	flush := func() bool {
-		if added.Len() == 0 {
-			return false
+		defer added.Reset()
+		skipShapes := opts.shapesAllowed(cur)
+		var k string
+		ok := false
+		if cur != "" && cur != "/dev/null" { // a deleted file has no path to publish
+			k, ok = firstHit([]byte(cur), skipShapes)
 		}
-		k, ok := firstHit(added.Bytes(), opts.shapesAllowed(cur))
-		added.Reset()
+		if !ok && added.Len() > 0 {
+			k, ok = firstHit(added.Bytes(), skipShapes)
+		}
 		if ok {
 			file, kind = cur, k
 		}
@@ -592,16 +619,32 @@ func scanPatch(patch []byte, opts PushOptions) (file, kind string, hit bool) {
 	}
 	for _, line := range bytes.Split(patch, []byte{'\n'}) {
 		switch {
-		case bytes.HasPrefix(line, []byte("diff --git ")), bytes.HasPrefix(line, []byte("diff --cc ")):
+		case bytes.HasPrefix(line, []byte("diff --git ")):
 			if flush() {
 				return file, kind, true
 			}
-			cur, inHeader = "", true
+			// The new path is the last " b/" part; "+++" or "rename to" below
+			// replace it when the diff has them (a path may hold " b/" itself).
+			rest := string(line[len("diff --git "):])
+			cur, inHeader = rest, true
+			if i := strings.LastIndex(rest, " b/"); i >= 0 {
+				cur = rest[i+len(" b/"):]
+			}
+		case bytes.HasPrefix(line, []byte("diff --cc ")):
+			if flush() {
+				return file, kind, true
+			}
+			cur, inHeader = string(line[len("diff --cc "):]), true
 		case inHeader && bytes.HasPrefix(line, []byte("@@")):
 			inHeader = false
 		case inHeader:
-			if bytes.HasPrefix(line, []byte("+++ ")) {
+			switch {
+			case bytes.HasPrefix(line, []byte("+++ ")):
 				cur = strings.TrimSuffix(strings.TrimPrefix(string(line[4:]), "b/"), "\t")
+			case bytes.HasPrefix(line, []byte("rename to ")):
+				cur = string(line[len("rename to "):])
+			case bytes.HasPrefix(line, []byte("copy to ")):
+				cur = string(line[len("copy to "):])
 			}
 		case len(line) > 0 && line[0] == '+':
 			added.Write(line[1:])
@@ -629,9 +672,17 @@ func gitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// gitScanConfig is the -c arguments of every git call of the gate. Decision:
+// the repository is writable by the session, so the gate states what it needs
+// instead of reading the repository's config: log.showRoot=true, or a root
+// commit shows no patch when the config says false (GH-6334).
+func gitScanConfig() []string {
+	return []string{"-c", "core.quotepath=false", "-c", "log.showRoot=true"}
+}
+
 func gitOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	defer gitCallDone(args)
-	cmd := gitCommand(ctx, dir, append([]string{"-c", "core.quotepath=false"}, args...)...)
+	cmd := gitCommand(ctx, dir, append(gitScanConfig(), args...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -647,7 +698,7 @@ var errScanTooLarge = errors.New("git output too large to scan")
 // gitOutputMax is gitOutput that stops reading, and kills git, past max bytes.
 func gitOutputMax(ctx context.Context, dir string, max int64, args ...string) ([]byte, error) {
 	defer gitCallDone(args)
-	cmd := gitCommand(ctx, dir, append([]string{"-c", "core.quotepath=false"}, args...)...)
+	cmd := gitCommand(ctx, dir, append(gitScanConfig(), args...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
