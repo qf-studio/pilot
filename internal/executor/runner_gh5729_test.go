@@ -63,7 +63,7 @@ func newPushScenario(t *testing.T, branch string, failAfterPush bool) *pushScena
 	fakeBin := t.TempDir()
 	pushLog := filepath.Join(fakeBin, "pushes.log")
 	script := "#!/bin/sh\n" +
-		"is_push=0; for a in \"$@\"; do case \"$a\" in -c|push.*) ;; push) is_push=1; break;; *) break;; esac; done\n" +
+		"is_push=0; for a in \"$@\"; do case \"$a\" in -c|push.*|core.hooksPath=*) ;; push) is_push=1; break;; *) break;; esac; done\n" +
 		"if [ $is_push = 1 ]; then echo \"$@\" >> " + pushLog + "; fi\n"
 	if failAfterPush {
 		script += "if [ $is_push = 1 ]; then " + realGit + " \"$@\"; echo 'error: chdir after push' >&2; exit 1; fi\n"

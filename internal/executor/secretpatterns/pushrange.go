@@ -433,7 +433,10 @@ func checkRange(ctx context.Context, dir, diffBase string, logArgs []string, hea
 			return fmt.Errorf("secret gate: git diff: %w", err)
 		}
 	}
-	msgs, err := gitOutput(ctx, dir, append([]string{"log", "--no-textconv", "--no-ext-diff", "--format=%B"}, logArgs...)...)
+	if err := checkCommitEncodings(ctx, dir, logArgs); err != nil {
+		return err
+	}
+	msgs, err := gitOutput(ctx, dir, append([]string{"log", "--no-show-signature", "--no-textconv", "--no-ext-diff", "--format=%B"}, logArgs...)...)
 	if cerr := ctxError(ctx); cerr != nil {
 		return cerr
 	}
@@ -471,6 +474,58 @@ func checkRange(ctx context.Context, dir, diffBase string, logArgs []string, hea
 	return ctxError(ctx)
 }
 
+// checkCommitEncodings refuses a range that holds a commit whose encoding header
+// (%e) is set and is not UTF-8. git re-encodes such a message for every reading
+// command, so the scan would read other text than the bytes the remote receives;
+// the gate does not try to decode it (GH-6343). The records are NUL-terminated
+// (-z): no header value holds a NUL, so a value cannot forge another record.
+func checkCommitEncodings(ctx context.Context, dir string, logArgs []string) error {
+	out, err := gitOutput(ctx, dir, append([]string{"log", "--no-show-signature", "-z", "--format=%H%n%e"}, logArgs...)...)
+	if cerr := ctxError(ctx); cerr != nil {
+		return cerr
+	}
+	if err != nil {
+		return fmt.Errorf("secret gate: git log: %w", err)
+	}
+	for _, rec := range bytes.Split(out, []byte{0}) {
+		sha, enc, _ := bytes.Cut(rec, []byte{'\n'})
+		enc = bytes.TrimSuffix(enc, []byte{'\n'})
+		if len(enc) == 0 || isUTF8Name(string(enc)) {
+			continue
+		}
+		return &PushScanError{Reason: fmt.Sprintf("commit %s has the encoding %s; only UTF-8 commit messages are pushed",
+			shortSHA(sha), Redact(printableValue(string(enc))))}
+	}
+	return nil
+}
+
+// isUTF8Name reports whether an encoding header names UTF-8: any case, with or
+// without the dash.
+func isUTF8Name(name string) bool {
+	n := strings.ToLower(name)
+	return n == "utf-8" || n == "utf8"
+}
+
+// printableValue makes an attacker-chosen header value safe to print: control
+// characters become "?" and a long value is cut.
+func printableValue(v string) string {
+	const maxLen = 40
+	var b strings.Builder
+	n := 0
+	for _, r := range v {
+		if n == maxLen {
+			b.WriteString("...")
+			break
+		}
+		if r < 0x20 || r == 0x7f {
+			r = '?'
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
+}
+
 // scanCommits scans every selected commit on its own, streaming git's output so
 // a huge commit is cut off at maxCommitScanBytes instead of read whole.
 //
@@ -487,7 +542,7 @@ func scanCommits(ctx context.Context, dir string, logArgs []string, opts PushOpt
 	start, msgMark, patchMark := []byte(mark+"S\n"), []byte("\n"+mark+"M\n"), []byte("\n"+mark+"P\n")
 	format := "--format=" + mark + "S%n%H%n" + mark + "M%n%B%n" + mark + "P"
 
-	args := append(gitScanConfig(), "log", "-p", "--cc", "--text", "--no-textconv", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--reverse", "--no-color", format)
+	args := append(gitScanConfig(), "log", "--no-show-signature", "-p", "--cc", "--text", "--no-textconv", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--reverse", "--no-color", format)
 	args = append(args, logArgs...)
 	defer gitCallDone(args)
 	cmd := gitCommand(ctx, dir, args...)
@@ -661,11 +716,16 @@ func scanPatch(patch []byte, opts PushOptions) (file, kind string, hit bool) {
 // test seam: it lets a test end the context between two calls.
 var gitCallDone = func(args []string) {}
 
+// gitCommandSeen is called with the full argument list of every git command the
+// gate starts. A test seam: it lets a test record what each command carries.
+var gitCommandSeen = func(args []string) {}
+
 // gitCommand is the one way the gate starts git. Decision: it runs with
 // GIT_NO_REPLACE_OBJECTS=1. A replace ref or a graft made by the session maps a
 // commit to another one for every reading command, so the scan would see the
 // replacement while git push sends the real objects (GH-6318).
 func gitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	gitCommandSeen(args)
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
@@ -675,9 +735,55 @@ func gitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
 // gitScanConfig is the -c arguments of every git call of the gate. Decision:
 // the repository is writable by the session, so the gate states what it needs
 // instead of reading the repository's config: log.showRoot=true, or a root
-// commit shows no patch when the config says false (GH-6334).
+// commit shows no patch when the config says false (GH-6334). The rest closes
+// the ways the session's config makes a gate command run a program or read
+// re-encoded text: hooks off, no signature display and no gpg program, and
+// UTF-8 output whatever i18n.logOutputEncoding says (GH-6343).
 func gitScanConfig() []string {
-	return []string{"-c", "core.quotepath=false", "-c", "log.showRoot=true"}
+	return append([]string{
+		"-c", "core.quotepath=false",
+		"-c", "log.showRoot=true",
+		"-c", "log.showSignature=false",
+		"-c", "i18n.logOutputEncoding=UTF-8",
+		"-c", "gpg.program=false",
+	}, HooksOffArgs()...)
+}
+
+var (
+	emptyHooksOnce sync.Once
+	emptyHooksPath string
+)
+
+// noHooksPath is EmptyHooksDir when the daemon could not create the directory:
+// nothing can exist below /dev/null, so git finds no hook there either.
+const noHooksPath = "/dev/null/pilot-empty-hooks"
+
+// EmptyHooksDir returns the path of an empty directory the daemon creates once
+// per process, with mode 0700, in its own temp directory and not inside any
+// repository. Every git command the daemon runs in a repository the session can
+// write passes -c core.hooksPath=<this path>, so a hook the session wrote into
+// the repository's hooks directory never runs with the daemon's credentials
+// (GH-6343). When the directory cannot be created the path is one that cannot
+// exist, which also finds no hook.
+func EmptyHooksDir() string {
+	emptyHooksOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "pilot-empty-hooks-")
+		if err != nil {
+			slog.Warn("could not create the empty hooks directory; git hooks stay off through an unusable path", slog.Any("error", err))
+			emptyHooksPath = noHooksPath
+			return
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			slog.Warn("could not restrict the empty hooks directory", slog.Any("error", err))
+		}
+		emptyHooksPath = dir
+	})
+	return emptyHooksPath
+}
+
+// HooksOffArgs is the git -c arguments that turn every hook off.
+func HooksOffArgs() []string {
+	return []string{"-c", "core.hooksPath=" + EmptyHooksDir()}
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {

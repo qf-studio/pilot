@@ -770,3 +770,115 @@ func TestCheckPushRange_SecretInRenamedPathRefusedAndMasked(t *testing.T) {
 		t.Errorf("the verdict holds the value: %v / %q", err, pre.File)
 	}
 }
+
+// GH-6343: every git command of the gate carries hooks off, no signature
+// display, no gpg program and UTF-8 output; every git log carries
+// --no-show-signature. The argv is recorded at the one exec helper, gitCommand.
+//
+// mutation pin: drop one value from gitScanConfig or one --no-show-signature -> this test fails
+func TestCheckPushRange_EveryGateCommandCarriesTheFixedConfig(t *testing.T) {
+	f := newPushFixture(t)
+	RegisterSecretValues("hunter2-not-a-known-shape")
+	f.commit("main.go", "package main\n", "feat: code")
+	f.git("commit", "--allow-empty", "-m", "feat: merge base")
+
+	var seen [][]string
+	prev := gitCommandSeen
+	gitCommandSeen = func(args []string) { seen = append(seen, append([]string(nil), args...)) }
+	t.Cleanup(func() { gitCommandSeen = prev })
+
+	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", PushOptions{}); err != nil {
+		t.Fatalf("clean range: %v", err)
+	}
+	// The no-base path lists commits through more commands.
+	f.git("remote", "remove", "origin")
+	f.git("update-ref", "-d", "refs/remotes/origin/main")
+	if err := CheckPush(context.Background(), f.local, "pilot/GH-1", PushOptions{}); err != nil {
+		t.Fatalf("no-base range: %v", err)
+	}
+
+	want := []string{
+		"core.hooksPath=" + EmptyHooksDir(),
+		"log.showSignature=false",
+		"i18n.logOutputEncoding=UTF-8",
+		"gpg.program=false",
+		"log.showRoot=true",
+		"core.quotepath=false",
+	}
+	var logs int
+	for _, args := range seen {
+		joined := strings.Join(args, "\x00")
+		for _, w := range want {
+			if !strings.Contains(joined, "-c\x00"+w+"\x00") {
+				t.Errorf("git %v lacks -c %s", args, w)
+			}
+		}
+		for _, a := range args {
+			if a == "log" || a == "show" {
+				logs++
+				if !contains(args, "--no-show-signature") {
+					t.Errorf("git %v lacks --no-show-signature", args)
+				}
+				break
+			}
+		}
+	}
+	if logs < 3 || len(seen) < 5 {
+		t.Errorf("recorded %d commands (%d log): the gate ran fewer git commands than expected", len(seen), logs)
+	}
+}
+
+func contains(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestCheckPushRange_EmptyHooksDirIsAnEmptyPrivateDirectoryOutsideTheRepository(t *testing.T) {
+	dir := EmptyHooksDir()
+	if dir != EmptyHooksDir() {
+		t.Error("EmptyHooksDir is not stable across calls")
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Errorf("EmptyHooksDir is %v, want a directory with mode 0700", info.Mode())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Errorf("EmptyHooksDir holds %d entries (err %v), want none", len(entries), err)
+	}
+	f := newPushFixture(t)
+	if strings.HasPrefix(dir, f.local) {
+		t.Errorf("EmptyHooksDir %s is inside the repository %s", dir, f.local)
+	}
+}
+
+func TestCheckPushRange_EncodingHeaderRefused(t *testing.T) {
+	f := newPushFixture(t)
+	tree := f.git("rev-parse", "HEAD^{tree}")
+	parent := f.git("rev-parse", "HEAD")
+	for enc, refused := range map[string]bool{"IBM037": true, "ISO-8859-1": true, "UTF-16": true, "utf-8": false, "UTF8": false, "Utf-8": false} {
+		obj := "tree " + tree + "\nparent " + parent + "\nauthor t <t@example.com> 1700000000 +0000\ncommitter t <t@example.com> 1700000000 +0000\nencoding " + enc + "\n\nclean\n"
+		file := filepath.Join(t.TempDir(), "obj")
+		if err := os.WriteFile(file, []byte(obj), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sha := f.git("hash-object", "-t", "commit", "-w", file)
+		err := CheckPushRange(context.Background(), f.local, "main", sha)
+		var scan *PushScanError
+		switch {
+		case refused && !errors.As(err, &scan):
+			t.Errorf("encoding %s: got %v, want a scan refusal", enc, err)
+		case refused && !strings.Contains(err.Error(), "has the encoding "+enc+"; only UTF-8 commit messages are pushed"):
+			t.Errorf("encoding %s: refusal text %q", enc, err)
+		case !refused && err != nil:
+			t.Errorf("encoding %s: got %v, want a pass", enc, err)
+		}
+	}
+}
