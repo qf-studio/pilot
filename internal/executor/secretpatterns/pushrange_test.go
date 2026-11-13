@@ -798,7 +798,7 @@ func TestCheckPushRange_EveryGateCommandCarriesTheFixedConfig(t *testing.T) {
 	}
 
 	want := []string{
-		"core.hooksPath=" + EmptyHooksDir(),
+		"core.hooksPath=" + NoHooksPath,
 		"log.showSignature=false",
 		"i18n.logOutputEncoding=UTF-8",
 		"gpg.program=false",
@@ -837,25 +837,17 @@ func contains(args []string, want string) bool {
 	return false
 }
 
-func TestCheckPushRange_EmptyHooksDirIsAnEmptyPrivateDirectoryOutsideTheRepository(t *testing.T) {
-	dir := EmptyHooksDir()
-	if dir != EmptyHooksDir() {
-		t.Error("EmptyHooksDir is not stable across calls")
+// GH-6353: the hooks path is one no process can create, not a directory the
+// session could write a hook into.
+func TestCheckPushRange_HooksPathCannotExist(t *testing.T) {
+	if got := strings.Join(HooksOffArgs(), " "); got != "-c core.hooksPath="+NoHooksPath {
+		t.Errorf("HooksOffArgs = %q", got)
 	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
+	if _, err := os.Stat(NoHooksPath); err == nil {
+		t.Errorf("%s exists", NoHooksPath)
 	}
-	if !info.IsDir() || info.Mode().Perm() != 0o700 {
-		t.Errorf("EmptyHooksDir is %v, want a directory with mode 0700", info.Mode())
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 0 {
-		t.Errorf("EmptyHooksDir holds %d entries (err %v), want none", len(entries), err)
-	}
-	f := newPushFixture(t)
-	if strings.HasPrefix(dir, f.local) {
-		t.Errorf("EmptyHooksDir %s is inside the repository %s", dir, f.local)
+	if err := os.MkdirAll(NoHooksPath, 0o700); err == nil {
+		t.Errorf("%s could be created", NoHooksPath)
 	}
 }
 

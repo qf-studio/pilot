@@ -183,8 +183,8 @@ func TestSecretGate_GateCommandsDoNotRunHooks(t *testing.T) {
 		t.Fatalf("gate on clean commits: %v", err)
 	}
 	assertNoMarker(t, marker, "a hook")
-	if dir := secretpatterns.EmptyHooksDir(); dir == "" || strings.HasPrefix(dir, f.local) {
-		t.Errorf("EmptyHooksDir = %q, want a directory outside the repository", dir)
+	if _, err := os.Stat(secretpatterns.NoHooksPath); err == nil {
+		t.Errorf("the hooks path %s exists", secretpatterns.NoHooksPath)
 	}
 }
 

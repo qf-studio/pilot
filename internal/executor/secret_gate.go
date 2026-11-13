@@ -109,7 +109,7 @@ func SecretGateOptionsFor(ctx context.Context, dir string) secretpatterns.PushOp
 // the same for the main checkout and all of its worktrees. "" when dir is not
 // in a git repository.
 func gateRepoKey(ctx context.Context, dir string) string {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
+	cmd := exec.CommandContext(ctx, "git", append(secretpatterns.GitScanConfig(), "rev-parse", "--git-common-dir")...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1") // like every git call of the gate
 	out, err := cmd.Output()
