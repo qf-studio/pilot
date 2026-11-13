@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -232,21 +233,28 @@ func billingStatusLine(st admissionStatusBody) string {
 	return line
 }
 
-// wireBillingChip feeds the TUI header chip: the mode in force once at boot and
-// again after every switch.
+// wireBillingChip feeds the billing word on banner line 2: the mode in force
+// once at boot and again after every switch.
 func wireBillingChip(d *executor.Dispatcher, program *tea.Program) {
 	if d == nil || program == nil {
 		return
 	}
 	d.SetBillingObserver(func(st executor.BillingOverrideStatus) {
-		program.Send(billingModeMsg(st))
+		program.Send(billingModeMsg(st, os.Environ()))
 	})
 	// Send blocks until the program runs, so the boot message goes out of band.
 	go func() {
-		program.Send(billingModeMsg(d.BillingOverride()))
+		program.Send(billingModeMsg(d.BillingOverride(), os.Environ()))
 	}()
 }
 
-func billingModeMsg(st executor.BillingOverrideStatus) dashboard.BillingModeMsg {
-	return dashboard.BillingModeMsg{Mode: st.Mode, Source: st.Source, Until: st.Until}
+// billingModeMsg carries the mode in use: with billing.mode unset that is the
+// mode derived from environ (DerivedBillingMode, GH-6350), as the executions
+// record it, so the banner never shows "unset".
+func billingModeMsg(st executor.BillingOverrideStatus, environ []string) dashboard.BillingModeMsg {
+	mode := st.Mode
+	if mode == string(executor.BillingModeUnset) {
+		mode = executor.DerivedBillingMode(environ)
+	}
+	return dashboard.BillingModeMsg{Mode: mode, Source: st.Source, Until: st.Until}
 }

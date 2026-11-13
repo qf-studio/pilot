@@ -17,7 +17,9 @@ func TestFullDashboardRender_WidthInvariants(t *testing.T) {
 	m := NewModel("2.233.0")
 	m.width = 120
 	m.height = 50
-	m.SetBannerMeta("stage", "opus/sonnet", nil, time.Now().Add(-4*time.Minute))
+	m.SetBannerMeta("stage", "opus-5-5 / sonnet-5-5", nil, time.Now().Add(-4*time.Minute))
+	next, _ := m.Update(BillingModeMsg{Mode: "subscription", Source: "config"})
+	m = next.(Model)
 	m.SetBannerAdapters([]AdapterStatus{
 		{Name: "gh", Active: true},
 		{Name: "tg", Active: true},
@@ -69,12 +71,66 @@ func TestFullDashboardRender_WidthInvariants(t *testing.T) {
 	for _, want := range []string{
 		"╭─ tokens ", "╭─ cost ", "╭─ queue · outcomes ",
 		"┤ ● 1 running  ● gh  ● tg  ○ 1 idle ├", "╭─ autopilot ", "╭─ history ", "╭─ logs ",
-		" pilot ●",
+		" pilot ●", " opus-5-5 / sonnet-5-5", "subscription ",
 		"✓ GH-4018", "■■■■■■■ released", "✗ GH-4008", "■■■■■■■ ci_failed",
 		"┤ ● 2 prs ├", "● #4054", "⟲ #4050", "↳ ⟲ retry 1/3",
 	} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("dashboard missing grom landmark %q", want)
 		}
+	}
+}
+
+// TestChromeHeader_TwoLineBanner pins the GH-6350 header: banner line 1 is
+// the identity and clock, line 2 the model text and billing word, every line
+// the panel width (69, or the terminal width when stacked), and no header line
+// holds the word "billing".
+func TestChromeHeader_TwoLineBanner(t *testing.T) {
+	tests := []struct {
+		name    string
+		width   int
+		stacked bool
+		msg     BillingModeMsg
+		word    string
+		want    int
+	}{
+		{"subscription at 69", 120, false, BillingModeMsg{Mode: "subscription", Source: "config"}, "subscription", panelTotalWidth},
+		{"api tokens at 69", 120, false, BillingModeMsg{Mode: "api_key", Source: "config"}, "api tokens", panelTotalWidth},
+		{"subscription stacked at 80", 80, true, BillingModeMsg{Mode: "subscription", Source: "config"}, "subscription", 80},
+		{"override stacked at 80", 80, true, BillingModeMsg{Mode: "api_key", Source: "cli"}, "api tokens", 80},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel("2.320.1")
+			m.width, m.height = tt.width, 50
+			if tt.stacked {
+				m.gitGraphMode = GitGraphVisible
+			}
+			m.SetBannerMeta("stage", "opus-5-5 / sonnet-5-5", nil, time.Now().Add(-10*time.Minute))
+			next, _ := m.Update(tt.msg)
+			m = next.(Model)
+
+			header := m.renderChromeHeader()
+			t.Log("\n" + stripANSI(header))
+			lines := strings.Split(strings.TrimSuffix(header, "\n"), "\n")
+			if len(lines) < 2 {
+				t.Fatalf("header = %d lines:\n%s", len(lines), stripANSI(header))
+			}
+			l1, l2 := stripANSI(lines[0]), stripANSI(lines[1])
+			if !strings.HasPrefix(l1, " pilot ● · v2.320.1 · stage") || !strings.HasSuffix(l1, " utc ") {
+				t.Errorf("banner line 1 = %q", l1)
+			}
+			if !strings.HasPrefix(l2, " opus-5-5 / sonnet-5-5 ") || !strings.HasSuffix(l2, "  "+tt.word+" ") {
+				t.Errorf("banner line 2 = %q, want the model text left and %q right", l2, tt.word)
+			}
+			for i, line := range lines {
+				if w := lipgloss.Width(line); w != tt.want {
+					t.Errorf("header line %d visual width = %d, want %d: %q", i+1, w, tt.want, stripANSI(line))
+				}
+				if strings.Contains(stripANSI(line), "billing") {
+					t.Errorf("header line %d holds \"billing\": %q", i+1, stripANSI(line))
+				}
+			}
+		})
 	}
 }

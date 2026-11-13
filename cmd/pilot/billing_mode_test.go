@@ -18,8 +18,10 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/dashboard"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 // billingTestGateway is an httptest gateway that records the billing-mode
@@ -423,4 +425,59 @@ func TestStatusCmd_BillingLineAuthed(t *testing.T) {
 			t.Errorf("status output is missing entirely:\n%s", out)
 		}
 	})
+}
+
+// GH-6350: with billing.mode unset the TUI message carries the derived mode,
+// so the banner shows "subscription" or "api tokens" and never "unset".
+func TestBillingModeMsg_UnsetSendsDerivedMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		st       executor.BillingOverrideStatus
+		environ  []string
+		wantMode string
+		wantWord string
+	}{
+		{
+			name:     "unset without an API key derives subscription",
+			st:       executor.BillingOverrideStatus{Mode: "unset", Source: "config", ConfigMode: "unset"},
+			environ:  []string{"HOME=/tmp"},
+			wantMode: "subscription",
+			wantWord: "subscription",
+		},
+		{
+			name:     "unset with an API key derives api_key",
+			st:       executor.BillingOverrideStatus{Mode: "unset", Source: "config", ConfigMode: "unset"},
+			environ:  []string{"ANTHROPIC_API_KEY=" + testutil.FakeAnthropicKey},
+			wantMode: "api_key",
+			wantWord: "api tokens",
+		},
+		{
+			name:     "a configured mode is sent as is",
+			st:       executor.BillingOverrideStatus{Mode: "subscription", Source: "config", ConfigMode: "subscription"},
+			environ:  []string{"ANTHROPIC_API_KEY=" + testutil.FakeAnthropicKey},
+			wantMode: "subscription",
+			wantWord: "subscription",
+		},
+		{
+			name:     "an override keeps its mode and source",
+			st:       executor.BillingOverrideStatus{Mode: "api_key", Source: "cli", ConfigMode: "unset"},
+			environ:  nil,
+			wantMode: "api_key",
+			wantWord: "api tokens",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := billingModeMsg(tt.st, tt.environ)
+			if msg.Mode != tt.wantMode || msg.Source != tt.st.Source {
+				t.Fatalf("billingModeMsg() = %+v, want mode %q source %q", msg, tt.wantMode, tt.st.Source)
+			}
+			model := dashboard.NewModel("9.9.9")
+			next, _ := model.Update(msg)
+			banner := next.(dashboard.Model).RenderBannerForTest()
+			if !strings.Contains(banner, tt.wantWord) || strings.Contains(banner, "unset") {
+				t.Errorf("banner lacks %q or shows \"unset\":\n%s", tt.wantWord, banner)
+			}
+		})
+	}
 }

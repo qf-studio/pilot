@@ -1755,43 +1755,238 @@ func TestRenderBanner(t *testing.T) {
 	})
 
 	out := m.renderBanner()
+	lines := strings.Split(out, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("renderBanner() = %d lines, want 2\nout:\n%s", len(lines), out)
+	}
 
-	// One grom-grammar line: wordmark + liveness dot, lowercased segments,
-	// uptime + clock. Adapter chips moved to the queue border legend.
-	for _, want := range []string{" pilot ●", "v2.102.3", "prod", "opus/sonnet", "up ", "utc"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("renderBanner() missing %q\nout:\n%s", want, out)
+	// Line 1: wordmark + liveness dot, lowercased segments, uptime + clock.
+	// Line 2 (GH-6350): the model text. Adapter chips live in the queue
+	// border legend.
+	for _, want := range []string{" pilot ●", "v2.102.3", "prod", "up ", "utc"} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("renderBanner() line 1 missing %q\nout:\n%s", want, out)
 		}
 	}
-	for _, reject := range []string{"daemon", "gh", "slack", "\n"} {
+	if strings.Contains(lines[0], "opus") {
+		t.Errorf("renderBanner() line 1 must not hold the model text\nout:\n%s", out)
+	}
+	if !strings.HasPrefix(stripANSI(lines[1]), " opus/sonnet") {
+		t.Errorf("renderBanner() line 2 = %q, want the model text with a one-space indent", stripANSI(lines[1]))
+	}
+	for _, reject := range []string{"daemon", "gh", "slack", "billing"} {
 		if strings.Contains(out, reject) {
 			t.Errorf("renderBanner() should not contain %q\nout:\n%s", reject, out)
 		}
 	}
 
-	if w := lipgloss.Width(out); w != panelTotalWidth {
-		t.Errorf("renderBanner() visual width = %d, want %d", w, panelTotalWidth)
+	for i, line := range lines {
+		if w := lipgloss.Width(line); w != panelTotalWidth {
+			t.Errorf("renderBanner() line %d visual width = %d, want %d", i+1, w, panelTotalWidth)
+		}
 	}
 }
 
 func TestRenderBannerNarrowDropsSegments(t *testing.T) {
-	// An over-long model stack must degrade by dropping trailing identity
-	// segments — never by corrupting the line or dropping the wordmark.
+	// An over-long env name drops from line 1 — never by corrupting the line
+	// or dropping the wordmark. The model text no longer competes for line 1:
+	// it sits whole on line 2 (GH-6350).
 	m := NewModel("2.102.3")
-	m.SetBannerMeta("prod", "opus:plan | sonnet:exec | haiku:triage", nil, time.Now().Add(-time.Minute))
+	m.SetBannerMeta(strings.Repeat("e", 60), "opus:plan | sonnet:exec | haiku:triage", nil, time.Now().Add(-time.Minute))
 
 	out := m.renderBanner()
+	lines := strings.Split(out, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("renderBanner() = %d lines, want 2\nout:\n%s", len(lines), out)
+	}
 
 	for _, want := range []string{" pilot ●", "v2.102.3", "utc"} {
-		if !strings.Contains(out, want) {
+		if !strings.Contains(lines[0], want) {
 			t.Errorf("renderBanner() narrow missing %q\nout:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "sonnet:exec") {
-		t.Errorf("renderBanner() narrow should drop over-long model stack\nout:\n%s", out)
+	if strings.Contains(out, "eeee") {
+		t.Errorf("renderBanner() narrow should drop an over-long env name\nout:\n%s", out)
 	}
-	if w := lipgloss.Width(out); w != panelTotalWidth {
-		t.Errorf("renderBanner() narrow visual width = %d, want %d", w, panelTotalWidth)
+	if !strings.Contains(lines[1], "opus:plan | sonnet:exec | haiku:triage") {
+		t.Errorf("renderBanner() line 2 should hold the whole model text\nout:\n%s", out)
+	}
+	for i, line := range lines {
+		if w := lipgloss.Width(line); w != panelTotalWidth {
+			t.Errorf("renderBanner() narrow line %d visual width = %d, want %d", i+1, w, panelTotalWidth)
+		}
+	}
+}
+
+// GH-6350: banner line 2 carries the model text on the left and the billing
+// word on the right.
+func TestRenderBannerLine2(t *testing.T) {
+	long70 := strings.Repeat("m", 70)
+	tests := []struct {
+		name      string
+		width     int // terminal width; 0 keeps panelTotalWidth
+		stacked   bool
+		models    string
+		billing   *BillingModeMsg
+		wantWidth int
+		wantLeft  string // plain line 2 left text after the indent; "" = empty
+		wantRight string // plain line 2 right text before the pad; "" = empty
+		warn      bool   // right text is in the warning style
+	}{
+		{
+			name:      "two models and subscription at 69",
+			models:    "opus-5-5 / sonnet-5-5",
+			billing:   &BillingModeMsg{Mode: "subscription", Source: "config"},
+			wantWidth: panelTotalWidth,
+			wantLeft:  "opus-5-5 / sonnet-5-5",
+			wantRight: "subscription",
+		},
+		{
+			name:      "two models and subscription stacked at 80",
+			width:     80,
+			stacked:   true,
+			models:    "opus-5-5 / sonnet-5-5",
+			billing:   &BillingModeMsg{Mode: "subscription", Source: "config"},
+			wantWidth: 80,
+			wantLeft:  "opus-5-5 / sonnet-5-5",
+			wantRight: "subscription",
+		},
+		{
+			name:      "api_key is api tokens",
+			models:    "opus-5-5 / sonnet-5-5",
+			billing:   &BillingModeMsg{Mode: "api_key", Source: "config"},
+			wantWidth: panelTotalWidth,
+			wantLeft:  "opus-5-5 / sonnet-5-5",
+			wantRight: "api tokens",
+		},
+		{
+			name:      "an override shows the same word, no source",
+			models:    "opus-5-5 / sonnet-5-5",
+			billing:   &BillingModeMsg{Mode: "api_key", Source: "cli", Until: time.Now().Add(time.Hour)},
+			wantWidth: panelTotalWidth,
+			wantLeft:  "opus-5-5 / sonnet-5-5",
+			wantRight: "api tokens",
+			warn:      true,
+		},
+		{
+			name:      "unset mode never shows unset",
+			models:    "sonnet-5-5",
+			billing:   &BillingModeMsg{Mode: "unset", Source: "config"},
+			wantWidth: panelTotalWidth,
+			wantLeft:  "sonnet-5-5",
+			wantRight: "",
+		},
+		{
+			name:      "no model text",
+			billing:   &BillingModeMsg{Mode: "subscription", Source: "config"},
+			wantWidth: panelTotalWidth,
+			wantLeft:  "",
+			wantRight: "subscription",
+		},
+		{
+			name:      "no BillingModeMsg yet",
+			models:    "opus-5-5 / sonnet-5-5",
+			wantWidth: panelTotalWidth,
+			wantLeft:  "opus-5-5 / sonnet-5-5",
+			wantRight: "",
+		},
+		{
+			name:      "a 70-character model text is cut, the billing word is whole",
+			models:    long70,
+			billing:   &BillingModeMsg{Mode: "subscription", Source: "config"},
+			wantWidth: panelTotalWidth,
+			// 69 - indent 1 - "subscription" 12 - pad 1 - gap 2 = 53 columns.
+			wantLeft:  strings.Repeat("m", 52) + "…",
+			wantRight: "subscription",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModel("2.320.1")
+			if tt.width > 0 {
+				m.width = tt.width
+				m.height = 50
+			}
+			if tt.stacked {
+				m.gitGraphMode = GitGraphVisible
+			}
+			m.SetBannerMeta("stage", tt.models, nil, time.Now().Add(-10*time.Minute))
+			if tt.billing != nil {
+				next, _ := m.Update(*tt.billing)
+				m = next.(Model)
+			}
+
+			out := m.renderBanner()
+			t.Log("\n" + stripANSI(out))
+			lines := strings.Split(out, "\n")
+			if len(lines) != 2 {
+				t.Fatalf("renderBanner() = %d lines, want 2:\n%s", len(lines), stripANSI(out))
+			}
+			for i, line := range lines {
+				if w := lipgloss.Width(line); w != tt.wantWidth {
+					t.Errorf("line %d visual width = %d, want %d: %q", i+1, w, tt.wantWidth, stripANSI(line))
+				}
+			}
+
+			line2 := stripANSI(lines[1])
+			if !strings.HasSuffix(line2, " ") {
+				t.Errorf("line 2 lacks the one-space right pad: %q", line2)
+			}
+			body := strings.TrimSuffix(line2, " ")
+			gotRight := ""
+			if tt.wantRight != "" {
+				if !strings.HasSuffix(body, tt.wantRight) {
+					t.Fatalf("line 2 right = %q, want %q", line2, tt.wantRight)
+				}
+				gotRight = tt.wantRight
+				body = strings.TrimSuffix(body, tt.wantRight)
+				if tt.wantLeft != "" && !strings.HasSuffix(body, "  ") {
+					t.Errorf("line 2 lacks a two-column gap before the billing word: %q", line2)
+				}
+			}
+			gotLeft := strings.TrimSpace(body)
+			if gotLeft != tt.wantLeft {
+				t.Errorf("line 2 left = %q, want %q (right %q)", gotLeft, tt.wantLeft, gotRight)
+			}
+			if tt.wantLeft != "" && !strings.HasPrefix(line2, " "+tt.wantLeft) {
+				t.Errorf("line 2 left text lacks the one-space indent: %q", line2)
+			}
+			if strings.Contains(stripANSI(lines[0]), "opus") || strings.Contains(out, "billing") || strings.Contains(out, "unset") {
+				t.Errorf("banner holds model text on line 1, \"billing\" or \"unset\":\n%s", stripANSI(out))
+			}
+			if tt.wantRight != "" {
+				styled := dimStyle.Render(tt.wantRight)
+				if tt.warn {
+					styled = warningStyle.Render(tt.wantRight)
+				}
+				if !strings.Contains(lines[1], styled) {
+					t.Errorf("billing word not in the %s style: %q", map[bool]string{true: "warning", false: "dim"}[tt.warn], lines[1])
+				}
+			}
+		})
+	}
+}
+
+func TestBillingModeLabel(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  *BillingModeMsg
+		want string
+	}{
+		{"no message", nil, ""},
+		{"subscription", &BillingModeMsg{Mode: "subscription", Source: "config"}, "subscription"},
+		{"api_key", &BillingModeMsg{Mode: "api_key", Source: "config"}, "api tokens"},
+		{"override keeps the word", &BillingModeMsg{Mode: "api_key", Source: "gateway"}, "api tokens"},
+		{"fallback override keeps the word", &BillingModeMsg{Mode: "subscription", Source: "fallback"}, "subscription"},
+		{"unset is never shown", &BillingModeMsg{Mode: "unset", Source: "config"}, ""},
+		{"empty mode", &BillingModeMsg{Source: "config"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := billingModeLabel(tt.msg); got != tt.want {
+				t.Errorf("billingModeLabel(%+v) = %q, want %q", tt.msg, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -2274,43 +2469,122 @@ func TestUpgradeRender_FailedShowsError(t *testing.T) {
 	}
 }
 
-// GH-6053: the header carries one billing chip, fed by BillingModeMsg.
+// GH-6053 / GH-6350: the billing word, fed by BillingModeMsg, sits on banner
+// line 2 — no separate header line, hidden with the banner.
 func TestTUI_HeaderBillingChip(t *testing.T) {
 	apply := func(m Model, msg BillingModeMsg) Model {
 		next, _ := m.Update(msg)
 		return next.(Model)
 	}
-	updated := func(msg BillingModeMsg) Model { return apply(NewModel("test"), msg) }
+	newModel := func() Model {
+		m := NewModel("test")
+		m.SetBannerMeta("stage", "opus-5-5 / sonnet-5-5", nil, time.Now().Add(-time.Minute))
+		return m
+	}
+	updated := func(msg BillingModeMsg) Model { return apply(newModel(), msg) }
 
-	t.Run("no chip before the daemon reports", func(t *testing.T) {
-		if header := NewModel("test").renderChromeHeader(); strings.Contains(header, "billing") {
-			t.Errorf("header shows a billing chip before any BillingModeMsg:\n%s", header)
+	// bannerLine2 returns header line 2 (banner line 2), plain.
+	bannerLine2 := func(t *testing.T, header string) string {
+		t.Helper()
+		lines := strings.Split(stripANSI(header), "\n")
+		if len(lines) < 2 {
+			t.Fatalf("header has %d lines:\n%s", len(lines), header)
+		}
+		return lines[1]
+	}
+
+	tests := []struct {
+		name      string
+		model     func() Model
+		wantWord  string // on banner line 2; "" = right side empty
+		rejectAny []string
+	}{
+		{
+			name:      "no word before the daemon reports",
+			model:     newModel,
+			rejectAny: []string{"subscription", "api tokens"},
+		},
+		{
+			name:      "config source renders the word only",
+			model:     func() Model { return updated(BillingModeMsg{Mode: "subscription", Source: "config"}) },
+			wantWord:  "subscription",
+			rejectAny: []string{"·config", "api tokens"},
+		},
+		{
+			name: "override renders the word without its source",
+			model: func() Model {
+				return updated(BillingModeMsg{Mode: "api_key", Source: "cli", Until: time.Now().Add(time.Hour)})
+			},
+			wantWord:  "api tokens",
+			rejectAny: []string{"cli", "api_key"},
+		},
+		{
+			name: "a later message replaces the word",
+			model: func() Model {
+				return apply(updated(BillingModeMsg{Mode: "api_key", Source: "gateway"}), BillingModeMsg{Mode: "subscription", Source: "config"})
+			},
+			wantWord:  "subscription",
+			rejectAny: []string{"api tokens", "gateway"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := tt.model()
+			header := m.renderChromeHeader()
+			plain := stripANSI(header)
+			line2 := bannerLine2(t, header)
+			if !strings.Contains(line2, "opus-5-5 / sonnet-5-5") {
+				t.Errorf("banner line 2 lacks the model text: %q", line2)
+			}
+			if tt.wantWord != "" && !strings.HasSuffix(line2, tt.wantWord+" ") {
+				t.Errorf("banner line 2 = %q, want %q on the right", line2, tt.wantWord)
+			}
+			for _, reject := range tt.rejectAny {
+				if strings.Contains(plain, reject) {
+					t.Errorf("header holds %q:\n%s", reject, plain)
+				}
+			}
+			for i, line := range strings.Split(plain, "\n") {
+				if strings.Contains(line, "billing") {
+					t.Errorf("header line %d holds \"billing\": %q", i+1, line)
+				}
+			}
+			// The banner is two lines whether or not the message arrived.
+			if got, want := lineCount(header), lineCount(newModel().renderChromeHeader()); got != want {
+				t.Errorf("header = %d lines, want %d (layout must not jump)", got, want)
+			}
+		})
+	}
+
+	t.Run("showBanner false hides both lines", func(t *testing.T) {
+		m := updated(BillingModeMsg{Mode: "subscription", Source: "config"})
+		shown := m.renderChromeHeader()
+		m.showBanner = false
+		header := stripANSI(m.renderChromeHeader())
+		for _, reject := range []string{"opus-5-5", "subscription", "pilot ●"} {
+			if strings.Contains(header, reject) {
+				t.Errorf("header with the banner hidden holds %q:\n%s", reject, header)
+			}
+		}
+		if got, want := lineCount(shown)-lineCount(m.renderChromeHeader()), 2; got != want {
+			t.Errorf("hiding the banner removed %d header lines, want %d", got, want)
 		}
 	})
 
-	t.Run("config source renders the mode only", func(t *testing.T) {
-		header := updated(BillingModeMsg{Mode: "subscription", Source: "config"}).renderChromeHeader()
-		if !strings.Contains(header, "billing subscription") {
-			t.Errorf("header lacks the chip \"billing subscription\":\n%s", header)
+	t.Run("grid height follows the two-line banner", func(t *testing.T) {
+		m := updated(BillingModeMsg{Mode: "subscription", Source: "config"})
+		m.width, m.height = 120, 60
+		if got, want := m.gridAvailHeight(), m.height-lineCount(m.renderChromeHeader()); got != want {
+			t.Errorf("gridAvailHeight() = %d, want %d", got, want)
 		}
-		if strings.Contains(header, "billing subscription·") {
-			t.Errorf("config source must not render a source suffix:\n%s", header)
+		hidden := m
+		hidden.showBanner = false
+		if got := hidden.gridAvailHeight() - m.gridAvailHeight(); got != 2 {
+			t.Errorf("hiding the banner gave the grid %d rows, want 2", got)
 		}
-	})
-
-	t.Run("override renders mode and source", func(t *testing.T) {
-		header := updated(BillingModeMsg{Mode: "api_key", Source: "cli", Until: time.Now().Add(time.Hour)}).renderChromeHeader()
-		if !strings.Contains(header, "billing api_key·cli") {
-			t.Errorf("header lacks the chip \"billing api_key·cli\":\n%s", header)
-		}
-	})
-
-	t.Run("a later message replaces the chip", func(t *testing.T) {
-		m := updated(BillingModeMsg{Mode: "api_key", Source: "gateway"})
-		m = apply(m, BillingModeMsg{Mode: "subscription", Source: "config"})
-		header := m.renderChromeHeader()
-		if strings.Contains(header, "api_key") || !strings.Contains(header, "billing subscription") {
-			t.Errorf("chip was not replaced:\n%s", header)
+		frame := strings.Split(m.renderGrid(), "\n")
+		if len(frame) > m.height {
+			t.Errorf("rendered frame = %d lines, taller than the terminal (%d)", len(frame), m.height)
 		}
 	})
 }
