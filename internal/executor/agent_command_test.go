@@ -35,6 +35,15 @@ func setRunAsStateForTest(t *testing.T, s *runAsSettings, failed string) {
 	})
 }
 
+// stubRunAsGOOS makes the platform Linux for one test: agentCommand builds the
+// sudo form on Linux only, and these tests check that form on any host.
+func stubRunAsGOOS(t *testing.T) {
+	t.Helper()
+	prev := runAsGOOS
+	runAsGOOS = "linux"
+	t.Cleanup(func() { runAsGOOS = prev })
+}
+
 func testRunAsSettings(t *testing.T) *runAsSettings {
 	t.Helper()
 	return &runAsSettings{user: "pilot-agent", home: t.TempDir(), gid: -1}
@@ -164,6 +173,7 @@ func TestAgentCommandRunAsUserArgv(t *testing.T) {
 }
 
 func TestAgentCommandPreserveListEqualsEnvNames(t *testing.T) {
+	stubRunAsGOOS(t)
 	setRunAsStateForTest(t, testRunAsSettings(t), "")
 	cmd, err := agentCommand(context.Background(), "claude")
 	if err != nil {
@@ -277,6 +287,7 @@ func TestRunAsUserKillCommand(t *testing.T) {
 }
 
 func TestRunAsUserKillProcessGroupGoesThroughSudo(t *testing.T) {
+	stubRunAsGOOS(t)
 	setRunAsStateForTest(t, testRunAsSettings(t), "")
 	logPath := mockSudo(t, 0)
 	cmd, err := agentCommand(context.Background(), "claude")
@@ -296,6 +307,7 @@ func TestRunAsUserKillProcessGroupGoesThroughSudo(t *testing.T) {
 }
 
 func TestRunAsUserKillFailureLogsOneErrorWithPgid(t *testing.T) {
+	stubRunAsGOOS(t)
 	setRunAsStateForTest(t, testRunAsSettings(t), "")
 	mockSudo(t, 1)
 	var buf bytes.Buffer
@@ -339,10 +351,12 @@ func TestRunAsUserKillOptionEmptyIsDirect(t *testing.T) {
 	}
 }
 
-// stubRunAsHost replaces the host lookups of the preflight.
+// stubRunAsHost replaces the host lookups of the preflight. Every user it
+// knows has uid 5000; the group "pilot-agents" has gid 6000 and the daemon is
+// a member of it. Tests change lookupGrp and daemonGroups for the group cases.
 func stubRunAsHost(t *testing.T, goos string, daemonUID string, users map[string]string) {
 	t.Helper()
-	pg, pu, pc, po := lookupGrp, lookupUser, currentUID, runAsGOOS
+	pg, pu, pc, po, pd := lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups
 	runAsGOOS = goos
 	currentUID = func() (string, error) { return daemonUID, nil }
 	lookupUser = func(name string) (*user.User, error) {
@@ -352,7 +366,14 @@ func stubRunAsHost(t *testing.T, goos string, daemonUID string, users map[string
 		}
 		return &user.User{Uid: "5000", HomeDir: home}, nil
 	}
-	t.Cleanup(func() { lookupGrp, lookupUser, currentUID, runAsGOOS = pg, pu, pc, po })
+	lookupGrp = func(name string) (*user.Group, error) {
+		if name != "pilot-agents" {
+			return nil, fmt.Errorf("unknown group %s", name)
+		}
+		return &user.Group{Gid: "6000", Name: name}, nil
+	}
+	daemonGroups = func() ([]int, error) { return []int{1000, 6000}, nil }
+	t.Cleanup(func() { lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups = pg, pu, pc, po, pd })
 }
 
 func TestRunAsUserPreflightFailsClosed(t *testing.T) {
@@ -368,7 +389,7 @@ func TestRunAsUserPreflightFailsClosed(t *testing.T) {
 	}{
 		{"missing user", "linux", "nobody-such", "1000", 0, home, "user exists"},
 		{"the daemon user", "linux", "pilot-agent", "5000", 0, home, "user differs from the daemon user"},
-		{"sudo exits non-zero", "linux", "pilot-agent", "1000", 1, home, "sudo -n -u pilot-agent true"},
+		{"sudo exits non-zero", "linux", "pilot-agent", "1000", 1, home, "sudo -n -u pilot-agent -g pilot-agents true"},
 		{"home missing", "linux", "pilot-agent", "1000", 0, filepath.Join(home, "gone"), "home exists"},
 		{"not linux", "darwin", "pilot-agent", "1000", 0, home, "linux only"},
 	}
@@ -382,7 +403,7 @@ func TestRunAsUserPreflightFailsClosed(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 			t.Cleanup(func() { slog.SetDefault(prev) })
 
-			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: tc.user})
+			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: tc.user, RunAsGroup: "pilot-agents"}, "")
 			_ = sudoArgv(t, logPath) // the preflight's own probe
 
 			if n := strings.Count(buf.String(), "level=ERROR"); n != 1 || !strings.Contains(buf.String(), tc.wantCheck) {
@@ -408,9 +429,9 @@ func TestRunAsUserPreflightPasses(t *testing.T) {
 	home := t.TempDir()
 	stubRunAsHost(t, "linux", "1000", map[string]string{"pilot-agent": home})
 
-	PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: "pilot-agent"})
+	PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents"}, "")
 	got := sudoArgv(t, logPath)
-	if strings.Join(got, " ") != "sudo -n -u pilot-agent true" {
+	if strings.Join(got, " ") != "sudo -n -u pilot-agent -g pilot-agents true" {
 		t.Errorf("probe = %q", got)
 	}
 	cmd, err := agentCommand(context.Background(), "claude", "-p", "x")
@@ -426,8 +447,8 @@ func TestRunAsUserPreflightPasses(t *testing.T) {
 func TestRunAsUserPreflightOptionEmptyDoesNothing(t *testing.T) {
 	setRunAsStateForTest(t, nil, "")
 	logPath := mockSudo(t, 1)
-	PreflightRunAsUser(nil)
-	PreflightRunAsUser(&ClaudeCodeConfig{})
+	PreflightRunAsUser(nil, "")
+	PreflightRunAsUser(&ClaudeCodeConfig{}, "")
 	if got := sudoArgv(t, logPath); got != nil {
 		t.Errorf("the empty option ran sudo: %q", got)
 	}
@@ -438,7 +459,7 @@ func TestRunAsUserPreflightOptionEmptyDoesNothing(t *testing.T) {
 
 func TestRunAsUserPreflightEmptyClearsEarlierFailure(t *testing.T) {
 	setRunAsStateForTest(t, testRunAsSettings(t), "sudo -n -u pilot-agent true")
-	PreflightRunAsUser(&ClaudeCodeConfig{})
+	PreflightRunAsUser(&ClaudeCodeConfig{}, "")
 	if _, err := agentCommand(context.Background(), "claude"); err != nil {
 		t.Errorf("reloading an empty option left the flag set: %v", err)
 	}

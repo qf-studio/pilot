@@ -700,6 +700,11 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	var ghGuardJournalPath string
 	if b.ghGuardEnabled {
 		shimDir, journalPath, ghGuardCleanup, shimErr := setupGhGuardShim(b.ghGuardRealGh)
+		if shimErr != nil && runAsSettingsNow() != nil {
+			// TASK-651: with run_as_user set a run without the gh guard is
+			// not an option, and a shim the agent user cannot read is no guard.
+			return nil, shimErr
+		}
 		if shimErr != nil {
 			b.log.Warn("gh-guard shim setup failed; proceeding without gh-guard for this execution",
 				slog.Any("error", shimErr),
@@ -803,7 +808,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 					slog.Any("surviving_children", survivingChildCmdlines(pid)),
 				)
 				if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
-					b.log.Error("Failed to kill process group after result-exit grace",
+					b.log.Log(context.Background(), killFailureLevel(err), "Failed to kill process group after result-exit grace",
 						slog.String("task_id", opts.TaskID),
 						slog.Int("pid", pid),
 						slog.Any("error", err),
@@ -906,7 +911,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 				// tracked PID, so backgrounded grandchildren die too.
 				if cmd.Process != nil {
 					if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
-						b.log.Error("Failed to kill hung process",
+						b.log.Log(context.Background(), killFailureLevel(err), "Failed to kill hung process",
 							slog.Int("pid", cmd.Process.Pid),
 							slog.Any("error", err),
 						)
@@ -952,7 +957,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 				// GH-4503: signal the whole process group, not just the
 				// tracked PID, so backgrounded grandchildren die too.
 				if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
-					b.log.Error("Watchdog failed to kill process",
+					b.log.Log(context.Background(), killFailureLevel(err), "Watchdog failed to kill process",
 						slog.Int("pid", cmd.Process.Pid),
 						slog.Any("error", err),
 					)
@@ -1159,7 +1164,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 					// group-kills on ctx.Done(), so this is a defense-in-depth
 					// re-strike rather than the primary kill.
 					if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
-						b.log.Error("Failed to kill process",
+						b.log.Log(context.Background(), killFailureLevel(err), "Failed to kill process",
 							slog.Int("pid", cmd.Process.Pid),
 							slog.Any("error", err),
 						)

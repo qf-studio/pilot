@@ -209,6 +209,12 @@ var apiTools = []apiToolDef{
 // --- Tool Execution ---
 
 func execBash(command string, timeout int, cwd string) string {
+	// TASK-651: model-chosen commands would run here as the daemon user, with
+	// the daemon environment. The preflight refuses this backend with
+	// run_as_user set; this is the second barrier. Nothing runs.
+	if runAsSettingsNow() != nil {
+		return "[ERROR: run_as_user is not supported with the " + BackendTypeAnthropicAPI + " and " + BackendTypeOpenAIAPI + " backends: command not run]"
+	}
 	if timeout <= 0 || timeout > 600 {
 		timeout = apiBashTimeout
 	}
