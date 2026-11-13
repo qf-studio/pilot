@@ -449,7 +449,7 @@ func main() {
 // loaded and what claude_code.read_guard says. A nil claudeCode (no
 // executor.claude_code block) still registers the config path, so a config
 // loaded through a non-default --config is on the deny list. GH-6252, GH-6261.
-func applyReadGuardConfig(claudeCode *executor.ClaudeCodeConfig, configPath string) {
+func applyReadGuardConfig(claudeCode *executor.ClaudeCodeConfig, configPath, backendType string) {
 	if claudeCode == nil {
 		claudeCode = &executor.ClaudeCodeConfig{}
 	}
@@ -457,7 +457,7 @@ func applyReadGuardConfig(claudeCode *executor.ClaudeCodeConfig, configPath stri
 	executor.SetReadGuardConfig(claudeCode)
 	// TASK-651: fail-closed check of claude_code.run_as_user at every
 	// entrypoint that can spawn a model process. Does nothing when empty.
-	executor.PreflightRunAsUser(claudeCode)
+	executor.PreflightRunAsUser(claudeCode, backendType)
 }
 
 // applyReadGuardConfigFromFile is applyReadGuardConfig for entrypoints that do
@@ -470,6 +470,7 @@ func applyReadGuardConfigFromFile(cfgPath string) {
 	}
 	var doc struct {
 		Executor *struct {
+			Type       string                     `yaml:"type"`
 			ClaudeCode *executor.ClaudeCodeConfig `yaml:"claude_code"`
 		} `yaml:"executor"`
 	}
@@ -477,10 +478,12 @@ func applyReadGuardConfigFromFile(cfgPath string) {
 		_ = yaml.Unmarshal(raw, &doc)
 	}
 	var claudeCode *executor.ClaudeCodeConfig
+	var backendType string
 	if doc.Executor != nil {
 		claudeCode = doc.Executor.ClaudeCode
+		backendType = doc.Executor.Type
 	}
-	applyReadGuardConfig(claudeCode, cfgPath)
+	applyReadGuardConfig(claudeCode, cfgPath, backendType)
 }
 
 // gatewayChatNeedsOwnRunner reports whether gateway mode must build a
@@ -562,10 +565,12 @@ Examples:
 
 			// GH-6252: tell the executor read guard which config file is loaded.
 			var claudeCode *executor.ClaudeCodeConfig
+			var backendType string
 			if cfg.Executor != nil {
 				claudeCode = cfg.Executor.ClaudeCode
+				backendType = cfg.Executor.Type
 			}
-			applyReadGuardConfig(claudeCode, configPath)
+			applyReadGuardConfig(claudeCode, configPath, backendType)
 
 			secretCount := secretpatterns.SecretValueCount()
 

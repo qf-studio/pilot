@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/logging"
@@ -699,6 +700,11 @@ func (b *OpenCodeBackend) StopServer() error {
 
 	if b.serverCmd != nil && b.serverCmd.Process != nil {
 		b.log.Info("Stopping OpenCode server")
+		// TASK-651: a server started as the run_as_user user is stopped
+		// through sudo, as a group: Process.Kill signals sudo only.
+		if agentUser, ok := agentCmdUser(b.serverCmd); ok {
+			return killAgentProcessGroup(b.serverCmd, agentUser, syscall.SIGKILL)
+		}
 		return b.serverCmd.Process.Kill()
 	}
 	return nil

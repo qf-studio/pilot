@@ -27,6 +27,10 @@ import (
 // runAsTimeout bounds the preflight sudo probe and the sudo kill.
 const runAsTimeout = 5 * time.Second
 
+// runAsWaitDelay bounds cmd.Wait after the cancel of a command made by
+// agentCommand with the option set.
+const runAsWaitDelay = 10 * time.Second
+
 // runAsPreserveFlag is the sudo flag that carries the environment names.
 const runAsPreserveFlag = "--preserve-env="
 
@@ -45,6 +49,7 @@ type runAsState struct {
 	settings *runAsSettings // nil: option empty
 	failed   string         // name of the failed preflight check, empty: none
 	checked  bool           // the preflight ran for these settings
+	backend  string         // backend type the preflight ran for
 }
 
 var (
@@ -60,6 +65,19 @@ var (
 		}
 		return u.Uid, nil
 	}
+	// daemonGroups returns the group ids of the daemon process: chown to a
+	// group works only for a group the process is a member of.
+	daemonGroups = func() ([]int, error) {
+		gids, err := os.Getgroups()
+		if err != nil {
+			return nil, err
+		}
+		return append(gids, os.Getegid()), nil
+	}
+	// runAsSnapshots holds the settings one command was built with, from
+	// agentCommand until setAgentEnv takes them: a reload in between cannot
+	// give the command a preserve list that differs from cmd.Env.
+	runAsSnapshots sync.Map // *exec.Cmd -> *runAsSettings
 )
 
 // runAsAllowedEnv lists the names a model process keeps when it runs as the
@@ -120,6 +138,38 @@ func (s *runAsSettings) sudoArgs() []string {
 	return args
 }
 
+// validRunAsName reports whether name is a safe user or group name: a to z or
+// an underscore first, then a to z, 0 to 9, underscore or dash, at most 32
+// characters. It keeps option-like and shell-like values ("-u root", "#0",
+// "a b") out of the sudo argv before any lookup.
+func validRunAsName(name string) bool {
+	if name == "" || len(name) > 32 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z', c == '_':
+		case i > 0 && (c >= '0' && c <= '9' || c == '-'):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// backendRunsToolsInProcess reports whether a backend type executes the tool
+// calls the model chose inside the daemon process, as the daemon user: the
+// two API backends (execBash in backend_anthropic.go, shared by the OpenAI
+// one). The CLI backends spawn the model through agentCommand.
+func backendRunsToolsInProcess(backendType string) bool {
+	switch backendType {
+	case BackendTypeAnthropicAPI, BackendTypeOpenAIAPI:
+		return true
+	}
+	return false
+}
+
 // resolveRunAs resolves user, group and home once with os/user. The returned
 // check name is empty on success.
 func resolveRunAs(userName, group string) (*runAsSettings, string) {
@@ -129,32 +179,52 @@ func resolveRunAs(userName, group string) (*runAsSettings, string) {
 		return s, "user exists"
 	}
 	s.home = u.HomeDir
-	if group != "" {
-		g, err := lookupGrp(group)
-		if err != nil || g == nil {
-			return s, "group exists"
-		}
-		gid, err := strconv.Atoi(g.Gid)
-		if err != nil {
-			return s, "group exists"
-		}
-		s.gid = gid
+	if u.Uid == "0" {
+		return s, "run_as_user has uid 0"
 	}
-	if uid, err := currentUID(); err == nil && uid == u.Uid {
+	g, err := lookupGrp(group)
+	if err != nil || g == nil {
+		return s, "group exists"
+	}
+	gid, err := strconv.Atoi(g.Gid)
+	if err != nil {
+		return s, "group exists"
+	}
+	if gid == 0 {
+		return s, "run_as_group has gid 0"
+	}
+	s.gid = gid
+	uid, err := currentUID()
+	if err != nil || uid == u.Uid {
 		return s, "user differs from the daemon user"
+	}
+	gids, err := daemonGroups()
+	if err != nil {
+		return s, "daemon user is a member of the group"
+	}
+	member := false
+	for _, id := range gids {
+		member = member || id == gid
+	}
+	if !member {
+		return s, "daemon user is a member of the group"
 	}
 	return s, ""
 }
 
 // PreflightRunAsUser reads claude_code.run_as_user / run_as_group, resolves
-// them and checks the host: Linux, the user exists and is not the daemon
-// user, `sudo -n -u <user> true` exits 0 within 5 seconds, and the home of
-// the user exists. On any failure it logs one Error line naming the check and
-// sets the process-wide flag: every model spawn then returns an error and no
-// process starts. It never falls back to a run as the daemon user. With the
-// option empty it clears any earlier state and does nothing else. Called at
-// the same place as the read guard config, for every entrypoint that spawns.
-func PreflightRunAsUser(cfg *ClaudeCodeConfig) {
+// them and checks the host. backendType is the configured executor backend
+// ("" is claude-code). The checks: the names are valid, not root, run_as_group
+// is set, the backend does not run model-chosen commands in the daemon
+// process, Linux, user and group exist with uid and gid not 0, the user is not
+// the daemon user, the daemon user is a member of the group, `sudo -n -u <user>
+// -g <group> true` exits 0 within 5 seconds, and the home of the user exists.
+// On any failure it logs one Error line naming the check and sets the
+// process-wide flag: every model spawn then returns an error and no process
+// starts. It never falls back to a run as the daemon user. With the option
+// empty it clears any earlier state and does nothing else. Called at the same
+// place as the read guard config, for every entrypoint that spawns.
+func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
 	var userName, group string
 	if cfg != nil {
 		userName, group = strings.TrimSpace(cfg.RunAsUser), strings.TrimSpace(cfg.RunAsGroup)
@@ -167,22 +237,35 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig) {
 	}
 
 	runAsMu.RLock()
-	same := runAsCur.checked && runAsCur.settings != nil &&
+	same := runAsCur.checked && runAsCur.settings != nil && runAsCur.backend == backendType &&
 		runAsCur.settings.user == userName && runAsCur.settings.group == group
 	runAsMu.RUnlock()
 	if same {
 		return
 	}
 
-	s, failed := resolveRunAs(userName, group)
+	s := &runAsSettings{user: userName, group: group, gid: -1}
+	var failed string
 	switch {
+	case !validRunAsName(userName) || userName == "root":
+		failed = "run_as_user name is not valid"
+	case group == "":
+		failed = "run_as_group is required with run_as_user"
+	case !validRunAsName(group):
+		failed = "run_as_group name is not valid"
+	case backendRunsToolsInProcess(backendType):
+		failed = "run_as_user is not supported with the " + backendType + " backend"
 	case runAsGOOS != "linux":
 		failed = "linux only"
-	case failed != "":
-	case !sudoProbeOK(s):
-		failed = "sudo -n -u " + userName + " true"
-	case !dirExists(s.home):
-		failed = "home exists"
+	default:
+		s, failed = resolveRunAs(userName, group)
+		switch {
+		case failed != "":
+		case !sudoProbeOK(s):
+			failed = "sudo -n -u " + userName + " -g " + group + " true"
+		case !dirExists(s.home):
+			failed = "home exists"
+		}
 	}
 	if failed != "" {
 		slog.Default().Error("run_as_user preflight failed: model processes will not start",
@@ -191,7 +274,7 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig) {
 		)
 	}
 	runAsMu.Lock()
-	runAsCur = runAsState{settings: s, failed: failed, checked: true}
+	runAsCur = runAsState{settings: s, failed: failed, checked: true, backend: backendType}
 	runAsMu.Unlock()
 }
 
@@ -213,11 +296,16 @@ func dirExists(p string) bool {
 }
 
 // agentCommand is the constructor of every model process. With the option
-// empty it is exec.CommandContext(ctx, name, args...). With it set (Linux) it
-// builds `sudo -n -u <user> [-g <group>] --preserve-env=<names> -- <name>
-// <args...>`; no environment value is ever placed in argv, and the caller sets
-// the environment with setAgentEnv so the names and cmd.Env always match.
-// While the preflight flag is set it returns an error and builds nothing.
+// empty it is exec.CommandContext(ctx, name, args...), no field changed. With
+// it set (Linux) it builds `sudo -n -u <user> [-g <group>] --preserve-env=<names>
+// -- <name> <args...>`; no environment value is ever placed in argv, and the
+// caller sets the environment with setAgentEnv so the names and cmd.Env always
+// match. It also puts the command in its own process group and makes the
+// cancel of the context kill that group through sudo (SIGKILL, WaitDelay 10
+// seconds): the default cancel of os/exec signals only the sudo process, which
+// the daemon user may not signal, and the model would outlive the timeout. A
+// site that sets its own Cancel after the call keeps it. While the preflight
+// flag is set it returns an error and builds nothing.
 func agentCommand(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
 	if err := runAsSpawnError(); err != nil {
 		return nil, err
@@ -228,7 +316,12 @@ func agentCommand(ctx context.Context, name string, args ...string) (*exec.Cmd, 
 	}
 	argv := append(s.sudoArgs(), runAsPreserveFlag+strings.Join(agentEnvNames(s.envBase()), ","), "--", name)
 	argv = append(argv, args...)
-	return exec.CommandContext(ctx, "sudo", argv...), nil
+	cmd := exec.CommandContext(ctx, "sudo", argv...)
+	configureProcessGroup(cmd)
+	cmd.Cancel = func() error { return killAgentProcessGroup(cmd, s.user, syscall.SIGKILL) }
+	cmd.WaitDelay = runAsWaitDelay
+	runAsSnapshots.Store(cmd, s)
+	return cmd, nil
 }
 
 // envBase is the part of the environment the agent user always gets.
@@ -298,7 +391,12 @@ func setAgentEnv(cmd *exec.Cmd, env []string) {
 		cmd.Env = env
 		return
 	}
-	s := runAsSettingsNow()
+	// The settings agentCommand built this command with, not the current ones.
+	snap, found := runAsSnapshots.LoadAndDelete(cmd)
+	s, _ := snap.(*runAsSettings)
+	if !found || s == nil {
+		s = runAsSettingsNow()
+	}
 	if s == nil {
 		// cmd was built under settings that are gone; keep it closed.
 		cmd.Env = env
@@ -366,30 +464,47 @@ func killAgentProcessGroup(cmd *exec.Cmd, agentUser string, sig syscall.Signal) 
 			slog.Any("error", err),
 			slog.String("output", strings.TrimSpace(string(out))),
 		)
-		return fmt.Errorf("sudo kill of process group %d: %w", pgid, err)
+		return fmt.Errorf("sudo kill of process group %d: %w: %w", pgid, errAgentKillLogged, err)
 	}
 	return nil
 }
 
+// errAgentKillLogged marks the error of a failed sudo kill: killAgentProcessGroup
+// has already logged it at Error.
+var errAgentKillLogged = errors.New("failure logged")
+
+// killFailureLevel is the level a caller logs a failed kill at: Error, except
+// for a failed sudo kill, which killAgentProcessGroup logged at Error already
+// (one Error line per failed kill).
+func killFailureLevel(err error) slog.Level {
+	if errors.Is(err, errAgentKillLogged) {
+		return slog.LevelWarn
+	}
+	return slog.LevelError
+}
+
+// guardChown is os.Chown; tests replace it to fail a change of group.
+var guardChown = os.Chown
+
 // errRunAsGuardPerm is wrapped around a failed chown/chmod of guard files.
-var errRunAsGuardPerm = errors.New("run_as_user guard permissions")
+var errRunAsGuardPerm = errors.New("run_as_user: guard files not readable by the agent")
 
 // applyGuardPerm opens a guard directory (0750) or file (0640, scripts 0750)
 // to the group of the agent user: with the option set it sets the mode and,
 // with a run_as_group, the group (the owner stays the daemon user, a member of
-// the group). With the option empty it does nothing: the modes stay 0700 and
-// 0600 (scripts 0755).
+// the group). A failure is an error that stops the spawn. With the option
+// empty it does nothing: the modes stay 0700 and 0600 (scripts 0755).
 func applyGuardPerm(path string, mode os.FileMode) error {
 	s := runAsSettingsNow()
 	if s == nil {
 		return nil
 	}
 	if err := os.Chmod(path, mode); err != nil {
-		return fmt.Errorf("%w: chmod %s: %v", errRunAsGuardPerm, path, err)
+		return fmt.Errorf("%w: %s: chmod: %v", errRunAsGuardPerm, path, err)
 	}
 	if s.gid >= 0 {
-		if err := os.Chown(path, -1, s.gid); err != nil {
-			return fmt.Errorf("%w: chown %s: %v", errRunAsGuardPerm, path, err)
+		if err := guardChown(path, -1, s.gid); err != nil {
+			return fmt.Errorf("%w: %s: chown: %v", errRunAsGuardPerm, path, err)
 		}
 	}
 	return nil

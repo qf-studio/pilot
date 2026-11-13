@@ -82,6 +82,7 @@ func agentSiteEnv(t *testing.T) (cli string) {
 }
 
 func TestRunAsUserEverySpawnSiteGoesThroughSudo(t *testing.T) {
+	stubRunAsGOOS(t)
 	cli := agentSiteEnv(t)
 	for _, site := range agentSites(cli) {
 		t.Run(site.name, func(t *testing.T) {

@@ -333,7 +333,7 @@ func (b *QwenCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Ba
 					if cmd.Process != nil {
 						// GH-4503: signal the whole process group.
 						if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
-							b.log.Error("Failed to kill hung process",
+							b.log.Log(context.Background(), killFailureLevel(err), "Failed to kill hung process",
 								slog.Int("pid", cmd.Process.Pid),
 								slog.Any("error", err),
 							)
@@ -371,7 +371,7 @@ func (b *QwenCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Ba
 
 				// GH-4503: signal the whole process group.
 				if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
-					b.log.Error("Watchdog failed to kill process",
+					b.log.Log(context.Background(), killFailureLevel(err), "Watchdog failed to kill process",
 						slog.Int("pid", cmd.Process.Pid),
 						slog.Any("error", err),
 					)
@@ -473,7 +473,7 @@ func (b *QwenCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Ba
 					)
 					// GH-4503: signal the whole process group.
 					if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
-						b.log.Error("Failed to kill process",
+						b.log.Log(context.Background(), killFailureLevel(err), "Failed to kill process",
 							slog.Int("pid", cmd.Process.Pid),
 							slog.Any("error", err),
 						)

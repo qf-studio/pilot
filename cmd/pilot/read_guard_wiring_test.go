@@ -50,14 +50,14 @@ func TestStartCmdWiresReadGuardConfig(t *testing.T) {
 	t.Cleanup(func() { executor.SetReadGuardConfig(nil) })
 
 	off := false
-	applyReadGuardConfig(&executor.ClaudeCodeConfig{ReadGuard: &off}, cfgPath)
+	applyReadGuardConfig(&executor.ClaudeCodeConfig{ReadGuard: &off}, cfgPath, "")
 	got := executor.ReadGuardConfig()
 	if got == nil || got.ConfigPath != cfgPath || got.ReadGuardEnabled() {
 		t.Errorf("ReadGuardConfig() = %+v, want ConfigPath %q and guard off", got, cfgPath)
 	}
 
 	// No executor.claude_code block: the path is still protected.
-	applyReadGuardConfig(nil, cfgPath)
+	applyReadGuardConfig(nil, cfgPath, "")
 	got = executor.ReadGuardConfig()
 	if got == nil || got.ConfigPath != cfgPath || !got.ReadGuardEnabled() {
 		t.Errorf("ReadGuardConfig() = %+v, want ConfigPath %q and guard on", got, cfgPath)
@@ -126,16 +126,16 @@ func TestEveryEntrypointAppliesReadGuardConfig(t *testing.T) {
 func TestReadGuardConfigRunsRunAsUserPreflight(t *testing.T) {
 	t.Cleanup(func() {
 		executor.SetReadGuardConfig(nil)
-		executor.PreflightRunAsUser(nil)
+		executor.PreflightRunAsUser(nil, "")
 	})
 	cfgPath := filepath.Join(t.TempDir(), "custom.yaml")
 
-	applyReadGuardConfig(&executor.ClaudeCodeConfig{RunAsUser: "pilot-no-such-user-6321"}, cfgPath)
+	applyReadGuardConfig(&executor.ClaudeCodeConfig{RunAsUser: "pilot-no-such-user-6321"}, cfgPath, "")
 	if err := executor.RunAsUserPreflightError(); err == nil {
 		t.Error("a run_as_user that does not exist left spawns open: the preflight is not wired into applyReadGuardConfig")
 	}
 
-	applyReadGuardConfig(&executor.ClaudeCodeConfig{}, cfgPath)
+	applyReadGuardConfig(&executor.ClaudeCodeConfig{}, cfgPath, "")
 	if err := executor.RunAsUserPreflightError(); err != nil {
 		t.Errorf("empty run_as_user: preflight error %v, want none", err)
 	}
