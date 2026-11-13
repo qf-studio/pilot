@@ -3,8 +3,9 @@ package memory
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/pricing"
 )
 
 // ExecutionMetrics holds detailed metrics for a single execution
@@ -114,64 +115,14 @@ type FailureReason struct {
 	Count  int
 }
 
-// Model pricing constants (USD per 1M tokens)
-// Source: https://platform.claude.com/docs/en/about-claude/pricing
-const (
-	// Claude Sonnet 4.5/4 pricing
-	SonnetInputPricePerMillion  = 3.00
-	SonnetOutputPricePerMillion = 15.00
+// DefaultModel is the model the dashboard prices a token delta at when the
+// update carries no model name.
+const DefaultModel = "claude-opus-4-6"
 
-	// Claude Opus 4.6/4.5 pricing (same price)
-	OpusInputPricePerMillion  = 5.00
-	OpusOutputPricePerMillion = 25.00
-
-	// Claude Opus 4.1/4.0 pricing (legacy, for historical cost tracking)
-	Opus41InputPricePerMillion  = 15.00
-	Opus41OutputPricePerMillion = 75.00
-
-	// Claude Haiku 4.5 pricing
-	HaikuInputPricePerMillion  = 1.00
-	HaikuOutputPricePerMillion = 5.00
-
-	// Aliases for backward compatibility
-	Opus46InputPricePerMillion    = OpusInputPricePerMillion
-	Opus46OutputPricePerMillion   = OpusOutputPricePerMillion
-	Opus45InputPricePerMillion    = OpusInputPricePerMillion  // 4.5 same as 4.6
-	Opus45OutputPricePerMillion   = OpusOutputPricePerMillion // 4.5 same as 4.6
-	Sonnet35InputPricePerMillion  = SonnetInputPricePerMillion
-	Sonnet35OutputPricePerMillion = SonnetOutputPricePerMillion
-
-	// Default model
-	DefaultModel = "claude-opus-4-6"
-)
-
-// EstimateCost calculates estimated cost from token usage
+// EstimateCost calculates estimated cost from token usage. The rates live in
+// internal/pricing (GH-6355); cache tokens are not part of this signature.
 func EstimateCost(inputTokens, outputTokens int64, model string) float64 {
-	var inputPrice, outputPrice float64
-
-	modelLower := strings.ToLower(model)
-	switch {
-	case strings.Contains(modelLower, "opus-4-1") || strings.Contains(modelLower, "opus-4-0") || model == "claude-opus-4":
-		// Legacy Opus 4.1/4.0 pricing
-		inputPrice = Opus41InputPricePerMillion
-		outputPrice = Opus41OutputPricePerMillion
-	case strings.Contains(modelLower, "opus"):
-		// Opus 4.6/4.5 pricing (same price: $5/$25)
-		inputPrice = OpusInputPricePerMillion
-		outputPrice = OpusOutputPricePerMillion
-	case strings.Contains(modelLower, "haiku"):
-		// Haiku 4.5 pricing
-		inputPrice = HaikuInputPricePerMillion
-		outputPrice = HaikuOutputPricePerMillion
-	default:
-		// Sonnet / unknown — default to Sonnet pricing
-		inputPrice = SonnetInputPricePerMillion
-		outputPrice = SonnetOutputPricePerMillion
-	}
-
-	inputCost := float64(inputTokens) * inputPrice / 1_000_000
-	outputCost := float64(outputTokens) * outputPrice / 1_000_000
-	return inputCost + outputCost
+	return pricing.Cost(model, inputTokens, outputTokens, 0, 0, 0)
 }
 
 // TelemetryGapStats summarises how many recent completed executions reported

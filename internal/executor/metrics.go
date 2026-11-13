@@ -104,7 +104,7 @@ func NewExecutionMetrics(
 		TokensOut:           state.tokensOutput,
 		CacheCreationTokens: state.cacheCreationInputTokens,
 		CacheReadTokens:     state.cacheReadInputTokens,
-		EstimatedCostUSD:    estimateCostWithCache(state.tokensInput, state.tokensOutput, state.cacheCreationInputTokens, state.cacheReadInputTokens, model),
+		EstimatedCostUSD:    estimateCostWithCacheTTL(state.tokensInput, state.tokensOutput, state.cacheCreationInputTokens, state.cacheCreation1hTokens, state.cacheReadInputTokens, model),
 		Phase:               state.phase,
 		FilesRead:           state.filesRead,
 		FilesWritten:        state.filesWrite,

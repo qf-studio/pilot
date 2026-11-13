@@ -959,9 +959,9 @@ func TestModelPricing(t *testing.T) {
 	}
 }
 
-// TestEstimateCostCacheReadRate pins the per-model cache-read rate (GH-5821):
-// 1M cache-read tokens cost the model's listed cache-read price, not a flat
-// 10% of input.
+// TestEstimateCostCacheReadRate pins the per-model cache-read rate (GH-5821,
+// GH-6355): 1M cache-read tokens cost the model's listed cache-read price,
+// else 10% of input.
 func TestEstimateCostCacheReadRate(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -969,13 +969,14 @@ func TestEstimateCostCacheReadRate(t *testing.T) {
 		want  float64
 	}{
 		{"opus-5-5 lists $0.20 (5% of input)", "claude-opus-5-5", 0.20},
-		{"sonnet-5-5 lists $0.20", "claude-sonnet-5-5", 0.20},
+		{"sonnet-5-5 lists $0.10 (10% of input)", "claude-sonnet-5-5", 0.10},
 		{"sonnet-5 lists $0.20", "claude-sonnet-5", 0.20},
 		{"fable-5-1 lists $0.25", "claude-fable-5-1", 0.25},
 		{"sonnet-4-6 stays 10% of input", "claude-sonnet-4-6", 0.30},
 		{"opus-5 stays 10% of input", "claude-opus-5", 0.50},
 		{"opus-4-6 stays 10% of input", "claude-opus-4-6", 0.50},
 		{"fable-5 stays 10% of input", "claude-fable-5", 1.00},
+		{"haiku-5-5 stays 10% of input", "claude-haiku-5-5", 0.01},
 	}
 
 	for _, tt := range tests {

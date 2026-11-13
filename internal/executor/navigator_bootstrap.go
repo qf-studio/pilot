@@ -198,12 +198,14 @@ func (r *Runner) ExecuteNavigatorBootstrap(ctx context.Context, projectPath stri
 	mu.Unlock()
 
 	var model string
+	var cacheCreation1h int64
 
 	if res != nil {
 		out.SessionID = res.SessionID
 		out.TokensInput = res.TokensInput
 		out.TokensOutput = res.TokensOutput
 		out.CacheCreationInputTokens = res.CacheCreationInputTokens
+		cacheCreation1h = res.CacheCreation1hInputTokens
 		out.CacheReadInputTokens = res.CacheReadInputTokens
 		out.ReportedCostUSD = res.ReportedCostUSD
 		if res.Model != "" {
@@ -214,7 +216,7 @@ func (r *Runner) ExecuteNavigatorBootstrap(ctx context.Context, projectPath stri
 		model = r.fallbackModelName()
 	}
 	out.Model = model
-	out.CostUSD = estimateCostWithCache(out.TokensInput, out.TokensOutput, out.CacheCreationInputTokens, out.CacheReadInputTokens, model)
+	out.CostUSD = estimateCostWithCacheTTL(out.TokensInput, out.TokensOutput, out.CacheCreationInputTokens, cacheCreation1h, out.CacheReadInputTokens, model)
 	out.FilesWritten = navigatorFilesWritten(projectPath, paths)
 	out.PlaceholdersRemain = navigatorReadmeHasPlaceholder(projectPath)
 

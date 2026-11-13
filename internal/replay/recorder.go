@@ -13,6 +13,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/pricing"
 	"log/slog"
 )
 
@@ -506,47 +507,11 @@ func (r *Recorder) generateSummary() error {
 	return os.WriteFile(r.recording.SummaryPath, secretpatterns.RedactBytes([]byte(sb.String())), recordingFileMode)
 }
 
-// estimateCost calculates estimated cost from token usage
-// Pricing source: https://platform.claude.com/docs/en/about-claude/pricing
+// estimateCost calculates estimated cost from token usage. The rates live in
+// internal/pricing (GH-6355).
 func (r *Recorder) estimateCost() float64 {
-	// Pricing per 1M tokens
-	const (
-		// Sonnet 4.5/4
-		sonnetInputPrice  = 3.00
-		sonnetOutputPrice = 15.00
-		// Opus 4.6/4.5
-		opusInputPrice  = 5.00
-		opusOutputPrice = 25.00
-		// Opus 4.1/4.0 (legacy)
-		opus41InputPrice  = 15.00
-		opus41OutputPrice = 75.00
-		// Haiku 4.5
-		haikuInputPrice  = 1.00
-		haikuOutputPrice = 5.00
-	)
-
-	model := r.recording.Metadata.ModelName
-	modelLower := strings.ToLower(model)
-	var inPrice, outPrice float64
-
-	switch {
-	case strings.Contains(modelLower, "opus-4-1") || strings.Contains(modelLower, "opus-4-0") || model == "claude-opus-4":
-		inPrice = opus41InputPrice
-		outPrice = opus41OutputPrice
-	case strings.Contains(modelLower, "opus"):
-		inPrice = opusInputPrice
-		outPrice = opusOutputPrice
-	case strings.Contains(modelLower, "haiku"):
-		inPrice = haikuInputPrice
-		outPrice = haikuOutputPrice
-	default:
-		inPrice = sonnetInputPrice
-		outPrice = sonnetOutputPrice
-	}
-
-	inputCost := float64(r.recording.TokenUsage.InputTokens) * inPrice / 1_000_000
-	outputCost := float64(r.recording.TokenUsage.OutputTokens) * outPrice / 1_000_000
-	return inputCost + outputCost
+	usage := r.recording.TokenUsage
+	return pricing.Cost(r.recording.Metadata.ModelName, usage.InputTokens, usage.OutputTokens, 0, 0, 0)
 }
 
 // GetRecordingID returns the recording ID

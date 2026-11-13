@@ -20,6 +20,7 @@ import (
 	"github.com/qf-studio/pilot/internal/executor/workflow"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/pricing"
 	"github.com/qf-studio/pilot/internal/quality"
 	"github.com/qf-studio/pilot/internal/replay"
 	"github.com/qf-studio/pilot/internal/webhooks"
@@ -665,6 +666,26 @@ type UsageInfo struct {
 	OutputTokens             int64 `json:"output_tokens"`
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int64 `json:"cache_read_input_tokens,omitempty"`
+	// CacheCreation splits CacheCreationInputTokens by cache TTL when the
+	// stream reports it (GH-6355).
+	CacheCreation *CacheCreationUsage `json:"cache_creation,omitempty"`
+}
+
+// CacheCreationUsage is the per-TTL split of the cache write tokens in a
+// usage object: ephemeral_5m_input_tokens + ephemeral_1h_input_tokens equals
+// cache_creation_input_tokens (GH-6355).
+type CacheCreationUsage struct {
+	Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens,omitempty"`
+	Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens,omitempty"`
+}
+
+// CacheCreation1hInputTokens returns the 1-hour cache write tokens, or 0 when
+// the stream gave only the total (then every write is priced as 5-minute).
+func (u *UsageInfo) CacheCreation1hInputTokens() int64 {
+	if u == nil || u.CacheCreation == nil {
+		return 0
+	}
+	return u.CacheCreation.Ephemeral1hInputTokens
 }
 
 // AssistantMsg represents the message field in assistant events
@@ -718,6 +739,7 @@ type progressState struct {
 	tokensInput              int64    // Input tokens used
 	tokensOutput             int64    // Output tokens used
 	cacheCreationInputTokens int64    // Cache creation input tokens (GH-2164)
+	cacheCreation1hTokens    int64    // 1-hour TTL share of cacheCreationInputTokens (GH-6355)
 	cacheReadInputTokens     int64    // Cache read input tokens (GH-2164)
 	modelName                string   // Model used
 	reportedCostUSD          *float64 // GH-5676: sum of CLI-reported total_cost_usd across invocations; nil if none reported
@@ -998,6 +1020,9 @@ type ExecutionResult struct {
 	TokensTotal int64
 	// CacheCreationInputTokens is the number of cache creation input tokens (GH-2164).
 	CacheCreationInputTokens int64
+	// CacheCreation1hInputTokens is the part of CacheCreationInputTokens
+	// written with the 1-hour cache TTL, priced at 2x input (GH-6355).
+	CacheCreation1hInputTokens int64
 	// CacheReadInputTokens is the number of cache read input tokens (GH-2164).
 	CacheReadInputTokens int64
 	// ResearchTokens is the number of tokens used by parallel research phase (GH-217).
@@ -5317,13 +5342,14 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			result.TokensOutput = state.tokensOutput
 			result.TokensTotal = state.tokensInput + state.tokensOutput
 			result.CacheCreationInputTokens = state.cacheCreationInputTokens
+			result.CacheCreation1hInputTokens = state.cacheCreation1hTokens
 			result.CacheReadInputTokens = state.cacheReadInputTokens
 			result.ReportedCostUSD = state.reportedCostUSD
 			result.ModelName = state.modelName
 			if result.ModelName == "" {
 				result.ModelName = r.fallbackModelName()
 			}
-			result.EstimatedCostUSD = estimateCostWithCache(result.TokensInput, result.TokensOutput, result.CacheCreationInputTokens, result.CacheReadInputTokens, result.ModelName)
+			result.EstimatedCostUSD = estimateCostWithCacheTTL(result.TokensInput, result.TokensOutput, result.CacheCreationInputTokens, result.CacheCreation1hInputTokens, result.CacheReadInputTokens, result.ModelName)
 			log.Warn("Task cancelled due to per-task budget limit",
 				slog.String("task_id", task.ID),
 				slog.String("reason", state.budgetReason),
@@ -5366,13 +5392,14 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			result.TokensOutput = state.tokensOutput
 			result.TokensTotal = state.tokensInput + state.tokensOutput
 			result.CacheCreationInputTokens = state.cacheCreationInputTokens
+			result.CacheCreation1hInputTokens = state.cacheCreation1hTokens
 			result.CacheReadInputTokens = state.cacheReadInputTokens
 			result.ReportedCostUSD = state.reportedCostUSD
 			result.ModelName = state.modelName
 			if result.ModelName == "" {
 				result.ModelName = r.fallbackModelName()
 			}
-			result.EstimatedCostUSD = estimateCostWithCache(result.TokensInput, result.TokensOutput, result.CacheCreationInputTokens, result.CacheReadInputTokens, result.ModelName)
+			result.EstimatedCostUSD = estimateCostWithCacheTTL(result.TokensInput, result.TokensOutput, result.CacheCreationInputTokens, result.CacheCreation1hInputTokens, result.CacheReadInputTokens, result.ModelName)
 			log.Warn("Task stalled: no agent event activity",
 				slog.String("task_id", task.ID),
 				slog.Duration("stall_timeout", stallTimeout),
@@ -5869,6 +5896,7 @@ retrySucceeded:
 	// are settled.
 	fillDiffMetrics(ctx, task, git, result, log)
 	result.CacheCreationInputTokens = state.cacheCreationInputTokens
+	result.CacheCreation1hInputTokens = state.cacheCreation1hTokens
 	result.CacheReadInputTokens = state.cacheReadInputTokens
 	result.ReportedCostUSD = state.reportedCostUSD // GH-5676
 	if result.ModelName == "" {
@@ -5885,7 +5913,7 @@ retrySucceeded:
 		result.ModelName = r.fallbackModelName()
 	}
 	// Estimate cost based on token usage (including research tokens) with cache-aware pricing (GH-2164)
-	result.EstimatedCostUSD = estimateCostWithCache(result.TokensInput+result.ResearchTokens, result.TokensOutput, result.CacheCreationInputTokens, result.CacheReadInputTokens, result.ModelName)
+	result.EstimatedCostUSD = estimateCostWithCacheTTL(result.TokensInput+result.ResearchTokens, result.TokensOutput, result.CacheCreationInputTokens, result.CacheCreation1hInputTokens, result.CacheReadInputTokens, result.ModelName)
 
 	// Emit Prometheus counters for token usage, cost, and execution outcome
 	// (GH-2855). Skipped for canary executions (GH-4240) — they're still
@@ -6122,6 +6150,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 						state.tokensInput += event.TokensInput
 						state.tokensOutput += event.TokensOutput
 						state.cacheCreationInputTokens += event.CacheCreationInputTokens
+						state.cacheCreation1hTokens += event.CacheCreation1hInputTokens
 						state.cacheReadInputTokens += event.CacheReadInputTokens
 						state.addReportedCost(event.ReportedCostUSD)
 						// Extract any commit SHAs from retry
@@ -8168,6 +8197,7 @@ func (r *Runner) parseStreamEvent(taskID, line string, state *progressState) (st
 			state.tokensInput += event.Usage.InputTokens
 			state.tokensOutput += event.Usage.OutputTokens
 			state.cacheCreationInputTokens += event.Usage.CacheCreationInputTokens
+			state.cacheCreation1hTokens += event.Usage.CacheCreation1hInputTokens()
 			state.cacheReadInputTokens += event.Usage.CacheReadInputTokens
 		}
 		state.addReportedCost(event.TotalCostUSD)
@@ -8195,6 +8225,7 @@ func (r *Runner) parseStreamEvent(taskID, line string, state *progressState) (st
 		state.tokensInput += event.Usage.InputTokens
 		state.tokensOutput += event.Usage.OutputTokens
 		state.cacheCreationInputTokens += event.Usage.CacheCreationInputTokens
+		state.cacheCreation1hTokens += event.Usage.CacheCreation1hInputTokens()
 		state.cacheReadInputTokens += event.Usage.CacheReadInputTokens
 		// Report token usage to callbacks (e.g., dashboard)
 		r.reportTokens(taskID, state.tokensInput, state.tokensOutput, state.modelName)
@@ -8210,6 +8241,7 @@ func (r *Runner) processBackendEvent(taskID string, event BackendEvent, state *p
 	state.tokensInput += event.TokensInput
 	state.tokensOutput += event.TokensOutput
 	state.cacheCreationInputTokens += event.CacheCreationInputTokens
+	state.cacheCreation1hTokens += event.CacheCreation1hInputTokens
 	state.cacheReadInputTokens += event.CacheReadInputTokens
 	state.addReportedCost(event.ReportedCostUSD)
 	if event.Model != "" {
@@ -8796,80 +8828,10 @@ func isValidSHA(s string) bool {
 	return true
 }
 
-// modelPricing returns (inputPrice, outputPrice) in USD per 1M tokens for the given model.
-// Pricing source: https://platform.claude.com/docs/en/about-claude/pricing
-// (checked 2026-10-23, GH-5821).
+// modelPricing returns (inputPrice, outputPrice) in USD per 1M tokens for the
+// given model. The rates live in internal/pricing (GH-6355).
 func modelPricing(model string) (inputPrice, outputPrice float64) {
-	// Model pricing in USD per 1M tokens
-	const (
-		// Sonnet 4.6/4.5/4
-		sonnetInputPrice  = 3.00
-		sonnetOutputPrice = 15.00
-		// Opus 4.6/4.5 (same pricing)
-		opusInputPrice  = 5.00
-		opusOutputPrice = 25.00
-		// Opus 4.1/4.0 (legacy)
-		opus41InputPrice  = 15.00
-		opus41OutputPrice = 75.00
-		// Haiku 4.5
-		haikuInputPrice  = 1.00
-		haikuOutputPrice = 5.00
-		// Claude 5 Fable/Mythos
-		fableInputPrice  = 10.00
-		fableOutputPrice = 50.00
-		// Claude 5.5 generation (GH-5821)
-		opus55InputPrice   = 4.00
-		opus55OutputPrice  = 20.00
-		sonnet5InputPrice  = 2.00 // Sonnet 5 and Sonnet 5.5
-		sonnet5OutputPrice = 10.00
-		haiku55InputPrice  = 0.10 // up to 100K prompt; $0.50/$2.50 beyond is not modelled
-		haiku55OutputPrice = 0.50
-	)
-
-	modelLower := strings.ToLower(model)
-	switch {
-	case strings.Contains(modelLower, "fable") || strings.Contains(modelLower, "mythos"):
-		// Claude 5 Fable/Mythos ($10/$50) — without this, these match nothing
-		// below and silently fall through to the Sonnet default, a 3.3x
-		// underestimate.
-		return fableInputPrice, fableOutputPrice
-	case strings.Contains(modelLower, "opus-5-5"):
-		// Claude Opus 5.5 ($4/$20) — must precede the generic opus-5 case.
-		return opus55InputPrice, opus55OutputPrice
-	case strings.Contains(modelLower, "opus-5"):
-		// Claude Opus 5 ($5/$25). This already lands correctly via the
-		// generic "opus" case below, but is made explicit — ahead of the
-		// opus-4-1 legacy check — so a future default change can't silently
-		// reprice it.
-		return opusInputPrice, opusOutputPrice
-	case strings.Contains(modelLower, "sonnet-5"):
-		// Claude Sonnet 5 and Sonnet 5.5 ($2/$10). Matches "sonnet-5-5" too,
-		// which lists the same rate as Sonnet 5.
-		return sonnet5InputPrice, sonnet5OutputPrice
-	case strings.Contains(modelLower, "opus-4-1") || strings.Contains(modelLower, "opus-4-0") || model == "claude-opus-4":
-		// Legacy Opus 4.1/4.0
-		return opus41InputPrice, opus41OutputPrice
-	case strings.Contains(modelLower, "opus"):
-		// Opus 4.6/4.5 ($5/$25)
-		return opusInputPrice, opusOutputPrice
-	case strings.Contains(modelLower, "haiku-5-5"):
-		// Claude Haiku 5.5 — must precede the generic haiku (4.5) case.
-		return haiku55InputPrice, haiku55OutputPrice
-	case strings.Contains(modelLower, "haiku"):
-		return haikuInputPrice, haikuOutputPrice
-	case strings.Contains(modelLower, "qwen"):
-		// Qwen3-Coder pricing (per 1M tokens)
-		switch {
-		case strings.Contains(modelLower, "480b") || strings.Contains(modelLower, "plus"):
-			return 1.00, 5.00 // Qwen3-Coder-Plus (International, 0-32K)
-		case strings.Contains(modelLower, "flash"):
-			return 0.30, 1.50
-		default:
-			return 0.07, 0.30 // Qwen3-Coder-Next (default)
-		}
-	default:
-		return sonnetInputPrice, sonnetOutputPrice
-	}
+	return pricing.ModelRates(model)
 }
 
 // estimateCost calculates estimated cost from token usage (TASK-13).
@@ -8878,39 +8840,34 @@ func estimateCost(inputTokens, outputTokens int64, model string) float64 {
 	return estimateCostWithCache(inputTokens, outputTokens, 0, 0, model)
 }
 
-// modelCacheReadPrice returns the USD per 1M tokens charged for cache reads
-// (GH-5821). inputPrice is the model's input rate from modelPricing and is the
-// base for the default 10% rate. Opus 5.5, Sonnet 5.5 and Sonnet 5 list
-// $0.20/MTok (5% of Opus 5.5's input rate, 10% of Sonnet's); Fable 5.1 lists
-// $0.25/MTok. Source: https://platform.claude.com/docs/en/about-claude/pricing
-// (checked 2026-10-23).
-func modelCacheReadPrice(model string, inputPrice float64) float64 {
-	modelLower := strings.ToLower(model)
-	switch {
-	case strings.Contains(modelLower, "fable-5-1"):
-		return 0.25
-	case strings.Contains(modelLower, "opus-5-5"), strings.Contains(modelLower, "sonnet-5"):
-		return 0.20
-	default:
-		return inputPrice * 0.10
-	}
+// modelCacheReadPrice returns the USD per 1M tokens charged for cache reads:
+// the model's listed rate from internal/pricing, else 10% of its input rate
+// (GH-5821, GH-6355). The input rate is looked up by the package, so the
+// second argument is kept only for the signature.
+func modelCacheReadPrice(model string, _ float64) float64 {
+	return pricing.CacheReadRate(model)
 }
 
-// estimateCostWithCache calculates estimated cost with cache-aware pricing (GH-2164).
-// Cache creation tokens cost 125% of input price; cache read tokens use the
-// per-model rate from modelCacheReadPrice. No per-model cache-write value was
-// given for GH-5821, so the 125% (5-minute TTL) multiplier from
-// https://platform.claude.com/docs/en/build-with-claude/prompt-caching#pricing
-// applies to every model.
+// estimateCostWithCache calculates estimated cost with cache-aware pricing
+// (GH-2164). Every cache write token is priced as a 5-minute write (1.25x
+// input); use estimateCostWithCacheTTL when the 1-hour share is known.
 func estimateCostWithCache(input, output, cacheCreation, cacheRead int64, model string) float64 {
-	inputPrice, outputPrice := modelPricing(model)
-	cacheReadPrice := modelCacheReadPrice(model, inputPrice)
+	return estimateCostWithCacheTTL(input, output, cacheCreation, 0, cacheRead, model)
+}
 
-	inputCost := float64(input) * inputPrice / 1_000_000
-	outputCost := float64(output) * outputPrice / 1_000_000
-	cacheCreateCost := float64(cacheCreation) * (inputPrice * 1.25) / 1_000_000
-	cacheReadCost := float64(cacheRead) * cacheReadPrice / 1_000_000
-	return inputCost + outputCost + cacheCreateCost + cacheReadCost
+// estimateCostWithCacheTTL is estimateCostWithCache with the 1-hour share of
+// the cache write tokens split out (GH-6355). cacheCreation is the total cache
+// write count, as cache_creation_input_tokens reports it; cacheCreation1h is
+// the part of it written with the 1-hour TTL (2x input). The rest is priced
+// as a 5-minute write.
+func estimateCostWithCacheTTL(input, output, cacheCreation, cacheCreation1h, cacheRead int64, model string) float64 {
+	if cacheCreation1h > cacheCreation {
+		cacheCreation1h = cacheCreation
+	}
+	if cacheCreation1h < 0 {
+		cacheCreation1h = 0
+	}
+	return pricing.Cost(model, input, output, cacheRead, cacheCreation-cacheCreation1h, cacheCreation1h)
 }
 
 // emitAlertEvent sends an event to the alert processor if configured

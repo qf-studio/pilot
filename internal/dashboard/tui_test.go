@@ -2385,6 +2385,28 @@ func TestUpdateTokens_ModelAwareCost(t *testing.T) {
 	}
 }
 
+// TestUpdateTokens_5xModelCost pins the cost card for the 5.5 models
+// (GH-6355): claude-opus-5-5 is $4/$20 and claude-sonnet-5-5 is $2/$10, not
+// the older opus $5/$25 or the $3/$15 default.
+func TestUpdateTokens_5xModelCost(t *testing.T) {
+	tests := []struct {
+		model string
+		want  float64 // 1M input + 1M output
+	}{
+		{"claude-opus-5-5", 4.00 + 20.00},
+		{"claude-sonnet-5-5", 2.00 + 10.00},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			m := NewModel("test")
+			updated, _ := m.Update(updateTokensMsg{InputTokens: 1_000_000, OutputTokens: 1_000_000, TotalTokens: 2_000_000, Model: tt.model})
+			if got := updated.(Model).metricsCard.TotalCostUSD; math.Abs(got-tt.want) > 1e-9 {
+				t.Errorf("cost card for %q = %.4f, want %.4f", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUpdateTokens_EmptyModelFallsBackToDefault(t *testing.T) {
 	m := NewModel("test")
 	updated, _ := m.Update(updateTokensMsg{InputTokens: 100_000, OutputTokens: 50_000, TotalTokens: 150_000, Model: ""})

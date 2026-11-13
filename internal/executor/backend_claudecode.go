@@ -1062,6 +1062,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 						result.TokensInput += event.TokensInput
 						result.TokensOutput += event.TokensOutput
 						result.CacheCreationInputTokens += event.CacheCreationInputTokens
+						result.CacheCreation1hInputTokens += event.CacheCreation1hInputTokens
 						result.CacheReadInputTokens += event.CacheReadInputTokens
 						if event.ReportedCostUSD != nil {
 							sum := *event.ReportedCostUSD
@@ -1577,6 +1578,7 @@ func (b *ClaudeCodeBackend) parseStreamEvents(line string) []BackendEvent {
 		first.TokensInput = streamEvent.Usage.InputTokens
 		first.TokensOutput = streamEvent.Usage.OutputTokens
 		first.CacheCreationInputTokens = streamEvent.Usage.CacheCreationInputTokens
+		first.CacheCreation1hInputTokens = streamEvent.Usage.CacheCreation1hInputTokens()
 		first.CacheReadInputTokens = streamEvent.Usage.CacheReadInputTokens
 	}
 	if streamEvent.Model != "" {

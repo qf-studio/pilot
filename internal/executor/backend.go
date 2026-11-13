@@ -183,6 +183,10 @@ type BackendEvent struct {
 	// CacheCreationInputTokens is the cache creation input token count (GH-2164)
 	CacheCreationInputTokens int64
 
+	// CacheCreation1hInputTokens is the 1-hour TTL part of
+	// CacheCreationInputTokens, when the stream reports it (GH-6355)
+	CacheCreation1hInputTokens int64
+
 	// CacheReadInputTokens is the cache read input token count (GH-2164)
 	CacheReadInputTokens int64
 
@@ -303,6 +307,10 @@ type BackendResult struct {
 
 	// CacheCreationInputTokens is the total cache creation input tokens (GH-2164)
 	CacheCreationInputTokens int64
+
+	// CacheCreation1hInputTokens is the 1-hour TTL part of
+	// CacheCreationInputTokens (GH-6355)
+	CacheCreation1hInputTokens int64
 
 	// CacheReadInputTokens is the total cache read input tokens (GH-2164)
 	CacheReadInputTokens int64

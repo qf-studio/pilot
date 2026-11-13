@@ -476,7 +476,6 @@ type Model struct {
 	quitting       bool
 	tokenUsage     TokenUsage
 	completedTasks []CompletedTask
-	costPerMToken  float64
 	autopilotPanel *AutopilotPanel
 	version        string
 	store          *memory.Store // SQLite persistence (GH-367)
@@ -640,7 +639,6 @@ func NewModel(version string) Model {
 		showLogs:        true,
 		showBanner:      true,
 		completedTasks:  []CompletedTask{},
-		costPerMToken:   3.0,
 		autopilotPanel:  NewAutopilotPanel(nil), // Disabled by default
 		version:         version,
 		focus:           panelQueue,
@@ -659,7 +657,6 @@ func NewModelWithStore(version string, store *memory.Store) Model {
 		showLogs:        true,
 		showBanner:      true,
 		completedTasks:  []CompletedTask{},
-		costPerMToken:   3.0,
 		autopilotPanel:  NewAutopilotPanel(nil),
 		version:         version,
 		store:           store,
@@ -680,7 +677,6 @@ func NewModelWithAutopilot(version string, controller *autopilot.Controller) Mod
 		showLogs:        true,
 		showBanner:      true,
 		completedTasks:  []CompletedTask{},
-		costPerMToken:   3.0,
 		autopilotPanel:  NewAutopilotPanel(controller),
 		version:         version,
 		focus:           panelQueue,
@@ -698,7 +694,6 @@ func NewModelWithStoreAndAutopilot(version string, store *memory.Store, controll
 		showLogs:        true,
 		showBanner:      true,
 		completedTasks:  []CompletedTask{},
-		costPerMToken:   3.0,
 		autopilotPanel:  NewAutopilotPanel(controller),
 		version:         version,
 		store:           store,
@@ -953,7 +948,6 @@ func NewModelWithOptions(version string, store *memory.Store, controller *autopi
 		showLogs:        true,
 		showBanner:      true,
 		completedTasks:  []CompletedTask{},
-		costPerMToken:   3.0,
 		autopilotPanel:  NewAutopilotPanel(controller),
 		version:         version,
 		store:           store,
