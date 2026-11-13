@@ -1,6 +1,6 @@
 # TASK-651: Agent isolation — agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM
 
-**Status**: 🚀 **U0 merged, U1 dispatched, U2–U5 dispatch-ready (2026-11-12).** U0 [#6320](https://github.com/qf-studio/pilot/issues/6320) → PR#6325 merged 10:29Z; three major defects for a real host → follow-up [#6328](https://github.com/qf-studio/pilot/issues/6328). **O4 must not run on the box before #6328 merges and passes a container review.** U1 [#6321](https://github.com/qf-studio/pilot/issues/6321): next in the poller's chain for `internal/executor` (PR#6331 for #6318 merged 11-12). U2–U5 written after a research pass on `GitOperations`, the worktree life cycle and every place where the daemon runs repository content; founder calls 11-12: U3 after U2, daemon push with hooks off, the read-only token also serves module fetch, full clone without alternates. Order U1 → U2 → U3 → U4 → U5, one at a time. **O1 done 2026-11-12 09:14Z** (backup `/root/90-cloud-init-users.bak-task651-o1`). Waiting for the founder: O2 (create the GitHub App) and O3 (new secret values in SSM). Design: `.agent/system/agent-isolation-design.md`.
+**Status**: 🚀 **U0 and U1 merged; F1 and B1 dispatched; U2–U5 dispatch-ready (2026-11-13).** U1 [#6321](https://github.com/qf-studio/pilot/issues/6321) → PR#6335 merged 11-12 12:50Z, fix [#6336](https://github.com/qf-studio/pilot/issues/6336) → PR#6342, both in v2.320.0, both without the draft hold (no session ran). Post-merge run-it review 11-13 with a real sudo: GO-WITH-NOTES — safe with the option empty, a sound base for U2, **not ready for a set option**: a context timeout does not stop the agent at seven spawn sites, the anthropic-api backend runs model bash as the daemon user, `run_as_group` is required in practice → **F1 [#6344](https://github.com/qf-studio/pilot/issues/6344)**. Host script: #6328 parked by the pre-PR review (one blocking defect, eleven minor), closed and replaced by **B1 [#6345](https://github.com/qf-studio/pilot/issues/6345)** from current main (first run kept on branch `pilot/GH-6328-run1`). **O4 must not run on the box before B1 merges and passes a container review.** Order now: F1 → U2 → U3 → U4 → U5, one at a time; B1 and TASK-650 L8 touch other files. **O1 done 2026-11-12 09:14Z** (backup `/root/90-cloud-init-users.bak-task651-o1`). Waiting for the founder: O2 (create the GitHub App) and O3 (new secret values in SSM). Design: `.agent/system/agent-isolation-design.md`.
 **Created**: 2026-11-12
 **Assignee**: Pilot (one leg at a time) + operator steps by a Navigator session with founder consent
 **Parent**: TASK-650 leg H1
@@ -52,12 +52,14 @@
 ### Phase C — code legs (Pilot), each merged with the option empty
 
 - [x] **U0** (PR#6325 merged; fixes in #6328 before any host run) host setup script with dry-run and undo, tested with a mocked PATH (dispatch-ready, below).
-- [ ] **U1** config option, one spawn constructor for every model process, allowlist environment, kill through sudo, fail-closed preflight, group-readable guard files (dispatch-ready, below).
+- [ ] **F1** ([#6344](https://github.com/qf-studio/pilot/issues/6344), dispatched 11-13) fixes from the run-it review of U1: cancel through the process group in the constructor, anthropic-api refused, `run_as_group` required, guard files fail closed, name check. Must merge before U2 (same file `agent_command.go`).
+- [ ] **B1** ([#6345](https://github.com/qf-studio/pilot/issues/6345), dispatched 11-13) host script, second run; replaces #6328.
+- [x] **U1** (PR#6335 + PR#6342 merged 11-12) config option, one spawn constructor for every model process, allowlist environment, kill through sudo, fail-closed preflight, group-readable guard files (dispatch-ready, below).
 - [ ] **U2** (dispatch-ready, below; needs U1 on main) workspace as an agent-owned clone under the workspace root (full fetch of the base branch, no alternates), one constructor for every git command in the workspace, cleanup and sweeps as the agent user, Navigator copy without a followed link, preflight for the root, `use_worktree` and the pool.
 - [ ] **U3** (dispatch-ready, below; needs U2) hand-over as a bundle that the agent writes and the daemon fetches into `refs/pilot/handover/<task>`; the secret gate and the push run only in the daemon's repository, with replace refs ignored and hooks off; PR creation, recovery ref and the preserve commit follow. Closes the gate-trust class of mem-308 when the option is set (seven shapes; the tamper table is the test list of the leg).
 - [ ] **U4** (dispatch-ready, below; needs U2) quality gates, workflow hooks, evidence commands and the lint fix as the agent user with the allowlist environment; `run_as_env` for values such as the Go caches.
 - [ ] **U5** (dispatch-ready, below; needs U3 and, on the box, O2) read-only installation token per run in a file for the `gh` shim and a git credential helper (also serves the fetch of a private module); per-project override of the option.
-- **Order (founder call 11-12):** U1 → U2 → U3 → U4 → U5, one at a time. The poller holds legs that touch the same directory, so a parallel dispatch gains nothing. Check for an open post-merge-review issue on the same files before each dispatch (mem-301).
+- **Order (founder call 11-12):** U1 → F1 → U2 → U3 → U4 → U5, one at a time. The poller holds legs that touch the same directory, so a parallel dispatch gains nothing. Check for an open post-merge-review issue on the same files before each dispatch (mem-301).
 
 ### Phase S — switch
 
@@ -221,7 +223,7 @@ The rule of this leg: with the option set, the daemon runs no git command with t
 5. PR creation by gh in CreatePR: with the option set, run gh with the directory of the daemon's repository and pass the repository, the head branch and the base branch as explicit flags. No gh command of the daemon has the workspace as its directory.
 6. Recovery and preserve: CreateRecoveryRef with the option set creates the ref refs/pilot-recovery/TASK in the daemon's repository from the handed-over SHA. preserveDirtyWorktreeAsWIP commits in the workspace as the agent user, then uses the hand-over and the daemon push. A workspace is removed only after a successful hand-over or after an Error line that names the task and the reason.
 7. Delete the hand-over ref after a successful push and in the cleanup of the run.
-8. Tests with real temporary repositories (a bare origin, a daemon clone, an agent workspace; the fixtures newRemoteAndLocalRepo and newPushRefusedFixture show the pattern) and the mock sudo script. Use the fake secret shape that the present gate tests use. Each of these cases must end with a blocked push and no new commit on the bare origin when the option is set: a secret in a new commit; the same with a forged ref under refs/remotes/origin in the workspace; with a remote that the workspace adds; with a replace ref in the workspace; with a shallow file in the workspace; with a pushurl and an insteadOf value in the workspace config; with a textconv driver in the workspace config; with log.showRoot false and an orphan root commit; with a file in the .git directory of the workspace that shadows the branch name; with push.followTags true and an annotated tag (the tag must be absent on the origin). One more case: a pre-push hook and a core.sshCommand value in the workspace do not run (they would create a marker file; the file must not exist). A clean branch is pushed, and the origin head equals the workspace head. A bundle path that is a symbolic link is refused.
+8. Tests with real temporary repositories (a bare origin, a daemon clone, an agent workspace; the fixtures newRemoteAndLocalRepo and newPushRefusedFixture show the pattern) and the mock sudo script. Use the fake secret shape that the present gate tests use. Each of these cases must end with a blocked push and no new commit on the bare origin when the option is set: a secret in a new commit; the same with a forged ref under refs/remotes/origin in the workspace; with a remote that the workspace adds; with a replace ref in the workspace; with a shallow file in the workspace; with a pushurl and an insteadOf value in the workspace config; with a commit in the encoding IBM037; with a pre-push hook in the workspace; with a submodule and push.recurseSubmodules; with a gpg.program and log.showSignature; with a textconv driver in the workspace config; with log.showRoot false and an orphan root commit; with a file in the .git directory of the workspace that shadows the branch name; with push.followTags true and an annotated tag (the tag must be absent on the origin). One more case: a pre-push hook and a core.sshCommand value in the workspace do not run (they would create a marker file; the file must not exist). A clean branch is pushed, and the origin head equals the workspace head. A bundle path that is a symbolic link is refused.
 
 ## Acceptance
 
@@ -322,6 +324,103 @@ The creation of the GitHub App and its key (operator step). A token for other ho
 
 - Navigator TASK-651 in this repo · TASK-461 · design section 4.4
 
+### LEG F1 — repo: qf-studio/pilot — title: fix(executor): run_as_user — a context timeout stops the agent process at every spawn site, the anthropic-api backend is refused, run_as_group is required, the gh shim fails closed
+
+probe: present qf-studio/pilot func[[:space:]]agentCommand\(
+probe: present qf-studio/pilot func[[:space:]]killAgentProcessGroup\(
+probe: present qf-studio/pilot func[[:space:]]PreflightRunAsUser\(
+probe: present qf-studio/pilot func[[:space:]]execBash\(
+probe: absent  qf-studio/pilot func[[:space:]]validRunAsNam[e]\(
+
+## Context
+
+Navigator TASK-651. The option run_as_user starts every model process as a second Unix user through sudo; the constructor is agentCommand in `internal/executor/agent_command.go`, the preflight is PreflightRunAsUser in the same file (called once from `cmd/pilot/main.go`), and the kill through sudo is killAgentProcessGroup. The option is empty on every host. A run-it review with a real sudo found three defects that must be fixed before the option is set anywhere, and some minor ones. With the option empty nothing may change.
+
+1. A context timeout does not stop the model. Three sites set a process group and a cancel function that kills the group (`internal/executor/backend_claudecode.go`, `internal/executor/backend_qwencode.go`, `internal/executor/parallel.go`). Seven sites keep the default cancel of os/exec, which signals only the sudo process: `internal/executor/epic.go`, `internal/executor/subtask_parser.go`, `internal/executor/effort_classifier.go`, `internal/executor/complexity_classifier.go`, runCmdInHome in `internal/executor/intent_judge.go` (also used by the post-merge reviewer), and the summary and evidence calls in `internal/executor/runner.go`. In the review a command with a 1 second timeout returned after 12 seconds and the agent process stayed alive. The stop of the server in `internal/executor/backend_opencode.go` calls Process.Kill on sudo and has the same defect.
+2. The anthropic-api backend runs commands that the model chose with bash in the daemon process (execBash in `internal/executor/backend_anthropic.go`), as the daemon user with the full environment. Nothing refuses that backend when the option is set.
+3. Without run_as_group the guard files stay in the group of the daemon user and the agent user cannot read the settings file. A failed change of owner of the gh shim directory only logs a warning in `internal/executor/backend_claudecode.go`, and the run goes on without the gh guard.
+
+## Scope
+
+1. Cancel in the constructor. With the option set, agentCommand itself sets the process group (configureProcessGroup), sets cmd.Cancel to the kill of the group through killAgentProcessGroup with SIGKILL, and sets cmd.WaitDelay to 10 seconds, so that every site that uses the constructor is covered. A site that sets its own cancel after the call keeps working. With the option empty the constructor still returns exactly exec.CommandContext(ctx, name, args...) with no field changed. The stop of the opencode server uses the same kill of the group when the option is set.
+2. Backend check in the preflight: with the option set, a backend type that runs model-chosen commands inside the daemon process fails the preflight with the line "run_as_user is not supported with the <type> backend". This is anthropic-api for certain; read `internal/executor/backend_openai.go` and the backend list in `internal/executor/backend_factory.go`, and add every other backend that executes a tool call in-process. Give PreflightRunAsUser the backend type (a new argument or a second function called at the same place). As a second barrier, execBash returns an error and runs nothing when the option is set.
+3. run_as_group: with run_as_user set and run_as_group empty, the preflight fails with "run_as_group is required with run_as_user". The preflight also checks that the group exists and that the daemon user is a member of it.
+4. Guard files fail closed: with the option set, a failed change of group or mode of the guard directory, of the settings file or of the gh shim directory is an error that stops the spawn ("run_as_user: guard files not readable by the agent: <path>"). With the option empty the present warning stays.
+5. Name check: a function validRunAsName accepts only a name that starts with a letter a to z or an underscore and continues with a to z, 0 to 9, underscore or dash, at most 32 characters. The preflight applies it to the user and the group before any lookup, and fails for the name root, for a user with uid 0 and for a group with gid 0.
+6. Minors from the same review: an error from currentUID fails the daemon-user check (today it passes); setAgentEnv and agentCommand use one snapshot of the option values for one command, so that a config reload between them cannot give a preserve list that differs from cmd.Env; a failed kill logs one Error line, not two; the four tests EverySpawnSiteGoesThroughSudo, PreserveListEqualsEnvNames, KillProcessGroupGoesThroughSudo and KillFailureLogsOneErrorWithPgid stub the platform (runAsGOOS) so that they pass on macOS.
+7. Tests, table-driven, with the mock sudo script on PATH that the present tests use; the mock must start the command in the background and survive a signal to itself, so that it shows the defect of Context item 1. One test per spawn site of that item: a context with a 1 second timeout and a command that sleeps 30 seconds returns in under 5 seconds, and the argv of the recorded kill holds the negative process group id. Preflight tests for items 2, 3 and 5 (values root, "-u root", "a b", "#0", a 33 character name, a missing group, a group without the daemon user). A spawn with a guard directory that cannot be changed returns the error of item 4 and starts nothing. With the option empty: the constructor result has no Cancel, no WaitDelay and no SysProcAttr set by it, and execBash runs as today.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ ./cmd/pilot/ -run 'AgentCommand|RunAsUser|ModelEnv|ReadGuard|GhGuard'` passes on Linux and on macOS; paste the output into the PR body.
+- [ ] Remove the cancel from the constructor -> the timeout test of every site of Context item 1 fails.
+- [ ] Remove the backend check -> its preflight test fails, and the execBash test still fails closed.
+- [ ] Let an empty run_as_group pass -> its test fails.
+- [ ] Turn the guard file error back into a warning -> its test fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The workspace, git commands, quality gates, hooks and the GitHub token (later legs). The rule that names with the prefix CLAUDE_ or ANTHROPIC_ pass to the agent. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review of PR #6335 and PR #6342
+
+### LEG B1 — repo: qf-studio/pilot — title: fix(box): agent user setup script, second run — argument validation, shared read on git directories only with a complete undo, proven sudo removal as the last step, firewall without a gap
+
+probe: present qf-studio/pilot restore_cloud_init
+probe: present qf-studio/pilot shared_read_ok
+probe: absent  qf-studio/pilot --confirm-root-pat[h]\)
+probe: absent  qf-studio/pilot --repos-lin[k]\)
+
+## Context
+
+Navigator TASK-651, leg U0 follow-up. The host setup script for the agent user is `scripts/box/setup-agent-user.sh`; its test is `scripts/box/setup-agent-user_test.sh` with mocks in `scripts/box/testdata/mock-host-cmds.sh`. A run of the script in an Amazon Linux 2023 container with systemd showed: with default arguments it is correct and idempotent; three major defects and several minor ones must be fixed before an operator runs it on a host.
+
+This issue replaces #6328. The first run of #6328 was stopped by the pre-PR review; its work is on the branch pilot/GH-6328-run1 for reference only. Do not continue that branch: it conflicts with main in 14 places. Start from main. Since then main got these parts (do not redo them, keep their tests green): the helper shared_read_ok for the idempotence check of the shared read, the guarded removal of the temp sudoers file in dry-run mode, a fresh backup of the cloud-init file with restore_cloud_init, and the firewall match on local addresses.
+
+## Scope
+
+1. Argument validation, before any change:
+   - --data-dir: canonicalise with realpath; it must exist, be a directory owned by the daemon user, and not be a system directory or an ancestor of one (/, /usr, /etc, /var, /var/lib, /home, /bin and so on); reject a value with a `..` part or a leading dash. With --data-dir /usr the script changed the group of /usr/bin and removed the setuid bit of sudo.
+   - The same containment check applies to every path that the script changes after it resolves a symbolic link: the repos directory, the bin directory and the binary. A resolved path outside the canonical data dir is refused before any change.
+   - --agent-user and --daemon-user: reject root and any user with uid below 1000 for the daemon user; the agent user must not exist with uid 0, must differ from the daemon user, and, when it exists already, must have a no-login shell and must not be a member of wheel or sudo.
+   - --group: reject root, wheel, sudo, adm and the primary group of the daemon user.
+   - All names: only the characters a to z, 0 to 9, underscore and dash, starting with a letter.
+2. Shared read without exposure of private files:
+   - The bin directory and the binary get group read and execute. Under repos only the top directory, each directory on the way to a repository (a repository can be one or two levels down, for example repos/org/repo: the middle directory gets group traverse only, no read of other entries beyond what it had), and, for each repository, its git directory (objects, refs, packed-refs, HEAD, config) get the group and group read. Never the working tree.
+   - Never add a permission bit to a file or directory that has no permission for "other" unless it is inside a git directory, or is one of the directories named above, where the only added bits are group traverse (and group read for the repos top directory and the bin directory).
+   - Record every path whose group or mode the script changes, with its earlier group and mode, in a state file under the data dir BEFORE the change. --undo restores exactly those, the binary included, and prints each restored path.
+   - Use chgrp -h and chmod only on paths that are not symbolic links at the moment of the change (test with -L directly before each change).
+3. Path chain: when the repos directory is reached through a symlink chain whose directories the agent user cannot traverse, print one line per directory with the exact command to grant traverse (a setfacl or chmod suggestion) and count the step as failed. Check every directory of the chain and the final target directory. Add an argument --repos-link <path> (repeatable) for such chains.
+4. The cloud-init step must prove its result:
+   - Comment out only lines whose user list is exactly the daemon user AND whose run-as part is ALL or root or is absent. Leave lines with several users, aliases, Defaults lines and lines that run as another user only (for example a rule with the run-as part "(deploy)") untouched, and report them.
+   - After the edit, run sudo -n -l -U for the daemon user. When that command itself fails, the step fails with its output. When the output still holds a NOPASSWD rule that is not the agent rule, the step fails and prints the file and line of the remaining rule.
+5. Backups of the cloud-init file: keep the older backups with a numbered suffix; --undo restores the newest one and says which.
+6. Firewall: the idempotence check must verify that the jump to the chain is the first rule of OUTPUT, and move it there when it is not. Match the gateway port on the loopback interface for any local address (IPv4 and IPv6). When ip6tables is missing, apply the IPv4 rules, install the boot unit for IPv4 only, and report the IPv6 part as skipped, not failed. A rebuild of the chain must leave no moment without the reject rules: build a new chain with a temporary name, switch the jump in OUTPUT to it, then remove the old chain (or use one iptables-restore call with --noflush).
+7. Order and safety: do the removal of the daemon user's general sudo LAST, after the firewall and the boot unit. Before that removal, require the argument --confirm-root-path, and refuse without it with a message that the operator must hold another root session.
+8. --dry-run must not delete or change anything.
+9. --undo stops and disables the boot unit, and prints the group and mode changes it restored from the state file of item 2.
+10. Tests: make the mocked test run on macOS too (no GNU-only flags of find and stat), and add cases for items 1 to 9, among them: a repository two levels down with a middle directory of mode 0700; a binary that is a symbolic link to a path outside the data dir (refused); a rule line with the run-as part "(deploy)" (untouched and reported); a mocked sudo -l that exits non-zero (step failed); a file with mode 0600 in a working tree (unchanged after apply). Add one container test script, new file, plain text: scripts/box/setup-agent-user_container_test.sh, with the execute bit set (git mode 100755), which runs apply, a second apply, undo and three invalid-argument cases for real in an amazonlinux:2023 container when docker is available and exits 0 with a "skipped" line when it is not. In the container it also checks the real output of sudo -l -U and of iptables -S against what the script expects. Do not add it to CI.
+
+## Acceptance
+
+- [ ] The output of the mocked test (all cases pass) and of shellcheck for the three scripts (no finding) is in the PR body.
+- [ ] Remove the system-directory check of item 1 -> its test fails.
+- [ ] Make the repos step recursive over the working tree again -> the private-file test fails.
+- [ ] Remove the containment check for the resolved binary path -> its test fails.
+- [ ] Swallow the error of sudo -l again -> its test fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+SELinux contexts. A call of the script from Go code. A run on a real host. A race with a process that changes the same paths during the run, beyond the link test of item 2.
+
+## Refs
+
+- #6328 (first run, closed) · #6320 · PR #6325 · PR #6338 · Navigator TASK-651 in this repo
+
 ---
 
 ## Out of Scope
@@ -388,9 +487,11 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 
 ---
 
-**Last Updated**: 2026-11-12
+**Last Updated**: 2026-11-13
 
 ## Refs
 
 - U0 → https://github.com/qf-studio/pilot/issues/6320
 - U1 → https://github.com/qf-studio/pilot/issues/6321
+- F1 → https://github.com/qf-studio/pilot/issues/6344
+- B1 → https://github.com/qf-studio/pilot/issues/6345

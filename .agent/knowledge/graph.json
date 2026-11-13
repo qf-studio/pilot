@@ -3171,17 +3171,17 @@
         "title": "Secret exposure hardening \u2014 value-based redaction, leak detection, adapter canary tests, agent isolation",
         "status": "dispatched",
         "concepts": [
-          "authentication",
           "api",
-          "theory of mind",
-          "deployment",
-          "markers",
-          "workflow",
-          "testing",
-          "context",
           "skills",
+          "authentication",
           "database",
-          "knowledge"
+          "markers",
+          "knowledge",
+          "testing",
+          "theory of mind",
+          "context",
+          "workflow",
+          "deployment"
         ]
       },
       "TASK-651": {
@@ -3189,17 +3189,18 @@
         "title": "Agent isolation \u2014 agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM",
         "status": "dispatched",
         "concepts": [
-          "deployment",
-          "database",
-          "testing",
           "simplification",
           "context",
-          "markers",
-          "frontend",
-          "authentication",
           "api",
+          "workflow",
           "skills",
-          "theory of mind"
+          "deployment",
+          "theory of mind",
+          "authentication",
+          "frontend",
+          "database",
+          "testing",
+          "markers"
         ]
       }
     },
@@ -13218,6 +13219,11 @@
       "from": "TASK-650",
       "to": "knowledge",
       "type": "implements"
+    },
+    {
+      "from": "TASK-651",
+      "to": "workflow",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -15352,7 +15358,8 @@
       "mem-293",
       "mem-294",
       "TASK-647",
-      "TASK-650"
+      "TASK-650",
+      "TASK-651"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -15855,10 +15862,10 @@
       "TASK-651"
     ]
   },
-  "last_updated": "2026-11-12T11:20:40.041927+00:00",
+  "last_updated": "2026-11-13T14:11:40.706541+00:00",
   "stats": {
     "total_nodes": 784,
-    "total_edges": 834,
+    "total_edges": 835,
     "memory_count": 433
   },
   "metadata": {
