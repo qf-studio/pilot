@@ -1132,11 +1132,20 @@ func branchRefspec(branch string) string {
 // pushArgs is the git push command line of the three push methods. Decision:
 // push.followTags is set to false on the command line and --no-follow-tags
 // repeats it, so a session that sets the config cannot make the push publish an
-// annotated tag the gate does not scan (GH-6334).
+// annotated tag the gate does not scan (GH-6334). The same two-fold form turns
+// submodule recursion off (push.recurseSubmodules=on-demand would send a branch
+// of a submodule the gate does not scan), and hooks are off through an empty
+// core.hooksPath, so a pre-push hook the session wrote does not run with the
+// push's credentials (GH-6343).
 func pushArgs(options ...string) []string {
-	args := []string{"-c", "push.followTags=false", "push", "--no-follow-tags"}
+	args := append(secretpatterns.HooksOffArgs(), "-c", "push.followTags=false", "-c", "push.recurseSubmodules=no",
+		"push", "--no-follow-tags", "--no-recurse-submodules")
 	return append(args, options...)
 }
+
+// PushArgs is pushArgs for the push sites outside this package: the git argument
+// list of a push that the secret gate cleared, followed by options.
+func PushArgs(options ...string) []string { return pushArgs(options...) }
 
 // Push pushes the current branch to remote. Before pushing it strips the
 // Claude co-author trailer from every commit the push would publish (GH-5711,

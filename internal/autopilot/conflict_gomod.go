@@ -98,7 +98,7 @@ func resolveGoModSumConflict(ctx context.Context, worktreePath, branchName strin
 	if err := executor.CheckSecretGate(ctx, worktreePath, "HEAD", ""); err != nil {
 		return fmt.Errorf("push mechanical resolution to %s: %w", branchName, err)
 	}
-	if err := runGitCmd(ctx, worktreePath, "push", "origin", "HEAD:refs/heads/"+branchName); err != nil {
+	if err := runGitCmd(ctx, worktreePath, executor.PushArgs("origin", "HEAD:refs/heads/"+branchName)...); err != nil {
 		return fmt.Errorf("push mechanical resolution to %s: %w", branchName, err)
 	}
 
