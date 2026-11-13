@@ -74,6 +74,11 @@ func newSecretGateFixture(t *testing.T) *secretGateFixture {
 		t.Fatal(err)
 	}
 	f.run("init", "-b", "main")
+	// The daemon's git commands (the co-author amend) inherit the test process's
+	// environment, not f.run's identity; a CI runner has no git identity of its
+	// own, so the repository carries one (GH-6358).
+	f.run("config", "user.name", "t")
+	f.run("config", "user.email", "t@example.com")
 	f.run("remote", "add", "origin", f.remote)
 	f.commit("README.md", "hello\n", "init")
 	f.run("push", "-u", "origin", "main")
