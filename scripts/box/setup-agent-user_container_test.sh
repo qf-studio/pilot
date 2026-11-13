@@ -144,7 +144,7 @@ sh_ok "the agent user cannot list the working tree" '! su -s /bin/bash pilot-age
 sh_ok "the agent user reads HEAD" 'su -s /bin/bash pilot-agent -c "cat /var/lib/pilot/repos/alpha/.git/HEAD"'
 sh_ok "the agent user reads the repository two levels down" 'su -s /bin/bash pilot-agent -c "cat /var/lib/pilot/repos/org/beta/.git/HEAD"'
 sh_ok "the agent user runs the binary" 'su -s /bin/bash pilot-agent -c "/var/lib/pilot/bin/pilot"'
-sh_ok "the state file is root-only" 'test "$(stat -c %U:%a /var/lib/pilot/.agent-setup-state)" = root:600'
+sh_ok "the state file is root-only" 'test "$(stat -c %U:%G:%a /var/lib/pilot/.agent-setup-state)" = root:root:600'
 
 echo "=== container test: the real output of sudo -l -U ==="
 SUDO_L="$(cx sudo -n -l -U ec2-user 2>&1 || true)"
@@ -154,7 +154,7 @@ else
     printf '%s\n' "$SUDO_L"
     fail_test "sudo -l -U does not list the agent rule"
 fi
-if printf '%s\n' "$SUDO_L" | grep NOPASSWD | grep -qvE '^[[:space:]]*\(pilot-agent\) '; then
+if printf '%s\n' "$SUDO_L" | grep NOPASSWD | grep -qvE '^[[:space:]]*\(pilot-agent\) SETENV: NOPASSWD: ALL$'; then
     printf '%s\n' "$SUDO_L"
     fail_test "sudo -l -U still lists another NOPASSWD rule"
 else
@@ -196,8 +196,8 @@ sh_ok "ip6tables: the jump is the first rule and the loopback rule is there" 'ip
 sh_ok "boot unit is enabled" 'systemctl is-enabled --quiet pilot-agent-firewall.service'
 sh_ok "the boot unit runs and keeps the rules (restart)" 'systemctl restart pilot-agent-firewall.service && iptables -S OUTPUT | grep "^-A OUTPUT" | head -1 | grep -q PILOT_AGENT_EGRESS && test "$(iptables -S PILOT_AGENT_EGRESS | grep -c "^-A ")" = 3'
 
-echo "=== container test: second apply ==="
-out="$(cx "$SETUP" --confirm-root-path 2>&1 || true)"
+echo "=== container test: second apply (no --confirm-root-path: nothing is left to remove) ==="
+out="$(cx "$SETUP" 2>&1 || true)"
 skipped="$(printf '%s\n' "$out" | grep -c '^step .*: skipped' || true)"
 if [ "$skipped" = 10 ]; then
     pass "second apply skips all 10 steps"

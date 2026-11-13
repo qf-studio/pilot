@@ -114,10 +114,11 @@ build_repos() {
     chmod 700 "$r/org"
 }
 
-# repo_snapshot — path, mode and group of everything under repos and bin.
+# repo_snapshot — path, mode and group of everything under repos and bin (a
+# repos or bin that is a symbolic link is followed).
 repo_snapshot() {
     local p
-    find "${DATA_DIR}/repos" "${DATA_DIR}/bin" | sort | while IFS= read -r p; do
+    find -H "${DATA_DIR}/repos" "${DATA_DIR}/bin" | sort | while IFS= read -r p; do
         if [ -L "$p" ]; then
             echo "${p} link"
         else
@@ -692,18 +693,19 @@ teardown_sandbox
 
 # mutation pin: the system-directory check is removed from the --data-dir validation -> this test fails
 echo "=== test: --data-dir that is a system directory, or one above it, is refused before any change ==="
+# Each value must be refused by this check, not by another one (the mocks report
+# / as owned by root, and /var/lib does not exist on macOS): the message is
+# checked per value.
 setup_sandbox
-for sysdir in /usr /etc /; do
+for sysdir in / /usr /var/lib /etc /var /usr/; do
     set_meta "$sysdir" ec2-user:ec2-user
     expect_refused "--data-dir ${sysdir}" -- --data-dir "$sysdir"
+    if grep -qE "^setup-agent-user: --data-dir '[^']*' (is a system directory|contains the system directory )" "$OUT"; then
+        pass "--data-dir ${sysdir}: refused as a system directory"
+    else
+        fail_test "--data-dir ${sysdir}: not refused as a system directory: $(cat "$OUT")"
+    fi
 done
-set_meta /var ec2-user:ec2-user
-expect_refused "--data-dir /var (an ancestor of /var/lib)" -- --data-dir /var
-if grep -qF "system directory" "$OUT" || grep -qF "contains the system directory" "$OUT"; then
-    pass "the message names the system directory"
-else
-    fail_test "no system directory message: $(cat "$OUT")"
-fi
 teardown_sandbox
 
 echo "=== test: --data-dir must exist, be a directory owned by the daemon user, have no '..' and no leading dash ==="
@@ -855,6 +857,28 @@ check "the state file holds the earlier mode and group of the binary" grep -qF "
 check_not "the state file does not hold the working tree" grep -qF "secret.env" "$STATE_FILE"
 teardown_sandbox
 
+# mutation pin: a repository or middle directory keeps the group read bit it had, and the chgrp hands it to the shared group -> this test fails
+echo "=== test: a repository and a middle directory at 0750 get group traverse only (0710) ==="
+setup_sandbox
+build_repos
+chmod 750 "$R/alpha" "$R/org" "$R/org/beta"
+if run_setup -- ; then
+    pass "apply exits 0"
+else
+    cat "$OUT"
+    fail_test "apply exited non-zero"
+fi
+for d in "$R/alpha" "$R/org" "$R/org/beta"; do
+    check "${d#"$R"/}: 0750 -> pilot 0710, the agent cannot list it" test "$(mode_of "$d")" = 710 -a "$(group_of "$d")" = pilot
+done
+: >"$MUT_LOG"
+run_setup -- || true
+expect_step shared-read skipped
+check "a second apply changes nothing" test ! -s "$MUT_LOG"
+run_setup -- --undo >/dev/null || true
+check "undo restores 0750" test "$(mode_of "$R/alpha")" = 750 -a "$(mode_of "$R/org")" = 750
+teardown_sandbox
+
 echo "=== test: shared read is idempotent and notices a file made later in a git directory only ==="
 setup_sandbox
 build_repos
@@ -954,6 +978,62 @@ expect_step shared-read failed
 check "nothing was restored" test "$before_snap" = "$(repo_snapshot)"
 teardown_sandbox
 
+# mutation pin: the state file check compares only the owner and the mode, not the group -> this test fails
+echo "=== test: a state file of group other than root is refused by apply and by undo ==="
+setup_sandbox
+build_repos
+run_setup -- >/dev/null || true
+set_meta "$STATE_FILE" root:ec2-user
+before_snap="$(repo_snapshot)"
+if run_setup -- --undo; then
+    fail_test "undo must fail on a state file of group ec2-user"
+else
+    pass "undo exits non-zero on a state file of group ec2-user"
+fi
+expect_step shared-read failed
+check "undo restored nothing" test "$before_snap" = "$(repo_snapshot)"
+printf 'x\n' >"$R/alpha/.git/refs/heads/late"
+chmod 600 "$R/alpha/.git/refs/heads/late"
+if run_setup -- ; then
+    fail_test "apply must fail on a state file of group ec2-user"
+else
+    pass "apply exits non-zero on a state file of group ec2-user"
+fi
+expect_step shared-read failed
+check "apply did not change the new ref" test "$(mode_of "$R/alpha/.git/refs/heads/late")" = 600
+teardown_sandbox
+
+# mutation pin: undo checks only the last part of a recorded path for a link, not where the path resolves -> this test fails
+echo "=== test: undo refuses a record outside the data dir or through a symbolic link, and reports it ==="
+setup_sandbox
+build_repos
+run_setup -- >/dev/null || true
+mkdir "${SANDBOX}/outside"
+printf 'secret\n' >"${SANDBOX}/outside/key"
+chmod 600 "${SANDBOX}/outside/key"
+set_meta "${SANDBOX}/outside/key" root:root
+ln -s "${SANDBOX}/outside" "${DATA_DIR}/linkdir"
+ln -s "${DATA_DIR}/bin" "${DATA_DIR}/inlink"
+printf 'ec2-user\t777\t%s\n' "${SANDBOX}/outside/key" "${DATA_DIR}/linkdir/key" "${DATA_DIR}/inlink/pilot" >>"$STATE_FILE"
+: >"$MUT_LOG"
+if run_setup -- --undo; then
+    fail_test "undo must fail when a record is refused"
+else
+    pass "undo exits non-zero when a record is refused"
+fi
+expect_step shared-read failed
+check "the file outside keeps mode 600" test "$(mode_of "${SANDBOX}/outside/key")" = 600
+check "the file outside keeps group root" test "$(group_of "${SANDBOX}/outside/key")" = root
+check_not "no chgrp or chmod named a refused record" grep -qE "^(chgrp|chmod) .*(outside/key|linkdir|inlink)" "$MUT_LOG"
+for p in "${SANDBOX}/outside/key" "${DATA_DIR}/linkdir/key" "${DATA_DIR}/inlink/pilot"; do
+    check "reported: ${p#"$SANDBOX"/}" grep -qF "refused, not restored: ${p} resolves to" "$OUT"
+done
+check "the record outside the data dir names the resolved path" grep -qF "refused, not restored: ${SANDBOX}/outside/key resolves to '${SANDBOX}/outside/key'" "$OUT"
+check "the record through the link names the resolved path" grep -qF "refused, not restored: ${DATA_DIR}/linkdir/key resolves to '${SANDBOX}/outside/key'" "$OUT"
+check "the state file is kept" test -e "$STATE_FILE"
+check "the other records are restored" grep -qE "^restored: ${R}/alpha/.git/HEAD group=" "$OUT"
+teardown_sandbox
+
 # ----------------------------------------------------- item 3: path chain
 
 echo "=== test: repos reached through a symlink chain the agent user cannot traverse — one line per directory, step fails ==="
@@ -963,12 +1043,18 @@ mkdir "${DATA_DIR}/store"
 mv "${DATA_DIR}/repos" "${DATA_DIR}/store/repos"
 ln -s "${DATA_DIR}/store/repos" "${DATA_DIR}/repos"
 chmod 700 "${DATA_DIR}/store"
+before_snap="$(repo_snapshot)"
+: >"$CALL_LOG"
 if run_setup -- ; then
     fail_test "apply must fail when the agent cannot traverse the chain"
 else
     pass "apply exits non-zero"
 fi
 expect_step shared-read failed
+# mutation pin: shared-read changes groups and modes before it checks the chain -> this check fails
+check_not "the failed chain check comes before any change: no chgrp or chmod" grep -qE '^(chgrp|chmod) ' "$CALL_LOG"
+check "the failed chain check comes before any change: groups and modes unchanged" test "$before_snap" = "$(repo_snapshot)"
+check_not "the failed chain check comes before any change: no state file" test -e "$STATE_FILE"
 want="agent user pilot-agent cannot traverse ${DATA_DIR}/store: setfacl -m u:pilot-agent:x ${DATA_DIR}/store  (or: chmod o+x ${DATA_DIR}/store)"
 if has_line "$OUT" "$want"; then
     pass "prints the command for the directory without traverse"
@@ -1088,6 +1174,21 @@ check "the cloud-init lines are still commented out" test "$(cat "${SUDOERS_DIR}
 expect_step cloud-init-sudoers failed
 teardown_sandbox
 
+# mutation pin: the proof takes every NOPASSWD rule with the run-as part (pilot-agent) for the agent rule -> this test fails
+echo "=== test: a NOPASSWD rule with the run-as part (pilot-agent) that is not the agent rule fails the step ==="
+setup_sandbox
+printf 'ec2-user ALL=(pilot-agent) NOPASSWD: ALL\n' >"${SUDOERS_DIR}/10-other"
+if run_setup -- ; then
+    fail_test "apply must fail while another (pilot-agent) NOPASSWD rule is left"
+else
+    pass "apply exits non-zero"
+fi
+expect_step cloud-init-sudoers failed
+check "the sudo -l line is printed" has_line "$OUT" "  sudo -l: (pilot-agent) NOPASSWD: ALL"
+check "the file and line are printed" has_line "$OUT" "  ${SUDOERS_DIR}/10-other:1: ec2-user ALL=(pilot-agent) NOPASSWD: ALL"
+check_not "the agent rule itself is not reported" grep -qF "sudo -l: (pilot-agent) SETENV: NOPASSWD: ALL" "$OUT"
+teardown_sandbox
+
 # mutation pin: the error of sudo -l is swallowed (|| true) so an empty output counts as proof -> this test fails
 echo "=== test: sudo -n -l -U that itself fails fails the step with its output ==="
 setup_sandbox
@@ -1127,6 +1228,26 @@ check "the cloud-init file is untouched" test "$(cat "${SUDOERS_DIR}/90-cloud-in
 check "nothing was done before the refusal (no group, no user)" test ! -e "${STATE_DIR}/groups/pilot" -a ! -e "${STATE_DIR}/users/pilot-agent"
 check "--dry-run does not need it" run_setup NO_CONFIRM=1 -- --dry-run
 check "--undo does not need it" run_setup NO_CONFIRM=1 -- --undo
+teardown_sandbox
+
+# mutation pin: --confirm-root-path is demanded during argument checking even when nothing is left to remove -> this test fails
+echo "=== test: a second apply on a host that is set up needs no --confirm-root-path ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+: >"$MUT_LOG"
+if run_setup NO_CONFIRM=1 -- ; then
+    pass "second apply without --confirm-root-path exits 0"
+else
+    cat "$OUT"
+    fail_test "second apply without --confirm-root-path failed"
+fi
+for s in $ALL_STEPS; do
+    expect_step "$s" skipped
+done
+check "it changes nothing" test ! -s "$MUT_LOG"
+printf '%s\n' "$CLOUD_INIT_ORIGINAL" >"${SUDOERS_DIR}/90-cloud-init-users"
+expect_refused "a line to comment out again, no --confirm-root-path" NO_CONFIRM=1 --
+check "the message tells the operator to hold another root session" grep -qF "keep another root session open" "$OUT"
 teardown_sandbox
 
 echo "=== test: the removal comes last — a failed firewall step leaves the daemon user's sudo alone ==="
@@ -1198,6 +1319,33 @@ if [ -n "$new_n" ] && [ -n "$ins_n" ] && [ -n "$del_n" ] && [ "$new_n" -lt "$ins
 else
     fail_test "rebuild order wrong (new ${new_n}, switch ${ins_n}, remove ${del_n})"
 fi
+teardown_sandbox
+
+# mutation pin: rebuild_chain drops the jump to a leftover temporary chain before the jump to the new chain is in place -> this test fails
+echo "=== test: a leftover temporary chain whose jump is the only one in force is replaced without a gap ==="
+setup_sandbox
+# an interrupted rebuild: the old chain flushed, the temporary chain complete and switched in
+mock_run iptables -w -N PILOT_AGENT_EGRESS
+mock_run iptables -w -N PILOT_AGENT_EGRESS_NEW
+mock_run iptables -w -A PILOT_AGENT_EGRESS_NEW -d 169.254.169.254 -j REJECT
+mock_run iptables -w -A PILOT_AGENT_EGRESS_NEW -p tcp -d 127.0.0.1 --dport 9091 -j REJECT --reject-with tcp-reset
+mock_run iptables -w -A PILOT_AGENT_EGRESS_NEW -p tcp --dport 9091 -m addrtype --dst-type LOCAL -o lo -j REJECT --reject-with tcp-reset
+mock_run iptables -w -I OUTPUT 1 -m owner --uid-owner pilot-agent -j PILOT_AGENT_EGRESS_NEW
+rm -f "${STATE_DIR}/gap.log"
+if run_setup -- ; then
+    pass "apply exits 0 after an interrupted rebuild"
+else
+    cat "$OUT"
+    fail_test "apply failed after an interrupted rebuild"
+fi
+check_not "no moment without a jump to a chain with a REJECT rule" test -e "${STATE_DIR}/gap.log"
+check "the chain is complete (3 rules)" test "$(mock_run iptables -w -S PILOT_AGENT_EGRESS | grep -c '^-A ' | tr -d ' ')" = 3
+check_not "no temporary chain is left" grep -qE "^chain PILOT_AGENT_EGRESS_(NEW|ALT)$" "${STATE_DIR}/iptables.rules"
+check "one jump, to the chain, first in OUTPUT" test "$(mock_run iptables -w -S OUTPUT | grep '^-A ')" = "-A OUTPUT -m owner --uid-owner pilot-agent -j PILOT_AGENT_EGRESS"
+: >"$MUT_LOG"
+run_setup -- || true
+expect_step firewall-ipv4 skipped
+check "the next apply changes nothing" test ! -s "$MUT_LOG"
 teardown_sandbox
 
 echo "=== test: the gap check itself notices a flush of the chain behind a live jump ==="
@@ -1272,7 +1420,9 @@ else
 fi
 check "dry-run undo: no mutating command" test ! -s "$MUT_LOG"
 check "dry-run undo: files, modes and the state file unchanged" test "$before" = "$(tree_listing)" -a "$state_before" = "$(cat "$STATE_FILE")"
-check "dry-run undo prints the restore it would do" grep -qE "^restored: ${DATA_DIR}/bin/pilot group=" "$OUT"
+check "dry-run undo prints the restore it would do" grep -qE "^would restore: ${DATA_DIR}/bin/pilot group=" "$OUT"
+# mutation pin: a dry-run undo prints "restored:" for every record although nothing was restored -> this check fails
+check_not "dry-run undo prints no 'restored:' line" grep -qE "^restored: " "$OUT"
 check "dry-run undo: the groups and modes under repos are unchanged" test "$before_snap" = "$(repo_snapshot)"
 teardown_sandbox
 

@@ -43,9 +43,10 @@
 #   --repos-link P       a path through which the agent user reaches the repos
 #                        directory (a symlink chain); every directory on it is
 #                        checked for traverse; repeatable
-#   --confirm-root-path  the operator holds another root session; required to
-#                        remove the daemon user's general sudo (not for --dry-run,
-#                        --undo or --keep-daemon-sudo)
+#   --confirm-root-path  the operator holds another root session; required when
+#                        the cloud-init file still has a line to comment out (not
+#                        for --dry-run, --undo, --keep-daemon-sudo or a host that is
+#                        set up already); asked before the first change
 #   --dry-run            print every command, change nothing
 #   --undo               stop and disable the boot unit, remove the firewall chain
 #                        and the sudoers rule, restore the cloud-init file from its
@@ -91,6 +92,7 @@ SUDOERS_NAME="90-pilot-agent-runas"
 UNIT_NAME="pilot-agent-firewall.service"
 CHAIN="PILOT_AGENT_EGRESS"
 CHAIN_NEW="${CHAIN}_NEW"
+CHAIN_ALT="${CHAIN}_ALT"
 METADATA_V4="169.254.169.254"
 METADATA_V6="fd00:ec2::254"
 GATEWAY_PORT="9091"
@@ -186,23 +188,28 @@ case "$GROUP" in
 esac
 [ "$GROUP" != "$DAEMON_PRIMARY_GROUP" ] || die "--group must not be the primary group of the daemon user (${DAEMON_PRIMARY_GROUP})"
 
+# refuse_system_dir PATH — PATH must not be a system directory nor an ancestor
+# of one. Checked on the value as given and on its canonical form.
+refuse_system_dir() {
+    local p="$1" s
+    while [ "$p" != / ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
+    for s in $SYSTEM_DIRS; do
+        [ "$p" != "$s" ] || die "--data-dir '${p}' is a system directory"
+        case "${s}/" in "${p}"/*) die "--data-dir '${p}' contains the system directory ${s}" ;; esac
+    done
+}
+
 check_path_arg --data-dir "$DATA_DIR"
+refuse_system_dir "$DATA_DIR"
 [ -e "$DATA_DIR" ] || die "--data-dir does not exist: '${DATA_DIR}'"
 DATA_DIR="$(realpath "$DATA_DIR")" || die "cannot resolve --data-dir"
+refuse_system_dir "$DATA_DIR"
 [ -d "$DATA_DIR" ] || die "--data-dir is not a directory: '${DATA_DIR}'"
 [ "$(stat -c %U "$DATA_DIR")" = "$DAEMON_USER" ] || die "--data-dir '${DATA_DIR}' is not owned by the daemon user (${DAEMON_USER})"
-for s in $SYSTEM_DIRS; do
-    [ "$DATA_DIR" != "$s" ] || die "--data-dir '${DATA_DIR}' is a system directory"
-    case "${s}/" in "${DATA_DIR}"/*) die "--data-dir '${DATA_DIR}' contains the system directory ${s}" ;; esac
-done
 
 for link in ${REPOS_LINKS[@]+"${REPOS_LINKS[@]}"}; do
     check_path_arg --repos-link "$link"
 done
-
-if [ "$UNDO" = 0 ] && [ "$DRY_RUN" = 0 ] && [ "$KEEP_DAEMON_SUDO" = 0 ] && [ "$CONFIRM_ROOT_PATH" = 0 ]; then
-    die "refusing to remove the general sudo of ${DAEMON_USER}: keep another root session open (a second root shell or the console) and run again with --confirm-root-path, or pass --keep-daemon-sudo"
-fi
 
 AGENT_HOME="${DATA_DIR}/agent-home"
 WORKSPACES="${DATA_DIR}/agent-workspaces"
@@ -212,10 +219,20 @@ SUDOERS_TMP="${SUDOERS_DIR}/.${SUDOERS_NAME}.new"
 CLOUD_INIT_BACKUP="${CLOUD_INIT_SUDOERS}.pilot-agent.bak"
 UNIT_FILE="${SYSTEMD_DIR}/${UNIT_NAME}"
 
+# contained PATH — true when the resolved form of PATH is strictly inside the
+# data dir. Sets RESOLVED (empty when PATH cannot be resolved).
+RESOLVED=""
+contained() {
+    RESOLVED="$(realpath "$1" 2>/dev/null)" || RESOLVED=""
+    case "$RESOLVED" in
+        "$DATA_DIR"/*) return 0 ;;
+    esac
+    return 1
+}
+
 # resolve_inside LABEL PATH TYPE — sets RESOLVED to the resolved path of PATH,
 # or "" when it does not exist. A path whose resolved form is not strictly
 # inside the data dir, or has the wrong type, is refused.
-RESOLVED=""
 resolve_inside() {
     local label="$1" path="$2" type="$3"
     RESOLVED=""
@@ -223,11 +240,7 @@ resolve_inside() {
         [ ! -L "$path" ] || die "${label} '${path}' is a dangling symbolic link"
         return 0
     fi
-    RESOLVED="$(realpath "$path")" || die "cannot resolve ${label} '${path}'"
-    case "$RESOLVED" in
-        "$DATA_DIR"/*) ;;
-        *) die "${label} '${path}' resolves to '${RESOLVED}', outside the data dir '${DATA_DIR}'" ;;
-    esac
+    contained "$path" || die "${label} '${path}' resolves to '${RESOLVED:-?}', outside the data dir '${DATA_DIR}'"
     case "$type" in
         d) [ -d "$RESOLVED" ] || die "${label} '${RESOLVED}' is not a directory" ;;
         f) [ -f "$RESOLVED" ] || die "${label} '${RESOLVED}' is not a regular file" ;;
@@ -326,6 +339,11 @@ step_directories() {
     return 0
 }
 
+# state_file_ok — the state file is a regular file, root:root 0600.
+state_file_ok() {
+    [ ! -L "$STATE_FILE" ] && [ -f "$STATE_FILE" ] && [ "$(stat -c '%U:%G:%a' "$STATE_FILE")" = "root:root:600" ]
+}
+
 # record_change PATH GROUP MODE — the earlier group and mode of a path, written
 # to the state file BEFORE the path is changed (dry-run: printed only). The file
 # is root-only; a link or a file of another owner in its place is refused.
@@ -348,7 +366,7 @@ record_change() {
     if [ ! -e "$STATE_FILE" ]; then
         run install -m 0600 -o root -g root /dev/null "$STATE_FILE" || return 1
     fi
-    if [ "$(stat -c '%U:%a' "$STATE_FILE")" != "root:600" ]; then
+    if ! state_file_ok; then
         echo "state file ${STATE_FILE} is not root:root 0600; refusing to use it" >&2
         return 1
     fi
@@ -359,6 +377,8 @@ record_change() {
 # BITS (r=4, x=1, r-x=5, as a number) added to the group class and no group
 # write. Sets SR_GROUP, SR_MODE (current, octal text) and SR_WANT (octal text).
 # A file the owner can execute keeps that for the group (the chmod g+rX rule).
+# BITS 1 (a repository or a middle directory) is traverse only: a group read bit
+# the directory had is dropped, as the chgrp would hand it to the shared group.
 SR_GROUP="" SR_MODE="" SR_WANT=""
 shared_read_ok() {
     local path="$1" bits="$2" cur mode
@@ -372,7 +392,11 @@ shared_read_ok() {
     if [ "$bits" = 4 ] && [ $(((mode >> 6) & 1)) -eq 1 ]; then
         bits=5
     fi
-    SR_WANT="$(printf '%o' $(((mode | (bits << 3)) & ~8#020)))"
+    if [ "$bits" = 1 ]; then
+        SR_WANT="$(printf '%o' $(((mode & ~8#070) | 8#010)))"
+    else
+        SR_WANT="$(printf '%o' $(((mode | (bits << 3)) & ~8#020)))"
+    fi
     [ "$SR_GROUP" = "$GROUP" ] && [ $((8#${SR_WANT})) -eq "$mode" ]
 }
 
@@ -503,8 +527,9 @@ check_chain() {
     while IFS= read -r dir; do
         case $'\n'"$CHAIN_SEEN" in *$'\n'"$dir"$'\n'*) continue ;; esac
         CHAIN_SEEN="${CHAIN_SEEN}${dir}"$'\n'
-        # A dry run changed nothing yet: the repos directory is set by this step.
-        if [ "$DRY_RUN" = 1 ] && [ "$dir" = "$REPOS_REAL" ]; then
+        # The chain is checked before this step changes anything; the repos
+        # directory itself gets group r-x from it.
+        if [ "$dir" = "$REPOS_REAL" ]; then
             continue
         fi
         if ! agent_can_traverse "$dir"; then
@@ -538,6 +563,8 @@ check_repos_chains() {
 step_shared_read() {
     local d1 d2 middle_done
     CHANGED=0
+    # The chain first: a failed check leaves nothing changed.
+    check_repos_chains || return 1
     if [ -z "$REPOS_REAL" ]; then echo "absent, left alone: ${DATA_DIR}/repos"; fi
     if [ -z "$BIN_REAL" ]; then echo "absent, left alone: ${DATA_DIR}/bin"; fi
     if [ -z "$BINARY_REAL" ]; then echo "absent, left alone: ${DATA_DIR}/bin/${BINARY_NAME}"; fi
@@ -574,7 +601,6 @@ step_shared_read() {
     if [ -z "$REPOS_REAL" ] && [ -z "$BIN_REAL" ]; then
         NOTE="neither repos nor bin exists under ${DATA_DIR}"
     fi
-    check_repos_chains || return 1
     [ "$CHANGED" = 1 ] || RESULT=skipped
     return 0
 }
@@ -707,7 +733,9 @@ remaining_rules() {
 }
 
 # prove_sudo_removed — sudo -n -l -U for the daemon user must succeed and list
-# no NOPASSWD rule but the agent rule.
+# no NOPASSWD rule but the agent rule itself, which sudo prints as
+# "(AGENT) SETENV: NOPASSWD: ALL"; any other rule with the agent user as its
+# run-as part counts as a remaining rule.
 prove_sudo_removed() {
     local out rc=0 left where
     if [ "$DRY_RUN" = 1 ]; then
@@ -720,7 +748,8 @@ prove_sudo_removed() {
         printf '%s\n' "$out" | sed 's/^/  /' >&2
         return 1
     fi
-    left="$(printf '%s\n' "$out" | grep 'NOPASSWD' | grep -Ev "^[[:space:]]*\(${AGENT_USER}\)[[:space:]]" || true)"
+    left="$(printf '%s\n' "$out" | awk -v agent="(${AGENT_USER}) SETENV: NOPASSWD: ALL" '
+        /NOPASSWD/ { l = $0; sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l); if (l != agent) print $0 }')"
     if [ -n "$left" ]; then
         echo "${DAEMON_USER} still has a NOPASSWD rule that is not the agent rule:" >&2
         printf '%s\n' "$left" | sed 's/^[[:space:]]*/  sudo -l: /' >&2
@@ -735,6 +764,11 @@ prove_sudo_removed() {
     fi
 }
 
+# cloud_init_plan — the report of CLOUD_AWK for the cloud-init file, no output file.
+cloud_init_plan() {
+    awk -v d="$DAEMON_USER" -v re="$(daemon_line_re)" -v out="" "$CLOUD_AWK" "$CLOUD_INIT_SUDOERS"
+}
+
 step_cloud_init_sudoers() {
     local plan kind n rest reason text ndis=0 tmp meta bak_n
     if [ "$KEEP_DAEMON_SUDO" = 1 ]; then
@@ -747,7 +781,7 @@ step_cloud_init_sudoers() {
         NOTE="no file at ${CLOUD_INIT_SUDOERS}"
         return 0
     fi
-    plan="$(awk -v d="$DAEMON_USER" -v re="$(daemon_line_re)" -v out="" "$CLOUD_AWK" "$CLOUD_INIT_SUDOERS")"
+    plan="$(cloud_init_plan)"
     while IFS=$'\t' read -r kind n rest; do
         case "$kind" in
             DISABLE) ndis=$((ndis + 1)); echo "  to comment out: ${CLOUD_INIT_SUDOERS}:${n}: ${rest}" ;;
@@ -762,6 +796,11 @@ step_cloud_init_sudoers() {
         prove_sudo_removed || return 1
         RESULT=skipped
         return 0
+    fi
+    # Checked before the first change too; this guards the step on its own.
+    if [ "$DRY_RUN" = 0 ] && [ "$CONFIRM_ROOT_PATH" = 0 ]; then
+        echo "refusing to edit ${CLOUD_INIT_SUDOERS} without --confirm-root-path" >&2
+        return 1
     fi
     # Never drop the old rule unless the new one is in place.
     if [ "$DRY_RUN" = 0 ] && ! file_has_content "$SUDOERS_FILE" "$(sudoers_rule)"; then
@@ -868,24 +907,41 @@ ensure_jump_first() {
 }
 
 # rebuild_chain BIN FAMILY — a new chain under a temporary name, the jump to it
-# inserted first, then the old jump and the old chain removed and the new chain
-# renamed. The reject rules are in force at every moment.
+# inserted first, then the old jumps and the old chains removed and the new
+# chain renamed. The reject rules are in force at every moment. A temporary
+# chain left over from an interrupted run may hold the only jump in force: the
+# new chain takes a temporary name that no jump uses, and the leftover goes only
+# after the jump to the new chain is in place.
 rebuild_chain() {
-    local bin="$1"
-    if "$bin" -w -S "$CHAIN_NEW" >/dev/null 2>&1; then
-        # a leftover of an interrupted run
-        drop_jumps "$bin" "$CHAIN_NEW" || return 1
-        run "$bin" -w -F "$CHAIN_NEW" || return 1
-        run "$bin" -w -X "$CHAIN_NEW" || return 1
+    local bin="$1" tmp="" c
+    for c in "$CHAIN_NEW" "$CHAIN_ALT"; do
+        # shellcheck disable=SC2046,SC2086
+        if ! "$bin" -w -C OUTPUT $(jump_rule "$c") >/dev/null 2>&1; then
+            tmp="$c"
+            break
+        fi
+    done
+    if [ -z "$tmp" ]; then
+        echo "both ${CHAIN_NEW} and ${CHAIN_ALT} have a jump in OUTPUT; remove one by hand" >&2
+        return 1
     fi
-    run "$bin" -w -N "$CHAIN_NEW" || return 1
-    add_rules "$bin" "$CHAIN_NEW" "$2" || return 1
+    if "$bin" -w -S "$tmp" >/dev/null 2>&1; then
+        # a leftover with no jump to it: nothing is in force through it
+        run "$bin" -w -F "$tmp" || return 1
+        run "$bin" -w -X "$tmp" || return 1
+    fi
+    run "$bin" -w -N "$tmp" || return 1
+    add_rules "$bin" "$tmp" "$2" || return 1
     # shellcheck disable=SC2046,SC2086
-    run "$bin" -w -I OUTPUT 1 $(jump_rule "$CHAIN_NEW") || return 1
-    drop_jumps "$bin" "$CHAIN" || return 1
-    run "$bin" -w -F "$CHAIN" || return 1
-    run "$bin" -w -X "$CHAIN" || return 1
-    run "$bin" -w -E "$CHAIN_NEW" "$CHAIN" || return 1
+    run "$bin" -w -I OUTPUT 1 $(jump_rule "$tmp") || return 1
+    for c in "$CHAIN" "$CHAIN_NEW" "$CHAIN_ALT"; do
+        [ "$c" != "$tmp" ] || continue
+        "$bin" -w -S "$c" >/dev/null 2>&1 || continue
+        drop_jumps "$bin" "$c" || return 1
+        run "$bin" -w -F "$c" || return 1
+        run "$bin" -w -X "$c" || return 1
+    done
+    run "$bin" -w -E "$tmp" "$CHAIN" || return 1
 }
 
 # firewall_family BIN FAMILY — sets CHANGED=1 when it acts.
@@ -1002,7 +1058,7 @@ undo_firewall_family() {
         NOTE="${bin} not found"
         return 0
     fi
-    for chain in "$CHAIN" "$CHAIN_NEW"; do
+    for chain in "$CHAIN" "$CHAIN_NEW" "$CHAIN_ALT"; do
         # shellcheck disable=SC2046,SC2086
         if "$bin" -w -C OUTPUT $(jump_rule "$chain") >/dev/null 2>&1; then
             drop_jumps "$bin" "$chain" || return 1
@@ -1041,7 +1097,10 @@ undo_sudoers_rule() {
 }
 
 # undo_shared_read — the group and mode of every recorded path, last record
-# first (a path recorded twice ends with its first, original values).
+# first (a path recorded twice ends with its first, original values). A record
+# is refused, as in apply, when its path resolves outside the data dir or runs
+# through a symbolic link (apply records resolved paths only); the step then
+# fails and the state file is kept.
 undo_shared_read() {
     local records=() grp mode path i failed=0
     if [ ! -e "$STATE_FILE" ] && [ ! -L "$STATE_FILE" ]; then
@@ -1049,7 +1108,7 @@ undo_shared_read() {
         NOTE="no state file at ${STATE_FILE}"
         return 0
     fi
-    if [ -L "$STATE_FILE" ] || [ ! -f "$STATE_FILE" ] || [ "$(stat -c '%U:%a' "$STATE_FILE")" != "root:600" ]; then
+    if ! state_file_ok; then
         echo "state file ${STATE_FILE} is not a root:root 0600 regular file; refusing to use it" >&2
         return 1
     fi
@@ -1066,7 +1125,16 @@ undo_shared_read() {
             echo "gone, not restored: ${path}"
             continue
         fi
-        if run chgrp -h "$grp" "$path" && { [ -L "$path" ] || run chmod "$mode" "$path"; }; then
+        if ! contained "$path" || [ "$RESOLVED" != "$path" ]; then
+            echo "refused, not restored: ${path} resolves to '${RESOLVED:-?}' (outside the data dir '${DATA_DIR}' or through a symbolic link)" >&2
+            failed=1
+            continue
+        fi
+        if [ "$DRY_RUN" = 1 ]; then
+            run chgrp -h "$grp" "$path"
+            run chmod "$mode" "$path"
+            echo "would restore: ${path} group=${grp} mode=${mode}"
+        elif run chgrp -h "$grp" "$path" && { [ -L "$path" ] || run chmod "$mode" "$path"; }; then
             echo "restored: ${path} group=${grp} mode=${mode}"
         else
             echo "could not restore: ${path}" >&2
@@ -1153,6 +1221,14 @@ if [ "$UNDO" = 1 ]; then
     print_summary
     print_manual_cleanup
     exit 0
+fi
+
+# The removal of the daemon user's general sudo needs --confirm-root-path. It is
+# asked here, before the first change, and only when the cloud-init file still
+# has a line to comment out: a host that is set up already needs no flag.
+if [ "$DRY_RUN" = 0 ] && [ "$KEEP_DAEMON_SUDO" = 0 ] && [ "$CONFIRM_ROOT_PATH" = 0 ] \
+    && [ -f "$CLOUD_INIT_SUDOERS" ] && cloud_init_plan | grep -q '^DISABLE'; then
+    die "refusing to remove the general sudo of ${DAEMON_USER}: keep another root session open (a second root shell or the console) and run again with --confirm-root-path, or pass --keep-daemon-sudo"
 fi
 
 # The removal of the daemon user's general sudo is the last step, after the
