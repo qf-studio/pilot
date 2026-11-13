@@ -14,6 +14,12 @@ import (
 // approximating process groups.
 func Configure(_ *exec.Cmd, _ ...time.Duration) {}
 
+// ConfigureSession is a no-op on non-Unix platforms.
+func ConfigureSession(_ *exec.Cmd) {}
+
+// Alive reports false on non-Unix platforms: there is no signal 0 here.
+func Alive(_ int) bool { return false }
+
 // Kill falls back to signalling only the tracked PID on non-Unix platforms,
 // identical to the pre-GH-4503 single-PID behavior.
 func Kill(cmd *exec.Cmd, sig syscall.Signal) error {
