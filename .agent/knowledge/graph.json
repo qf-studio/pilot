@@ -3202,6 +3202,18 @@
           "testing",
           "markers"
         ]
+      },
+      "TASK-652": {
+        "path": ".agent/tasks/TASK-652-dashboard-banner-model-line-billing-word.md",
+        "title": "Dashboard banner \u2014 model line and a plain billing word, both inside the banner",
+        "status": "dispatched",
+        "concepts": [
+          "testing",
+          "context",
+          "knowledge",
+          "api",
+          "deployment"
+        ]
       }
     },
     "memories": {
@@ -9046,6 +9058,19 @@
         ],
         "created": "2026-11-12",
         "last_validated": "2026-11-12"
+      },
+      "mem-309": {
+        "type": "learning",
+        "summary": "Before a statement about dashboard layout, read where the width comes from. The dashboard width is a constant (panelTotalWidth 69, three cards of 23) outside stacked mode; a wider terminal does not give the banner more room. On 2026-11-13 Navigator told the founder to widen the window to see a dropped banner segment; that advice was wrong. The founder's correction: check such things first.",
+        "path": "memories/learnings/mem-309.md",
+        "confidence": 0.9,
+        "concepts": [
+          "dashboard",
+          "tui",
+          "verification"
+        ],
+        "created": "2026-11-13",
+        "last_validated": "2026-11-13"
       }
     }
   },
@@ -13224,6 +13249,36 @@
       "from": "TASK-651",
       "to": "workflow",
       "type": "implements"
+    },
+    {
+      "from": "TASK-652",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-652",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-652",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-652",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-652",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "mem-309",
+      "to": "TASK-652",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -13410,7 +13465,8 @@
       "TASK-647",
       "TASK-649",
       "TASK-651",
-      "TASK-650"
+      "TASK-650",
+      "TASK-652"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -13820,7 +13876,8 @@
       "TASK-647",
       "TASK-649",
       "TASK-651",
-      "TASK-650"
+      "TASK-650",
+      "TASK-652"
     ],
     "conversational-bot": [
       "mem-036",
@@ -13847,7 +13904,8 @@
       "mem-151",
       "tui-subtask-ghost-rows",
       "stagefailed-conflates-healthy-handoff-with-terminal-failure",
-      "mem-285"
+      "mem-285",
+      "mem-309"
     ],
     "dashboard-project-scoping": [
       "TASK-284",
@@ -14120,7 +14178,8 @@
       "TASK-647",
       "TASK-649",
       "TASK-651",
-      "TASK-650"
+      "TASK-650",
+      "TASK-652"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -14635,7 +14694,8 @@
       "TASK-646",
       "TASK-647",
       "TASK-649",
-      "TASK-650"
+      "TASK-650",
+      "TASK-652"
     ],
     "labels": [
       "mem-100",
@@ -15203,7 +15263,8 @@
       "TASK-647",
       "TASK-649",
       "TASK-650",
-      "TASK-651"
+      "TASK-651",
+      "TASK-652"
     ],
     "testing-quality": [
       "TASK-384",
@@ -15257,7 +15318,8 @@
     ],
     "tui": [
       "mem-148",
-      "mem-151"
+      "mem-151",
+      "mem-309"
     ],
     "verification": [
       "gh4982-defect2-was-silent-skip-misread",
@@ -15265,7 +15327,8 @@
       "mem-036",
       "mem-039",
       "mem-082",
-      "parallel-explore-traces-per-defect-beat-one-research-pass"
+      "parallel-explore-traces-per-defect-beat-one-research-pass",
+      "mem-309"
     ],
     "workflow": [
       "TASK-368",
@@ -15862,11 +15925,11 @@
       "TASK-651"
     ]
   },
-  "last_updated": "2026-11-13T14:11:40.706541+00:00",
+  "last_updated": "2026-11-13T16:48:08.635206+00:00",
   "stats": {
-    "total_nodes": 784,
-    "total_edges": 835,
-    "memory_count": 433
+    "total_nodes": 786,
+    "total_edges": 841,
+    "memory_count": 434
   },
   "metadata": {
     "last_updated": null
