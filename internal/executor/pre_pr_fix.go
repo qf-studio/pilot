@@ -333,6 +333,7 @@ func (r *Runner) runReviewFixSession(ctx context.Context, task *Task, executionP
 			state.tokensInput += event.TokensInput
 			state.tokensOutput += event.TokensOutput
 			state.cacheCreationInputTokens += event.CacheCreationInputTokens
+			state.cacheCreation1hTokens += event.CacheCreation1hInputTokens
 			state.cacheReadInputTokens += event.CacheReadInputTokens
 			state.addReportedCost(event.ReportedCostUSD)
 			if event.Type == EventTypeToolResult && event.ToolResult != "" {

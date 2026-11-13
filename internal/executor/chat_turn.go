@@ -327,7 +327,11 @@ func (r *Runner) executeChatTurn(ctx context.Context, turn ChatTurn, onProgress 
 	if out.Model == "" {
 		out.Model = r.chatTurnModel()
 	}
-	out.EstimatedCostUSD = estimateCostWithCache(out.TokensInput, out.TokensOutput, out.TokensCacheWrite, out.TokensCacheRead, out.Model)
+	var cacheWrite1h int64
+	if res != nil {
+		cacheWrite1h = res.CacheCreation1hInputTokens
+	}
+	out.EstimatedCostUSD = estimateCostWithCacheTTL(out.TokensInput, out.TokensOutput, out.TokensCacheWrite, cacheWrite1h, out.TokensCacheRead, out.Model)
 	out.Duration = time.Since(started)
 	collected := strings.Join(texts, "\n\n")
 

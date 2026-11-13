@@ -218,6 +218,7 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 		aggregateResult.TokensOutput += subtaskResult.TokensOutput
 		aggregateResult.TokensTotal += subtaskResult.TokensTotal
 		aggregateResult.CacheCreationInputTokens += subtaskResult.CacheCreationInputTokens
+		aggregateResult.CacheCreation1hInputTokens += subtaskResult.CacheCreation1hInputTokens
 		aggregateResult.CacheReadInputTokens += subtaskResult.CacheReadInputTokens
 		aggregateResult.ResearchTokens += subtaskResult.ResearchTokens
 		aggregateResult.FilesChanged += subtaskResult.FilesChanged
@@ -294,10 +295,11 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 	}
 
 	aggregateResult.Duration = time.Since(start)
-	aggregateResult.EstimatedCostUSD = estimateCostWithCache(
+	aggregateResult.EstimatedCostUSD = estimateCostWithCacheTTL(
 		aggregateResult.TokensInput+aggregateResult.ResearchTokens,
 		aggregateResult.TokensOutput,
 		aggregateResult.CacheCreationInputTokens,
+		aggregateResult.CacheCreation1hInputTokens,
 		aggregateResult.CacheReadInputTokens,
 		aggregateResult.ModelName,
 	)
@@ -373,6 +375,7 @@ func aggregateSubtaskCost(agg, sub *ExecutionResult) {
 	agg.TokensOutput += sub.TokensOutput
 	agg.TokensTotal += sub.TokensTotal
 	agg.CacheCreationInputTokens += sub.CacheCreationInputTokens
+	agg.CacheCreation1hInputTokens += sub.CacheCreation1hInputTokens
 	agg.CacheReadInputTokens += sub.CacheReadInputTokens
 	agg.ResearchTokens += sub.ResearchTokens
 	if sub.ModelName != "" {

@@ -205,15 +205,15 @@ class ReportTest(unittest.TestCase):
         self.assertTrue(self.prices.source)
         self.assertTrue(self.prices.as_of)
         self.assertEqual(self.prices.models["claude-opus-5-5"], {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0})
-        self.assertEqual(self.prices.models["claude-sonnet-5-5"], {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5})
+        self.assertEqual(self.prices.models["claude-sonnet-5-5"], {"input": 2.0, "output": 10.0, "cache_read": 0.1, "cache_write": 2.5})
 
     def test_estimate_for_known_opus_row(self):
         # 1.0M in x $4 + 0.1M out x $20 + 0.2M write x $5 + 5.0M read x $0.20
         s = self.session(repo="sqlx", stage=1)
         self.assertAlmostEqual(br.estimate_usd(s, self.prices), 4.0 + 2.0 + 1.0 + 1.0)
-        # 0.2M x $2 + 0.05M x $10 + 0.1M x $2.5 + 2.0M x $0.20
+        # 0.2M x $2 + 0.05M x $10 + 0.1M x $2.5 + 2.0M x $0.10
         s2 = self.session(repo="sqlx", stage=2)
-        self.assertAlmostEqual(br.estimate_usd(s2, self.prices), 0.4 + 0.5 + 0.25 + 0.4)
+        self.assertAlmostEqual(br.estimate_usd(s2, self.prices), 0.4 + 0.5 + 0.25 + 0.2)
         self.assertIsNone(br.estimate_usd(br.Session(repo="x", stage=1, model="some-other-model"), self.prices))
         dated = br.Session(repo="x", stage=1, model="claude-opus-5-5-20261001", tokens_input=1_000_000)
         self.assertAlmostEqual(br.estimate_usd(dated, self.prices), 4.0)

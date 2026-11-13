@@ -2,10 +2,13 @@ package replay
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/pricing"
 )
 
 func TestNewRecorder(t *testing.T) {
@@ -678,6 +681,35 @@ func TestEstimateCostSonnet(t *testing.T) {
 	expectedCost := 0.018
 	if recording.TokenUsage.EstimatedCostUSD < expectedCost-0.001 || recording.TokenUsage.EstimatedCostUSD > expectedCost+0.001 {
 		t.Errorf("Expected cost ~%.4f, got %.4f", expectedCost, recording.TokenUsage.EstimatedCostUSD)
+	}
+}
+
+// TestEstimateCost_ReturnsPackageValue proves that the recorder prices the
+// 5.5 models through internal/pricing (GH-6355).
+func TestEstimateCost_ReturnsPackageValue(t *testing.T) {
+	tests := []struct {
+		model string
+		want  float64 // 1M input + 1M output
+	}{
+		{"claude-opus-5-5", 4.00 + 20.00},
+		{"claude-sonnet-5-5", 2.00 + 10.00},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			recorder, err := NewRecorder("TASK-PRICE", "/test/project", t.TempDir())
+			if err != nil {
+				t.Fatalf("NewRecorder: %v", err)
+			}
+			recorder.SetModel(tt.model)
+			_ = recorder.RecordEvent(`{"type":"result","result":"done","usage":{"input_tokens":1000000,"output_tokens":1000000}}`)
+			_ = recorder.Finish("completed")
+
+			got := recorder.GetRecording().TokenUsage.EstimatedCostUSD
+			pkg := pricing.Cost(tt.model, 1_000_000, 1_000_000, 0, 0, 0)
+			if math.Abs(got-pkg) > 1e-9 || math.Abs(got-tt.want) > 1e-9 {
+				t.Errorf("recorder cost for %q = %v, package %v, want %v", tt.model, got, pkg, tt.want)
+			}
+		})
 	}
 }
 
