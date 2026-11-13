@@ -503,7 +503,8 @@ type Model struct {
 	stalenessBanner string
 
 	// billing is the billing mode in force (GH-6053), set by BillingModeMsg.
-	// nil until the daemon first reports it; the header shows no chip then.
+	// nil until the daemon first reports it; banner line 2 shows no billing
+	// word then (GH-6350).
 	billing *BillingModeMsg
 
 	// Banner metadata (GH-2455 / GH-2459 rework): env name, model stack, adapter
@@ -605,6 +606,8 @@ type updateAvailableMsg UpdateInfo
 // BillingModeMsg reports the billing mode in force (GH-6053). The daemon sends
 // it at boot and on every switch. Source is "config" when no override is in
 // force, else cli, gateway or fallback; Until is zero when there is no expiry.
+// Mode is the mode in use: with billing.mode unset the daemon sends the
+// derived mode (GH-6350), so the banner never shows "unset".
 type BillingModeMsg struct {
 	Mode   string
 	Source string
@@ -1558,11 +1561,13 @@ func splashAdapterList(adapters []AdapterStatus) string {
 	return strings.Join(parts, dimStyle.Render(" · "))
 }
 
-// renderBanner returns the grom-style one-line header — the exact grammar of
+// renderBanner returns the grom-style two-line header — the exact grammar of
 // the grom gallery header (bold accent wordmark, dim ·-separated segments),
-// with live status right-aligned:
+// with live status right-aligned on line 1 and the model text and billing
+// word on line 2 (GH-6350):
 //
-//	pilot ● · v2.233.0 · stage · opus/sonnet           up 4m · 16:36 utc
+//	pilot ● · v2.320.1 · stage                       up 10m · 16:36 utc
+//	opus-5-5 / sonnet-5-5                                  subscription
 //
 // The dot after the wordmark is the daemon liveness mark; it pulses with the
 // animation tick. Adapter status lives in the queue panel border legend
@@ -1592,25 +1597,64 @@ func (m Model) renderBanner() string {
 	}
 	right += dimStyle.Render(time.Now().UTC().Format("15:04")+" utc") + " "
 
-	// Identity segments append only while they fit next to the right cluster:
-	// narrow terminals drop env then model — never the wordmark/version.
+	// The env segment appends only while it fits next to the right cluster:
+	// narrow terminals drop it — never the wordmark/version.
 	budget := tw - lipgloss.Width(right) - 1
 	left := gromTheme.AccentStyle().Bold(true).Render(" pilot") + " " + dot + sep + labelStyle.Render(ver)
-	var extras []string
 	if m.envName != "" {
-		extras = append(extras, statusRunningStyle.Render(strings.ToLower(m.envName)))
-	}
-	if m.modelStack != "" {
-		extras = append(extras, labelStyle.Render(strings.ToLower(m.modelStack)))
-	}
-	for _, seg := range extras {
-		if lipgloss.Width(left)+lipgloss.Width(sep)+lipgloss.Width(seg) > budget {
-			break
+		seg := statusRunningStyle.Render(strings.ToLower(m.envName))
+		if lipgloss.Width(left)+lipgloss.Width(sep)+lipgloss.Width(seg) <= budget {
+			left += sep + seg
 		}
-		left += sep + seg
 	}
 
+	return padLeftRightLine(tw, left, right) + "\n" + m.renderBannerMetaLine(tw)
+}
+
+// renderBannerMetaLine renders banner line 2 (GH-6350): the model text on the
+// left, the billing word on the right. It is always drawn while the banner is
+// shown — either side may be empty — so the layout does not jump when the
+// first BillingModeMsg arrives. The billing word is never cut; the model text
+// is cut with "…" to keep a two-column gap.
+func (m Model) renderBannerMetaLine(tw int) string {
+	right := " "
+	if label := billingModeLabel(m.billing); label != "" {
+		style := dimStyle
+		if billingOverridden(m.billing) {
+			style = warningStyle
+		}
+		right = style.Render(label) + " "
+	}
+	left := ""
+	if m.modelStack != "" {
+		budget := tw - 1 - lipgloss.Width(right) - 2 // indent, right cluster + pad, gap
+		if text := cutWithEllipsis(strings.ToLower(m.modelStack), budget); text != "" {
+			left = " " + labelStyle.Render(text)
+		}
+	}
 	return padLeftRightLine(tw, left, right)
+}
+
+// cutWithEllipsis cuts plain text s to at most w columns, ending a cut text
+// with "…". It returns "" when w leaves no room for one column of text.
+func cutWithEllipsis(s string, w int) string {
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	if w < 2 {
+		return ""
+	}
+	var b strings.Builder
+	width := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if width+rw > w-1 {
+			break
+		}
+		b.WriteRune(r)
+		width += rw
+	}
+	return b.String() + "…"
 }
 
 // buildAdapterLegend renders adapter status in the grom border-legend grammar
@@ -1685,12 +1729,6 @@ func (m Model) renderChromeHeader() string {
 	// Update notification (if available) — always visible regardless of banner
 	if m.updateInfo != nil {
 		b.WriteString(m.renderUpdateNotification())
-		b.WriteString("\n")
-	}
-
-	// Billing chip (GH-6053) — one line, only once the daemon has reported.
-	if chip := m.renderBillingChip(); chip != "" {
-		b.WriteString(lipgloss.PlaceHorizontal(m.effectivePanelTotalWidth(), lipgloss.Right, chip))
 		b.WriteString("\n")
 	}
 
@@ -2895,28 +2933,27 @@ func (m Model) renderStalenessBanner() string {
 	return renderPanelStyled("ledger stale", "", content.String(), tw, warnChrome)
 }
 
-// billingChipText is the chip text: "billing <mode>" for the config's mode,
-// "billing <mode>·<source>" when an override is in force. "" before the first
-// BillingModeMsg.
-func billingChipText(b *BillingModeMsg) string {
-	if b == nil || b.Mode == "" {
+// billingModeLabel is the billing word on banner line 2 (GH-6350):
+// "subscription" or "api tokens". An override shows the same word (styled as
+// a warning by the caller); its source is not shown. "" before the first
+// BillingModeMsg and for any mode that is not one of the two — never "unset".
+func billingModeLabel(b *BillingModeMsg) string {
+	if b == nil {
 		return ""
 	}
-	if b.Source == "" || b.Source == "config" {
-		return "billing " + b.Mode
+	switch b.Mode {
+	case memory.BillingModeSubscription:
+		return "subscription"
+	case memory.BillingModeAPIKey:
+		return "api tokens"
 	}
-	return "billing " + b.Mode + "·" + b.Source
+	return ""
 }
 
-func (m Model) renderBillingChip() string {
-	text := billingChipText(m.billing)
-	if text == "" {
-		return ""
-	}
-	if m.billing.Source != "" && m.billing.Source != "config" {
-		return warningStyle.Render(text)
-	}
-	return dimStyle.Render(text)
+// billingOverridden reports whether the mode in b comes from a runtime
+// override rather than the config.
+func billingOverridden(b *BillingModeMsg) bool {
+	return b != nil && b.Source != "" && b.Source != "config"
 }
 
 // renderUpdateNotification renders the update notification panel (amber
