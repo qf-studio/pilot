@@ -3171,17 +3171,17 @@
         "title": "Secret exposure hardening \u2014 value-based redaction, leak detection, adapter canary tests, agent isolation",
         "status": "dispatched",
         "concepts": [
-          "api",
-          "skills",
-          "authentication",
-          "database",
           "markers",
+          "database",
+          "workflow",
+          "api",
           "knowledge",
-          "testing",
+          "deployment",
+          "skills",
           "theory of mind",
           "context",
-          "workflow",
-          "deployment"
+          "testing",
+          "authentication"
         ]
       },
       "TASK-651": {
@@ -3189,29 +3189,41 @@
         "title": "Agent isolation \u2014 agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM",
         "status": "dispatched",
         "concepts": [
-          "simplification",
-          "context",
-          "api",
-          "workflow",
           "skills",
-          "deployment",
-          "theory of mind",
-          "authentication",
           "frontend",
-          "database",
+          "authentication",
+          "simplification",
+          "deployment",
+          "workflow",
+          "theory of mind",
+          "api",
+          "context",
           "testing",
+          "database",
           "markers"
         ]
       },
       "TASK-652": {
         "path": ".agent/tasks/TASK-652-dashboard-banner-model-line-billing-word.md",
         "title": "Dashboard banner \u2014 model line and a plain billing word, both inside the banner",
+        "status": "completed",
+        "concepts": [
+          "context",
+          "api",
+          "knowledge",
+          "deployment",
+          "testing"
+        ]
+      },
+      "TASK-653": {
+        "path": ".agent/tasks/TASK-653-one-price-table.md",
+        "title": "One price table \u2014 the same rates for the cost estimate, the dashboard card and the replay recorder",
         "status": "dispatched",
         "concepts": [
-          "testing",
-          "context",
           "knowledge",
-          "api",
+          "context",
+          "theory of mind",
+          "testing",
           "deployment"
         ]
       }
@@ -9071,6 +9083,79 @@
         ],
         "created": "2026-11-13",
         "last_validated": "2026-11-13"
+      },
+      "mem-310": {
+        "type": "decision",
+        "summary": "Billing text: one word by mode (founder call 11-13) - plain, short, no control that starts per-token charges",
+        "path": "memories/decisions/mem-310.md",
+        "confidence": 0.95,
+        "concepts": [
+          "context",
+          "api",
+          "knowledge",
+          "deployment",
+          "testing"
+        ],
+        "created": "2026-11-13",
+        "last_validated": "2026-11-13"
+      },
+      "mem-311": {
+        "type": "decision",
+        "summary": "Place of model text: line 2 left (founder call 11-13) - two models never fit on line 1 at 69 columns",
+        "path": "memories/decisions/mem-311.md",
+        "confidence": 0.95,
+        "concepts": [
+          "context",
+          "api",
+          "knowledge",
+          "deployment",
+          "testing"
+        ],
+        "created": "2026-11-13",
+        "last_validated": "2026-11-13"
+      },
+      "mem-312": {
+        "type": "decision",
+        "summary": "Unset mode: the credential in use - the operator asks \"who pays\", not \"what is configured\"",
+        "path": "memories/decisions/mem-312.md",
+        "confidence": 0.95,
+        "concepts": [
+          "context",
+          "api",
+          "knowledge",
+          "deployment",
+          "testing"
+        ],
+        "created": "2026-11-13",
+        "last_validated": "2026-11-13"
+      },
+      "mem-313": {
+        "type": "decision",
+        "summary": "Overflow on line 2: cut with an ellipsis - a dropped model text is how this task started",
+        "path": "memories/decisions/mem-313.md",
+        "confidence": 0.95,
+        "concepts": [
+          "context",
+          "api",
+          "knowledge",
+          "deployment",
+          "testing"
+        ],
+        "created": "2026-11-13",
+        "last_validated": "2026-11-13"
+      },
+      "mem-314": {
+        "type": "pitfall",
+        "summary": "A spec for a security control must not prescribe a mechanism that the attacker can reach. TASK-650 L8 asked for an empty hooks directory in the daemon temp directory; a session of the same Unix user found it and wrote a pre-push hook into it (review of PR #6348). Prescribe the property (no hook can run), prefer a value that cannot exist on disk (a path below /dev/null), and let a research pass confirm the mechanism before the spec names it.",
+        "path": "memories/pitfalls/mem-314.md",
+        "confidence": 0.9,
+        "concepts": [
+          "security",
+          "git",
+          "git-push"
+        ],
+        "created": "2026-11-13",
+        "last_validated": "2026-11-13"
       }
     }
   },
@@ -13279,6 +13364,51 @@
       "from": "mem-309",
       "to": "TASK-652",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-653",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-653",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-653",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-653",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "mem-310",
+      "to": "TASK-652",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-311",
+      "to": "TASK-652",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-312",
+      "to": "TASK-652",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-313",
+      "to": "TASK-652",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-314",
+      "to": "TASK-650",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -13466,7 +13596,11 @@
       "TASK-649",
       "TASK-651",
       "TASK-650",
-      "TASK-652"
+      "TASK-652",
+      "mem-310",
+      "mem-311",
+      "mem-312",
+      "mem-313"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -13877,7 +14011,12 @@
       "TASK-649",
       "TASK-651",
       "TASK-650",
-      "TASK-652"
+      "TASK-652",
+      "TASK-653",
+      "mem-310",
+      "mem-311",
+      "mem-312",
+      "mem-313"
     ],
     "conversational-bot": [
       "mem-036",
@@ -14179,7 +14318,12 @@
       "TASK-649",
       "TASK-651",
       "TASK-650",
-      "TASK-652"
+      "TASK-652",
+      "TASK-653",
+      "mem-310",
+      "mem-311",
+      "mem-312",
+      "mem-313"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -14454,7 +14598,8 @@
       "test-asserts-on-pre-rewrite-sha-is-vacuous",
       "tag-push-runs-full-pre-push-gate",
       "mem-299",
-      "mem-308"
+      "mem-308",
+      "mem-314"
     ],
     "git-operations": [
       "mem-011",
@@ -14695,7 +14840,12 @@
       "TASK-647",
       "TASK-649",
       "TASK-650",
-      "TASK-652"
+      "TASK-652",
+      "TASK-653",
+      "mem-310",
+      "mem-311",
+      "mem-312",
+      "mem-313"
     ],
     "labels": [
       "mem-100",
@@ -15003,7 +15153,8 @@
       "mem-304",
       "mem-305",
       "mem-306",
-      "mem-308"
+      "mem-308",
+      "mem-314"
     ],
     "ship-test": [],
     "shipped-check": [
@@ -15264,7 +15415,12 @@
       "TASK-649",
       "TASK-650",
       "TASK-651",
-      "TASK-652"
+      "TASK-652",
+      "TASK-653",
+      "mem-310",
+      "mem-311",
+      "mem-312",
+      "mem-313"
     ],
     "testing-quality": [
       "TASK-384",
@@ -15507,7 +15663,8 @@
       "TASK-634",
       "TASK-646",
       "TASK-651",
-      "TASK-650"
+      "TASK-650",
+      "TASK-653"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -15809,7 +15966,8 @@
       "executor-swallowed-rejected-push-as-success-branch-exists-is-not-pushed",
       "infra-repicks-bypass-hard-cap-backoff-and-identical-failure-streak",
       "mem-303",
-      "mem-308"
+      "mem-308",
+      "mem-314"
     ],
     "continuation": [
       "executor-swallowed-rejected-push-as-success-branch-exists-is-not-pushed"
@@ -15925,11 +16083,11 @@
       "TASK-651"
     ]
   },
-  "last_updated": "2026-11-13T16:48:08.635206+00:00",
+  "last_updated": "2026-11-13T17:42:10.671715+00:00",
   "stats": {
-    "total_nodes": 786,
-    "total_edges": 841,
-    "memory_count": 434
+    "total_nodes": 792,
+    "total_edges": 850,
+    "memory_count": 439
   },
   "metadata": {
     "last_updated": null

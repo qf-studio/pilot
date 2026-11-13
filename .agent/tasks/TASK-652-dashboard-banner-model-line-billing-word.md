@@ -1,6 +1,6 @@
 # TASK-652: Dashboard banner — model line and a plain billing word, both inside the banner
 
-**Status**: 🚀 **D1 DISPATCHED 2026-11-13** → [#6350](https://github.com/qf-studio/pilot/issues/6350) (`pilot` + `no-decompose`); display change, normal review
+**Status**: ✅ **D1 merged 2026-11-13 17:19Z** — [#6350](https://github.com/qf-studio/pilot/issues/6350) → PR#6352, first run on `claude-opus-5-5`, first try. Waits for the next release to reach the box; then check the two `Done` lines and archive.
 **Created**: 2026-11-13
 **Assignee**: Pilot
 
@@ -46,7 +46,7 @@
 
 ### Phase 1: leg D1 (Pilot)
 
-- [ ] **D1** two-line banner → [#6350](https://github.com/qf-studio/pilot/issues/6350), dispatched 11-13.
+- [x] **D1** two-line banner → [#6350](https://github.com/qf-studio/pilot/issues/6350), dispatched 11-13.
 
 ---
 

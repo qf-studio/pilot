@@ -1,6 +1,6 @@
 # TASK-651: Agent isolation — agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM
 
-**Status**: 🚀 **U0 and U1 merged; F1 and B1 dispatched; U2–U5 dispatch-ready (2026-11-13).** U1 [#6321](https://github.com/qf-studio/pilot/issues/6321) → PR#6335 merged 11-12 12:50Z, fix [#6336](https://github.com/qf-studio/pilot/issues/6336) → PR#6342, both in v2.320.0, both without the draft hold (no session ran). Post-merge run-it review 11-13 with a real sudo: GO-WITH-NOTES — safe with the option empty, a sound base for U2, **not ready for a set option**: a context timeout does not stop the agent at seven spawn sites, the anthropic-api backend runs model bash as the daemon user, `run_as_group` is required in practice → **F1 [#6344](https://github.com/qf-studio/pilot/issues/6344)**. Host script: #6328 parked by the pre-PR review (one blocking defect, eleven minor), closed and replaced by **B1 [#6345](https://github.com/qf-studio/pilot/issues/6345)** from current main (first run kept on branch `pilot/GH-6328-run1`). **O4 must not run on the box before B1 merges and passes a container review.** Order now: F1 → U2 → U3 → U4 → U5, one at a time; B1 and TASK-650 L8 touch other files. **O1 done 2026-11-12 09:14Z** (backup `/root/90-cloud-init-users.bak-task651-o1`). Waiting for the founder: O2 (create the GitHub App) and O3 (new secret values in SSM). Design: `.agent/system/agent-isolation-design.md`.
+**Status**: 🚀 **U0, U1 and F1 merged; F2 and the second run of B1 dispatched; U2–U5 dispatch-ready (2026-11-13 pm).** F1 [#6344](https://github.com/qf-studio/pilot/issues/6344) → PR#6349 merged 17:09Z after a run-it review with a real sudo (GO-WITH-NOTES: unchanged with the option empty at twelve spawn sites). **The option must stay empty:** two blockers → **F2 [#6354](https://github.com/qf-studio/pilot/issues/6354)**: the kill misses the agent when sudo uses a terminal (`use_pty` and a daemon in tmux — the box case) → sudo in a new session without a terminal, plus a preflight probe; the API backends were refused for bash only → refused at `Execute`, `executeTool` and `NewBackend`. B1 [#6345](https://github.com/qf-studio/pilot/issues/6345): first run parked by the pre-PR review (one blocking defect in undo, eight minor; the fix round had no time left); body amended with the defect list and the hold label cleared 11-13, the run continues on branch `pilot/GH-6345`. **O4 must not run on the box before B1 merges and passes a container review.** Order now: F2 → U2 → U3 → U4 → U5, one at a time. **O1 done 2026-11-12 09:14Z.** Waiting for the founder: O2 (GitHub App) and O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
 **Created**: 2026-11-12
 **Assignee**: Pilot (one leg at a time) + operator steps by a Navigator session with founder consent
 **Parent**: TASK-650 leg H1
@@ -52,14 +52,15 @@
 ### Phase C — code legs (Pilot), each merged with the option empty
 
 - [x] **U0** (PR#6325 merged; fixes in #6328 before any host run) host setup script with dry-run and undo, tested with a mocked PATH (dispatch-ready, below).
-- [ ] **F1** ([#6344](https://github.com/qf-studio/pilot/issues/6344), dispatched 11-13) fixes from the run-it review of U1: cancel through the process group in the constructor, anthropic-api refused, `run_as_group` required, guard files fail closed, name check. Must merge before U2 (same file `agent_command.go`).
+- [ ] **F2** ([#6354](https://github.com/qf-studio/pilot/issues/6354), dispatched 11-13) blockers from the run-it review of F1: kill under a sudo terminal, API backends refused as a whole, gh guard journal. Must merge before U2.
+- [x] **F1** (PR#6349 merged 11-13) ([#6344](https://github.com/qf-studio/pilot/issues/6344), dispatched 11-13) fixes from the run-it review of U1: cancel through the process group in the constructor, anthropic-api refused, `run_as_group` required, guard files fail closed, name check. Must merge before U2 (same file `agent_command.go`).
 - [ ] **B1** ([#6345](https://github.com/qf-studio/pilot/issues/6345), dispatched 11-13) host script, second run; replaces #6328.
 - [x] **U1** (PR#6335 + PR#6342 merged 11-12) config option, one spawn constructor for every model process, allowlist environment, kill through sudo, fail-closed preflight, group-readable guard files (dispatch-ready, below).
 - [ ] **U2** (dispatch-ready, below; needs U1 on main) workspace as an agent-owned clone under the workspace root (full fetch of the base branch, no alternates), one constructor for every git command in the workspace, cleanup and sweeps as the agent user, Navigator copy without a followed link, preflight for the root, `use_worktree` and the pool.
 - [ ] **U3** (dispatch-ready, below; needs U2) hand-over as a bundle that the agent writes and the daemon fetches into `refs/pilot/handover/<task>`; the secret gate and the push run only in the daemon's repository, with replace refs ignored and hooks off; PR creation, recovery ref and the preserve commit follow. Closes the gate-trust class of mem-308 when the option is set (seven shapes; the tamper table is the test list of the leg).
 - [ ] **U4** (dispatch-ready, below; needs U2) quality gates, workflow hooks, evidence commands and the lint fix as the agent user with the allowlist environment; `run_as_env` for values such as the Go caches.
 - [ ] **U5** (dispatch-ready, below; needs U3 and, on the box, O2) read-only installation token per run in a file for the `gh` shim and a git credential helper (also serves the fetch of a private module); per-project override of the option.
-- **Order (founder call 11-12):** U1 → F1 → U2 → U3 → U4 → U5, one at a time. The poller holds legs that touch the same directory, so a parallel dispatch gains nothing. Check for an open post-merge-review issue on the same files before each dispatch (mem-301).
+- **Order (founder call 11-12):** U1 → F1 → F2 → U2 → U3 → U4 → U5, one at a time. The poller holds legs that touch the same directory, so a parallel dispatch gains nothing. Check for an open post-merge-review issue on the same files before each dispatch (mem-301).
 
 ### Phase S — switch
 
@@ -367,6 +368,51 @@ The workspace, git commands, quality gates, hooks and the GitHub token (later le
 
 - Navigator TASK-651 in this repo · review of PR #6335 and PR #6342
 
+### LEG F2 — repo: qf-studio/pilot — title: fix(executor): run_as_user — the kill reaches the agent when sudo uses a terminal, API backends are refused as a whole, the gh guard journal is writable for the agent
+
+probe: present qf-studio/pilot func[[:space:]]killAgentProcessGroup\(
+probe: present qf-studio/pilot func[[:space:]]sudoProbeOK\(
+probe: present qf-studio/pilot func[[:space:]]RunAsUserPreflightError\(
+probe: absent  qf-studio/pilot func[[:space:]]runAsBackendErro[r]\(
+probe: absent  qf-studio/pilot Setsi[d]:[[:space:]]+true
+
+## Context
+
+Navigator TASK-651. The option run_as_user starts every model process as a second Unix user: agentCommand in `internal/executor/agent_command.go` builds a sudo command, sets a process group (Setpgid) and sets a cancel that calls killAgentProcessGroup; that function runs kill as the agent user on the negative pid of the sudo process. The option is empty on every host. A run-it review with a real sudo found two defects that must be fixed before the option is set anywhere. With the option empty nothing may change.
+
+1. The kill misses the agent when sudo uses a terminal. With `Defaults use_pty` in sudoers (the default of several distributions) and a daemon that has a controlling terminal (a daemon in tmux), sudo runs the command in a new session: the tree is sudo (group P), a second sudo (session S), the agent (group A). The kill of group P fails with exit 1. Sites with a context return only after the wait delay; kills without a context (the watchdog paths in `internal/executor/backend_claudecode.go`, `internal/executor/backend_qwencode.go`, `internal/executor/parallel.go` and `internal/executor/runner.go`, and StopServer in `internal/executor/backend_opencode.go`) leave the agent processes alive. In the same review, a sudo with use_pty and NO terminal on the daemon side used no pty, and the kill worked.
+2. The API backends are refused for bash only. The preflight refuses the types anthropic-api and openai-api, but that refusal only stops agentCommand. Execute in `internal/executor/backend_anthropic.go` and in `internal/executor/backend_openai.go` does not read it, and executeTool still runs read_file, write_file and edit_file as the daemon user. The preflight log line "model processes will not start" is false for these backends.
+
+Three more points from the same review: three sites call configureProcessGroup again after agentCommand (`internal/executor/backend_claudecode.go`, `internal/executor/backend_qwencode.go`, `internal/executor/parallel.go`), which replaces the SysProcAttr of the constructor and sets a wait delay of 5 seconds; a run_as_user value of spaces only counts as empty, so the model runs as the daemon user without a message; the agent cannot create the journal file of the gh guard, because setupGhGuardShim in `internal/executor/ghguard_spawn.go` makes the directory 0750 and the journal write in `internal/executor/ghguard/policy.go` creates the file itself, so denials are not recorded.
+
+## Scope
+
+1. No terminal for sudo. With the option set, agentCommand starts sudo in a new session (SysProcAttr with Setsid true, and without Setpgid, because both together fail) and with standard input from the null device when the caller sets none. Then sudo has no controlling terminal, pid, group and session of the sudo process are equal, and the kill of the negative pid reaches the agent. With the option empty the constructor result is unchanged.
+2. The three sites that call configureProcessGroup after agentCommand must not replace the SysProcAttr or shorten the wait delay when the option is set. Give them one helper, or let configureProcessGroup keep a session that is already set. With the option empty these sites behave as today.
+3. Preflight probe: sudoProbeOK runs its probe with the same SysProcAttr and standard input as item 1. Add a second probe that runs, as the agent user through the same sudo argv, a command that prints whether it has a controlling terminal (for example `sh -c 'ps -o tty= -p $$'`), and expect none. When the agent process has a terminal, the preflight fails closed with "run_as_user: sudo gives the agent a terminal (use_pty); the kill would not reach it".
+4. Kill result: when killAgentProcessGroup gets a non-zero exit from the kill and the process is still alive after 2 seconds, log one Error line with the pid and return the error to the caller; callers without a context must not report a successful stop.
+5. API backends: a function runAsBackendError returns an error when the option is set and the backend type runs tools inside the daemon process ("run_as_user is not supported with the <type> backend"). Call it as the first statement of Execute in both API backends and at the start of executeTool, so that no tool runs, and in NewBackend in `internal/executor/backend_factory.go`, so that the daemon fails at start with that message. Correct the preflight log line so that it is true for these backends.
+6. A run_as_user or run_as_group value that is not empty and holds only white space fails the preflight ("run_as_user is blank"); it does not count as empty.
+7. gh guard journal: with the option set, setupGhGuardShim creates the journal file itself, empty, with mode 0660 and the agent group. The directory stays 0750 and owned by the daemon user. With the option empty nothing changes.
+8. Tests, table-driven, with the mock sudo script on PATH that the present tests use: with the option set, the command of every spawn site has Setsid true, Setpgid false and a standard input; the three sites of item 2 keep them and a wait delay of 10 seconds; with the option empty the SysProcAttr, standard input, cancel and wait delay of every site equal the present ones; the terminal probe fails the preflight when the mock prints a terminal name and passes for "?"; a failed kill with a live process returns an error and logs one Error line; Execute, executeTool (each of the four tools) and NewBackend refuse both API backend types with the option set and work with it empty; a blank value fails the preflight; the journal file exists with mode 0660 and the directory keeps 0750.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/... ./cmd/pilot/ -run 'AgentCommand|RunAsUser|ProcessGroup|GhGuard|Backend'` passes on Linux and on macOS; paste the output into the PR body.
+- [ ] Set Setpgid in place of Setsid in the constructor -> the session test fails.
+- [ ] Let one of the three sites replace the SysProcAttr -> its test fails.
+- [ ] Remove the check from executeTool -> the tool test fails for read_file, write_file and edit_file.
+- [ ] Let a blank value count as empty -> its test fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The workspace, git commands, quality gates and the GitHub token (later legs). A kill by user name. A wrapper process that records the group of the agent. The heartbeat and the resource limits that read the pid of the sudo process. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review of PR #6349
+
 ### LEG B1 — repo: qf-studio/pilot — title: fix(box): agent user setup script, second run — argument validation, shared read on git directories only with a complete undo, proven sudo removal as the last step, firewall without a gap
 
 probe: present qf-studio/pilot restore_cloud_init
@@ -495,3 +541,4 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - U1 → https://github.com/qf-studio/pilot/issues/6321
 - F1 → https://github.com/qf-studio/pilot/issues/6344
 - B1 → https://github.com/qf-studio/pilot/issues/6345
+- F2 → https://github.com/qf-studio/pilot/issues/6354
