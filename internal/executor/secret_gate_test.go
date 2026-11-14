@@ -324,3 +324,105 @@ func TestSecretGate_LateRepositoryDefaultBranchReachesWorktrees(t *testing.T) {
 		t.Errorf("%d entries still pending after the repository resolved", pending)
 	}
 }
+
+// mutation pin: gateRepoKey runs git rev-parse without GitScanConfig -> this test fails
+func TestSecretGate_RepoKeyRunsWithTheGateScanSettings(t *testing.T) {
+	f := newSecretGateFixture(t)
+	stop := recordGitArgv(t)
+	key := gateRepoKey(context.Background(), f.local)
+	argvs := stop()
+
+	var revParse []string
+	for _, argv := range argvs {
+		if gitSubcommand(argv) == "rev-parse" && argv[len(argv)-1] == "--git-common-dir" {
+			revParse = argv
+		}
+	}
+	if revParse == nil {
+		t.Fatalf("gateRepoKey ran no git rev-parse --git-common-dir; recorded %q", argvs)
+	}
+	scan := secretpatterns.GitScanConfig()
+	for i := 0; i+1 < len(scan); i += 2 {
+		if !hasConfig(revParse, scan[i+1]) {
+			t.Errorf("gateRepoKey's git command lacks -c %s: %q", scan[i+1], revParse)
+		}
+	}
+
+	// The settings do not change the key: the repository's common git dir.
+	want, err := filepath.EvalSymlinks(filepath.Join(f.local, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key != filepath.Clean(want) {
+		t.Errorf("gateRepoKey = %q, want %q", key, want)
+	}
+}
+
+// dropGitIdentity takes every git identity away from the daemon's git commands,
+// as on a CI runner or a host with no identity of its own: the fixture's
+// repository identity (GH-6358), the global and system config, the identity
+// variables, and git's guess from the host (user.useConfigOnly).
+func (f *secretGateFixture) dropGitIdentity() {
+	f.t.Helper()
+	f.run("config", "--unset", "user.name")
+	f.run("config", "--unset", "user.email")
+	home := f.t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[user]\n\tuseConfigOnly = true\n"), 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+	f.t.Setenv("HOME", home)
+	f.t.Setenv("XDG_CONFIG_HOME", home)
+	f.t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"} {
+		f.t.Setenv(k, "") // restores the value after the test
+		if err := os.Unsetenv(k); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+}
+
+// The fixture's repository identity hides the identity-less host from every
+// other secret-gate test. This one runs the co-author strip with no identity.
+// The rewrite of a range takes the committer from each commit it rebuilds and
+// strips. The amend of HEAD needs the daemon's own identity: it fails, the
+// strip logs and goes on, and the push publishes the trailer. That gap is
+// known and not a regression (internal/executor/git.go amendHeadWithoutAnthropicCoAuthor,
+// out of scope for GH-6363); when the amend takes the commit's identity, the
+// amend case must assert that the trailer is gone.
+//
+// mutation pin: the fixture identity hides the identity-less case (no dropGitIdentity) -> this test fails
+func TestSecretGate_CoAuthorStripWithoutGitIdentity(t *testing.T) {
+	t.Run("amend of HEAD fails quietly", func(t *testing.T) {
+		f := newSecretGateFixture(t)
+		f.commit("notes.md", "clean\n", "docs: notes\n\n"+claudeCoAuthorTrailer)
+		f.dropGitIdentity()
+
+		var logs strings.Builder
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		t.Cleanup(func() { slog.SetDefault(prev) })
+
+		if err := f.git.Push(context.Background(), "pilot/GH-9", "GH-9"); err != nil {
+			t.Fatalf("push: %v", err)
+		}
+		if !strings.Contains(logs.String(), "Failed to strip co-author trailer before push") {
+			t.Errorf("the amend did not fail without a git identity; logs:\n%s", logs.String())
+		}
+		if msgs := f.branchMessages(); !strings.Contains(msgs, "anthropic.com") {
+			t.Errorf("the amend stripped the trailer without a git identity:\n%s", msgs)
+		}
+	})
+	t.Run("rewrite of the range strips", func(t *testing.T) {
+		f := newSecretGateFixture(t)
+		f.commit("notes.md", "clean\n", "docs: notes\n\n"+claudeCoAuthorTrailer)
+		f.commit("more.md", "clean\n", "docs: more\n\n"+claudeCoAuthorTrailer)
+		f.dropGitIdentity()
+
+		if err := f.git.Push(context.Background(), "pilot/GH-9", "GH-9"); err != nil {
+			t.Fatalf("push: %v", err)
+		}
+		if msgs := f.branchMessages(); strings.Contains(msgs, "anthropic.com") {
+			t.Errorf("the rewrite did not strip the trailer without a git identity:\n%s", msgs)
+		}
+	})
+}
