@@ -948,9 +948,29 @@ func stripAnthropicCoAuthorLines(msg string) string {
 	return strings.TrimRight(anthropicCoAuthorRe.ReplaceAllString(msg, ""), " \t\r\n") + "\n"
 }
 
-func (g *GitOperations) gitOutput(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+// gitHardened is the one constructor of the git commands of the co-author
+// strip, which runs in the worktree the session can write directly before the
+// push secret gate (GH-6353). Decision: it states what the command needs instead
+// of reading the repository's config: hooks off and the gate's scan settings
+// (secretpatterns.GitScanConfig: no signature display, no gpg program), no
+// commit signing and no fsmonitor program, GIT_NO_REPLACE_OBJECTS=1 so a replace
+// ref of the session cannot substitute a commit or tree the strip reads, and
+// --no-show-signature on every git log and git show. Without it the amend, the
+// rewrite and the ref update ran the session's hooks and gpg.program with the
+// daemon's environment.
+func (g *GitOperations) gitHardened(ctx context.Context, args ...string) *exec.Cmd {
+	if len(args) > 0 && (args[0] == "log" || args[0] == "show") {
+		args = append([]string{args[0], "--no-show-signature"}, args[1:]...)
+	}
+	full := append(secretpatterns.GitScanConfig(), "-c", "commit.gpgSign=false", "-c", "core.fsmonitor=false")
+	cmd := exec.CommandContext(ctx, "git", append(full, args...)...)
 	cmd.Dir = g.projectPath
+	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
+	return cmd
+}
+
+func (g *GitOperations) gitOutput(ctx context.Context, args ...string) (string, error) {
+	cmd := g.gitHardened(ctx, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
@@ -1011,8 +1031,7 @@ func (g *GitOperations) amendHeadWithoutAnthropicCoAuthor(ctx context.Context) e
 	if err != nil {
 		return err
 	}
-	amend := exec.CommandContext(ctx, "git", "commit", "--amend", "--only", "--no-verify", "--allow-empty", "-F", "-")
-	amend.Dir = g.projectPath
+	amend := g.gitHardened(ctx, "commit", "--amend", "--only", "--no-verify", "--allow-empty", "-F", "-")
 	amend.Stdin = strings.NewReader(stripAnthropicCoAuthorLines(msg))
 	if output, err := amend.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to amend commit message: %w: %s", err, output)
@@ -1070,9 +1089,8 @@ func (g *GitOperations) rewriteCommitMessages(ctx context.Context, commits []str
 			args = append(args, "-p", p)
 		}
 		args = append(args, "-F", "-")
-		cmd := exec.CommandContext(ctx, "git", args...)
-		cmd.Dir = g.projectPath
-		cmd.Env = append(os.Environ(),
+		cmd := g.gitHardened(ctx, args...)
+		cmd.Env = append(cmd.Env,
 			"GIT_AUTHOR_NAME="+f[0], "GIT_AUTHOR_EMAIL="+f[1], "GIT_AUTHOR_DATE="+f[2],
 			"GIT_COMMITTER_NAME="+f[3], "GIT_COMMITTER_EMAIL="+f[4], "GIT_COMMITTER_DATE="+f[5])
 		cmd.Stdin = strings.NewReader(stripAnthropicCoAuthorLines(msg))
@@ -1087,7 +1105,7 @@ func (g *GitOperations) rewriteCommitMessages(ctx context.Context, commits []str
 	if !ok {
 		return nil
 	}
-	if out, err := exec.CommandContext(ctx, "git", "-C", g.projectPath, "update-ref",
+	if out, err := g.gitHardened(ctx, "update-ref",
 		"-m", "pilot: strip Anthropic co-author trailer", "HEAD", newHead, oldHead).CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to move branch to rewritten commits: %w: %s", err, out)
 	}
@@ -1135,8 +1153,9 @@ func branchRefspec(branch string) string {
 // annotated tag the gate does not scan (GH-6334). The same two-fold form turns
 // submodule recursion off (push.recurseSubmodules=on-demand would send a branch
 // of a submodule the gate does not scan), and hooks are off through an empty
-// core.hooksPath, so a pre-push hook the session wrote does not run with the
-// push's credentials (GH-6343).
+// core.hooksPath that cannot exist (secretpatterns.NoHooksPath), so a pre-push
+// hook the session wrote does not run with the push's credentials (GH-6343,
+// GH-6353).
 func pushArgs(options ...string) []string {
 	args := append(secretpatterns.HooksOffArgs(), "-c", "push.followTags=false", "-c", "push.recurseSubmodules=no",
 		"push", "--no-follow-tags", "--no-recurse-submodules")

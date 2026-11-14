@@ -1,6 +1,7 @@
 package secretpatterns
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -436,6 +437,12 @@ func checkRange(ctx context.Context, dir, diffBase string, logArgs []string, hea
 	if err := checkCommitEncodings(ctx, dir, logArgs); err != nil {
 		return err
 	}
+	if err := checkCommitNUL(ctx, dir, logArgs); err != nil {
+		return err
+	}
+	if cerr := ctxError(ctx); cerr != nil {
+		return cerr
+	}
 	msgs, err := gitOutput(ctx, dir, append([]string{"log", "--no-show-signature", "--no-textconv", "--no-ext-diff", "--format=%B"}, logArgs...)...)
 	if cerr := ctxError(ctx); cerr != nil {
 		return cerr
@@ -499,6 +506,98 @@ func checkCommitEncodings(ctx context.Context, dir string, logArgs []string) err
 	return nil
 }
 
+// checkCommitNUL refuses a range that holds a commit whose raw object has a 0
+// byte. git prints a message only up to its first NUL, so the scan would read the
+// first part while the push sends the whole object (GH-6353). The objects are
+// read raw, in one cat-file --batch call over the commit list, through the
+// gate's exec helper (no replace refs, the gate's config).
+//
+// Tags are not checked: every push the gate clears sends refs/heads refspecs with
+// --no-follow-tags and push.followTags=false, so no annotated tag object leaves
+// with it.
+func checkCommitNUL(ctx context.Context, dir string, logArgs []string) error {
+	list, err := gitOutput(ctx, dir, append([]string{"rev-list"}, logArgs...)...)
+	if cerr := ctxError(ctx); cerr != nil {
+		return cerr
+	}
+	if err != nil {
+		return fmt.Errorf("secret gate: git rev-list: %w", err)
+	}
+	if len(bytes.TrimSpace(list)) == 0 {
+		return nil
+	}
+	args := append(GitScanConfig(), "cat-file", "--batch")
+	defer gitCallDone(args)
+	cmd := gitCommand(ctx, dir, args...)
+	cmd.Stdin = bytes.NewReader(list)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, perr := cmd.StdoutPipe()
+	if perr != nil {
+		return fmt.Errorf("secret gate: git cat-file: %w", perr)
+	}
+	if serr := cmd.Start(); serr != nil {
+		return fmt.Errorf("secret gate: git cat-file: %w", serr)
+	}
+	verdict := readBatchForNUL(bufio.NewReader(stdout))
+	if verdict != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		if cerr := ctxError(ctx); cerr != nil {
+			return cerr
+		}
+		return verdict
+	}
+	if werr := cmd.Wait(); werr != nil {
+		if cerr := ctxError(ctx); cerr != nil {
+			return cerr
+		}
+		return fmt.Errorf("secret gate: git cat-file: %w: %s", werr, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// readBatchForNUL reads cat-file --batch output ("<sha> <type> <size>\n",
+// the object, "\n" per record) and returns a *PushScanError for the first
+// commit that holds a 0 byte. An object is streamed, never held whole.
+func readBatchForNUL(r *bufio.Reader) error {
+	chunk := make([]byte, 64<<10)
+	for {
+		header, err := r.ReadString('\n')
+		if err == io.EOF && header == "" {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("secret gate: git cat-file: %w", err)
+		}
+		f := strings.Fields(header)
+		if len(f) != 3 {
+			return fmt.Errorf("secret gate: git cat-file: unexpected record %q", printableValue(strings.TrimSpace(header)))
+		}
+		size, err := strconv.ParseInt(f[2], 10, 64)
+		if err != nil || size < 0 {
+			return fmt.Errorf("secret gate: git cat-file: unexpected size %q", printableValue(f[2]))
+		}
+		nul := false
+		for size > 0 {
+			n, rerr := r.Read(chunk[:min(int64(len(chunk)), size)])
+			if bytes.IndexByte(chunk[:n], 0) >= 0 {
+				nul = true
+			}
+			size -= int64(n)
+			if rerr != nil && size > 0 {
+				return fmt.Errorf("secret gate: git cat-file: %w", rerr)
+			}
+		}
+		if nul {
+			return &PushScanError{Reason: fmt.Sprintf("commit %s holds a NUL byte; the commit is not pushed", shortSHA([]byte(f[0])))}
+		}
+		if _, err := r.Discard(1); err != nil { // the newline after the object
+			return fmt.Errorf("secret gate: git cat-file: %w", err)
+		}
+	}
+}
+
 // isUTF8Name reports whether an encoding header names UTF-8: any case, with or
 // without the dash.
 func isUTF8Name(name string) bool {
@@ -542,7 +641,7 @@ func scanCommits(ctx context.Context, dir string, logArgs []string, opts PushOpt
 	start, msgMark, patchMark := []byte(mark+"S\n"), []byte("\n"+mark+"M\n"), []byte("\n"+mark+"P\n")
 	format := "--format=" + mark + "S%n%H%n" + mark + "M%n%B%n" + mark + "P"
 
-	args := append(gitScanConfig(), "log", "--no-show-signature", "-p", "--cc", "--text", "--no-textconv", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--reverse", "--no-color", format)
+	args := append(GitScanConfig(), "log", "--no-show-signature", "-p", "--cc", "--text", "--no-textconv", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--reverse", "--no-color", format)
 	args = append(args, logArgs...)
 	defer gitCallDone(args)
 	cmd := gitCommand(ctx, dir, args...)
@@ -732,14 +831,16 @@ func gitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	return cmd
 }
 
-// gitScanConfig is the -c arguments of every git call of the gate. Decision:
+// GitScanConfig is the -c arguments of every git call of the gate, exported for
+// the daemon's other git commands in the same repository (the co-author strip
+// before a push). Decision:
 // the repository is writable by the session, so the gate states what it needs
 // instead of reading the repository's config: log.showRoot=true, or a root
 // commit shows no patch when the config says false (GH-6334). The rest closes
 // the ways the session's config makes a gate command run a program or read
 // re-encoded text: hooks off, no signature display and no gpg program, and
 // UTF-8 output whatever i18n.logOutputEncoding says (GH-6343).
-func gitScanConfig() []string {
+func GitScanConfig() []string {
 	return append([]string{
 		"-c", "core.quotepath=false",
 		"-c", "log.showRoot=true",
@@ -749,46 +850,22 @@ func gitScanConfig() []string {
 	}, HooksOffArgs()...)
 }
 
-var (
-	emptyHooksOnce sync.Once
-	emptyHooksPath string
-)
-
-// noHooksPath is EmptyHooksDir when the daemon could not create the directory:
-// nothing can exist below /dev/null, so git finds no hook there either.
-const noHooksPath = "/dev/null/pilot-empty-hooks"
-
-// EmptyHooksDir returns the path of an empty directory the daemon creates once
-// per process, with mode 0700, in its own temp directory and not inside any
-// repository. Every git command the daemon runs in a repository the session can
-// write passes -c core.hooksPath=<this path>, so a hook the session wrote into
-// the repository's hooks directory never runs with the daemon's credentials
-// (GH-6343). When the directory cannot be created the path is one that cannot
-// exist, which also finds no hook.
-func EmptyHooksDir() string {
-	emptyHooksOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "pilot-empty-hooks-")
-		if err != nil {
-			slog.Warn("could not create the empty hooks directory; git hooks stay off through an unusable path", slog.Any("error", err))
-			emptyHooksPath = noHooksPath
-			return
-		}
-		if err := os.Chmod(dir, 0o700); err != nil {
-			slog.Warn("could not restrict the empty hooks directory", slog.Any("error", err))
-		}
-		emptyHooksPath = dir
-	})
-	return emptyHooksPath
-}
+// NoHooksPath is the core.hooksPath of every git command the daemon runs in a
+// repository the session can write. Decision: a path below /dev/null, which
+// cannot exist, so git finds no hook there and no process can create one. A real
+// empty directory in the daemon's temp directory was writable by the session,
+// which runs as the same Unix user and reads the path from the argv of git: a
+// pre-push script written into it ran inside the daemon's push (GH-6353).
+const NoHooksPath = "/dev/null/pilot-empty-hooks"
 
 // HooksOffArgs is the git -c arguments that turn every hook off.
 func HooksOffArgs() []string {
-	return []string{"-c", "core.hooksPath=" + EmptyHooksDir()}
+	return []string{"-c", "core.hooksPath=" + NoHooksPath}
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	defer gitCallDone(args)
-	cmd := gitCommand(ctx, dir, append(gitScanConfig(), args...)...)
+	cmd := gitCommand(ctx, dir, append(GitScanConfig(), args...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -804,7 +881,7 @@ var errScanTooLarge = errors.New("git output too large to scan")
 // gitOutputMax is gitOutput that stops reading, and kills git, past max bytes.
 func gitOutputMax(ctx context.Context, dir string, max int64, args ...string) ([]byte, error) {
 	defer gitCallDone(args)
-	cmd := gitCommand(ctx, dir, append(gitScanConfig(), args...)...)
+	cmd := gitCommand(ctx, dir, append(GitScanConfig(), args...)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
