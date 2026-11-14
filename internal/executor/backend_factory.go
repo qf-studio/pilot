@@ -12,6 +12,12 @@ func NewBackend(config *BackendConfig) (Backend, error) {
 		config = DefaultBackendConfig()
 	}
 
+	// TASK-651: an API backend runs the tools of the model inside the daemon
+	// process; with run_as_user set the daemon does not start with one.
+	if err := runAsBackendError(config.Type, config.ClaudeCode); err != nil {
+		return nil, err
+	}
+
 	heartbeatTimeout := config.EffectiveHeartbeatTimeout()
 
 	switch config.Type {

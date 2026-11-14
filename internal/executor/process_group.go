@@ -10,7 +10,14 @@ import (
 // configureProcessGroup puts cmd in its own process group with the default
 // WaitDelay (GH-4503). Implementation lives in internal/procgroup, shared
 // with the quality gate runner (GH-6081).
+//
+// A command agentCommand built as the run_as_user user is left as it is: it
+// already runs in a session of its own (Setsid, which Setpgid would break)
+// with the wait delay of the sudo kill (TASK-651).
 func configureProcessGroup(cmd *exec.Cmd) {
+	if _, ok := agentCmdUser(cmd); ok {
+		return
+	}
 	procgroup.Configure(cmd)
 }
 

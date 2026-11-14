@@ -298,7 +298,14 @@ func execEditFile(path, oldStr, newStr string) string {
 	return fmt.Sprintf("[Edited %s]", path)
 }
 
-func executeTool(name string, input map[string]interface{}, cwd string) string {
+// executeTool runs one tool call of the model for the API backend
+// backendType, inside the daemon process. TASK-651: with run_as_user set no
+// tool runs, read_file, write_file and edit_file included: they would read
+// and write as the daemon user.
+func executeTool(backendType, name string, input map[string]interface{}, cwd string) string {
+	if err := runAsBackendError(backendType, nil); err != nil {
+		return "[ERROR: " + err.Error() + ": tool not run]"
+	}
 	switch name {
 	case "bash":
 		cmd, _ := input["command"].(string)
@@ -547,6 +554,9 @@ func (b *AnthropicBackend) parseSSEStream(body io.Reader) (*apiResponse, error) 
 // --- Main Execute Loop ---
 
 func (b *AnthropicBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	if err := runAsBackendError(BackendTypeAnthropicAPI, b.config.claudeCode()); err != nil {
+		return nil, err
+	}
 	if b.apiKey == "" {
 		return nil, fmt.Errorf("no API key configured for anthropic-api backend")
 	}
@@ -720,7 +730,7 @@ func (b *AnthropicBackend) Execute(ctx context.Context, opts ExecuteOptions) (*B
 				_ = json.Unmarshal(tc.Input, &toolInput)
 
 				slog.Info("Tool exec", slog.Int("turn", turn), slog.String("tool", tc.Name))
-				result := executeTool(tc.Name, toolInput, cwd)
+				result := executeTool(BackendTypeAnthropicAPI, tc.Name, toolInput, cwd)
 
 				if opts.EventHandler != nil {
 					opts.EventHandler(BackendEvent{
