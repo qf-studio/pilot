@@ -3171,17 +3171,17 @@
         "title": "Secret exposure hardening \u2014 value-based redaction, leak detection, adapter canary tests, agent isolation",
         "status": "dispatched",
         "concepts": [
-          "markers",
-          "database",
-          "workflow",
-          "api",
-          "knowledge",
           "deployment",
-          "skills",
+          "database",
+          "markers",
+          "workflow",
+          "authentication",
           "theory of mind",
-          "context",
+          "knowledge",
+          "api",
           "testing",
-          "authentication"
+          "skills",
+          "context"
         ]
       },
       "TASK-651": {
@@ -3189,18 +3189,18 @@
         "title": "Agent isolation \u2014 agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM",
         "status": "dispatched",
         "concepts": [
+          "api",
+          "theory of mind",
+          "database",
+          "deployment",
+          "markers",
+          "workflow",
+          "simplification",
           "skills",
           "frontend",
-          "authentication",
-          "simplification",
-          "deployment",
-          "workflow",
-          "theory of mind",
-          "api",
           "context",
           "testing",
-          "database",
-          "markers"
+          "authentication"
         ]
       },
       "TASK-652": {
@@ -3218,13 +3218,13 @@
       "TASK-653": {
         "path": ".agent/tasks/TASK-653-one-price-table.md",
         "title": "One price table \u2014 the same rates for the cost estimate, the dashboard card and the replay recorder",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
-          "knowledge",
           "context",
-          "theory of mind",
+          "deployment",
           "testing",
-          "deployment"
+          "theory of mind",
+          "knowledge"
         ]
       }
     },
@@ -9156,6 +9156,51 @@
         ],
         "created": "2026-11-13",
         "last_validated": "2026-11-13"
+      },
+      "mem-315": {
+        "type": "decision",
+        "summary": "Home of the table: new leaf package `internal/pricing` - `executor` imports `memory` and `replay`; a leaf package gives no import cycle",
+        "path": "memories/decisions/mem-315.md",
+        "confidence": 0.95,
+        "concepts": [
+          "context",
+          "deployment",
+          "testing",
+          "theory of mind",
+          "knowledge"
+        ],
+        "created": "2026-11-15",
+        "last_validated": "2026-11-15"
+      },
+      "mem-316": {
+        "type": "decision",
+        "summary": "Call sites: wrappers - no caller changes; the tests of callers stay",
+        "path": "memories/decisions/mem-316.md",
+        "confidence": 0.95,
+        "concepts": [
+          "context",
+          "deployment",
+          "testing",
+          "theory of mind",
+          "knowledge"
+        ],
+        "created": "2026-11-15",
+        "last_validated": "2026-11-15"
+      },
+      "mem-317": {
+        "type": "decision",
+        "summary": "Sonnet 5.5 cache read: 0.10 - the reference names the cache read as the one price that changed from Sonnet 5",
+        "path": "memories/decisions/mem-317.md",
+        "confidence": 0.95,
+        "concepts": [
+          "context",
+          "deployment",
+          "testing",
+          "theory of mind",
+          "knowledge"
+        ],
+        "created": "2026-11-15",
+        "last_validated": "2026-11-15"
       }
     }
   },
@@ -13409,6 +13454,21 @@
       "from": "mem-314",
       "to": "TASK-650",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-315",
+      "to": "TASK-653",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-316",
+      "to": "TASK-653",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-317",
+      "to": "TASK-653",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -14016,7 +14076,10 @@
       "mem-310",
       "mem-311",
       "mem-312",
-      "mem-313"
+      "mem-313",
+      "mem-315",
+      "mem-316",
+      "mem-317"
     ],
     "conversational-bot": [
       "mem-036",
@@ -14323,7 +14386,10 @@
       "mem-310",
       "mem-311",
       "mem-312",
-      "mem-313"
+      "mem-313",
+      "mem-315",
+      "mem-316",
+      "mem-317"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -14845,7 +14911,10 @@
       "mem-310",
       "mem-311",
       "mem-312",
-      "mem-313"
+      "mem-313",
+      "mem-315",
+      "mem-316",
+      "mem-317"
     ],
     "labels": [
       "mem-100",
@@ -15420,7 +15489,10 @@
       "mem-310",
       "mem-311",
       "mem-312",
-      "mem-313"
+      "mem-313",
+      "mem-315",
+      "mem-316",
+      "mem-317"
     ],
     "testing-quality": [
       "TASK-384",
@@ -15664,7 +15736,10 @@
       "TASK-646",
       "TASK-651",
       "TASK-650",
-      "TASK-653"
+      "TASK-653",
+      "mem-315",
+      "mem-316",
+      "mem-317"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -16083,11 +16158,11 @@
       "TASK-651"
     ]
   },
-  "last_updated": "2026-11-13T17:42:10.671715+00:00",
+  "last_updated": "2026-11-15T13:00:15.998460+00:00",
   "stats": {
-    "total_nodes": 792,
-    "total_edges": 850,
-    "memory_count": 439
+    "total_nodes": 795,
+    "total_edges": 853,
+    "memory_count": 442
   },
   "metadata": {
     "last_updated": null

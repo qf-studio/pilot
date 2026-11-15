@@ -1,6 +1,6 @@
 # TASK-651: Agent isolation — agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM
 
-**Status**: 🚀 **U0, U1 and F1 merged; F2 and the second run of B1 dispatched; U2–U5 dispatch-ready (2026-11-13 pm).** F1 [#6344](https://github.com/qf-studio/pilot/issues/6344) → PR#6349 merged 17:09Z after a run-it review with a real sudo (GO-WITH-NOTES: unchanged with the option empty at twelve spawn sites). **The option must stay empty:** two blockers → **F2 [#6354](https://github.com/qf-studio/pilot/issues/6354)**: the kill misses the agent when sudo uses a terminal (`use_pty` and a daemon in tmux — the box case) → sudo in a new session without a terminal, plus a preflight probe; the API backends were refused for bash only → refused at `Execute`, `executeTool` and `NewBackend`. B1 [#6345](https://github.com/qf-studio/pilot/issues/6345): first run parked by the pre-PR review (one blocking defect in undo, eight minor; the fix round had no time left); body amended with the defect list and the hold label cleared 11-13, the run continues on branch `pilot/GH-6345`. **O4 must not run on the box before B1 merges and passes a container review.** Order now: F2 → U2 → U3 → U4 → U5, one at a time. **O1 done 2026-11-12 09:14Z.** Waiting for the founder: O2 (GitHub App) and O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
+**Status**: 🚀 **U0, U1, F1, F2 and B1 merged; F3 (test fix) dispatched; U2 is next (2026-11-15).** F2 [#6354](https://github.com/qf-studio/pilot/issues/6354) → PR#6361 merged 11-15 12:59Z after a run-it review with real sudo in five terminal modes: the kill reaches the agent in every mode, unchanged with the option empty at 11 spawn sites, API backends refused. One test fails on macOS (test bug) → F3. B1 [#6345](https://github.com/qf-studio/pilot/issues/6345) → PR#6359 merged 11-14: all nine defects fixed, undo containment proven. **O4 is still NO-GO:** the firewall and the boot unit did not run against a real iptables and systemd (container runtime of the review machine failed), and four findings wait for a follow-up (the agent user can block `--undo` with a link in its cache directory; traverse exposes an untracked world-readable file in a working tree and `.git/config`; the sudo proof passes with `Defaults:USER !authenticate` in another file; the mocked test fails on macOS). Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. Order now: F3 beside U2 (test files only) → U3 → U4 → U5. **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM), follow-up leg for the host script. Design: `.agent/system/agent-isolation-design.md`.
 **Created**: 2026-11-12
 **Assignee**: Pilot (one leg at a time) + operator steps by a Navigator session with founder consent
 **Parent**: TASK-650 leg H1
@@ -52,9 +52,10 @@
 ### Phase C — code legs (Pilot), each merged with the option empty
 
 - [x] **U0** (PR#6325 merged; fixes in #6328 before any host run) host setup script with dry-run and undo, tested with a mocked PATH (dispatch-ready, below).
-- [ ] **F2** ([#6354](https://github.com/qf-studio/pilot/issues/6354), dispatched 11-13) blockers from the run-it review of F1: kill under a sudo terminal, API backends refused as a whole, gh guard journal. Must merge before U2.
+- [ ] **F3** ([#6366](https://github.com/qf-studio/pilot/issues/6366), dispatched 11-15) test fix: the opencode spawn-site subtest waits for its server command; the kill-failure test passes on macOS.
+- [x] **F2** (PR#6361 merged 11-15 12:59Z) ([#6354](https://github.com/qf-studio/pilot/issues/6354), dispatched 11-13) blockers from the run-it review of F1: kill under a sudo terminal, API backends refused as a whole, gh guard journal. Must merge before U2.
 - [x] **F1** (PR#6349 merged 11-13) ([#6344](https://github.com/qf-studio/pilot/issues/6344), dispatched 11-13) fixes from the run-it review of U1: cancel through the process group in the constructor, anthropic-api refused, `run_as_group` required, guard files fail closed, name check. Must merge before U2 (same file `agent_command.go`).
-- [ ] **B1** ([#6345](https://github.com/qf-studio/pilot/issues/6345), dispatched 11-13) host script, second run; replaces #6328.
+- [x] **B1** (PR#6359 merged 11-14; **no host run yet**, see status) ([#6345](https://github.com/qf-studio/pilot/issues/6345), dispatched 11-13) host script, second run; replaces #6328.
 - [x] **U1** (PR#6335 + PR#6342 merged 11-12) config option, one spawn constructor for every model process, allowlist environment, kill through sudo, fail-closed preflight, group-readable guard files (dispatch-ready, below).
 - [ ] **U2** (dispatch-ready, below; needs U1 on main) workspace as an agent-owned clone under the workspace root (full fetch of the base branch, no alternates), one constructor for every git command in the workspace, cleanup and sweeps as the agent user, Navigator copy without a followed link, preflight for the root, `use_worktree` and the pool.
 - [ ] **U3** (dispatch-ready, below; needs U2) hand-over as a bundle that the agent writes and the daemon fetches into `refs/pilot/handover/<task>`; the secret gate and the push run only in the daemon's repository, with replace refs ignored and hooks off; PR creation, recovery ref and the preserve commit follow. Closes the gate-trust class of mem-308 when the option is set (seven shapes; the tamper table is the test list of the leg).
@@ -413,6 +414,42 @@ The workspace, git commands, quality gates and the GitHub token (later legs). A 
 
 - Navigator TASK-651 in this repo · review of PR #6349
 
+### LEG F3 — repo: qf-studio/pilot — title: test(executor): run_as_user — the opencode spawn-site subtest waits for its server command, so the kill-failure test passes on macOS
+
+probe: present qf-studio/pilot func[[:space:]]TestRunAsUserKillFailureLogsOneErrorWithPgid\(
+probe: present qf-studio/pilot func[[:space:]]TestRunAsUserEverySpawnSiteGoesThroughSudo\(
+probe: present qf-studio/pilot func[[:space:]]runAsBackendError\(
+
+## Context
+
+Navigator TASK-651. A review found one test defect in the run_as_user tests; production code is correct. On macOS the test TestRunAsUserKillFailureLogsOneErrorWithPgid in `internal/executor/agent_command_test.go` fails every time with two Error lines where it expects one. On Linux it passes, so CI is green.
+
+Cause: the subtest "opencode server" of TestRunAsUserEverySpawnSiteGoesThroughSudo in `internal/executor/agent_command_sites_test.go` starts the server command and returns without a wait for it. The cancel of its context fires after the subtest ends, when the mock sudo script is no longer on PATH. The cancel then runs the real sudo of the host, which fails. The liveness check counts a process that has ended and is not yet reaped as alive on platforms other than Linux, so the Error line of that failed kill appears two seconds later, in the log buffer of the next test.
+
+Reproduce on macOS: `go test -count=1 ./internal/executor/ -run 'TestRunAsUserEverySpawnSiteGoesThroughSudo/opencode_server|TestRunAsUserKillFailureLogsOneErrorWithPgid'`.
+
+## Scope
+
+1. In the opencode subtest, stop the server and wait for its command before the subtest returns, while the mock sudo is still on PATH (a t.Cleanup registered after the PATH setup runs too late; do it in the subtest body or register the cleanup so that it runs before PATH is restored). No process and no pending cancel may outlive the subtest.
+2. Check every other subtest of that table for the same shape (a started command with no wait) and correct each one.
+3. Make the log capture of TestRunAsUserKillFailureLogsOneErrorWithPgid safe against a late line of an earlier test: it counts only lines that hold the pgid of its own command.
+4. Do not change a non-test file.
+
+## Acceptance
+
+- [ ] `go test -race -count=5 ./internal/executor/ -run 'AgentCommand|RunAsUser|ProcessGroup'` passes on Linux; paste the output into the PR body.
+- [ ] State in the PR body which subtests had a command with no wait.
+- [ ] The diff holds test files only.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+Any change to production code. The liveness check for a process that is not yet reaped on macOS.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review of PR #6361
+
 ### LEG B1 — repo: qf-studio/pilot — title: fix(box): agent user setup script, second run — argument validation, shared read on git directories only with a complete undo, proven sudo removal as the last step, firewall without a gap
 
 probe: present qf-studio/pilot restore_cloud_init
@@ -533,7 +570,7 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 
 ---
 
-**Last Updated**: 2026-11-13
+**Last Updated**: 2026-11-15
 
 ## Refs
 
@@ -542,3 +579,4 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - F1 → https://github.com/qf-studio/pilot/issues/6344
 - B1 → https://github.com/qf-studio/pilot/issues/6345
 - F2 → https://github.com/qf-studio/pilot/issues/6354
+- F3 → https://github.com/qf-studio/pilot/issues/6366
