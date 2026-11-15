@@ -1,6 +1,6 @@
 # TASK-651: Agent isolation — agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM
 
-**Status**: 🚀 **U0, U1, F1, F2 and B1 merged; F3 (test fix) dispatched; U2 is next (2026-11-15).** F2 [#6354](https://github.com/qf-studio/pilot/issues/6354) → PR#6361 merged 11-15 12:59Z after a run-it review with real sudo in five terminal modes: the kill reaches the agent in every mode, unchanged with the option empty at 11 spawn sites, API backends refused. One test fails on macOS (test bug) → F3. B1 [#6345](https://github.com/qf-studio/pilot/issues/6345) → PR#6359 merged 11-14: all nine defects fixed, undo containment proven. **O4 is still NO-GO:** the firewall and the boot unit did not run against a real iptables and systemd (container runtime of the review machine failed), and four findings wait for a follow-up (the agent user can block `--undo` with a link in its cache directory; traverse exposes an untracked world-readable file in a working tree and `.git/config`; the sudo proof passes with `Defaults:USER !authenticate` in another file; the mocked test fails on macOS). Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. Order now: F3 beside U2 (test files only) → U3 → U4 → U5. **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM), follow-up leg for the host script. Design: `.agent/system/agent-isolation-design.md`.
+**Status**: 🚀 **U0, U1, F1, F2, F3 and B1 merged. Step 5 is split into G1 → U2 → N1 after a spec check against `origin/main` 1e99ccbe0 (2026-11-15); 🚀 G1 DISPATCHED 2026-11-15 → [pilot#6372](https://github.com/qf-studio/pilot/issues/6372) and B2 DISPATCHED 2026-11-15 → [pilot#6373](https://github.com/qf-studio/pilot/issues/6373) (`pilot` + `no-decompose`); both PRs are held as drafts until a run-it review; U2 and N1 are held until G1 merges (same directory).** The check found 110 inline git sites (not about 70), about ten daemon writes into the workspace, a base ref that can be a SHA only FETCH_HEAD holds, and a Navigator copy that follows a link above the last path element. Design change 11-15: the base commit reaches the workspace as a bundle on a stream and the agent user reads no repository of the daemon, so B2 removes the shared read of the host script. **O4 is still NO-GO** until B2 merges and its real iptables and systemd job passes. `run_as_user` stays empty on every host until U3 and U4 merge. Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. Order: G1 → U2 → N1 → U3 → U4 → U5, B2 beside them (other directory). **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
 **Created**: 2026-11-12
 **Assignee**: Pilot (one leg at a time) + operator steps by a Navigator session with founder consent
 **Parent**: TASK-650 leg H1
@@ -52,16 +52,19 @@
 ### Phase C — code legs (Pilot), each merged with the option empty
 
 - [x] **U0** (PR#6325 merged; fixes in #6328 before any host run) host setup script with dry-run and undo, tested with a mocked PATH (dispatch-ready, below).
-- [ ] **F3** ([#6366](https://github.com/qf-studio/pilot/issues/6366), dispatched 11-15) test fix: the opencode spawn-site subtest waits for its server command; the kill-failure test passes on macOS.
+- [x] **F3** (PR#6369 merged 11-15 13:36Z) ([#6366](https://github.com/qf-studio/pilot/issues/6366), dispatched 11-15) test fix: the opencode spawn-site subtest waits for its server command; the kill-failure test passes on macOS.
 - [x] **F2** (PR#6361 merged 11-15 12:59Z) ([#6354](https://github.com/qf-studio/pilot/issues/6354), dispatched 11-13) blockers from the run-it review of F1: kill under a sudo terminal, API backends refused as a whole, gh guard journal. Must merge before U2.
 - [x] **F1** (PR#6349 merged 11-13) ([#6344](https://github.com/qf-studio/pilot/issues/6344), dispatched 11-13) fixes from the run-it review of U1: cancel through the process group in the constructor, anthropic-api refused, `run_as_group` required, guard files fail closed, name check. Must merge before U2 (same file `agent_command.go`).
 - [x] **B1** (PR#6359 merged 11-14; **no host run yet**, see status) ([#6345](https://github.com/qf-studio/pilot/issues/6345), dispatched 11-13) host script, second run; replaces #6328.
+- [ ] **B2** ([#6373](https://github.com/qf-studio/pilot/issues/6373), dispatched 11-15) host script, third run: undo that the agent user cannot block, shared read removed, sudo proof by behaviour, macOS test fix, real iptables and systemd test in CI. O4 waits for it.
 - [x] **U1** (PR#6335 + PR#6342 merged 11-12) config option, one spawn constructor for every model process, allowlist environment, kill through sudo, fail-closed preflight, group-readable guard files (dispatch-ready, below).
-- [ ] **U2** (dispatch-ready, below; needs U1 on main) workspace as an agent-owned clone under the workspace root (full fetch of the base branch, no alternates), one constructor for every git command in the workspace, cleanup and sweeps as the agent user, Navigator copy without a followed link, preflight for the root, `use_worktree` and the pool.
+- [ ] **G1** ([#6372](https://github.com/qf-studio/pilot/issues/6372), dispatched 11-15; split from U2 on 11-15 after a spec check against `origin/main` 1e99ccbe0) one constructor for every git command of the executor package (110 inline sites), with the route to the agent user for a directory inside the workspace root; config field `run_as_workspace_dir`; fail-closed; a source test.
+- [ ] **U2** (dispatch-ready, below; needs G1) workspace as an agent-owned clone under the workspace root (base commit as a bundle that the daemon sends, no alternates, no read of the daemon's repository), cleanup and sweeps as the agent user with the project in the directory name, preflight for the root, `use_worktree` and the pool.
+- [ ] **N1** (dispatch-ready, below; needs U2; split from U2 on 11-15) the daemon writes no file into the workspace (task document, Navigator files, settings file go through a helper as the agent user); Navigator copy in as a tar stream, copy out without a followed link at any path element.
 - [ ] **U3** (dispatch-ready, below; needs U2) hand-over as a bundle that the agent writes and the daemon fetches into `refs/pilot/handover/<task>`; the secret gate and the push run only in the daemon's repository, with replace refs ignored and hooks off; PR creation, recovery ref and the preserve commit follow. Closes the gate-trust class of mem-308 when the option is set (seven shapes; the tamper table is the test list of the leg).
 - [ ] **U4** (dispatch-ready, below; needs U2) quality gates, workflow hooks, evidence commands and the lint fix as the agent user with the allowlist environment; `run_as_env` for values such as the Go caches.
 - [ ] **U5** (dispatch-ready, below; needs U3 and, on the box, O2) read-only installation token per run in a file for the `gh` shim and a git credential helper (also serves the fetch of a private module); per-project override of the option.
-- **Order (founder call 11-12):** U1 → F1 → F2 → U2 → U3 → U4 → U5, one at a time. The poller holds legs that touch the same directory, so a parallel dispatch gains nothing. Check for an open post-merge-review issue on the same files before each dispatch (mem-301).
+- **Order (founder call 11-12; U2 split into G1 → U2 → N1 on 11-15):** U1 → F1 → F2 → G1 → U2 → N1 → U3 → U4 → U5, one at a time. `run_as_user` stays empty on every host until U3 **and** U4 merge: until then the gate, the quality gates and the hooks run as the daemon inside the agent-owned clone. The poller holds legs that touch the same directory, so a parallel dispatch gains nothing. Check for an open post-merge-review issue on the same files before each dispatch (mem-301).
 
 ### Phase S — switch
 
@@ -152,51 +155,204 @@ The workspace and git operations (still a worktree owned by the daemon user, so 
 
 - Navigator TASK-651 in this repo · TASK-650 (parent) · design section 4.1
 
-### LEG U2 — repo: qf-studio/pilot — title: feat(executor): run_as_user workspace — an agent-owned clone per run, one constructor for every git command in the workspace, cleanup and sweeps as the agent user (off by default)
+### LEG G1 — repo: qf-studio/pilot — title: refactor(executor): run_as_user — one constructor for every git command of the executor package, with a route to the agent user for a directory inside the workspace root (off by default)
 
 probe: present qf-studio/pilot func[[:space:]]agentCommand\(
-probe: present qf-studio/pilot RunAsUser[[:space:]]+string
-probe: present qf-studio/pilot func[[:space:]]CleanupOrphanedWorktrees\(
+probe: present qf-studio/pilot func[[:space:]]setAgentEnv\(
 probe: present qf-studio/pilot func[[:space:]]NewGitOperations\(
-probe: absent  qf-studio/pilot func[[:space:]]createAgentWorkspac[e]\(
+probe: present qf-studio/pilot func[[:space:]]\(g[[:space:]]\*GitOperations\)[[:space:]]gitHardened\(
+probe: absent  qf-studio/pilot func[[:space:]]\(g[[:space:]]\*GitOperations\)[[:space:]]gitCm[d]\(
 probe: absent  qf-studio/pilot RunAsWorkspaceDi[r][[:space:]]+string
 
 ## Context
 
-Navigator TASK-651 (design in `.agent/system/agent-isolation-design.md`, section 4.2). The option run_as_user and the constructor agentCommand exist (earlier leg). The workspace is still a git worktree that the daemon user owns: CreateWorktreeWithBranch in `internal/executor/worktree.go` creates it under the temp directory and it shares the .git directory of the daemon's repository. An agent that runs as a second user cannot write there. A shared .git that the agent can write would let a hook or a config value run as the daemon user.
+Navigator TASK-651 (design in `.agent/system/agent-isolation-design.md`, section 4.2). The option run_as_user and the constructor agentCommand in `internal/executor/agent_command.go` exist: with the option set, a model process starts as a second Unix user through sudo with an allowlist environment (setAgentEnv). The next legs give the agent a workspace that the agent user owns, under one workspace root. Every git command that runs in that workspace must then run as the agent user, or a hook, a filter or a config value of the workspace runs as the daemon user.
 
-GitOperations in `internal/executor/git.go` is a struct with one path; about 70 call sites in `internal/executor` build a git command inline with exec.CommandContext (also `internal/executor/lint.go`, `internal/executor/git_freshness.go`, `internal/executor/simplify.go`, `internal/executor/preflight.go`, `internal/executor/worktree.go`). The cleanup is cleanupWorktreeAndBranch; the sweeps are CleanupOrphanedWorktrees and PruneOrphanedWorktreeForTask in `internal/executor/worktree.go` and findOrphanedWorktreeDirs in `internal/executor/finish_tripwires.go`. The sweeps recognise only a .git FILE with a gitdir line; a clone has a .git DIRECTORY and is skipped without a log line. The Navigator copy is EnsureNavigatorInWorktree (into the workspace) and CopyNavigatorBackFromWorktree (out of it).
+At origin/main 1e99ccbe0 the non-test files of the package `internal/executor` build a git command inline at 110 places (55 in `git.go`, 33 in `worktree.go`, the rest in files such as `lint.go`, `git_freshness.go`, `simplify.go`, `preflight.go`, `base_presence.go`, `repo_guardrail.go`). The forms are exec.CommandContext(ctx, "git", exec.CommandContext(fctx, "git" and exec.Command("git". Many sites set no cmd.Dir and pass `-C <dir>` in the arguments. The method gitHardened of GitOperations in `internal/executor/git.go` is the constructor of the co-author strip: it adds config flags, sets cmd.Dir, and sets cmd.Env to os.Environ() plus GIT_NO_REPLACE_OBJECTS=1. withGitCredentials in `internal/executor/git_credentials.go` adds the token and the askpass variables to cmd.Env.
 
-This leg changes where the workspace lives and who runs commands in it. With the option empty nothing changes. The push still runs in the workspace after this leg, and the agent user has no credential, so the option must stay empty on every host until the hand-over leg merges; keep the sentence in the config example.
+This leg is a refactor plus the route. No workspace exists yet, so with the option empty and with the option set every command of a real run still takes the plain route. The option must stay empty on every host until the hand-over leg and the gates leg merge.
 
 ## Scope
 
-1. Config: one string field run_as_workspace_dir next to run_as_user in the ClaudeCodeConfig struct of `internal/executor/backend.go`. With run_as_user set and this field empty the value is /var/lib/pilot/agent-workspaces. Document it in `configs/pilot.example.yaml`.
-2. One git constructor. Add a method on GitOperations, gitCmd(ctx, args...), and a free function for the sites that have no GitOperations value. With the option empty, or when the directory is not inside the workspace root, the result is exactly exec.CommandContext(ctx, "git", args...) with the directory set as today. With the option set and the directory inside the workspace root, the command comes from agentCommand with the allowlist environment of the earlier leg. Replace every inline git command in the non-test files of `internal/executor` with the constructor. Add a source test that reads the package files and fails when a non-test file other than the constructor file holds the text exec.CommandContext(ctx, "git" or exec.Command("git".
-3. Workspace creation, new file, plain text: internal/executor/agent_workspace.go. A function createAgentWorkspace(ctx, repoPath, taskID, branch, baseRef) that runs every step as the agent user. The directory is a direct child of the workspace root with the name pilot-ws-TASK-NANOSECONDS. Steps: git init; fetch the base ref (and, for a fix continuation, the task branch) from the daemon's repository through the file transport with safe.directory set for that one command only; create the task branch at the same commit that CreateWorktreeWithBranch would use; set the origin URL to the origin URL of the daemon's repository with any user or password part removed. The clone must have no alternates file and no hard link into the daemon's repository, and it must hold only the fetched refs. The daemon still runs fetchOriginBranchForWorktree in its own repository first, as today.
-4. Use it: at the place in `internal/executor/runner.go` where CreateWorktreeWithBranch is called for a task run, call createAgentWorkspace when the option is set. Every later step of the run receives the workspace path as it receives the worktree path today.
-5. Cleanup: with the option set, the removal of a workspace runs `rm -rf` as the agent user through agentCommand, with a 60 second timeout. Before the call, check that the cleaned path is a direct child of the workspace root, that its name starts with pilot-ws-, and that it holds no symbolic-link component (filepath.EvalSymlinks equals the path). A path that fails the check is not removed; log one Error line. The task branch of the daemon's repository is deleted as today.
-6. Sweeps: CleanupOrphanedWorktrees, PruneOrphanedWorktreeForTask and findOrphanedWorktreeDirs also list the direct children of the workspace root with the pilot-ws- prefix when the option is set. They apply to these the same orphan rule that they apply to worktree directories today and remove them through item 5. Log one Info line per removed workspace with the task ID.
-7. Navigator copy with the option set. Into the workspace: the copy runs as the agent user (for example `cp -R` through agentCommand); the daemon does not write into the workspace. Out of the workspace: the daemon reads data only. Skip every entry that is not a regular file (os.Lstat, no symbolic link is followed), skip a file over 5 MB with one Warn line, and resolve each destination inside the Navigator directory of the daemon's repository (reject a path that leaves it).
-8. Preflight, in the function of the earlier leg: with the option set, fail closed when the workspace root does not exist, when its owner is not the agent user, when use_worktree is false, or when worktree_pool_size is over 0. One Error line names the failed check.
-9. Tests, table-driven, no root needed, with the mock sudo script on PATH that the earlier leg uses (the mock runs the command as the present user): the constructor returns the plain command for an empty option and for a directory outside the root, and a sudo command inside it; createAgentWorkspace produces a repository with the task branch at the base commit, no alternates file, and an origin URL without a credential; cleanup refuses a path outside the root, a wrong prefix, and a symbolic link; the sweep removes an orphan clone (.git directory) and keeps the worktree behaviour; the copy out skips a symbolic link that points at a file outside the workspace; each preflight failure of item 8.
+1. Config: one string field RunAsWorkspaceDir (yaml run_as_workspace_dir) next to RunAsUser in the ClaudeCodeConfig struct of `internal/executor/backend.go`. With run_as_user set and this field empty the value is /var/lib/pilot/agent-workspaces. The resolved root becomes part of the run-as settings that agentCommand reads, and part of the comparison that decides if PreflightRunAsUser runs again. Document the field in `configs/pilot.example.yaml` with this sentence: run_as_user must stay empty on every host until the hand-over leg and the gates leg of TASK-651 merge.
+2. Constructor, new file, plain text: internal/executor/git_command.go. A method gitCmd(ctx, args...) on GitOperations and a free function for the sites that have no GitOperations value. Each takes, or derives from the receiver, the directory that decides the route. A site that passes `-C <dir>` today keeps its arguments and gives that directory for the route.
+3. Plain route: with the option empty, or with a route directory that is not inside the workspace root, the command has the same argv, the same cmd.Dir (set or not set) and the same cmd.Env as the inline command of that site today.
+4. Agent route: with the option set and the route directory inside the workspace root, the command comes from agentCommand and its environment goes through setAgentEnv. "Inside" compares the two paths after filepath.EvalSymlinks and filepath.Clean, so that a root reached through a symbolic link, a trailing slash or a /private prefix takes the agent route. With the option set, a route directory that cannot be resolved is an error.
+5. Fail closed: when agentCommand returns an error, or item 4 gives an error, the returned command has its Err field set. Run, Output, CombinedOutput and Start then return that error and no process starts. The constructor never falls back to the plain command.
+6. Environment on the agent route. The git process gets the allowlist environment plus the git variables of a fixed list in the constructor file (GIT_NO_REPLACE_OBJECTS and the other non-credential variables that the sites set today; list each one). No other variable of the daemon reaches it. A site that sets cmd.Env today does it through one helper of the constructor file, so that the rule holds for both routes.
+7. Credentials: withGitCredentials on a command of the agent route mints no token, sets no variable, and sets the Err field with a message that names the hand-over leg. A push from a workspace then fails with that error; this is intended until the hand-over leg.
+8. Replace every inline git command in the non-test files of the package directory `internal/executor` (not its subpackages) with the constructor. gitHardened keeps its config flags and its GIT_NO_REPLACE_OBJECTS=1 and builds on the constructor.
+9. Source test: parse the non-test files of the package directory with go/parser and fail when a file other than git_command.go holds a call of exec.Command or exec.CommandContext whose command argument is the string literal "git". The test names the file and the line. It does not depend on the name of the context variable.
+10. Tests, table-driven, no root needed. Add a second mock sudo helper next to mockSudo in `internal/executor/agent_command_test.go`: it drops the sudo flags up to and including `--` and runs the rest as the present user, and it records its argv (mockSudo and mockSudoBackground only record; they do not run the command). Use stubRunAsGOOS, because agentCommand builds a sudo command on Linux only. Cases: for a sample of sites that includes a `-C` site, a site with cmd.Dir and gitHardened, the plain route gives the argv, cmd.Dir and cmd.Env of today; a directory outside the root takes the plain route; a directory inside the root gives a sudo argv and git runs through the mock; a root behind a symbolic link and a path with a trailing slash take the agent route; a failed preflight gives a command whose Run returns the error and the mock records no call; withGitCredentials on the agent route sets Err and the provider is not called; a variable DAEMON_ONLY_SECRET of the test process is absent from the environment of git on the agent route and GIT_NO_REPLACE_OBJECTS=1 is present for gitHardened.
 
 ## Acceptance
 
-- [ ] `go test -race -count=1 ./internal/executor/ -run 'GitCmd|AgentWorkspace|OrphanedWorktree|NavigatorCopy|RunAsUser'` passes; paste the output into the PR body.
-- [ ] Add one inline exec.CommandContext(ctx, "git", ...) to a non-test file -> the source test fails.
-- [ ] Remove the symbolic-link check of item 5 -> the cleanup test fails.
-- [ ] Let the copy out follow a symbolic link -> the copy test fails.
-- [ ] With the option empty, the worktree tests that exist today pass without a change to their assertions.
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'GitCommand|GitCmd|GitSource|RunAsUser|AgentCommand'` passes; paste the output into the PR body.
+- [ ] Add one inline exec.CommandContext(fctx, "git", ...) to a non-test file -> the source test fails and names the line.
+- [ ] Return the plain command when agentCommand fails -> the fail-closed test fails.
+- [ ] Compare the paths without filepath.EvalSymlinks -> the symbolic-link test fails.
+- [ ] With the option empty, the tests of the package that exist today pass without a change to their assertions.
+- [ ] The PR body gives the count of replaced sites per file.
 - [ ] Do not re-run make build, make test or make lint as evidence.
 
 ## Out of scope
 
-The push, the secret gate, the PR creation, the recovery ref and the co-author strip (next leg; they still run in the workspace). Quality gates, workflow hooks, evidence commands and the lint fix. The GitHub token for the agent. The post-merge reviewer checkout. Any change of behaviour with the option empty.
+The creation of a workspace, its cleanup and the sweeps (next leg). The package `internal/executor/secretpatterns`, which has its own constructor gitCommand in `pushrange.go` and cannot import the executor package; the secret gate moves to the daemon's repository in the hand-over leg. The package `internal/quality`. Any change of an argument, a directory or an environment value on the plain route.
 
 ## Refs
 
 - Navigator TASK-651 in this repo · design section 4.2
+
+### LEG U2 — repo: qf-studio/pilot — title: feat(executor): run_as_user workspace — an agent-owned clone per run under the workspace root, cleanup and sweeps as the agent user, fail-closed preflight (off by default)
+
+probe: present qf-studio/pilot func[[:space:]]\(g[[:space:]]\*GitOperations\)[[:space:]]gitCmd\(
+probe: present qf-studio/pilot RunAsWorkspaceDir[[:space:]]+string
+probe: present qf-studio/pilot func[[:space:]]CleanupOrphanedWorktrees\(
+probe: present qf-studio/pilot func[[:space:]]PreflightRunAsUser\(
+probe: absent  qf-studio/pilot func[[:space:]]createAgentWorkspac[e]\(
+
+## Context
+
+Navigator TASK-651 (design in `.agent/system/agent-isolation-design.md`, section 4.2). The option run_as_user, the constructor agentCommand and the git constructor gitCmd exist (earlier legs): a git command whose directory is inside the workspace root runs as the agent user. The workspace is still a git worktree that the daemon user owns: CreateWorktreeWithBranch in `internal/executor/worktree.go` creates it under the temp directory and it shares the .git directory of the daemon's repository. An agent that runs as a second user cannot write there. A shared .git that the agent can write would let a hook or a config value run as the daemon user.
+
+Facts at origin/main 1e99ccbe0:
+
+- The runner creates the worktree near `internal/executor/runner.go:4178` and gets a cleanup function back (`runner.go:4300`); preserveWorktreeOnPushFailure keeps the directory after a failed push. The runner creates no worktree when allowWorktree is false, when the branch is empty, or when DirectCommit is set.
+- The base ref can be origin/BRANCH, a commit SHA that only FETCH_HEAD holds (`internal/executor/git.go:1977`), or the text FETCH_HEAD (`internal/executor/worktree.go:658`).
+- cleanupWorktreeAndBranch removes the worktree and deletes the task branch in the daemon's repository. CleanupOrphanedWorktrees and PruneOrphanedWorktreeForTask in `internal/executor/worktree.go` remove orphans; the second matches the prefix pilot-worktree- plus sanitizeBranchName of the task. findOrphanedWorktreeDirs in `internal/executor/finish_tripwires.go` only reports. All three recognise a .git FILE with a gitdir line and learn the project from it; a clone has a .git DIRECTORY and the workspace root is common to all projects.
+- PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) in `internal/executor/agent_command.go` does not see use_worktree and worktree_pool_size; both are fields of BackendConfig in `internal/executor/backend.go`. Its callers are in `cmd/pilot/main.go`.
+- The host script `scripts/box/setup-agent-user.sh` creates the workspace root with the agent user as owner, the daemon's group, and mode 2770. Design change of 2026-11-15: the agent user gets no access to a repository of the daemon (the shared read of the script is removed in another leg). Do not depend on it.
+
+With the option empty nothing changes. After this leg a run with the option set still cannot finish: the daemon writes files into the workspace (next leg) and the push needs the hand-over leg. The option stays empty on every host; keep the sentence in the config example.
+
+## Scope
+
+1. Workspace creation, new file, plain text: internal/executor/agent_workspace.go. A function createAgentWorkspace(ctx, repoPath, taskID, branch, baseRef) returns the workspace path and a cleanup function with the contract of the worktree cleanup function. Every command that creates or changes a file in the workspace runs as the agent user through agentCommand or gitCmd.
+2. Name: a direct child of the workspace root, pilot-ws-PROJECT-TASK-NANOSECONDS. PROJECT is the first 8 hex characters of the SHA-256 of the canonical path of the daemon's repository. TASK is sanitizeBranchName of the task ID. The project is read from the name only, never from a file inside the workspace.
+3. Base commit. The daemon runs fetchOriginBranchForWorktree in its own repository as today and resolves the base ref to a commit SHA there (all three forms of the Context). For a fix continuation it resolves the head of the task branch in the same way.
+4. Transport. The daemon never lets the agent user read its repository, and it writes no file into the workspace root. It runs `git bundle create` in its own repository with the output on standard output (a temporary ref under refs/pilot/ws-base/ names the commit; delete it in every outcome) and sends that stream to the standard input of a process that runs as the agent user and stores it as a file in the workspace root. Then, as the agent user: git init in the new workspace directory, one fetch from the bundle file, the task branch at the commit that CreateWorktreeWithBranch would use, the origin URL of the daemon's repository with any user or password part removed, and the removal of the bundle file. Keep the transport in one function.
+5. Properties of the result, each checked by the daemon before createAgentWorkspace returns: the head of the task branch equals the SHA of item 3; the repository has no alternates file and no object file that is a hard link into the daemon's repository; it holds no ref other than the task branch and the fetched base; no bundle file is left in the workspace root; the daemon user can list the workspace directory. A failed check removes the workspace through item 7 and returns an error.
+6. Use it: at the place in `internal/executor/runner.go` where CreateWorktreeWithBranch is called for a task run, call createAgentWorkspace when the option is set. Every later step receives the workspace path as it receives the worktree path today, and preserveWorktreeOnPushFailure keeps a workspace as it keeps a worktree. With the option set, a run for which the runner would create no worktree (allowWorktree false, an empty branch, DirectCommit) stops before any process starts, with one Error line that names the task and the reason.
+7. Cleanup: with the option set, the removal of a workspace runs `rm -rf` as the agent user through agentCommand, with a 60 second timeout. Before the call, check that the path is a direct child of the resolved workspace root, that its name starts with pilot-ws-, and that it holds no symbolic-link component (filepath.EvalSymlinks equals the path). A path that fails the check is not removed; log one Error line. For a workspace, do not delete a branch in the daemon's repository: the daemon's repository never got the task branch, and a local branch with the same name belongs to another flow.
+8. Sweeps: with the option set, CleanupOrphanedWorktrees and PruneOrphanedWorktreeForTask also handle the direct children of the workspace root whose name starts with pilot-ws-PROJECT- for the project they are called for (and, for the second, the TASK part of item 2). They apply the orphan rule that they apply to worktree directories today and remove through item 7. Log one Info line per removed workspace with the task ID. findOrphanedWorktreeDirs reports these directories too and removes nothing. A workspace of another project is never touched.
+9. Preflight: PreflightRunAsUser also gets use_worktree and worktree_pool_size (change the signature and the callers in `cmd/pilot/main.go`). With the option set it fails closed when the workspace root does not exist, when its owner is not the agent user, when the daemon user cannot list it, when a directory that the agent user creates in it cannot be listed by the daemon user (create one probe directory through agentCommand and remove it), when use_worktree is false, or when worktree_pool_size is over 0. One Error line names the failed check.
+10. Tests, table-driven, no root needed, with the mock sudo helper of the earlier leg that runs the command, and stubRunAsGOOS. Real temporary repositories. Cases: createAgentWorkspace gives a repository with the task branch at the base commit for each of the three base-ref forms and for a fix continuation; no alternates file; an origin URL without a credential when the daemon's origin URL holds one; the temporary ref and the bundle file are gone after success and after a failure; a head that differs from the resolved SHA is an error and the workspace is removed; the three no-worktree cases of item 6 stop the run; cleanup refuses a path outside the root, a wrong prefix and a symbolic link, and deletes no branch in the daemon's repository when a branch with the task's name exists there; the sweep removes an orphan workspace of its project, keeps a workspace of another project, and keeps the worktree behaviour; each preflight failure of item 9.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ ./cmd/pilot/ -run 'AgentWorkspace|OrphanedWorktree|RunAsUser|Preflight'` passes; paste the output into the PR body.
+- [ ] Remove the symbolic-link check of item 7 -> the cleanup test fails.
+- [ ] Remove the SHA comparison of item 5 -> its test fails.
+- [ ] Let the sweep ignore the PROJECT part of the name -> the other-project test fails.
+- [ ] With the option empty, the worktree tests that exist today pass without a change to their assertions.
+- [ ] Read the daemon's repository from the agent side (a fetch from its path) -> a test fails: the test makes that path unreadable for commands that run through the mock sudo helper.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+Files that the daemon writes into the workspace (task document, Navigator files, the settings file) and the Navigator copy in both directions (next leg). The push, the secret gate, the PR creation, the recovery ref and the co-author strip (hand-over leg). Quality gates, workflow hooks, evidence commands and the lint fix. The GitHub token for the agent. The post-merge reviewer checkout. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · design section 4.2
+
+### LEG N1 — repo: qf-studio/pilot — title: feat(executor): run_as_user workspace files — the daemon writes no file into the agent workspace and follows no link when it reads from it (off by default)
+
+probe: present qf-studio/pilot func[[:space:]]createAgentWorkspace\(
+probe: present qf-studio/pilot CopyNavigatorBackFromWorktree\(
+probe: present qf-studio/pilot EnsureNavigatorInWorktree\(
+probe: absent  qf-studio/pilot func[[:space:]]agentWriteFil[e]\(
+
+## Context
+
+Navigator TASK-651 (design in `.agent/system/agent-isolation-design.md`, section 4.2). With run_as_user set, the workspace of a run is a clone that the agent user owns (earlier leg). The daemon user can read it and cannot write it. A write of the daemon into a directory that the agent controls is also a risk: the agent can put a symbolic link at the path and the daemon then writes its own file.
+
+Places at origin/main 1e99ccbe0 where the daemon process writes into the workspace or reads through it:
+
+- Before the session, in `internal/executor/runner.go`: CreateTaskDoc (near line 4993), maybeInitNavigator (near 4411), and the `.claude/settings.json` clean and merge with CleanStalePilotHooks and MergeWithExisting (near 5100 to 5165), which also sets includeCoAuthoredBy to false. A failure of the settings write is a Warn line today.
+- After the session, in `internal/executor/runner.go` (near 7503 to 7530): ArchiveTaskDoc, UpdateFeatureMatrix, syncNavigatorIndex and the context marker. Also SimplifyModifiedFiles in `internal/executor/simplify.go`.
+- Navigator copy into the workspace: EnsureNavigatorInWorktree in `internal/executor/worktree.go`. The source is the `.agent` directory of the daemon's repository, with files that git does not track; the agent user has no read access to that working tree.
+- Navigator copy out of the workspace: CopyNavigatorBackFromWorktree in `internal/executor/worktree.go`. It checks the type of the last path element only, so a symbolic link in place of `.agent` or of a directory below it is followed. It runs `git -C WORKSPACE ls-files` (gitListPaths) and ignores a failure of that command.
+
+The rule of this leg: with the option set, the daemon process creates, changes and removes no file inside the workspace root, and a read of the daemon from the workspace never leaves the workspace. With the option empty nothing changes. The option stays empty on every host until the hand-over leg and the gates leg merge.
+
+## Scope
+
+1. Helper, new file, plain text: internal/executor/agent_files.go. A function agentWriteFile(ctx, path, data, mode) and what the sites below need next to it (make a directory, rename, remove). With the option set and a path inside the workspace root (the path rule of the git constructor) the operation runs as the agent user through agentCommand, with the data on standard input and never in the argv. With the option empty, or outside the root, it is the os call of today. An error of agentCommand is returned; there is no fallback to a direct write.
+2. Move every write of the Context list to the helper. Go through each function to its last file operation. A site whose result the session reads or the commit holds goes through the helper. A site that only serves the daemon can be skipped with one Info line when the option is set. The PR body has a table: site, file and line, helper or skipped, reason.
+3. The settings file: with the option set, a failure of its write stops the run with one Error line. It is not a Warn line.
+4. Evidence commands: the mutate and revert writes in `internal/executor/acceptance_evidence_run.go` belong to the gates leg. With the option set, this leg makes them return an error that names that leg.
+5. Navigator copy into the workspace, option set: the daemon reads the files that EnsureNavigatorInWorktree selects today and sends them as one tar stream to a tar process that runs as the agent user in the workspace. The agent user needs no read access to the daemon's working tree, and the daemon writes no file into the workspace.
+6. Navigator copy out of the workspace, option set: the daemon reads data only. It opens each path element below the workspace without following a link (a check of every element, and O_NOFOLLOW on the file), accepts regular files only, and resolves each destination inside the Navigator directory of the daemon's repository (a path that leaves it is rejected). The list of tracked paths comes through the git constructor. A failure of that list stops the copy out with one Warn line that names the task; nothing is copied.
+7. Tests, table-driven, no root needed, with a fixture that shows the boundary: the workspace root is not writable for the test process, and the mock sudo helper makes it writable only while its command runs. Cases: each site of item 2 that uses the helper produces its file in the workspace; a direct os.WriteFile into the workspace fails in the fixture (control case); the settings failure stops the run; the copy in gives the same files as today, with a file that git does not track; the copy out copies a regular file; the copy out copies nothing through a symbolic link at `.agent`, at a directory below it, and at a file, when each link points at a file outside the workspace; a failed tracked-path list copies nothing and logs the Warn line; with the option empty every site makes the os call of today.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'AgentFiles|AgentWriteFile|NavigatorCopy|WorkspaceWrites|RunAsUser'` passes; paste the output into the PR body.
+- [ ] Change one helper site back to os.WriteFile -> its test fails in the fixture.
+- [ ] Check only the last path element in the copy out -> the test with the link at `.agent` fails.
+- [ ] Make the settings failure a Warn line again -> its test fails.
+- [ ] With the option empty, the Navigator copy tests that exist today pass without a change to their assertions.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The push, the secret gate, the PR creation, the recovery ref and the co-author strip (hand-over leg). Quality gates, workflow hooks, evidence commands and the lint fix (gates leg). The GitHub token for the agent. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · design section 4.2
+
+### LEG B2 — repo: qf-studio/pilot — title: fix(box): agent user setup script, third run — an undo that the agent user cannot block, no access of the agent user to a repository of the daemon, a sudo proof by behaviour, the mocked test passes on macOS, a CI job with real iptables and systemd
+
+probe: present qf-studio/pilot ^prove_sudo_removed\(\)
+probe: present qf-studio/pilot ^step_shared_read\(\)
+probe: present qf-studio/pilot ^resolve_inside\(\)
+probe: absent  qf-studio/pilot box-scripts-rea[l]:
+
+## Context
+
+Navigator TASK-651. The script `scripts/box/setup-agent-user.sh` creates the agent user, its directories, a sudo rule, firewall rules and a boot unit, and has an --undo mode. Its tests are `scripts/box/setup-agent-user_test.sh` (mocked commands from `scripts/box/testdata/mock-host-cmds.sh`, run by the job box-scripts of `.github/workflows/ci.yml`) and `scripts/box/setup-agent-user_container_test.sh` (a privileged container; no CI job runs it). No host has run the script. A review of the second run found four defects, and the firewall and the boot unit never ran against a real iptables and a real systemd.
+
+1. The agent user can block --undo. The containment checks near line 258 run at top level, before the undo branch near line 1214, on paths that the agent user owns (the go, go/cache and go/mod directories of its home). A symbolic link at go/cache makes resolve_inside stop the script with exit 2. No undo step runs, and the sudoers file of the daemon user is not restored.
+2. Shared read gives too much. share_repo gives the group the traverse bit on each working tree, so a file there with mode 0644 that git does not track (for example .env) can be read by the agent user. share_git_dir makes `.git/config` readable, and a remote URL there can hold a token.
+3. The sudo proof reads text. prove_sudo_removed fails only on a NOPASSWD line of `sudo -n -l -U`. With `Defaults:USER !authenticate` and `USER ALL=(ALL) ALL` in another file the proof passes, and the daemon user still gets root without a password.
+4. The mocked test fails on macOS (387 passed, 10 failed). `stat -f %Lp` of BSD drops the setgid bit, so a directory with mode 2770 reads as 770 in real_stat of the mock file and in mode_of of the test; the script then sees a change on every run.
+
+Design change (TASK-651, 2026-11-15): the agent workspace gets its base commit as a bundle that the daemon sends, and the Navigator files as a tar stream. The agent user needs no access to a repository of the daemon.
+
+## Scope
+
+1. Undo depends only on what undo changes. With --undo, a path that the agent user or the daemon user can write never stops the script before the undo steps and never stops a step that restores root's files. Each undo step checks the paths that it changes. Test, mocked and real: go/cache is a symbolic link to a directory outside the data directory; --undo exits 0, the sudoers file of the daemon user is restored, and nothing outside the data directory changes.
+2. No shared read. Remove the step step_shared_read with share_repo, share_git_dir, set_shared, the --repos-link option, the state file records of that step and undo_shared_read. Remove the state file when no other step uses it. Property, proven in the real test: as the agent user, a read of a file with mode 0644 in a working tree of the daemon fails, a read of `.git/config` of that repository fails, and a list of the repository directory fails.
+3. The sudo proof tests behaviour. prove_sudo_removed runs `sudo -n true` as the daemon user and fails the step when the command succeeds, whatever the text of the rules is. Keep the dry-run skip. Test: the case with `Defaults:USER !authenticate` fails the step (mocked, and real in item 6).
+4. macOS: real_stat and mode_of give the four-digit mode with the setgid bit on BSD stat (`%Mp%Lp`, without a leading zero difference to the GNU form). `./scripts/box/setup-agent-user_test.sh` passes on macOS and on Linux with the same count.
+5. Smaller defects from the same review. Refuse a --group or an agent user that is, or is a member of, a system group with privileges (root, wheel, sudo, adm, disk, docker, shadow); one line names the reason. Remove a temporary firewall chain that an earlier failed run left, also when the main chain is absent. Undo restores the backup of the sudoers file in which the root line of the daemon user is active, not only the newest backup.
+6. A real test in CI. Add the job box-scripts-real to `.github/workflows/ci.yml` on ubuntu-latest (it has a real iptables, a real systemd and sudo for the runner user). It runs a new script (new file, plain text: scripts/box/setup-agent-user_real_test.sh) as root with test names for the daemon user, the agent user and the group, and a new data directory. The script refuses to start when the variable CI is not true. Checks:
+   a. After the apply: the chains and the first OUTPUT jump exist for IPv4 and IPv6 (`iptables -C`); the unit is enabled; `systemd-analyze verify` accepts the unit file.
+   b. Connections: put 169.254.169.254 on the loopback interface and start a listener on it and one on 127.0.0.1:9091. A curl as the agent user to each fails. The same curl as the daemon user succeeds. A curl as the agent user to another local listener succeeds.
+   c. Boot: delete the jump and the chain, start the unit, and both are back; check b again.
+   d. The agent user: `sudo -n true` fails; the properties of item 2; the daemon user runs a command as the agent user through the installed rule.
+   e. The sudo proof of item 3 with a `Defaults` line in a second file.
+   f. --undo with the link of item 1, then a second --undo: exit 0 both times, no chain, no unit, no user, no group, no sudoers file of the script.
+7. Remove `scripts/box/setup-agent-user_container_test.sh` when the real test covers each of its checks; say so in the PR body.
+
+## Acceptance
+
+- [ ] The jobs box-scripts and box-scripts-real pass on the PR; paste the summary lines of both test scripts into the PR body.
+- [ ] Run the containment checks before the undo branch again -> the test of item 1 fails.
+- [ ] Let prove_sudo_removed read the rule text again -> the test of item 3 fails.
+- [ ] Remove the rule for port 9091 from the script -> check 6b fails.
+- [ ] ShellCheck passes for `scripts/box`.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+A run of the script on a real host (operator step). Go code. The network rules beyond the metadata address and port 9091. A rename of the state file by the daemon user.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comments of PR#6359
 
 ### LEG U3 — repo: qf-studio/pilot — title: feat(executor): run_as_user hand-over — the daemon takes the branch from the agent workspace as a bundle, runs the secret gate on its own refs and pushes from its own repository with hooks off
 
@@ -216,11 +372,11 @@ The rule of this leg: with the option set, the daemon runs no git command with t
 1. Hand-over, new file, plain text: internal/executor/handover.go. A function handOverBranch(ctx, workspace, repoPath, taskID, branch, baseRef) returns the commit SHA.
    a. The agent user (through the git constructor) writes a bundle of the branch, without the commits of the base ref, to a file next to the workspace directory inside the workspace root, and prints the head SHA.
    b. The daemon copies the bundle to a file in its own temp directory. It opens the source with O_NOFOLLOW, accepts a regular file only, and stops with an error over 2 GB.
-   c. Inside the daemon's repository the daemon fetches the branch from its copy into the ref refs/pilot/handover/TASK. The fetch sets fetch.fsckObjects to true, sets core.hooksPath to an empty directory, and has GIT_NO_REPLACE_OBJECTS=1 in the environment.
+   c. Inside the daemon's repository the daemon fetches the branch from its copy into the ref refs/pilot/handover/TASK. The fetch sets fetch.fsckObjects to true, runs no hook (the constant NoHooksPath of `internal/executor/secretpatterns/pushrange.go`), and has GIT_NO_REPLACE_OBJECTS=1 in the environment.
    d. The SHA of the fetched ref must equal the SHA of step a. A difference is an error; nothing is pushed.
    e. Remove both bundle files in every outcome.
-2. Gate: with the option set, CheckSecretGate runs in the daemon's repository on the hand-over ref. Before the scan the daemon runs git fetch origin for the base branch and the task branch in its own repository. "Already published" comes only from refs/remotes/origin of the daemon's repository. Every git command of the gate has GIT_NO_REPLACE_OBJECTS=1 and core.hooksPath set to an empty directory.
-3. Push: with the option set, Push, PushForceWithLease and PushToMain push the hand-over ref from the daemon's repository to the branch name on origin. The command has core.hooksPath set to an empty directory, takes the origin URL from the daemon's repository, and gets the credential from withGitCredentials as today. The lease variant passes the expected remote SHA explicitly. Keep the three public method signatures, so that the call sites in `internal/executor/runner.go`, `internal/executor/runner_decompose.go` and `internal/executor/git_freshness.go` do not change; GitOperations gets the path of the daemon's repository as a second field when it is built for an agent workspace.
+2. Gate: with the option set, CheckSecretGate runs in the daemon's repository on the hand-over ref. Before the scan the daemon runs git fetch origin for the base branch and the task branch in its own repository. "Already published" comes only from refs/remotes/origin of the daemon's repository. Every git command of the gate has GIT_NO_REPLACE_OBJECTS=1 and no hook that runs (the constant NoHooksPath of `internal/executor/secretpatterns/pushrange.go`).
+3. Push: with the option set, Push, PushForceWithLease and PushToMain push the hand-over ref from the daemon's repository to the branch name on origin. The command has no hook that runs (the constant NoHooksPath of `internal/executor/secretpatterns/pushrange.go`), takes the origin URL from the daemon's repository, and gets the credential from withGitCredentials as today. The lease variant passes the expected remote SHA explicitly. Keep the three public method signatures, so that the call sites in `internal/executor/runner.go`, `internal/executor/runner_decompose.go` and `internal/executor/git_freshness.go` do not change; GitOperations gets the path of the daemon's repository as a second field when it is built for an agent workspace.
 4. Co-author strip: with the option set it runs in the workspace as the agent user before the hand-over (it rewrites the agent's own commits; it is not a security control). After the hand-over the daemon checks the commit messages of the pushed range in its own repository; a trailer that is still present stops the push with the present error.
 5. PR creation by gh in CreatePR: with the option set, run gh with the directory of the daemon's repository and pass the repository, the head branch and the base branch as explicit flags. No gh command of the daemon has the workspace as its directory.
 6. Recovery and preserve: CreateRecoveryRef with the option set creates the ref refs/pilot-recovery/TASK in the daemon's repository from the handed-over SHA. preserveDirtyWorktreeAsWIP commits in the workspace as the agent user, then uses the hand-over and the daemon push. A workspace is removed only after a successful hand-over or after an Error line that names the task and the reason.
@@ -522,6 +678,9 @@ SELinux contexts. A call of the script from Go code. A run on a real host. A rac
 |----------|-------------------|--------|-----------|
 | Privilege path | sudoers rule; `CAP_SETUID` on the binary; setuid helper; `systemd-run` | sudoers rule, daemon user → agent user only | survives self-upgrade, no new privileged code, one file to audit and undo |
 | Workspace | shared worktree with group write; agent-owned clone (`--shared`, `--reference`, full) | agent-owned full clone of the base branch, no alternates (founder call 11-12) | a shared `.git` lets a hook or config value run as the daemon user; alternates let the agent read every object and let a GC of the daemon's repository break a live clone |
+| Step-5 ticket size (11-15) | one ticket; three tickets | three: git constructor, workspace, workspace files | the spec check found 110 git sites (not about 70), about ten daemon writes into the workspace and a base-ref problem; one PR of that size cannot get a run-it review |
+| Base commit for the clone (11-15) | agent fetches from the daemon's repository over the file transport; daemon sends a bundle | bundle on a stream from the daemon | same shape as the hand-over; no ownership exception and no shared read of the daemon's repositories, so the host-script finding on `.git/config` and world-readable files goes away; a full bundle of this repository takes 2 s and 23 MB |
+| Project of an orphan workspace (11-15) | marker file in the workspace; hash in the directory name | hash of the repository path in the name | the daemon reads no file that the agent can change |
 | Hand-over transport | daemon runs `git fetch <workspace>`; bundle written by the agent | bundle, copied by the daemon, then fetched in the daemon's repository | the daemon runs no git command with an agent-owned repository; no ownership exception is needed |
 | Daemon push hooks | keep pre-push; hooks off | hooks off (founder call 11-12) | no repository script runs with the write credential; the Go secret gate still runs before every push |
 | Private module fetch in gates | no credential; read-only token | the read-only token of the run (founder call 11-12) | gates keep working; a leak gives read access for one hour at most |
@@ -580,3 +739,5 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - B1 → https://github.com/qf-studio/pilot/issues/6345
 - F2 → https://github.com/qf-studio/pilot/issues/6354
 - F3 → https://github.com/qf-studio/pilot/issues/6366
+- G1 → https://github.com/qf-studio/pilot/issues/6372
+- B2 → https://github.com/qf-studio/pilot/issues/6373

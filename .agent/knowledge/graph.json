@@ -3201,6 +3201,10 @@
           "context",
           "testing",
           "authentication"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6372",
+          "https://github.com/qf-studio/pilot/issues/6373"
         ]
       },
       "TASK-652": {
