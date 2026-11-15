@@ -70,6 +70,21 @@ func setupGhGuardShim(realGh string) (shimDir, journalPath string, cleanup func(
 	}
 
 	journalPath = filepath.Join(shimDir, "journal.jsonl")
+	// TASK-651: the agent user cannot create a file in the 0750 directory of
+	// the daemon user, so with run_as_user set the journal exists before the
+	// spawn, empty, 0660 and in the agent group: the guard appends to it.
+	if runAsSettingsNow() != nil {
+		f, err := os.OpenFile(journalPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			cleanup()
+			return "", "", func() {}, fmt.Errorf("ghguard: create journal: %w", err)
+		}
+		_ = f.Close()
+		if err := applyGuardPerm(journalPath, 0o660); err != nil {
+			cleanup()
+			return "", "", func() {}, fmt.Errorf("ghguard: journal permissions: %w", err)
+		}
+	}
 	return shimDir, journalPath, cleanup, nil
 }
 

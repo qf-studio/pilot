@@ -220,7 +220,7 @@ func TestRunAsUserKillFailureLevel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd.Process = &os.Process{Pid: 4242}
+	cmd.Process = &os.Process{Pid: startLiveProcess(t)}
 	kerr := killProcessGroup(cmd, syscall.SIGKILL)
 	if kerr == nil {
 		t.Fatal("a failed sudo kill returned nil")

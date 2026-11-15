@@ -50,7 +50,9 @@ func testRunAsSettings(t *testing.T) *runAsSettings {
 }
 
 // mockSudo puts a fake sudo first on PATH. It records its own name and its
-// arguments, NUL separated, in the returned file and exits with exitCode.
+// arguments, NUL separated, in the returned file and exits with exitCode. The
+// terminal probe of the preflight (sh -c 'ps -o tty= -p $$') is recorded in
+// the file plus ".tty" instead and prints $MOCK_SUDO_TTY, "?" when unset.
 func mockSudo(t *testing.T, exitCode int) (logPath string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -58,7 +60,18 @@ func mockSudo(t *testing.T, exitCode int) (logPath string) {
 	}
 	dir := t.TempDir()
 	logPath = filepath.Join(t.TempDir(), "sudo-argv")
-	body := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\0' \"${0##*/}\" \"$@\" > '%s'\nexit %d\n", logPath, exitCode)
+	body := fmt.Sprintf(`#!/bin/sh
+case "$*" in
+*"ps -o tty= -p"*)
+  printf '%%s\0' "${0##*/}" "$@" > '%[1]s.tty'
+  printf '%%s\n' "${MOCK_SUDO_TTY-?}"
+  ;;
+*)
+  printf '%%s\0' "${0##*/}" "$@" > '%[1]s'
+  ;;
+esac
+exit %[2]d
+`, logPath, exitCode)
 	if err := os.WriteFile(filepath.Join(dir, "sudo"), []byte(body), 0o755); err != nil { //nolint:gosec // mock must be executable
 		t.Fatal(err)
 	}
@@ -319,7 +332,8 @@ func TestRunAsUserKillFailureLogsOneErrorWithPgid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd.Process = &os.Process{Pid: 4242}
+	pid := startLiveProcess(t)
+	cmd.Process = &os.Process{Pid: pid}
 	if err := killProcessGroup(cmd, syscall.SIGKILL); err == nil {
 		t.Fatal("a failed sudo kill returned nil")
 	}
@@ -329,8 +343,8 @@ func TestRunAsUserKillFailureLogsOneErrorWithPgid(t *testing.T) {
 			errLines = append(errLines, l)
 		}
 	}
-	if len(errLines) != 1 || !strings.Contains(errLines[0], "pgid=4242") {
-		t.Errorf("want one Error line with pgid=4242, got %q", errLines)
+	if want := fmt.Sprintf("pgid=%d", pid); len(errLines) != 1 || !strings.Contains(errLines[0], want) {
+		t.Errorf("want one Error line with %s, got %q", want, errLines)
 	}
 }
 
@@ -433,6 +447,10 @@ func TestRunAsUserPreflightPasses(t *testing.T) {
 	got := sudoArgv(t, logPath)
 	if strings.Join(got, " ") != "sudo -n -u pilot-agent -g pilot-agents true" {
 		t.Errorf("probe = %q", got)
+	}
+	got = sudoArgv(t, logPath+".tty")
+	if strings.Join(got, "\x00") != strings.Join([]string{"sudo", "-n", "-u", "pilot-agent", "-g", "pilot-agents", "sh", "-c", "ps -o tty= -p $$"}, "\x00") {
+		t.Errorf("terminal probe = %q", got)
 	}
 	cmd, err := agentCommand(context.Background(), "claude", "-p", "x")
 	if err != nil {

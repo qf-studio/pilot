@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/executor/ghguard"
+	"github.com/qf-studio/pilot/internal/procgroup"
 )
 
 // TASK-651 (design: .agent/system/agent-isolation-design.md, 4.1 and 4.3):
@@ -33,6 +34,18 @@ const runAsWaitDelay = 10 * time.Second
 
 // runAsPreserveFlag is the sudo flag that carries the environment names.
 const runAsPreserveFlag = "--preserve-env="
+
+// runAsKillGrace is how long killAgentProcessGroup waits, after a failed
+// sudo kill, for the process to be gone before it reports the failure.
+const runAsKillGrace = 2 * time.Second
+
+// runAsTTYCheck is the preflight check that fails when sudo gives the agent a
+// terminal: with `Defaults use_pty` sudo then runs the agent in a session of
+// its own, outside the group of the sudo process, and the kill misses it.
+const runAsTTYCheck = "run_as_user: sudo gives the agent a terminal (use_pty); the kill would not reach it"
+
+// runAsTTYProbe prints the terminal of the probe shell: "?" when it has none.
+const runAsTTYProbe = "ps -o tty= -p $$"
 
 // runAsSettings is the resolved run_as_user option: what the spawn sites need
 // at every start, resolved once.
@@ -74,6 +87,9 @@ var (
 		}
 		return append(gids, os.Getegid()), nil
 	}
+	// execCommandContext is exec.CommandContext; tests wrap it to see the
+	// command every spawn site ends up with.
+	execCommandContext = exec.CommandContext
 	// runAsSnapshots holds the settings one command was built with, from
 	// agentCommand until setAgentEnv takes them: a reload in between cannot
 	// give the command a preserve list that differs from cmd.Env.
@@ -105,6 +121,34 @@ var runAsGhGuardEnv = map[string]bool{
 // runAsAllowedEnvPrefixes are the prefixes the allowlist keeps: how the CLI
 // is configured, routed and billed.
 var runAsAllowedEnvPrefixes = []string{"CLAUDE_", "ANTHROPIC_"}
+
+// runAsDevNull is the null device every sudo command of the option reads as
+// standard input when the caller sets none. Opened once, never closed: each
+// child gets its own copy of the descriptor.
+var runAsDevNull = sync.OnceValues(func() (*os.File, error) { return os.Open(os.DevNull) })
+
+// detachSudoCommand starts cmd in a new session, without a controlling
+// terminal, with standard input from the null device unless the caller set
+// one. sudo then has no terminal to hand to the agent, so even with
+// `Defaults use_pty` it runs the agent in its own process group, and pid,
+// process group and session of the sudo process are equal: the kill of the
+// negative pid reaches the agent.
+//
+// Decision: Setsid, not Setpgid (setsid fails for a group leader). A sudo
+// with use_pty and a controlling terminal (a daemon in tmux) runs the command
+// in a new session under a second sudo; the kill of the first group then
+// fails and the agent lives on. Without a terminal sudo uses no pty.
+func detachSudoCommand(cmd *exec.Cmd) error {
+	procgroup.ConfigureSession(cmd)
+	if cmd.Stdin == nil {
+		devNull, err := runAsDevNull()
+		if err != nil {
+			return fmt.Errorf("run_as_user: open %s: %w", os.DevNull, err)
+		}
+		cmd.Stdin = devNull
+	}
+	return nil
+}
 
 // runAsSettingsNow returns the current settings, nil when the option is empty.
 func runAsSettingsNow() *runAsSettings {
@@ -160,7 +204,7 @@ func validRunAsName(name string) bool {
 
 // backendRunsToolsInProcess reports whether a backend type executes the tool
 // calls the model chose inside the daemon process, as the daemon user: the
-// two API backends (execBash in backend_anthropic.go, shared by the OpenAI
+// two API backends (executeTool in backend_anthropic.go, shared by the OpenAI
 // one). The CLI backends spawn the model through agentCommand.
 func backendRunsToolsInProcess(backendType string) bool {
 	switch backendType {
@@ -168,6 +212,30 @@ func backendRunsToolsInProcess(backendType string) bool {
 		return true
 	}
 	return false
+}
+
+// claudeCode returns the claude_code block of c, nil when c is nil.
+func (c *BackendConfig) claudeCode() *ClaudeCodeConfig {
+	if c == nil {
+		return nil
+	}
+	return c.ClaudeCode
+}
+
+// runAsBackendError returns "run_as_user is not supported with the <type>
+// backend" when the option is set and backendType runs the tools of the model
+// inside the daemon process, nil otherwise. The option counts as set when cfg
+// names a run_as_user (a blank value included) or the preflight ran for one.
+// The API backends call it before any request and before any tool, and
+// NewBackend before it builds one, so no tool runs as the daemon user.
+func runAsBackendError(backendType string, cfg *ClaudeCodeConfig) error {
+	if !backendRunsToolsInProcess(backendType) {
+		return nil
+	}
+	if (cfg == nil || cfg.RunAsUser == "") && runAsSettingsNow() == nil {
+		return nil
+	}
+	return fmt.Errorf("run_as_user is not supported with the %s backend", backendType)
 }
 
 // resolveRunAs resolves user, group and home once with os/user. The returned
@@ -214,22 +282,34 @@ func resolveRunAs(userName, group string) (*runAsSettings, string) {
 
 // PreflightRunAsUser reads claude_code.run_as_user / run_as_group, resolves
 // them and checks the host. backendType is the configured executor backend
-// ("" is claude-code). The checks: the names are valid, not root, run_as_group
-// is set, the backend does not run model-chosen commands in the daemon
-// process, Linux, user and group exist with uid and gid not 0, the user is not
-// the daemon user, the daemon user is a member of the group, `sudo -n -u <user>
-// -g <group> true` exits 0 within 5 seconds, and the home of the user exists.
-// On any failure it logs one Error line naming the check and sets the
+// ("" is claude-code). The checks: neither value is blank (white space only),
+// the names are valid, not root, run_as_group is set, the backend does not run
+// model-chosen commands in the daemon process, Linux, user and group exist
+// with uid and gid not 0, the user is not the daemon user, the daemon user is
+// a member of the group, `sudo -n -u <user> -g <group> true` exits 0 within 5
+// seconds, the agent gets no terminal from sudo, and the home of the user
+// exists. On any failure it logs one Error line naming the check and sets the
 // process-wide flag: every model spawn then returns an error and no process
-// starts. It never falls back to a run as the daemon user. With the option
-// empty it clears any earlier state and does nothing else. Called at the same
-// place as the read guard config, for every entrypoint that spawns.
+// starts, and the API backends run no request and no tool. It never falls
+// back to a run as the daemon user. With the option empty it clears any
+// earlier state and does nothing else. Called at the same place as the read
+// guard config, for every entrypoint that spawns.
 func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
-	var userName, group string
+	var rawUser, rawGroup string
 	if cfg != nil {
-		userName, group = strings.TrimSpace(cfg.RunAsUser), strings.TrimSpace(cfg.RunAsGroup)
+		rawUser, rawGroup = cfg.RunAsUser, cfg.RunAsGroup
 	}
-	if userName == "" {
+	userName, group := strings.TrimSpace(rawUser), strings.TrimSpace(rawGroup)
+	// A value of white space only is a mistake, not an empty option: the
+	// model would run as the daemon user without a word.
+	var blank string
+	switch {
+	case rawUser != "" && userName == "":
+		blank = "run_as_user is blank"
+	case rawGroup != "" && group == "":
+		blank = "run_as_group is blank"
+	}
+	if userName == "" && blank == "" {
 		runAsMu.Lock()
 		runAsCur = runAsState{}
 		runAsMu.Unlock()
@@ -237,7 +317,7 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
 	}
 
 	runAsMu.RLock()
-	same := runAsCur.checked && runAsCur.settings != nil && runAsCur.backend == backendType &&
+	same := blank == "" && runAsCur.checked && runAsCur.settings != nil && runAsCur.backend == backendType &&
 		runAsCur.settings.user == userName && runAsCur.settings.group == group
 	runAsMu.RUnlock()
 	if same {
@@ -247,6 +327,8 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
 	s := &runAsSettings{user: userName, group: group, gid: -1}
 	var failed string
 	switch {
+	case blank != "":
+		failed = blank
 	case !validRunAsName(userName) || userName == "root":
 		failed = "run_as_user name is not valid"
 	case group == "":
@@ -263,12 +345,14 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
 		case failed != "":
 		case !sudoProbeOK(s):
 			failed = "sudo -n -u " + userName + " -g " + group + " true"
+		case !sudoNoTerminal(s):
+			failed = runAsTTYCheck
 		case !dirExists(s.home):
 			failed = "home exists"
 		}
 	}
 	if failed != "" {
-		slog.Default().Error("run_as_user preflight failed: model processes will not start",
+		slog.Default().Error("run_as_user preflight failed: no model process and no tool of the model will run",
 			slog.String("check", failed),
 			slog.String("run_as_user", userName),
 		)
@@ -279,12 +363,36 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
 }
 
 // sudoProbeOK runs `sudo -n -u <user> [-g <group>] true` with the 5 second
-// bound and reports whether it exited 0.
+// bound, detached as every spawn is (detachSudoCommand), and reports whether
+// it exited 0.
 func sudoProbeOK(s *runAsSettings) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), runAsTimeout)
 	defer cancel()
-	args := append(s.sudoArgs(), "true")
-	return exec.CommandContext(ctx, "sudo", args...).Run() == nil
+	cmd := execCommandContext(ctx, "sudo", append(s.sudoArgs(), "true")...)
+	if detachSudoCommand(cmd) != nil {
+		return false
+	}
+	return cmd.Run() == nil
+}
+
+// sudoNoTerminal runs `sh -c 'ps -o tty= -p $$'` as the agent user through
+// the sudo argv and the detach of a spawn, and reports whether the shell had
+// no controlling terminal ("?"). A sudo that still hands the agent a pty
+// (use_pty with a terminal) runs it outside the group the kill signals. Any
+// other result, an error or no output included, fails closed.
+func sudoNoTerminal(s *runAsSettings) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), runAsTimeout)
+	defer cancel()
+	cmd := execCommandContext(ctx, "sudo", append(s.sudoArgs(), "sh", "-c", runAsTTYProbe)...)
+	if detachSudoCommand(cmd) != nil {
+		return false
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	tty := strings.TrimSpace(string(out))
+	return tty != "" && strings.Trim(tty, "?") == ""
 }
 
 func dirExists(p string) bool {
@@ -300,24 +408,28 @@ func dirExists(p string) bool {
 // it set (Linux) it builds `sudo -n -u <user> [-g <group>] --preserve-env=<names>
 // -- <name> <args...>`; no environment value is ever placed in argv, and the
 // caller sets the environment with setAgentEnv so the names and cmd.Env always
-// match. It also puts the command in its own process group and makes the
+// match. It also starts the command in a new session without a terminal,
+// standard input from the null device (detachSudoCommand), and makes the
 // cancel of the context kill that group through sudo (SIGKILL, WaitDelay 10
 // seconds): the default cancel of os/exec signals only the sudo process, which
 // the daemon user may not signal, and the model would outlive the timeout. A
-// site that sets its own Cancel after the call keeps it. While the preflight
-// flag is set it returns an error and builds nothing.
+// site that sets its own Cancel or Stdin after the call keeps it; a later
+// configureProcessGroup keeps the session and the wait delay. While the
+// preflight flag is set it returns an error and builds nothing.
 func agentCommand(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
 	if err := runAsSpawnError(); err != nil {
 		return nil, err
 	}
 	s := runAsSettingsNow()
 	if s == nil || runAsGOOS != "linux" {
-		return exec.CommandContext(ctx, name, args...), nil
+		return execCommandContext(ctx, name, args...), nil
 	}
 	argv := append(s.sudoArgs(), runAsPreserveFlag+strings.Join(agentEnvNames(s.envBase()), ","), "--", name)
 	argv = append(argv, args...)
-	cmd := exec.CommandContext(ctx, "sudo", argv...)
-	configureProcessGroup(cmd)
+	cmd := execCommandContext(ctx, "sudo", argv...)
+	if err := detachSudoCommand(cmd); err != nil {
+		return nil, err
+	}
 	cmd.Cancel = func() error { return killAgentProcessGroup(cmd, s.user, syscall.SIGKILL) }
 	cmd.WaitDelay = runAsWaitDelay
 	runAsSnapshots.Store(cmd, s)
@@ -446,26 +558,42 @@ func agentKillCommand(ctx context.Context, agentUser string, pgid int, sig sysca
 
 // killAgentProcessGroup signals the process group of an agent command through
 // sudo: the daemon user may not signal the agent user or sudo itself. The
-// group id is the pid of the sudo process (configureProcessGroup). One Error
-// line with the pgid when it fails; there is no direct fallback, it would
-// only fail the same way.
+// group id is the pid of the sudo process (detachSudoCommand). When the kill
+// exits non-zero it waits up to 2 seconds for the sudo process to be gone: a
+// group that ended on its own is not a failure. A process still alive after
+// that is: one Error line with the pid, and the error goes to the caller, so a
+// caller without a context never reports a stop that did not happen. There is
+// no direct fallback, it would only fail the same way.
 func killAgentProcessGroup(cmd *exec.Cmd, agentUser string, sig syscall.Signal) error {
 	if cmd.Process == nil {
 		return nil
 	}
-	pgid := cmd.Process.Pid
+	pid := cmd.Process.Pid
 	ctx, cancel := context.WithTimeout(context.Background(), runAsTimeout)
 	defer cancel()
-	if out, err := agentKillCommand(ctx, agentUser, pgid, sig).CombinedOutput(); err != nil {
-		slog.Default().Error("run_as_user kill through sudo failed",
-			slog.Int("pgid", pgid),
-			slog.String("run_as_user", agentUser),
-			slog.String("signal", signalName(sig)),
-			slog.Any("error", err),
-			slog.String("output", strings.TrimSpace(string(out))),
-		)
-		return fmt.Errorf("sudo kill of process group %d: %w: %w", pgid, errAgentKillLogged, err)
+	out, err := agentKillCommand(ctx, agentUser, pid, sig).CombinedOutput()
+	if err == nil {
+		return nil
 	}
+	for deadline := time.Now().Add(runAsKillGrace); procgroup.Alive(pid); {
+		if time.Now().After(deadline) {
+			slog.Default().Error("run_as_user kill through sudo failed, the process is still alive",
+				slog.Int("pid", pid),
+				slog.Int("pgid", pid),
+				slog.String("run_as_user", agentUser),
+				slog.String("signal", signalName(sig)),
+				slog.Any("error", err),
+				slog.String("output", strings.TrimSpace(string(out))),
+			)
+			return fmt.Errorf("sudo kill of process group %d: %w: %w", pid, errAgentKillLogged, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	slog.Default().Debug("run_as_user kill through sudo failed after the process had exited",
+		slog.Int("pid", pid),
+		slog.String("run_as_user", agentUser),
+		slog.Any("error", err),
+	)
 	return nil
 }
 

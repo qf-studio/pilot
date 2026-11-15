@@ -398,6 +398,9 @@ func (b *OpenAIBackend) parseSSEStream(body io.Reader) (*openaiAccum, error) {
 // --- Main Execute Loop ---
 
 func (b *OpenAIBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	if err := runAsBackendError(BackendTypeOpenAIAPI, b.config.claudeCode()); err != nil {
+		return nil, err
+	}
 	if b.apiKey == "" {
 		return nil, fmt.Errorf("no API key configured for openai-api backend (set OPENAI_API_KEY or executor.openai.api_key)")
 	}
@@ -524,7 +527,7 @@ func (b *OpenAIBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Back
 				}
 
 				slog.Info("OpenAI tool exec", slog.Int("turn", turn), slog.String("tool", tc.Function.Name))
-				toolResult := executeTool(tc.Function.Name, toolInput, cwd)
+				toolResult := executeTool(BackendTypeOpenAIAPI, tc.Function.Name, toolInput, cwd)
 
 				if opts.EventHandler != nil {
 					opts.EventHandler(BackendEvent{

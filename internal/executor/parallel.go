@@ -331,7 +331,11 @@ func (p *ParallelRunner) Cancel() {
 	for id, cmd := range p.running {
 		if cmd.Process != nil {
 			// GH-4503: signal the whole process group.
-			_ = killProcessGroup(cmd, syscall.SIGKILL)
+			if err := killProcessGroup(cmd, syscall.SIGKILL); err != nil {
+				p.log.Log(context.Background(), killFailureLevel(err), "Failed to cancel subagent",
+					slog.String("id", id), slog.Any("error", err))
+				continue
+			}
 			p.log.Debug("Cancelled subagent", slog.String("id", id))
 		}
 	}
