@@ -1,6 +1,6 @@
 # TASK-653: One price table — the same rates for the cost estimate, the dashboard card and the replay recorder
 
-**Status**: 🚀 **P1 DISPATCHED 2026-11-13** → [#6355](https://github.com/qf-studio/pilot/issues/6355) (`pilot` + `no-decompose`); normal review
+**Status**: ✅ **P1 merged 2026-11-13 20:52Z** — [#6355](https://github.com/qf-studio/pilot/issues/6355) → PR#6362, released in v2.321.0. Open: the box check of `Done` (estimate within 10% of the reported cost on ten runs), then archive.
 **Created**: 2026-11-13
 **Assignee**: Pilot
 
