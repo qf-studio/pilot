@@ -1,7 +1,8 @@
 #!/bin/bash
 # Real test for setup-agent-user.sh: the script runs for real (useradd, visudo,
 # sudo, iptables, ip6tables, systemctl) as root on a disposable host, the runner
-# of the CI job box-scripts-real (ubuntu-latest: a real iptables, a real systemd).
+# of the CI job box-scripts-real (ubuntu-24.04: a real iptables, a real systemd,
+# the classic sudo).
 # It uses test names for the daemon user, the agent user and the group, a new
 # data dir and its own cloud-init sudoers file, but it changes the users, the
 # sudoers files and the firewall of the host it runs on: it refuses to start
@@ -31,6 +32,17 @@ if [ "$(id -u)" -ne 0 ]; then
     echo "setup-agent-user_real_test: must run as root" >&2
     exit 2
 fi
+# The box has the classic sudo (sudo.ws). sudo-rs (the default of Ubuntu 26.04)
+# rejects settings the cases below need (Defaults !authenticate), so a run
+# against it proves nothing about the box: stop instead of a partial result.
+SUDO_VERSION="$(sudo --version 2>&1 | head -n 1)"
+echo "sudo: ${SUDO_VERSION}"
+case "$SUDO_VERSION" in
+    *sudo-rs*)
+        echo "setup-agent-user_real_test: refusing to start: sudo is sudo-rs; run on a host with the classic sudo (the CI job pins ubuntu-24.04)" >&2
+        exit 2
+        ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETUP="${SCRIPT_DIR}/setup-agent-user.sh"

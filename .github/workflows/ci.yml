@@ -78,7 +78,8 @@ jobs:
   # CI=true (set by Actions, passed through sudo).
   box-scripts-real:
     name: Box Scripts (real iptables and systemd)
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest (26.04) has sudo-rs; the box has the classic sudo.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
