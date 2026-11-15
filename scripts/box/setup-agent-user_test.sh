@@ -1,13 +1,14 @@
 #!/bin/bash
 # Plain-bash test suite for setup-agent-user.sh — no bats dependency, no root,
-# no real host, and no GNU-only flag of find or stat (it runs on macOS too).
+# no real host, and no GNU-only flag of find or stat (it runs on macOS too, with
+# the same count of checks).
 # The script runs against a temp root with a PATH of mock commands
 # (scripts/box/testdata/mock-host-cmds.sh, linked under the names useradd,
 # groupadd, usermod, visudo, iptables, ip6tables, systemctl, install, chown,
-# chgrp, chmod, id, getent, stat and sudo) that record their arguments; the
+# chmod, id, getent, stat, sudo and runuser) that record their arguments; the
 # sudoers and systemd directories are pointed at the temp root through
-# SUDOERS_DIR / SYSTEMD_DIR. The real-host counterpart is
-# setup-agent-user_container_test.sh.
+# SUDOERS_DIR / SYSTEMD_DIR. The real-host counterpart, run in CI as root, is
+# setup-agent-user_real_test.sh.
 #
 # Usage: ./scripts/box/setup-agent-user_test.sh
 
@@ -16,7 +17,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETUP_SCRIPT="${SCRIPT_DIR}/setup-agent-user.sh"
 MOCK_CMDS="${SCRIPT_DIR}/testdata/mock-host-cmds.sh"
-MOCKED="useradd groupadd usermod visudo iptables ip6tables systemctl install chown chgrp chmod id getent stat sudo"
+MOCKED="useradd groupadd usermod visudo iptables ip6tables systemctl install chown chmod id getent stat sudo runuser"
 
 PASS=0
 FAIL=0
@@ -67,9 +68,17 @@ admin ALL=(ALL) NOPASSWD:ALL'
 
 EXPECTED_RULE='ec2-user ALL=(pilot-agent) NOPASSWD: SETENV: ALL'
 
-# mode_of PATH — octal mode, GNU or BSD stat.
+# mode_of PATH — octal mode as GNU stat %a prints it ("2770", "755"). BSD stat:
+# %Lp alone drops the setgid digit, so %Mp is put in front and a leading zero
+# ("0755") goes.
 mode_of() {
-    stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"
+    local m
+    if m="$(stat -c %a "$1" 2>/dev/null)"; then
+        echo "$m"
+        return 0
+    fi
+    m="$(stat -f '%Mp%Lp' "$1")"
+    echo "${m#0}"
 }
 
 # set_meta PATH OWNER:GROUP — the owner and group the mocks report for PATH.
@@ -77,54 +86,19 @@ set_meta() {
     echo "$2" >"${STATE_DIR}/meta/$(echo "$1" | tr '/' '_')"
 }
 
-# group_of PATH — the group the mocks report (a chgrp record, else the real one).
-group_of() {
-    local mf
-    mf="${STATE_DIR}/meta/$(echo "$1" | tr '/' '_')"
-    if [ -e "$mf" ]; then
-        cut -d: -f2 "$mf"
-    else
-        stat -c %G "$1" 2>/dev/null || stat -f %Sg "$1"
-    fi
-}
-
-# build_repos — repos/alpha (a repository one level down) and repos/org/beta
-# (two levels down, the middle directory and the repository at mode 0700), each
-# with private files in the working tree, a hooks directory and git files at 0600.
+# build_repos — repos/alpha, a repository of the daemon as git leaves it: the
+# working tree with a file at 0644 that git does not track, .git/config with a
+# remote URL. The repos directory is closed (0700), as the check wants it.
 build_repos() {
-    local r="${DATA_DIR}/repos" repo
-    for repo in "$r/alpha" "$r/org/beta"; do
-        mkdir -p "$repo/.git/objects/ab" "$repo/.git/refs/heads" "$repo/.git/hooks" "$repo/src"
-        printf 'ref: refs/heads/main\n' >"$repo/.git/HEAD"
-        printf '[core]\n' >"$repo/.git/config"
-        printf 'x\n' >"$repo/.git/packed-refs"
-        printf 'x\n' >"$repo/.git/index"
-        printf 'x\n' >"$repo/.git/objects/ab/obj"
-        printf 'x\n' >"$repo/.git/refs/heads/main"
-        printf '#!/bin/sh\n' >"$repo/.git/hooks/pre-commit"
-        printf 'TOKEN=x\n' >"$repo/secret.env"
-        printf 'package x\n' >"$repo/src/code.go"
-        chmod 600 "$repo/.git/HEAD" "$repo/.git/config" "$repo/.git/packed-refs" "$repo/.git/index" \
-            "$repo/.git/refs/heads/main" "$repo/secret.env" "$repo/src/code.go"
-        chmod 444 "$repo/.git/objects/ab/obj"
-        chmod 700 "$repo/.git/hooks/pre-commit"
-        chmod 700 "$repo/.git/hooks" "$repo/.git/refs/heads" "$repo/.git/refs" "$repo/.git/objects/ab" \
-            "$repo/.git/objects" "$repo/.git" "$repo/src" "$repo"
-    done
-    chmod 700 "$r/org"
-}
-
-# repo_snapshot — path, mode and group of everything under repos and bin (a
-# repos or bin that is a symbolic link is followed).
-repo_snapshot() {
-    local p
-    find -H "${DATA_DIR}/repos" "${DATA_DIR}/bin" | sort | while IFS= read -r p; do
-        if [ -L "$p" ]; then
-            echo "${p} link"
-        else
-            echo "${p} $(mode_of "$p") $(group_of "$p")"
-        fi
-    done
+    local repo="${DATA_DIR}/repos/alpha"
+    mkdir -p "$repo/.git/objects" "$repo/.git/refs/heads" "$repo/src"
+    printf 'ref: refs/heads/main\n' >"$repo/.git/HEAD"
+    printf '[remote "origin"]\n\turl = https://x:fake-test-token@example.invalid/r.git\n' >"$repo/.git/config"
+    printf 'TOKEN=fake-api-key\n' >"$repo/.env"
+    printf 'package x\n' >"$repo/src/code.go"
+    chmod 644 "$repo/.git/HEAD" "$repo/.git/config" "$repo/.env" "$repo/src/code.go"
+    chmod 755 "$repo/.git" "$repo/src" "$repo"
+    chmod 700 "${DATA_DIR}/repos"
 }
 
 setup_sandbox() {
@@ -138,13 +112,13 @@ setup_sandbox() {
     CALL_LOG="${SANDBOX}/calls.log"
     MUT_LOG="${SANDBOX}/mutations.log"
     OUT="${SANDBOX}/stdout.log"
-    STATE_FILE="${DATA_DIR}/.agent-setup-state"
     R="${DATA_DIR}/repos"
     BAK="${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak"
 
     mkdir -p "${DATA_DIR}/repos" "${DATA_DIR}/bin" "$SUDOERS_DIR" "$SYSTEMD_DIR" "$STUB_BIN" "${STATE_DIR}/users" "${STATE_DIR}/meta"
     chmod 755 "$DATA_DIR"
-    chmod 775 "${DATA_DIR}/repos" "${DATA_DIR}/bin"
+    chmod 700 "${DATA_DIR}/repos"
+    chmod 750 "${DATA_DIR}/bin"
     printf '#!/bin/sh\n' >"${DATA_DIR}/bin/pilot"
     chmod 755 "${DATA_DIR}/bin/pilot"
     : >"$CALL_LOG"
@@ -182,7 +156,6 @@ run_setup() {
         MOCK_SANDBOX="$SANDBOX" \
         MOCK_CALL_LOG="$CALL_LOG" \
         MOCK_MUT_LOG="$MUT_LOG" \
-        MOCK_STATEFILE="$STATE_FILE" \
         SUDOERS_DIR="$SUDOERS_DIR" \
         SYSTEMD_DIR="$SYSTEMD_DIR" \
         ${envs[@]+"${envs[@]}"} \
@@ -212,6 +185,18 @@ tree_listing() {
     cat "${SUDOERS_DIR}/90-cloud-init-users"
 }
 
+# dir_listing DIR — path, mode and content of everything under DIR.
+dir_listing() {
+    local p
+    find "$1" | sort | while IFS= read -r p; do
+        if [ -f "$p" ]; then
+            echo "${p} $(mode_of "$p") $(cat "$p")"
+        else
+            echo "${p} $(mode_of "$p")"
+        fi
+    done
+}
+
 # first_line PATTERN — line number of the first call that matches.
 first_line() {
     grep -n -m1 -E -- "$1" "$CALL_LOG" | cut -d: -f1
@@ -238,14 +223,14 @@ has_line() {
 }
 
 # expect_refused LABEL [VAR=value ...] -- ARGS... — exit 2, nothing mutated, no
-# chgrp or chmod called.
+# chmod or chown called.
 expect_refused() {
     local label="$1" rc=0
     shift
     : >"$MUT_LOG"
     : >"$CALL_LOG"
     run_setup "$@" || rc=$?
-    if [ "$rc" = 2 ] && [ ! -s "$MUT_LOG" ] && ! grep -qE '^(chgrp|chmod|chown) ' "$CALL_LOG"; then
+    if [ "$rc" = 2 ] && [ ! -s "$MUT_LOG" ] && ! grep -qE '^(chmod|chown) ' "$CALL_LOG"; then
         pass "refused with exit 2, nothing changed: ${label}"
     else
         cat "$OUT"
@@ -253,7 +238,9 @@ expect_refused() {
     fi
 }
 
-ALL_STEPS="group agent-user daemon-membership directories shared-read sudoers-rule firewall-ipv4 firewall-ipv6 firewall-unit cloud-init-sudoers"
+ALL_STEPS="daemon-private group agent-user daemon-membership directories sudoers-rule firewall-ipv4 firewall-ipv6 firewall-unit cloud-init-sudoers"
+# daemon-private is a check: it changes nothing, so it reports skipped.
+CHANGE_STEPS="group agent-user daemon-membership directories sudoers-rule firewall-ipv4 firewall-ipv6 firewall-unit cloud-init-sudoers"
 
 echo "=== test: dry run — prints every command, changes nothing ==="
 setup_sandbox
@@ -276,12 +263,10 @@ if [ "$before" = "$(tree_listing)" ]; then
 else
     fail_test "dry run changed the temp root"
 fi
-check_not "no state file is written by a dry run" test -e "$STATE_FILE"
 for want in "+ groupadd --system pilot" "+ useradd --system" "+ usermod -aG pilot ec2-user" \
     "+ visudo -cf" "+ iptables -w -N PILOT_AGENT_EGRESS" "+ ip6tables -w -N PILOT_AGENT_EGRESS" \
     "+ systemctl enable pilot-agent-firewall.service" "$EXPECTED_RULE" \
-    "+ chgrp -h pilot ${DATA_DIR}/repos/alpha/.git/HEAD" "+ chmod 640 ${DATA_DIR}/repos/alpha/.git/HEAD" \
-    "+ record ${DATA_DIR}/repos/alpha/.git/HEAD group="; do
+    "+ runuser -u ec2-user -- sudo -n true"; do
     if grep -qF -- "$want" "$OUT"; then
         pass "prints: ${want}"
     else
@@ -293,6 +278,7 @@ if has_line "$OUT" "+ visudo -c"; then
 else
     fail_test "dry run output lacks the line: + visudo -c"
 fi
+check_not "the dry run ran no sudo" grep -qE '^(sudo|runuser) ' "$CALL_LOG"
 teardown_sandbox
 
 # mutation pin: has_line goes back to a substring match, so "+ visudo -cf" counts as "+ visudo -c" -> this test fails
@@ -306,6 +292,15 @@ else
 fi
 rm -f "$SELF"
 
+echo "=== test: mode_of keeps the setgid digit (2770 stays 2770, 0755 reads 755) ==="
+SELF="$(mktemp -d)"
+mkdir "$SELF/ws" "$SELF/plain"
+chmod 2770 "$SELF/ws"
+chmod 755 "$SELF/plain"
+check "a directory at 2770 reads 2770" test "$(mode_of "$SELF/ws")" = 2770
+check "a directory at 0755 reads 755" test "$(mode_of "$SELF/plain")" = 755
+rm -rf "$SELF"
+
 echo "=== test: apply — steps run in order and leave the host as designed ==="
 setup_sandbox
 build_repos
@@ -316,7 +311,7 @@ else
     fail_test "apply exited non-zero"
 fi
 prev=0
-for pattern in '^groupadd ' '^useradd ' '^usermod ' '^install -d ' '^chgrp -h pilot ' '^visudo -cf ' '^iptables -w -N ' '^ip6tables -w -N ' '^systemctl enable ' '^install -m 0600 -o root -g root .*\.pilot-agent\.bak$' '^visudo -c$'; do
+for pattern in '^groupadd ' '^useradd ' '^usermod ' '^install -d ' '^visudo -cf ' '^iptables -w -N ' '^ip6tables -w -N ' '^systemctl enable ' '^install -m 0600 -o root -g root .*\.pilot-agent\.bak$' '^visudo -c$' '^runuser -u ec2-user -- sudo -n true$'; do
     n="$(first_line "$pattern" || true)"
     if [ -n "$n" ] && [ "$n" -gt "$prev" ]; then
         pass "in order: ${pattern}"
@@ -345,12 +340,12 @@ if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_APPLIED" ]; th
 else
     fail_test "cloud-init file content: $(cat "${SUDOERS_DIR}/90-cloud-init-users")"
 fi
-if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak")" = "$CLOUD_INIT_ORIGINAL" ]; then
+if [ "$(cat "$BAK")" = "$CLOUD_INIT_ORIGINAL" ]; then
     pass "backup holds the original cloud-init file"
 else
     fail_test "backup missing or different"
 fi
-if [ "$(mode_of "${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak")" = "600" ]; then
+if [ "$(mode_of "$BAK")" = "600" ]; then
     pass "backup is root-only (0600)"
 else
     fail_test "backup mode is not 0600"
@@ -386,15 +381,17 @@ if grep -q '^Type=oneshot' "$UNIT" && grep -q -- "--uid-owner pilot-agent -j PIL
 else
     fail_test "unit missing, not oneshot or not enabled"
 fi
-for s in $ALL_STEPS; do
+expect_step daemon-private skipped
+for s in $CHANGE_STEPS; do
     expect_step "$s" "done"
 done
-check_not "chgrp and chmod found every path in the state file first" test -s "${STATE_DIR}/unrecorded.log"
+check_not "no chgrp was run (no shared read)" grep -q '^chgrp ' "$CALL_LOG"
+check_not "no state file is written" test -e "${DATA_DIR}/.agent-setup-state"
+check "the repository of the daemon keeps its modes" test "$(mode_of "$R")" = 700 -a "$(mode_of "$R/alpha/.env")" = 644 -a "$(mode_of "$R/alpha/.git/config")" = 644
 check_not "the firewall never left a moment without reject rules" test -e "${STATE_DIR}/gap.log"
 
 echo "=== test: second apply skips every step ==="
 : >"$MUT_LOG"
-state_size="$(wc -c <"$STATE_FILE" | tr -d ' ')"
 if run_setup -- ; then
     pass "second apply exits 0"
 else
@@ -410,7 +407,6 @@ else
     cat "$MUT_LOG"
     fail_test "second apply ran mutating commands"
 fi
-check "second apply added nothing to the state file" test "$(wc -c <"$STATE_FILE" | tr -d ' ')" = "$state_size"
 
 echo "=== test: undo removes what apply added, keeps user/group/directories ==="
 : >"$MUT_LOG"
@@ -435,12 +431,12 @@ if ! grep -q PILOT_AGENT_EGRESS "${STATE_DIR}/iptables.rules" "${STATE_DIR}/ip6t
 else
     fail_test "firewall rules left"
 fi
-if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL" ] && [ ! -e "${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak" ]; then
+if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL" ] && [ ! -e "$BAK" ]; then
     pass "cloud-init file restored from the backup"
 else
     fail_test "cloud-init file not restored"
 fi
-if grep -qF "from the newest backup ${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak" "$OUT"; then
+if grep -qF "restoring ${SUDOERS_DIR}/90-cloud-init-users from ${BAK}, the newest backup with an active root line of ec2-user" "$OUT"; then
     pass "undo says which backup it restored"
 else
     fail_test "undo does not name the backup"
@@ -450,7 +446,7 @@ if ! grep -qE '^(userdel|groupdel|gpasswd|rm -rf)' "$CALL_LOG" && [ -d "${DATA_D
 else
     fail_test "undo removed the user, the group or a directory"
 fi
-for want in "userdel pilot-agent" "groupdel pilot" "rm -rf ${DATA_DIR}/agent-home ${DATA_DIR}/agent-workspaces"; do
+for want in "pkill -u pilot-agent" "userdel pilot-agent" "groupdel pilot" "rm -rf ${DATA_DIR}/agent-home ${DATA_DIR}/agent-workspaces"; do
     if grep -qF -- "  ${want}" "$OUT"; then
         pass "prints the manual command: ${want}"
     else
@@ -463,6 +459,141 @@ if run_setup -- --undo && [ ! -s "$MUT_LOG" ]; then
 else
     fail_test "second undo failed or changed something"
 fi
+expect_step cloud-init-sudoers skipped
+teardown_sandbox
+
+# ------------------------------------------- item 1: undo cannot be blocked
+
+# mutation pin: the containment checks run before the undo branch again -> this test fails
+echo "=== test: undo with go/cache a link to a directory outside the data dir — exit 0, root's files restored, nothing outside changed ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+mkdir "${SANDBOX}/outside"
+printf 'keep\n' >"${SANDBOX}/outside/file"
+chmod 640 "${SANDBOX}/outside/file"
+chmod 700 "${SANDBOX}/outside"
+rmdir "${DATA_DIR}/agent-home/go/cache"
+ln -s "${SANDBOX}/outside" "${DATA_DIR}/agent-home/go/cache"
+ln -s "${SANDBOX}/nowhere" "${DATA_DIR}/agent-home/go/mod.link"
+outside_before="$(dir_listing "${SANDBOX}/outside")"
+: >"$MUT_LOG"
+if run_setup -- --undo; then
+    pass "undo exits 0"
+else
+    cat "$OUT"
+    fail_test "undo exited non-zero with a link at go/cache"
+fi
+check "the cloud-init file (the sudo of the daemon user) is restored" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL"
+check "the sudoers file of the script is removed" test ! -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+check_not "the firewall chain is removed" grep -q PILOT_AGENT_EGRESS "${STATE_DIR}/iptables.rules"
+check "nothing outside the data dir changed" test "$outside_before" = "$(dir_listing "${SANDBOX}/outside")"
+check_not "no command named the directory outside" grep -qF "${SANDBOX}/outside" "$MUT_LOG"
+for s in cloud-init-sudoers firewall-unit firewall-ipv4 firewall-ipv6 sudoers-rule; do
+    expect_step "$s" "done"
+done
+expect_refused "apply with go/cache a link outside the data dir" --
+check "the refusal names the link" grep -qF "${DATA_DIR}/agent-home/go/cache' is a symbolic link; refused" "$OUT"
+teardown_sandbox
+
+echo "=== test: undo needs no data dir of the daemon user (gone, or another owner) ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+set_meta "$DATA_DIR" somebody:somebody
+if run_setup -- --undo; then
+    pass "undo exits 0 with a data dir of another owner"
+else
+    cat "$OUT"
+    fail_test "undo failed on the owner of the data dir"
+fi
+check "the cloud-init file is restored" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL"
+set_meta "$DATA_DIR" ec2-user:ec2-user
+run_setup -- >/dev/null || true
+if run_setup -- --undo --data-dir "${SANDBOX}/gone"; then
+    pass "undo exits 0 with a data dir that does not exist"
+else
+    cat "$OUT"
+    fail_test "undo failed on a missing data dir"
+fi
+check "the sudoers file of the script is removed" test ! -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+expect_refused "undo still checks its arguments (--group wheel)" -- --undo --group wheel
+expect_refused "undo still checks its arguments (--data-dir /usr)" -- --undo --data-dir /usr
+teardown_sandbox
+
+echo "=== test: undo refuses a backup that is a link or not root's, and a cloud-init file that is a link ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+cp "$BAK" "${SANDBOX}/evil"
+rm "$BAK"
+ln -s "${SANDBOX}/evil" "$BAK"
+if run_setup -- --undo; then
+    fail_test "undo must fail when the only backup is a link"
+else
+    pass "undo exits non-zero when the only backup is a link"
+fi
+check "the link is reported as passed over" grep -qF "not a regular file of root, passed over: ${BAK}" "$OUT"
+check "the cloud-init file stays as it is" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_APPLIED"
+expect_step cloud-init-sudoers failed
+teardown_sandbox
+setup_sandbox
+run_setup -- >/dev/null || true
+mv "${SUDOERS_DIR}/90-cloud-init-users" "${SANDBOX}/ci-target"
+ln -s "${SANDBOX}/ci-target" "${SUDOERS_DIR}/90-cloud-init-users"
+if run_setup -- --undo; then
+    fail_test "undo must refuse a cloud-init file that is a link"
+else
+    pass "undo refuses a cloud-init file that is a link"
+fi
+check "the target of the link is unchanged" test "$(cat "${SANDBOX}/ci-target")" = "$CLOUD_INIT_APPLIED"
+teardown_sandbox
+
+# ------------------------------------- item 5: the backup with the root line
+
+echo "=== test: undo restores the newest backup in which the root line of the daemon user is active ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+cp "$BAK" "${BAK}.1"
+set_meta "${BAK}.1" root:root
+printf '%s\n' "$CLOUD_INIT_APPLIED" >"$BAK"
+: >"$MUT_LOG"
+if run_setup -- --undo; then
+    pass "undo exits 0"
+else
+    cat "$OUT"
+    fail_test "undo exited non-zero"
+fi
+check "the cloud-init file holds the active root line again" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL"
+check "undo names the backup it used" grep -qF "restoring ${SUDOERS_DIR}/90-cloud-init-users from ${BAK}.1, the newest backup with an active root line of ec2-user" "$OUT"
+check "undo names the newer backup it passed over" grep -qF "no active root line of ec2-user, passed over: ${BAK}" "$OUT"
+check "both backups are kept" test -e "$BAK" -a -e "${BAK}.1"
+: >"$MUT_LOG"
+run_setup -- --undo >/dev/null || true
+check "a second undo changes nothing (the root line is active)" test ! -s "$MUT_LOG"
+teardown_sandbox
+
+echo "=== test: a backup not owned by root is passed over for an older one of root ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+cp "$BAK" "${BAK}.1"
+set_meta "${BAK}.1" root:root
+printf 'ec2-user ALL=(ALL) NOPASSWD:ALL\n# planted\n' >"$BAK"
+set_meta "$BAK" ec2-user:ec2-user
+run_setup -- --undo >/dev/null || true
+check "the root backup is restored, not the planted one" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL"
+check "the planted backup is reported" grep -qF "not a regular file of root, passed over: ${BAK}" "$OUT"
+teardown_sandbox
+
+echo "=== test: no backup with an active root line — undo fails and restores nothing ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+printf '%s\n' "$CLOUD_INIT_APPLIED" >"$BAK"
+if run_setup -- --undo; then
+    fail_test "undo must fail when no backup has the root line"
+else
+    pass "undo exits non-zero"
+fi
+expect_step cloud-init-sudoers failed
+check "the message says so" grep -qF "no backup of ${SUDOERS_DIR}/90-cloud-init-users has an active root line of ec2-user" "$OUT"
+check "the cloud-init file is unchanged" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_APPLIED"
 teardown_sandbox
 
 echo "=== test: failing visudo — no sudoers file, non-zero exit, nothing after it ==="
@@ -514,7 +645,7 @@ else
     cat "$OUT"
     fail_test "apply --keep-daemon-sudo exited non-zero"
 fi
-if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL" ] && [ ! -e "${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak" ]; then
+if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL" ] && [ ! -e "$BAK" ]; then
     pass "cloud-init file unchanged, no backup made"
 else
     fail_test "cloud-init file touched despite --keep-daemon-sudo"
@@ -572,7 +703,7 @@ setup_sandbox
 chmod 640 "${SUDOERS_DIR}/90-cloud-init-users"
 set_meta "${SUDOERS_DIR}/90-cloud-init-users" root:wheel
 run_setup MOCK_VISUDO_C_FAIL=1 -- || true
-if grep -qF "install -m 640 -o root -g wheel ${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak ${SUDOERS_DIR}/90-cloud-init-users" "$CALL_LOG" \
+if grep -qF "install -m 640 -o root -g wheel ${BAK} ${SUDOERS_DIR}/90-cloud-init-users" "$CALL_LOG" \
     && [ "$(mode_of "${SUDOERS_DIR}/90-cloud-init-users")" = "640" ]; then
     pass "restore after a failed validation keeps mode 640 and group wheel"
 else
@@ -582,7 +713,7 @@ fi
 run_setup -- || true
 : >"$CALL_LOG"
 run_setup -- --undo || true
-if grep -qF "install -m 640 -o root -g wheel ${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak ${SUDOERS_DIR}/90-cloud-init-users" "$CALL_LOG"; then
+if grep -qF "install -m 640 -o root -g wheel ${BAK} ${SUDOERS_DIR}/90-cloud-init-users" "$CALL_LOG"; then
     pass "undo keeps mode 640 and group wheel"
 else
     grep -F "90-cloud-init-users" "$CALL_LOG" || true
@@ -617,7 +748,7 @@ else
     pass "undo exits non-zero when visudo -c rejects the restored file"
 fi
 expect_step cloud-init-sudoers failed
-if [ -e "${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak" ]; then
+if [ -e "$BAK" ]; then
     pass "the backup is kept after a failed validation"
 else
     fail_test "the backup was removed after a failed validation"
@@ -662,7 +793,7 @@ if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$REWRITTEN2" ]; then
 else
     fail_test "undo restored stale content: $(cat "${SUDOERS_DIR}/90-cloud-init-users")"
 fi
-if grep -qF "from the newest backup ${BAK}" "$OUT" && [ -e "${BAK}.1" ] && [ -e "${BAK}.2" ]; then
+if grep -qF "from ${BAK}, the newest backup with an active root line" "$OUT" && [ -e "${BAK}.1" ] && [ -e "${BAK}.2" ]; then
     pass "undo names the backup and keeps the numbered ones"
 else
     fail_test "undo output or the numbered backups are wrong"
@@ -689,7 +820,7 @@ for f in iptables ip6tables; do
 done
 teardown_sandbox
 
-# ----------------------------------------------------- item 1: validation
+# ----------------------------------------------------------- validation
 
 # mutation pin: the system-directory check is removed from the --data-dir validation -> this test fails
 echo "=== test: --data-dir that is a system directory, or one above it, is refused before any change ==="
@@ -727,7 +858,7 @@ else
     cat "$OUT"
     fail_test "a symlink to a good data dir was refused"
 fi
-check "the canonical path is used" grep -qF "chgrp -h pilot ${DATA_DIR}/bin/pilot" "$OUT"
+check "the canonical path is used" grep -qF "install -d -o pilot-agent -g pilot -m 750 ${DATA_DIR}/agent-home" "$OUT"
 teardown_sandbox
 
 echo "=== test: user and group arguments ==="
@@ -736,8 +867,11 @@ printf '999:/bin/bash:lowuser\n' >"${STATE_DIR}/users/lowuser"
 printf '0:/usr/sbin/nologin:rootish\n' >"${STATE_DIR}/users/rootish"
 printf '1001:/bin/bash:logger\n' >"${STATE_DIR}/users/logger"
 printf '1002:/usr/sbin/nologin:adminish\n' >"${STATE_DIR}/users/adminish"
+printf '1003:/usr/sbin/nologin:dockerish\n' >"${STATE_DIR}/users/dockerish"
+printf '1004:/usr/sbin/nologin:disk\n' >"${STATE_DIR}/users/diskish"
 mkdir -p "${STATE_DIR}/members"
 echo adminish >"${STATE_DIR}/members/wheel"
+echo dockerish >"${STATE_DIR}/members/docker"
 expect_refused "--daemon-user root" -- --daemon-user root
 expect_refused "--daemon-user with uid below 1000" -- --daemon-user lowuser
 expect_refused "--daemon-user that does not exist" -- --daemon-user nobody-here
@@ -745,17 +879,24 @@ expect_refused "--agent-user root" -- --agent-user root
 expect_refused "--agent-user with uid 0" -- --agent-user rootish
 expect_refused "--agent-user with a login shell" -- --agent-user logger
 expect_refused "--agent-user in wheel" -- --agent-user adminish
+expect_refused "--agent-user in docker" -- --agent-user dockerish
+check "one line names the reason (docker)" has_line "$OUT" "setup-agent-user: the agent user 'dockerish' is a member of docker, a system group with privileges"
+expect_refused "--agent-user with the primary group disk" -- --agent-user diskish
+check "one line names the reason (disk)" has_line "$OUT" "setup-agent-user: the agent user 'diskish' is a member of disk, a system group with privileges"
 expect_refused "--agent-user equal to the daemon user" -- --agent-user ec2-user
-for g in root wheel sudo adm ec2-user; do
+for g in root wheel sudo adm disk docker shadow; do
     expect_refused "--group ${g}" -- --group "$g"
+    check "one line names the reason (--group ${g})" grep -qxE "setup-agent-user: --group must not be ${g}: a system group with privileges \(.*\)" "$OUT"
+    expect_refused "--agent-user ${g}" -- --agent-user "$g"
 done
+expect_refused "--group ec2-user (primary group of the daemon user)" -- --group ec2-user
 for bad in "Pilot" "1pilot" "_pilot" "pilot agent" "pilot;id" "-pilot" "pilot.x" ""; do
     expect_refused "--agent-user '${bad}'" -- --agent-user "$bad"
     expect_refused "--group '${bad}'" -- --group "$bad"
 done
 teardown_sandbox
 
-echo "=== test: an existing agent user with a no-login shell outside wheel and sudo is accepted ==="
+echo "=== test: an existing agent user with a no-login shell outside the privileged groups is accepted ==="
 setup_sandbox
 printf '1003:/sbin/nologin:pilot\n' >"${STATE_DIR}/users/pilot-agent"
 mkdir -p "${STATE_DIR}/groups" && touch "${STATE_DIR}/groups/pilot"
@@ -767,343 +908,76 @@ else
 fi
 teardown_sandbox
 
-# ------------------------------------------------- item 1: containment
-
-# mutation pin: the containment check for the resolved binary path is removed -> this test fails
-echo "=== test: a binary that is a symbolic link outside the data dir is refused ==="
+echo "=== test: the agent directories that are links, or leave the data dir, are refused by apply ==="
 setup_sandbox
 mkdir "${SANDBOX}/outside"
-printf '#!/bin/sh\n' >"${SANDBOX}/outside/evil"
-chmod 600 "${SANDBOX}/outside/evil"
-rm "${DATA_DIR}/bin/pilot"
-ln -s "${SANDBOX}/outside/evil" "${DATA_DIR}/bin/pilot"
-expect_refused "binary -> outside the data dir" --
-check "the file outside keeps mode 600" test "$(mode_of "${SANDBOX}/outside/evil")" = 600
-check "the message names the resolved path" grep -qF "resolves to '${SANDBOX}/outside/evil', outside the data dir" "$OUT"
-check_not "no state file was written" test -e "$STATE_FILE"
-teardown_sandbox
-
-echo "=== test: repos, bin and the agent directories that leave the data dir are refused ==="
-setup_sandbox
-mkdir "${SANDBOX}/outside"
-rmdir "${DATA_DIR}/repos"
-ln -s "${SANDBOX}/outside" "${DATA_DIR}/repos"
-expect_refused "repos -> outside the data dir" --
-rm "${DATA_DIR}/repos"
-mkdir "${DATA_DIR}/repos"
-rm -r "${DATA_DIR:?}/bin"
-ln -s "${SANDBOX}/outside" "${DATA_DIR}/bin"
-expect_refused "bin -> outside the data dir" --
-rm "${DATA_DIR}/bin"
-mkdir "${DATA_DIR}/bin"
+outside_before="$(mode_of "${SANDBOX}/outside")"
 ln -s "${SANDBOX}/outside" "${DATA_DIR}/agent-home"
 expect_refused "agent-home is a symbolic link" --
-check "the directory outside is untouched" test "$(mode_of "${SANDBOX}/outside")" = "$(mode_of "${SANDBOX}/outside")"
+rm "${DATA_DIR}/agent-home"
+ln -s "${SANDBOX}/outside" "${DATA_DIR}/agent-workspaces"
+expect_refused "agent-workspaces is a symbolic link" --
+check "the directory outside is untouched" test "$(mode_of "${SANDBOX}/outside")" = "$outside_before"
 teardown_sandbox
 
-echo "=== test: a binary that is a symbolic link inside the data dir is resolved and the link left alone ==="
-setup_sandbox
-mkdir -p "${DATA_DIR}/releases/v1"
-printf '#!/bin/sh\n' >"${DATA_DIR}/releases/v1/pilot"
-chmod 700 "${DATA_DIR}/releases/v1/pilot"
-rm "${DATA_DIR}/bin/pilot"
-ln -s "${DATA_DIR}/releases/v1/pilot" "${DATA_DIR}/bin/pilot"
-if run_setup -- ; then
-    pass "apply exits 0"
-else
-    cat "$OUT"
-    fail_test "apply with a binary link inside the data dir failed"
-fi
-check "the target gets group r-x (0750)" test "$(mode_of "${DATA_DIR}/releases/v1/pilot")" = 750
-check "the target is in the shared group" test "$(group_of "${DATA_DIR}/releases/v1/pilot")" = pilot
-check_not "the link itself was not passed to chgrp or chmod" grep -qE "^(chgrp|chmod) .* ${DATA_DIR}/bin/pilot\$" "$CALL_LOG"
-run_setup -- --undo >/dev/null || true
-check "undo restores the target's mode 700" test "$(mode_of "${DATA_DIR}/releases/v1/pilot")" = 700
-teardown_sandbox
+# ------------------------------------------- item 2: no access to the daemon
 
-# --------------------------------------------------- item 2: shared read
-
-echo "=== test: shared read gives the group exactly the git directories, never the working tree ==="
+echo "=== test: a data dir entry open to others fails the check — one line per entry, nothing changed ==="
 setup_sandbox
 build_repos
-if run_setup -- ; then
-    pass "apply exits 0"
-else
-    cat "$OUT"
-    fail_test "apply exited non-zero"
-fi
-check "bin directory: group r-x (mode 755, no group write)" test "$(mode_of "${DATA_DIR}/bin")" = 755
-check "repos top directory: group r-x, group write removed (775 -> 755)" test "$(mode_of "$R")" = 755
-check "the binary and the bin directory are in the shared group" test "$(group_of "${DATA_DIR}/bin/pilot")" = pilot -a "$(group_of "${DATA_DIR}/bin")" = pilot
-check "middle directory repos/org (0700): group traverse only (0710)" test "$(mode_of "$R/org")" = 710
-check "repository directory repos/org/beta (0700): group traverse only (0710)" test "$(mode_of "$R/org/beta")" = 710
-check "repository directory repos/alpha (0700): group traverse only (0710)" test "$(mode_of "$R/alpha")" = 710
-check "the middle directory is in the shared group" test "$(group_of "$R/org")" = pilot
-for repo in "$R/alpha" "$R/org/beta"; do
-    g="$repo/.git"
-    check "${g#"$R"/}: git directory, objects, refs: group r-x (0750)" test "$(mode_of "$g")" = 750 -a "$(mode_of "$g/objects")" = 750 -a "$(mode_of "$g/objects/ab")" = 750 -a "$(mode_of "$g/refs")" = 750 -a "$(mode_of "$g/refs/heads")" = 750
-    check "${g#"$R"/}: HEAD, config, packed-refs, a ref: group r (0640)" test "$(mode_of "$g/HEAD")" = 640 -a "$(mode_of "$g/config")" = 640 -a "$(mode_of "$g/packed-refs")" = 640 -a "$(mode_of "$g/refs/heads/main")" = 640
-    check "${g#"$R"/}: an object with 0444 keeps its mode and gets the group" test "$(mode_of "$g/objects/ab/obj")" = 444 -a "$(group_of "$g/objects/ab/obj")" = pilot
-    check "${g#"$R"/}: hooks, index are untouched" test "$(mode_of "$g/hooks")" = 700 -a "$(mode_of "$g/hooks/pre-commit")" = 700 -a "$(mode_of "$g/index")" = 600 -a "$(group_of "$g/index")" != pilot
-    # mutation pin: the repos step is recursive over the working tree again (chmod -R / chgrp -R on the repository) -> this check fails
-    check "${repo#"$R"/}: a private file in the working tree keeps mode 0600 and its group" test "$(mode_of "$repo/secret.env")" = 600 -a "$(group_of "$repo/secret.env")" != pilot
-    check "${repo#"$R"/}: the working tree's source directory and files are untouched" test "$(mode_of "$repo/src")" = 700 -a "$(mode_of "$repo/src/code.go")" = 600 -a "$(group_of "$repo/src/code.go")" != pilot
-done
-check_not "no recursive chmod or chown was run" grep -qE '^(chmod|chown|chgrp) .*-R' "$CALL_LOG"
-check_not "chgrp and chmod found every path in the state file first" test -s "${STATE_DIR}/unrecorded.log"
-check "the state file is root-only (root:root 0600)" test "$(cat "${STATE_DIR}/meta/$(echo "$STATE_FILE" | tr '/' '_')")" = root:root -a "$(mode_of "$STATE_FILE")" = 600
-check "the state file holds the earlier mode of repos/org (700)" grep -qF "$(printf '\t700\t%s' "$R/org")" "$STATE_FILE"
-check "the state file holds the earlier mode and group of the binary" grep -qF "$(printf '755\t%s' "${DATA_DIR}/bin/pilot")" "$STATE_FILE"
-check_not "the state file does not hold the working tree" grep -qF "secret.env" "$STATE_FILE"
-teardown_sandbox
-
-# mutation pin: a repository or middle directory keeps the group read bit it had, and the chgrp hands it to the shared group -> this test fails
-echo "=== test: a repository and a middle directory at 0750 get group traverse only (0710) ==="
-setup_sandbox
-build_repos
-chmod 750 "$R/alpha" "$R/org" "$R/org/beta"
-if run_setup -- ; then
-    pass "apply exits 0"
-else
-    cat "$OUT"
-    fail_test "apply exited non-zero"
-fi
-for d in "$R/alpha" "$R/org" "$R/org/beta"; do
-    check "${d#"$R"/}: 0750 -> pilot 0710, the agent cannot list it" test "$(mode_of "$d")" = 710 -a "$(group_of "$d")" = pilot
-done
+chmod 755 "$R" "${DATA_DIR}/bin"
+mkdir "${DATA_DIR}/pilot-home"
+chmod 711 "${DATA_DIR}/pilot-home"
+printf 'x\n' >"${DATA_DIR}/.hidden"
+chmod 604 "${DATA_DIR}/.hidden"
+mkdir "${SANDBOX}/elsewhere"
+chmod 755 "${SANDBOX}/elsewhere"
+ln -s "${SANDBOX}/elsewhere" "${DATA_DIR}/linked"
+ln -s "${SANDBOX}/gone" "${DATA_DIR}/dangling"
+before="$(tree_listing)"
 : >"$MUT_LOG"
-run_setup -- || true
-expect_step shared-read skipped
-check "a second apply changes nothing" test ! -s "$MUT_LOG"
-run_setup -- --undo >/dev/null || true
-check "undo restores 0750" test "$(mode_of "$R/alpha")" = 750 -a "$(mode_of "$R/org")" = 750
-teardown_sandbox
-
-echo "=== test: shared read is idempotent and notices a file made later in a git directory only ==="
-setup_sandbox
-build_repos
-run_setup -- >/dev/null || true
-: >"$MUT_LOG"
-run_setup -- || true
-expect_step shared-read skipped
-check "a second apply changes nothing" test ! -s "$MUT_LOG"
-printf 'x\n' >"$R/alpha/.git/refs/heads/late"
-chmod 600 "$R/alpha/.git/refs/heads/late"
-printf 'x\n' >"$R/alpha/src/late.go"
-chmod 600 "$R/alpha/src/late.go"
-: >"$MUT_LOG"
-run_setup -- || true
-expect_step shared-read "done"
-check "the new ref in the git directory is fixed (0640)" test "$(mode_of "$R/alpha/.git/refs/heads/late")" = 640
-check "the new file in the working tree is not" test "$(mode_of "$R/alpha/src/late.go")" = 600
-teardown_sandbox
-
-echo "=== test: a symbolic link in a git directory is not followed ==="
-setup_sandbox
-build_repos
-mkdir "${SANDBOX}/outside"
-printf 'secret\n' >"${SANDBOX}/outside/key"
-chmod 600 "${SANDBOX}/outside/key"
-ln -s "${SANDBOX}/outside/key" "$R/alpha/.git/refs/heads/link"
-ln -s "${SANDBOX}/outside" "$R/alpha/.git/objects/pack"
-ln -s "${SANDBOX}/outside" "$R/org/beta/.git/refs.link"
 if run_setup -- ; then
-    pass "apply exits 0 with links in the git directory"
-else
-    cat "$OUT"
-    fail_test "apply failed with links in the git directory"
-fi
-check "the file behind a link keeps mode 600" test "$(mode_of "${SANDBOX}/outside/key")" = 600
-check "the directory behind a link keeps its mode" test "$(mode_of "${SANDBOX}/outside")" = "$(mode_of "${SANDBOX}/outside")"
-check_not "no chgrp or chmod named a link or what is behind it" grep -qE "^(chgrp|chmod) .*(refs/heads/link|objects/pack|refs\.link|outside)" "$CALL_LOG"
-teardown_sandbox
-
-echo "=== test: a repository whose working tree is a worktree link (.git is a file) is left alone ==="
-setup_sandbox
-mkdir -p "$R/wt"
-printf 'gitdir: /elsewhere\n' >"$R/wt/.git"
-chmod 600 "$R/wt/.git"
-chmod 700 "$R/wt"
-if run_setup -- ; then
-    pass "apply exits 0"
-else
-    cat "$OUT"
-    fail_test "apply failed with a .git file"
-fi
-check "the directory and the .git file are untouched" test "$(mode_of "$R/wt")" = 700 -a "$(mode_of "$R/wt/.git")" = 600
-teardown_sandbox
-
-echo "=== test: undo restores the group and mode of every recorded path and prints each one ==="
-setup_sandbox
-build_repos
-before_snap="$(repo_snapshot)"
-run_setup -- >/dev/null || true
-check "apply changed the tree" test "$before_snap" != "$(repo_snapshot)"
-: >"$MUT_LOG"
-if run_setup -- --undo; then
-    pass "undo exits 0"
-else
-    cat "$OUT"
-    fail_test "undo exited non-zero"
-fi
-if [ "$before_snap" = "$(repo_snapshot)" ]; then
-    pass "repos and bin are back to the earlier groups and modes"
-else
-    diff <(echo "$before_snap") <(repo_snapshot) | head -20 || true
-    fail_test "undo did not restore every path"
-fi
-for p in "${DATA_DIR}/bin/pilot" "${DATA_DIR}/bin" "$R" "$R/org" "$R/org/beta" "$R/alpha/.git/HEAD" "$R/alpha/.git/objects/ab/obj"; do
-    check "undo prints: restored ${p#"$SANDBOX"/}" grep -qE "^restored: ${p} group=[^ ]+ mode=[0-7]+\$" "$OUT"
-done
-check_not "undo prints nothing for the working tree" grep -qF "secret.env" "$OUT"
-check "the state file is removed after the restore" test ! -e "$STATE_FILE"
-check_not "undo ran no recursive command" grep -qE '^(chmod|chgrp) .*-R' "$MUT_LOG"
-: >"$MUT_LOG"
-check "a second undo changes nothing" run_setup -- --undo
-check "a second undo ran no mutating command" test ! -s "$MUT_LOG"
-teardown_sandbox
-
-echo "=== test: undo refuses a state file that is not root-only ==="
-setup_sandbox
-build_repos
-run_setup -- >/dev/null || true
-set_meta "$STATE_FILE" ec2-user:ec2-user
-before_snap="$(repo_snapshot)"
-if run_setup -- --undo; then
-    fail_test "undo must fail on a state file owned by another user"
-else
-    pass "undo exits non-zero on a state file owned by another user"
-fi
-expect_step shared-read failed
-check "nothing was restored" test "$before_snap" = "$(repo_snapshot)"
-teardown_sandbox
-
-# mutation pin: the state file check compares only the owner and the mode, not the group -> this test fails
-echo "=== test: a state file of group other than root is refused by apply and by undo ==="
-setup_sandbox
-build_repos
-run_setup -- >/dev/null || true
-set_meta "$STATE_FILE" root:ec2-user
-before_snap="$(repo_snapshot)"
-if run_setup -- --undo; then
-    fail_test "undo must fail on a state file of group ec2-user"
-else
-    pass "undo exits non-zero on a state file of group ec2-user"
-fi
-expect_step shared-read failed
-check "undo restored nothing" test "$before_snap" = "$(repo_snapshot)"
-printf 'x\n' >"$R/alpha/.git/refs/heads/late"
-chmod 600 "$R/alpha/.git/refs/heads/late"
-if run_setup -- ; then
-    fail_test "apply must fail on a state file of group ec2-user"
-else
-    pass "apply exits non-zero on a state file of group ec2-user"
-fi
-expect_step shared-read failed
-check "apply did not change the new ref" test "$(mode_of "$R/alpha/.git/refs/heads/late")" = 600
-teardown_sandbox
-
-# mutation pin: undo checks only the last part of a recorded path for a link, not where the path resolves -> this test fails
-echo "=== test: undo refuses a record outside the data dir or through a symbolic link, and reports it ==="
-setup_sandbox
-build_repos
-run_setup -- >/dev/null || true
-mkdir "${SANDBOX}/outside"
-printf 'secret\n' >"${SANDBOX}/outside/key"
-chmod 600 "${SANDBOX}/outside/key"
-set_meta "${SANDBOX}/outside/key" root:root
-ln -s "${SANDBOX}/outside" "${DATA_DIR}/linkdir"
-ln -s "${DATA_DIR}/bin" "${DATA_DIR}/inlink"
-printf 'ec2-user\t777\t%s\n' "${SANDBOX}/outside/key" "${DATA_DIR}/linkdir/key" "${DATA_DIR}/inlink/pilot" >>"$STATE_FILE"
-: >"$MUT_LOG"
-if run_setup -- --undo; then
-    fail_test "undo must fail when a record is refused"
-else
-    pass "undo exits non-zero when a record is refused"
-fi
-expect_step shared-read failed
-check "the file outside keeps mode 600" test "$(mode_of "${SANDBOX}/outside/key")" = 600
-check "the file outside keeps group root" test "$(group_of "${SANDBOX}/outside/key")" = root
-check_not "no chgrp or chmod named a refused record" grep -qE "^(chgrp|chmod) .*(outside/key|linkdir|inlink)" "$MUT_LOG"
-for p in "${SANDBOX}/outside/key" "${DATA_DIR}/linkdir/key" "${DATA_DIR}/inlink/pilot"; do
-    check "reported: ${p#"$SANDBOX"/}" grep -qF "refused, not restored: ${p} resolves to" "$OUT"
-done
-check "the record outside the data dir names the resolved path" grep -qF "refused, not restored: ${SANDBOX}/outside/key resolves to '${SANDBOX}/outside/key'" "$OUT"
-check "the record through the link names the resolved path" grep -qF "refused, not restored: ${DATA_DIR}/linkdir/key resolves to '${SANDBOX}/outside/key'" "$OUT"
-check "the state file is kept" test -e "$STATE_FILE"
-check "the other records are restored" grep -qE "^restored: ${R}/alpha/.git/HEAD group=" "$OUT"
-teardown_sandbox
-
-# ----------------------------------------------------- item 3: path chain
-
-echo "=== test: repos reached through a symlink chain the agent user cannot traverse — one line per directory, step fails ==="
-setup_sandbox
-build_repos
-mkdir "${DATA_DIR}/store"
-mv "${DATA_DIR}/repos" "${DATA_DIR}/store/repos"
-ln -s "${DATA_DIR}/store/repos" "${DATA_DIR}/repos"
-chmod 700 "${DATA_DIR}/store"
-before_snap="$(repo_snapshot)"
-: >"$CALL_LOG"
-if run_setup -- ; then
-    fail_test "apply must fail when the agent cannot traverse the chain"
+    fail_test "apply must fail while the daemon's files are open to the agent user"
 else
     pass "apply exits non-zero"
 fi
-expect_step shared-read failed
-# mutation pin: shared-read changes groups and modes before it checks the chain -> this check fails
-check_not "the failed chain check comes before any change: no chgrp or chmod" grep -qE '^(chgrp|chmod) ' "$CALL_LOG"
-check "the failed chain check comes before any change: groups and modes unchanged" test "$before_snap" = "$(repo_snapshot)"
-check_not "the failed chain check comes before any change: no state file" test -e "$STATE_FILE"
-want="agent user pilot-agent cannot traverse ${DATA_DIR}/store: setfacl -m u:pilot-agent:x ${DATA_DIR}/store  (or: chmod o+x ${DATA_DIR}/store)"
-if has_line "$OUT" "$want"; then
-    pass "prints the command for the directory without traverse"
-else
-    grep -F 'cannot traverse' "$OUT" || true
-    fail_test "no line for ${DATA_DIR}/store"
-fi
-check "one line only: the other directories of the chain are fine" test "$(grep -c 'cannot traverse' "$OUT" | tr -d ' ')" = 1
-expect_step firewall-ipv4 skipped
-chmod 711 "${DATA_DIR}/store"
+expect_step daemon-private failed
+expect_step group skipped
+check "nothing was mutated" test ! -s "$MUT_LOG"
+check "nothing changed in the temp root" test "$before" = "$(tree_listing)"
+for want in "the agent user can reach ${R} (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): chmod o-rwx ${R}" \
+    "the agent user can reach ${DATA_DIR}/bin (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): chmod o-rwx ${DATA_DIR}/bin"; do
+    check "prints: ${want#the agent user can reach }" has_line "$OUT" "$want"
+done
+check "the pilot home at 0711 is reported (traverse is enough)" grep -qF "can reach ${DATA_DIR}/pilot-home " "$OUT"
+check "a hidden file is reported" grep -qF "can reach ${DATA_DIR}/.hidden " "$OUT"
+check "a link is followed and its target named" grep -qE "can reach ${DATA_DIR}/linked .*: chmod o-rwx ${SANDBOX}/elsewhere\$" "$OUT"
+check_not "a dangling link is not reported" grep -qF "can reach ${DATA_DIR}/dangling" "$OUT"
+check "five lines, one per open entry" test "$(grep -c 'can reach ' "$OUT" | tr -d ' ')" = 5
+chmod o-rwx "$R" "${DATA_DIR}/bin" "${DATA_DIR}/pilot-home" "${DATA_DIR}/.hidden" "${SANDBOX}/elsewhere"
 if run_setup -- ; then
-    pass "apply passes once the directory is traversable"
+    pass "apply passes once each entry is closed"
 else
     cat "$OUT"
-    fail_test "apply failed after the grant"
+    fail_test "apply failed after the chmods"
 fi
-check "the symlink itself was not changed, the target directory was" test -L "${DATA_DIR}/repos" -a "$(mode_of "${DATA_DIR}/store/repos")" = 755
+check "the file of the working tree keeps its mode" test "$(mode_of "$R/alpha/.env")" = 644
 teardown_sandbox
 
-echo "=== test: --repos-link (repeatable) checks every directory of each chain ==="
+echo "=== test: an entry in the shared group with a group bit fails the check ==="
 setup_sandbox
-mkdir -p "${SANDBOX}/home/user" "${SANDBOX}/home2/dev"
-ln -s "${DATA_DIR}/repos" "${SANDBOX}/home/user/repos"
-ln -s "${DATA_DIR}/repos" "${SANDBOX}/home2/dev/work"
-chmod 755 "${SANDBOX}/home" "${SANDBOX}/home2"
-chmod 700 "${SANDBOX}/home/user" "${SANDBOX}/home2/dev"
-if run_setup -- --repos-link "${SANDBOX}/home/user/repos" --repos-link "${SANDBOX}/home2/dev/work"; then
-    fail_test "apply must fail with two chains the agent cannot traverse"
+mkdir "${DATA_DIR}/shared"
+chmod 750 "${DATA_DIR}/shared"
+set_meta "${DATA_DIR}/shared" ec2-user:pilot
+if run_setup -- ; then
+    fail_test "apply must fail on an entry of the shared group"
 else
     pass "apply exits non-zero"
 fi
-check "a line for the first chain" has_line "$OUT" "agent user pilot-agent cannot traverse ${SANDBOX}/home/user: setfacl -m u:pilot-agent:x ${SANDBOX}/home/user  (or: chmod o+x ${SANDBOX}/home/user)"
-check "a line for the second chain" has_line "$OUT" "agent user pilot-agent cannot traverse ${SANDBOX}/home2/dev: setfacl -m u:pilot-agent:x ${SANDBOX}/home2/dev  (or: chmod o+x ${SANDBOX}/home2/dev)"
-check "two lines, one per directory" test "$(grep -c 'cannot traverse' "$OUT" | tr -d ' ')" = 2
-expect_step shared-read failed
-chmod 711 "${SANDBOX}/home/user" "${SANDBOX}/home2/dev"
-check "apply passes once both are traversable" run_setup -- --repos-link "${SANDBOX}/home/user/repos" --repos-link "${SANDBOX}/home2/dev/work"
-ln -s "${SANDBOX}" "${SANDBOX}/home/elsewhere"
-if run_setup -- --repos-link "${SANDBOX}/home/elsewhere"; then
-    fail_test "a link that does not lead to the repos directory must fail"
-else
-    pass "a link that does not lead to the repos directory fails"
-fi
-check "the message says so" grep -qF "does not lead to the repos directory" "$OUT"
-expect_refused "--repos-link with a '..' part" -- --repos-link "${SANDBOX}/home/../home/user/repos"
-expect_refused "--repos-link that is relative" -- --repos-link "home/user/repos"
+check "prints the chmod for group and others" has_line "$OUT" "the agent user can reach ${DATA_DIR}/shared (group pilot, mode 750): chmod go-rwx ${DATA_DIR}/shared"
 teardown_sandbox
 
-# ------------------------------------------------ item 4: cloud-init proof
+# ------------------------------------------- item 3: the sudo proof by behaviour
 
 echo "=== test: only exact daemon-user lines with run-as ALL, root or none are commented out ==="
 setup_sandbox
@@ -1118,7 +992,7 @@ ec2-user ALL = (ALL:ALL) ALL
 %ec2-user-admins ALL=(ALL) NOPASSWD:ALL
 EOF
 if run_setup -- ; then
-    pass "apply exits 0: no NOPASSWD rule is left but the agent rule"
+    pass "apply exits 0: sudo -n true fails for the daemon user"
 else
     cat "$OUT"
     fail_test "apply failed"
@@ -1141,7 +1015,7 @@ check "the alias line is reported" grep -qF "left untouched (several users, an a
 expect_step cloud-init-sudoers "done"
 teardown_sandbox
 
-echo "=== test: a rule with the run-as part (deploy) is left untouched and reported, and the proof still fails on it ==="
+echo "=== test: a rule with the run-as part (deploy) is left untouched and reported; it gives no root, so the proof passes ==="
 setup_sandbox
 cat >"${SUDOERS_DIR}/90-cloud-init-users" <<'EOF'
 # Created by cloud-init
@@ -1149,15 +1023,14 @@ ec2-user ALL=(ALL) NOPASSWD:ALL
 ec2-user ALL=(deploy) NOPASSWD: ALL
 EOF
 if run_setup -- ; then
-    fail_test "apply must fail while a NOPASSWD rule other than the agent rule is left"
+    pass "apply exits 0"
 else
-    pass "apply exits non-zero"
+    cat "$OUT"
+    fail_test "apply failed on a (deploy) rule"
 fi
 check "the (deploy) line is untouched" grep -qxF "ec2-user ALL=(deploy) NOPASSWD: ALL" "${SUDOERS_DIR}/90-cloud-init-users"
 check "the root line is commented out" grep -qxF "# disabled by setup-agent-user: ec2-user ALL=(ALL) NOPASSWD:ALL" "${SUDOERS_DIR}/90-cloud-init-users"
 check "the (deploy) line is reported as left untouched" grep -qF "left untouched (run-as part (deploy) is not ALL or root): ${SUDOERS_DIR}/90-cloud-init-users:3: ec2-user ALL=(deploy) NOPASSWD: ALL" "$OUT"
-check "the remaining rule is printed with file and line" has_line "$OUT" "  ${SUDOERS_DIR}/90-cloud-init-users:3: ec2-user ALL=(deploy) NOPASSWD: ALL"
-expect_step cloud-init-sudoers failed
 teardown_sandbox
 
 echo "=== test: a NOPASSWD rule left in another file fails the step with that file and line ==="
@@ -1168,57 +1041,90 @@ if run_setup -- ; then
 else
     pass "apply exits non-zero"
 fi
+check "the proof says sudo -n true succeeded" grep -qF "ec2-user still runs a command as root without a password: sudo -n true succeeded" "$OUT"
 check "the file and line are printed" has_line "$OUT" "  ${SUDOERS_DIR}/10-other:2: ec2-user,admin ALL=(ALL) NOPASSWD:ALL"
-check "the sudo -l line is printed" grep -qF "sudo -l: (ALL) NOPASSWD: ALL" "$OUT"
 check "the cloud-init lines are still commented out" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_APPLIED"
 expect_step cloud-init-sudoers failed
 teardown_sandbox
 
-# mutation pin: the proof takes every NOPASSWD rule with the run-as part (pilot-agent) for the agent rule -> this test fails
-echo "=== test: a NOPASSWD rule with the run-as part (pilot-agent) that is not the agent rule fails the step ==="
+# mutation pin: prove_sudo_removed reads the rule text again (NOPASSWD lines of sudo -l) -> this test fails
+echo "=== test: Defaults:USER !authenticate with a rule without NOPASSWD in another file fails the step ==="
 setup_sandbox
-printf 'ec2-user ALL=(pilot-agent) NOPASSWD: ALL\n' >"${SUDOERS_DIR}/10-other"
+printf 'Defaults:ec2-user !authenticate\n' >"${SUDOERS_DIR}/05-defaults"
+printf 'ec2-user ALL=(ALL) ALL\n' >"${SUDOERS_DIR}/10-other"
+check "the mocked sudo gives root without a password here" mock_run env MOCK_INVOKER=ec2-user sudo -n true
 if run_setup -- ; then
-    fail_test "apply must fail while another (pilot-agent) NOPASSWD rule is left"
+    fail_test "apply must fail: the daemon user gets root without a password"
 else
     pass "apply exits non-zero"
 fi
 expect_step cloud-init-sudoers failed
-check "the sudo -l line is printed" has_line "$OUT" "  sudo -l: (pilot-agent) NOPASSWD: ALL"
-check "the file and line are printed" has_line "$OUT" "  ${SUDOERS_DIR}/10-other:1: ec2-user ALL=(pilot-agent) NOPASSWD: ALL"
-check_not "the agent rule itself is not reported" grep -qF "sudo -l: (pilot-agent) SETENV: NOPASSWD: ALL" "$OUT"
+check "the proof says sudo -n true succeeded" grep -qF "sudo -n true succeeded" "$OUT"
+check "the Defaults line is named" has_line "$OUT" "  ${SUDOERS_DIR}/05-defaults:1: Defaults:ec2-user !authenticate"
+check "the rule is named" has_line "$OUT" "  ${SUDOERS_DIR}/10-other:1: ec2-user ALL=(ALL) ALL"
+rm "${SUDOERS_DIR}/05-defaults"
+if run_setup -- ; then
+    pass "without the Defaults line the rule needs a password and the proof passes"
+else
+    cat "$OUT"
+    fail_test "apply failed without the Defaults line"
+fi
+printf 'Defaults !authenticate\n' >"${SUDOERS_DIR}/05-defaults"
+if run_setup -- ; then
+    fail_test "apply must fail with a global Defaults !authenticate"
+else
+    pass "a global Defaults !authenticate fails the step too"
+fi
 teardown_sandbox
 
-# mutation pin: the error of sudo -l is swallowed (|| true) so an empty output counts as proof -> this test fails
-echo "=== test: sudo -n -l -U that itself fails fails the step with its output ==="
+echo "=== test: the proof ignores the text of a rule that gives no root ==="
 setup_sandbox
-if run_setup MOCK_SUDO_L_FAIL=1 -- ; then
-    fail_test "apply must fail when sudo -l fails"
+printf 'ec2-user ALL=(pilot-agent) NOPASSWD: ALL\n' >"${SUDOERS_DIR}/10-other"
+if run_setup -- ; then
+    pass "a second NOPASSWD rule to the agent user is no root: apply exits 0"
 else
-    pass "apply exits non-zero when sudo -l exits non-zero"
+    cat "$OUT"
+    fail_test "apply failed on a rule that gives no root"
+fi
+teardown_sandbox
+
+# mutation pin: the error of the positive control is swallowed, so a broken sudo counts as proof -> this test fails
+echo "=== test: a sudo that does not run fails the step with its output ==="
+setup_sandbox
+if run_setup MOCK_SUDO_BROKEN=1 -- ; then
+    fail_test "apply must fail when sudo itself fails"
+else
+    pass "apply exits non-zero when sudo itself fails"
 fi
 expect_step cloud-init-sudoers failed
-check "the output of sudo -l is printed" grep -qF "sudo: a password is required" "$OUT"
+check "the output of sudo is printed" grep -qF "sudo: unable to initialize policy plugin" "$OUT"
 check "the message says the removal is not proven" grep -qF "the sudo removal is not proven" "$OUT"
 teardown_sandbox
 
-echo "=== test: the proof also runs when nothing is left to edit ==="
+echo "=== test: the proof also runs when nothing is left to edit, and without a cloud-init file ==="
 setup_sandbox
 run_setup -- >/dev/null || true
-if run_setup MOCK_SUDO_L_FAIL=1 -- ; then
-    fail_test "second apply must fail when sudo -l fails"
+if run_setup MOCK_SUDO_BROKEN=1 -- ; then
+    fail_test "second apply must fail when sudo fails"
 else
-    pass "second apply fails when sudo -l fails"
+    pass "second apply fails when sudo fails"
 fi
-if run_setup MOCK_SUDO_L_EXTRA='(ALL) NOPASSWD: ALL' -- ; then
-    fail_test "second apply must fail on a remaining NOPASSWD rule"
+if run_setup MOCK_SUDO_ROOT_OK=1 -- ; then
+    fail_test "second apply must fail when sudo -n true succeeds"
 else
-    pass "second apply fails on a remaining NOPASSWD rule"
+    pass "second apply fails when sudo -n true succeeds (a rule from another source)"
 fi
 check "no source line is found for an unknown source" grep -qF "no such line in" "$OUT"
+rm "${SUDOERS_DIR}/90-cloud-init-users"
+if run_setup MOCK_SUDO_ROOT_OK=1 -- ; then
+    fail_test "apply without a cloud-init file must still prove the removal"
+else
+    pass "apply without a cloud-init file fails when sudo -n true succeeds"
+fi
+check "the proof ran" grep -qE '^runuser -u ec2-user -- sudo -n true$' "$CALL_LOG"
 teardown_sandbox
 
-# ----------------------------------------------- items 6 and 7: order, firewall
+# ----------------------------------------------- order, firewall
 
 echo "=== test: the removal of the daemon user's sudo needs --confirm-root-path ==="
 setup_sandbox
@@ -1260,7 +1166,7 @@ fi
 expect_step firewall-ipv4 failed
 expect_step cloud-init-sudoers skipped
 check "the cloud-init file is untouched" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL"
-check_not "no backup was made" test -e "${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak"
+check_not "no backup was made" test -e "$BAK"
 teardown_sandbox
 
 echo "=== test: the jump to the chain is moved to the first place in OUTPUT ==="
@@ -1348,6 +1254,33 @@ expect_step firewall-ipv4 skipped
 check "the next apply changes nothing" test ! -s "$MUT_LOG"
 teardown_sandbox
 
+# mutation pin: the leftover temporary chains are removed only on the rebuild path, not when the main chain is absent -> this test fails
+echo "=== test: a temporary chain of a failed run is removed also when the main chain is absent ==="
+setup_sandbox
+# a boot unit that failed after it removed the main chain: the temporary chain holds the only jump
+mock_run iptables -w -N PILOT_AGENT_EGRESS_NEW
+mock_run iptables -w -A PILOT_AGENT_EGRESS_NEW -d 169.254.169.254 -j REJECT
+mock_run iptables -w -I OUTPUT 1 -m owner --uid-owner pilot-agent -j PILOT_AGENT_EGRESS_NEW
+# and a leftover without a jump
+mock_run iptables -w -N PILOT_AGENT_EGRESS_ALT
+mock_run ip6tables -w -N PILOT_AGENT_EGRESS_ALT
+rm -f "${STATE_DIR}/gap.log"
+if run_setup -- ; then
+    pass "apply exits 0"
+else
+    cat "$OUT"
+    fail_test "apply failed with leftover temporary chains"
+fi
+for f in iptables ip6tables; do
+    check_not "${f}: no temporary chain is left" grep -qE "^chain PILOT_AGENT_EGRESS_(NEW|ALT)$" "${STATE_DIR}/${f}.rules"
+    check "${f}: one jump, to the complete chain, first in OUTPUT" test "$(mock_run "$f" -w -S OUTPUT | grep '^-A ')" = "-A OUTPUT -m owner --uid-owner pilot-agent -j PILOT_AGENT_EGRESS" -a "$(mock_run "$f" -w -S PILOT_AGENT_EGRESS | grep -c '^-A ' | tr -d ' ')" = 3
+done
+check_not "no moment without a jump to a chain with a REJECT rule" test -e "${STATE_DIR}/gap.log"
+: >"$MUT_LOG"
+run_setup -- || true
+check "the next apply changes nothing" test ! -s "$MUT_LOG"
+teardown_sandbox
+
 echo "=== test: the gap check itself notices a flush of the chain behind a live jump ==="
 setup_sandbox
 run_setup -- >/dev/null || true
@@ -1380,7 +1313,7 @@ run_setup IP6TABLES_CMD=ip6tables-not-installed -- --undo >/dev/null || true
 check "undo skips IPv6 as well" grep -qE '^step firewall-ipv6: skipped' "$OUT"
 teardown_sandbox
 
-# -------------------------------------------------------- item 8: dry run
+# ------------------------------------------------------------- dry run
 
 echo "=== test: --dry-run deletes and changes nothing, also on a host that was set up before ==="
 setup_sandbox
@@ -1388,14 +1321,11 @@ build_repos
 run_setup -- >/dev/null || true
 printf '%s\n' "$REWRITTEN" >"${SUDOERS_DIR}/90-cloud-init-users"
 printf 'stale\n' >"${SUDOERS_DIR}/.90-pilot-agent-runas.new"
-printf 'x\n' >"$R/alpha/.git/refs/heads/late"
-chmod 600 "$R/alpha/.git/refs/heads/late"
 mock_run iptables -w -I OUTPUT 1 -j ACCEPT
 before="$(tree_listing)"
-before_snap="$(repo_snapshot)"
 before_rules="$(cat "${STATE_DIR}/iptables.rules")"
-state_before="$(cat "$STATE_FILE")"
 : >"$MUT_LOG"
+: >"$CALL_LOG"
 if run_setup -- --dry-run; then
     pass "dry run exits 0"
 else
@@ -1404,12 +1334,12 @@ else
 fi
 check "no mutating command" test ! -s "$MUT_LOG"
 check "files and modes unchanged" test "$before" = "$(tree_listing)"
-check "groups and modes under repos unchanged" test "$before_snap" = "$(repo_snapshot)"
 check "firewall rules unchanged" test "$before_rules" = "$(cat "${STATE_DIR}/iptables.rules")"
-check "state file unchanged" test "$state_before" = "$(cat "$STATE_FILE")"
 check "the rotation of the old backup is printed, not done" grep -qF "+ mv ${BAK} ${BAK}.1" "$OUT"
 check "the lines to comment out are printed" grep -qF "to comment out: ${SUDOERS_DIR}/90-cloud-init-users:3:" "$OUT"
-check "the proof is printed, not run" grep -qF "+ sudo -n -l -U ec2-user" "$OUT"
+check "the proof is printed, not run" grep -qF "+ runuser -u ec2-user -- sudo -n true" "$OUT"
+check_not "the proof did not run" grep -qE '^(runuser|sudo) ' "$CALL_LOG"
+run_setup -- >/dev/null || true
 : >"$MUT_LOG"
 before="$(tree_listing)"
 if run_setup -- --dry-run --undo; then
@@ -1419,11 +1349,9 @@ else
     fail_test "dry-run undo failed"
 fi
 check "dry-run undo: no mutating command" test ! -s "$MUT_LOG"
-check "dry-run undo: files, modes and the state file unchanged" test "$before" = "$(tree_listing)" -a "$state_before" = "$(cat "$STATE_FILE")"
-check "dry-run undo prints the restore it would do" grep -qE "^would restore: ${DATA_DIR}/bin/pilot group=" "$OUT"
-# mutation pin: a dry-run undo prints "restored:" for every record although nothing was restored -> this check fails
-check_not "dry-run undo prints no 'restored:' line" grep -qE "^restored: " "$OUT"
-check "dry-run undo: the groups and modes under repos are unchanged" test "$before_snap" = "$(repo_snapshot)"
+check "dry-run undo: files and modes unchanged" test "$before" = "$(tree_listing)"
+check "dry-run undo prints the restore it would do" grep -qE "^\+ install -m [0-7]+ -o [^ ]+ -g [^ ]+ ${BAK} ${SUDOERS_DIR}/90-cloud-init-users\$" "$OUT"
+check "dry-run undo prints the removal of the rule" grep -qF "+ rm -f ${SUDOERS_DIR}/90-pilot-agent-runas" "$OUT"
 teardown_sandbox
 
 echo "=== test: not root, bad arguments ==="
@@ -1436,7 +1364,8 @@ fi
 if [ ! -s "$MUT_LOG" ]; then pass "nothing mutated as non-root"; else fail_test "mutations as non-root"; fi
 expect_refused "agent user equal to daemon user" -- --agent-user ec2-user
 expect_refused "unknown argument" -- --bogus
-expect_refused "missing value" -- --repos-link
+expect_refused "--repos-link is gone" -- --repos-link /x
+expect_refused "missing value" -- --group
 teardown_sandbox
 
 echo ""
