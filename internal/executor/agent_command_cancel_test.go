@@ -305,7 +305,7 @@ func TestRunAsUserPreflightRefusals(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 			t.Cleanup(func() { slog.SetDefault(prev) })
 
-			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: tc.user, RunAsGroup: tc.group}, tc.backend)
+			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: tc.user, RunAsGroup: tc.group}, tc.backend, true, 0)
 
 			if n := strings.Count(buf.String(), "level=ERROR"); n != 1 || !strings.Contains(buf.String(), tc.wantCheck) {
 				t.Errorf("want one Error line naming %q, got:\n%s", tc.wantCheck, buf.String())
@@ -329,11 +329,11 @@ func TestRunAsUserPreflightCacheKeysOnBackend(t *testing.T) {
 	mockSudo(t, 0)
 	stubRunAsHost(t, "linux", "1000", map[string]string{"pilot-agent": t.TempDir()})
 	cfg := &ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents"}
-	PreflightRunAsUser(cfg, "")
+	PreflightRunAsUser(cfg, "", true, 0)
 	if err := RunAsUserPreflightError(); err != nil {
 		t.Fatalf("claude-code backend refused: %v", err)
 	}
-	PreflightRunAsUser(cfg, BackendTypeAnthropicAPI)
+	PreflightRunAsUser(cfg, BackendTypeAnthropicAPI, true, 0)
 	if err := RunAsUserPreflightError(); err == nil {
 		t.Error("a reload to the anthropic-api backend kept the passing result")
 	}

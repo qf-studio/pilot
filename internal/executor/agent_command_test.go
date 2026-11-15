@@ -373,8 +373,10 @@ func TestRunAsUserKillOptionEmptyIsDirect(t *testing.T) {
 // a member of it. Tests change lookupGrp and daemonGroups for the group cases.
 func stubRunAsHost(t *testing.T, goos string, daemonUID string, users map[string]string) {
 	t.Helper()
-	pg, pu, pc, po, pd := lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups
+	pg, pu, pc, po, pd, pw := lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups, runAsWorkspaceCheck
 	runAsGOOS = goos
+	// The workspace root is a host check of its own (stubRunAsWorkspace).
+	runAsWorkspaceCheck = func(*runAsSettings) string { return "" }
 	currentUID = func() (string, error) { return daemonUID, nil }
 	lookupUser = func(name string) (*user.User, error) {
 		home, ok := users[name]
@@ -390,7 +392,9 @@ func stubRunAsHost(t *testing.T, goos string, daemonUID string, users map[string
 		return &user.Group{Gid: "6000", Name: name}, nil
 	}
 	daemonGroups = func() ([]int, error) { return []int{1000, 6000}, nil }
-	t.Cleanup(func() { lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups = pg, pu, pc, po, pd })
+	t.Cleanup(func() {
+		lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups, runAsWorkspaceCheck = pg, pu, pc, po, pd, pw
+	})
 }
 
 func TestRunAsUserPreflightFailsClosed(t *testing.T) {
@@ -420,7 +424,7 @@ func TestRunAsUserPreflightFailsClosed(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 			t.Cleanup(func() { slog.SetDefault(prev) })
 
-			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: tc.user, RunAsGroup: "pilot-agents"}, "")
+			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: tc.user, RunAsGroup: "pilot-agents"}, "", true, 0)
 			_ = sudoArgv(t, logPath) // the preflight's own probe
 
 			if n := strings.Count(buf.String(), "level=ERROR"); n != 1 || !strings.Contains(buf.String(), tc.wantCheck) {
@@ -446,7 +450,7 @@ func TestRunAsUserPreflightPasses(t *testing.T) {
 	home := t.TempDir()
 	stubRunAsHost(t, "linux", "1000", map[string]string{"pilot-agent": home})
 
-	PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents"}, "")
+	PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents"}, "", true, 0)
 	got := sudoArgv(t, logPath)
 	if strings.Join(got, " ") != "sudo -n -u pilot-agent -g pilot-agents true" {
 		t.Errorf("probe = %q", got)
@@ -468,8 +472,8 @@ func TestRunAsUserPreflightPasses(t *testing.T) {
 func TestRunAsUserPreflightOptionEmptyDoesNothing(t *testing.T) {
 	setRunAsStateForTest(t, nil, "")
 	logPath := mockSudo(t, 1)
-	PreflightRunAsUser(nil, "")
-	PreflightRunAsUser(&ClaudeCodeConfig{}, "")
+	PreflightRunAsUser(nil, "", true, 0)
+	PreflightRunAsUser(&ClaudeCodeConfig{}, "", true, 0)
 	if got := sudoArgv(t, logPath); got != nil {
 		t.Errorf("the empty option ran sudo: %q", got)
 	}
@@ -480,7 +484,7 @@ func TestRunAsUserPreflightOptionEmptyDoesNothing(t *testing.T) {
 
 func TestRunAsUserPreflightEmptyClearsEarlierFailure(t *testing.T) {
 	setRunAsStateForTest(t, testRunAsSettings(t), "sudo -n -u pilot-agent true")
-	PreflightRunAsUser(&ClaudeCodeConfig{}, "")
+	PreflightRunAsUser(&ClaudeCodeConfig{}, "", true, 0)
 	if _, err := agentCommand(context.Background(), "claude"); err != nil {
 		t.Errorf("reloading an empty option left the flag set: %v", err)
 	}

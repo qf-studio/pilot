@@ -1349,7 +1349,8 @@ type ClaudeCodeConfig struct {
 	RunAsGroup string `yaml:"run_as_group,omitempty"`
 	// RunAsWorkspaceDir is the root of the agent workspaces (TASK-651): with
 	// run_as_user set, every git command of the executor in a directory below
-	// it runs as the agent user. Empty: /var/lib/pilot/agent-workspaces. Has
+	// it runs as the agent user, and each task run gets an agent-owned clone
+	// there (agent_workspace.go). Empty: /var/lib/pilot/agent-workspaces. Has
 	// no effect while run_as_user is empty.
 	RunAsWorkspaceDir string `yaml:"run_as_workspace_dir,omitempty"`
 

@@ -1287,6 +1287,8 @@ func writeFileAtomic(path string, content []byte, perm os.FileMode, modTime time
 //
 // This function is safe to call at startup. Pool worktrees (pilot-worktree-pool-*)
 // are excluded because they are managed by the WorktreeManager lifecycle.
+// TASK-651: with run_as_user set the agent workspaces of the project of
+// repoPath (pilot-ws-PROJECT-*) under the workspace root are removed too.
 // TASK-357 (G1): returns (removedCount, freedBytes, err). err is reserved for
 // real failures (e.g. reading the temp dir); a successful cleanup of N orphans
 // returns a nil error so idiomatic `if err != nil { return err }` callers don't
@@ -1386,6 +1388,15 @@ func CleanupOrphanedWorktrees(ctx context.Context, repoPath string) (int, int64,
 		totalBytes += dirSize
 	}
 
+	// TASK-651 (4.2): with run_as_user set, the agent workspaces of this
+	// project under the workspace root are orphans at startup too. Removed as
+	// the agent user; a workspace of another project is never touched.
+	if repoPath != "" {
+		wsRemoved, wsBytes := sweepAgentWorkspaces(repoPath, "")
+		orphanCount += wsRemoved
+		totalBytes += wsBytes
+	}
+
 	// Run git worktree prune to clean up any stale references in .git/worktrees/
 	// This removes references to worktrees that no longer exist on disk
 	if repoPath != "" {
@@ -1416,6 +1427,10 @@ func CleanupOrphanedWorktrees(ctx context.Context, repoPath string) (int, int64,
 // never got to clean up after itself), but left the worktree directory on
 // disk until the next full restart swept it. Pruning it here reclaims the
 // space immediately instead of waiting for a restart.
+//
+// TASK-651: with run_as_user set it also removes the agent workspaces of the
+// task under the workspace root (pilot-ws-PROJECT-TASK-*, the project of
+// repoPath only).
 func PruneOrphanedWorktreeForTask(ctx context.Context, repoPath, taskID string) (int, error) {
 	tmpDir := os.TempDir()
 	entries, err := os.ReadDir(tmpDir)
@@ -1448,6 +1463,12 @@ func PruneOrphanedWorktreeForTask(ctx context.Context, repoPath, taskID string) 
 	if removed > 0 && repoPath != "" {
 		pruneCmd := gitCommandIn(ctx, repoPath, "worktree", "prune", "-v")
 		_ = pruneCmd.Run()
+	}
+
+	// TASK-651 (4.2): the agent workspaces of this task and project.
+	if repoPath != "" && taskID != "" {
+		wsRemoved, _ := sweepAgentWorkspaces(repoPath, taskID)
+		removed += wsRemoved
 	}
 
 	return removed, nil

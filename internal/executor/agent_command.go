@@ -53,6 +53,7 @@ type runAsSettings struct {
 	user  string
 	group string
 	home  string // home of the agent user
+	uid   string // uid of the agent user, the owner of the workspace root
 	gid   int    // gid of group, -1 when no group is set
 	// workspaceRoot is run_as_workspace_dir, defaultRunAsWorkspaceDir when
 	// empty: a git command in a directory below it runs as the agent user
@@ -67,6 +68,9 @@ type runAsState struct {
 	failed   string         // name of the failed preflight check, empty: none
 	checked  bool           // the preflight ran for these settings
 	backend  string         // backend type the preflight ran for
+	// useWorktree and poolSize are the worktree settings the preflight ran for.
+	useWorktree bool
+	poolSize    int
 }
 
 var (
@@ -250,7 +254,7 @@ func resolveRunAs(userName, group string) (*runAsSettings, string) {
 	if err != nil || u == nil {
 		return s, "user exists"
 	}
-	s.home = u.HomeDir
+	s.home, s.uid = u.HomeDir, u.Uid
 	if u.Uid == "0" {
 		return s, "run_as_user has uid 0"
 	}
@@ -292,13 +296,16 @@ func resolveRunAs(userName, group string) (*runAsSettings, string) {
 // with uid and gid not 0, the user is not the daemon user, the daemon user is
 // a member of the group, `sudo -n -u <user> -g <group> true` exits 0 within 5
 // seconds, the agent gets no terminal from sudo, and the home of the user
-// exists. On any failure it logs one Error line naming the check and sets the
+// exists. Then the workspace (TASK-651 4.2): use_worktree is true,
+// worktree_pool_size is 0, the workspace root is not /, the home of the daemon
+// user, the data directory of the daemon or a parent of one of them, and the
+// host checks of checkRunAsWorkspaceRoot pass. On any failure it logs one Error line naming the check and sets the
 // process-wide flag: every model spawn then returns an error and no process
 // starts, and the API backends run no request and no tool. It never falls
 // back to a run as the daemon user. With the option empty it clears any
 // earlier state and does nothing else. Called at the same place as the read
 // guard config, for every entrypoint that spawns.
-func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
+func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree bool, worktreePoolSize int) {
 	var rawUser, rawGroup, rawRoot string
 	if cfg != nil {
 		rawUser, rawGroup, rawRoot = cfg.RunAsUser, cfg.RunAsGroup, cfg.RunAsWorkspaceDir
@@ -327,7 +334,8 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
 	runAsMu.RLock()
 	same := blank == "" && runAsCur.checked && runAsCur.settings != nil && runAsCur.backend == backendType &&
 		runAsCur.settings.user == userName && runAsCur.settings.group == group &&
-		runAsCur.settings.workspaceRoot == root
+		runAsCur.settings.workspaceRoot == root &&
+		runAsCur.useWorktree == useWorktree && runAsCur.poolSize == worktreePoolSize
 	runAsMu.RUnlock()
 	if same {
 		return
@@ -360,6 +368,15 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
 			failed = runAsTTYCheck
 		case !dirExists(s.home):
 			failed = "home exists"
+		case !useWorktree:
+			failed = "run_as_user requires use_worktree"
+		case worktreePoolSize > 0:
+			failed = "run_as_user requires worktree_pool_size 0"
+		default:
+			s.workspaceRoot = root
+			if failed = refusedRunAsWorkspaceRoot(root, cfg); failed == "" {
+				failed = runAsWorkspaceCheck(s)
+			}
 		}
 	}
 	s.workspaceRoot = root
@@ -370,8 +387,100 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
 		)
 	}
 	runAsMu.Lock()
-	runAsCur = runAsState{settings: s, failed: failed, checked: true, backend: backendType}
+	runAsCur = runAsState{settings: s, failed: failed, checked: true, backend: backendType,
+		useWorktree: useWorktree, poolSize: worktreePoolSize}
 	runAsMu.Unlock()
+}
+
+// daemonHomeDir is os.UserHomeDir; tests replace it.
+var daemonHomeDir = os.UserHomeDir
+
+// refusedRunAsWorkspaceRoot returns the failed check when root is /, the home
+// of the daemon user, the data directory of the daemon (the Pilot home and
+// the directory of the loaded config file) or a parent of one of them: a
+// removal as the agent user below the root must never reach daemon files.
+// Paths are compared as given and resolved.
+func refusedRunAsWorkspaceRoot(root string, cfg *ClaudeCodeConfig) string {
+	const check = "run_as_workspace_dir is /, the daemon home, the daemon data directory or a parent of one of them"
+	var protected []string
+	home, err := daemonHomeDir()
+	if err != nil || home == "" {
+		return "run_as_workspace_dir: the home of the daemon user cannot be resolved"
+	}
+	protected = append(protected, home, filepath.Join(home, ".pilot"))
+	if cfg != nil && cfg.PilotHome != "" {
+		protected = append(protected, cfg.PilotHome)
+	}
+	if cfg != nil && cfg.ConfigPath != "" {
+		protected = append(protected, filepath.Dir(cfg.ConfigPath))
+	}
+	roots := pathForms(root)
+	if len(roots) == 0 {
+		return check
+	}
+	for _, r := range roots {
+		if r == string(filepath.Separator) {
+			return check
+		}
+		for _, p := range protected {
+			for _, pf := range pathForms(p) {
+				if pathInside(r, pf) {
+					return check
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// runAsWorkspaceCheck is checkRunAsWorkspaceRoot; tests that stub the host
+// replace it.
+var runAsWorkspaceCheck = checkRunAsWorkspaceRoot
+
+// runAsWorkspaceProbeName is the prefix of the probe directory of the
+// preflight; it never matches a workspace name (agentWorkspacePrefix).
+const runAsWorkspaceProbeName = "pilot-preflight-probe-"
+
+// checkRunAsWorkspaceRoot checks the workspace root on the host: it exists,
+// the agent user owns it, the daemon user can list it, and a directory that
+// the agent user creates in it (a probe, removed again) can be listed by the
+// daemon user. The returned check name is empty on success.
+func checkRunAsWorkspaceRoot(s *runAsSettings) string {
+	root := s.workspaceRoot
+	fi, err := os.Stat(root)
+	if err != nil || !fi.IsDir() {
+		return "workspace root exists"
+	}
+	if owner, ok := fileOwnerUID(fi); !ok || owner != s.uid {
+		return "workspace root is owned by the agent user"
+	}
+	if _, err := os.ReadDir(root); err != nil {
+		return "daemon user can list the workspace root"
+	}
+	probe := filepath.Join(root, runAsWorkspaceProbeName+strconv.FormatInt(time.Now().UnixNano(), 10))
+	run := func(name string, args ...string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), runAsTimeout)
+		defer cancel()
+		cmd, err := agentCommandAs(ctx, s, name, args...)
+		if err != nil {
+			return err
+		}
+		setAgentEnv(cmd, gitAgentBaseEnv())
+		return cmd.Run()
+	}
+	const probeCheck = "daemon user can list a directory the agent user creates in the workspace root"
+	if err := run("mkdir", "--", probe); err != nil {
+		return probeCheck
+	}
+	_, listErr := os.ReadDir(probe)
+	rmErr := run("rmdir", "--", probe)
+	if listErr != nil {
+		return probeCheck
+	}
+	if rmErr != nil {
+		return "agent user can remove its probe directory in the workspace root"
+	}
+	return ""
 }
 
 // sudoProbeOK runs `sudo -n -u <user> [-g <group>] true` with the 5 second
@@ -436,6 +545,14 @@ func agentCommand(ctx context.Context, name string, args ...string) (*exec.Cmd, 
 	if s == nil || runAsGOOS != "linux" {
 		return execCommandContext(ctx, name, args...), nil
 	}
+	return agentCommandAs(ctx, s, name, args...)
+}
+
+// agentCommandAs is the sudo form of agentCommand for the settings s, without
+// the check of the preflight flag: the preflight builds its probe with it
+// before the settings are stored, and a workspace cleanup with the settings
+// the workspace was created with.
+func agentCommandAs(ctx context.Context, s *runAsSettings, name string, args ...string) (*exec.Cmd, error) {
 	argv := append(s.sudoArgs(), runAsPreserveFlag+strings.Join(agentEnvNames(s.envBase()), ","), "--", name)
 	argv = append(argv, args...)
 	cmd := execCommandContext(ctx, "sudo", argv...)

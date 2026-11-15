@@ -446,10 +446,16 @@ func main() {
 }
 
 // applyReadGuardConfig tells the executor read guard which config file is
-// loaded and what claude_code.read_guard says. A nil claudeCode (no
-// executor.claude_code block) still registers the config path, so a config
-// loaded through a non-default --config is on the deny list. GH-6252, GH-6261.
-func applyReadGuardConfig(claudeCode *executor.ClaudeCodeConfig, configPath, backendType string) {
+// loaded and what claude_code.read_guard says. A nil executor block or a nil
+// claude_code block still registers the config path, so a config loaded
+// through a non-default --config is on the deny list. GH-6252, GH-6261.
+func applyReadGuardConfig(execCfg *executor.BackendConfig, configPath string) {
+	var claudeCode *executor.ClaudeCodeConfig
+	var backendType string
+	poolSize := 0
+	if execCfg != nil {
+		claudeCode, backendType, poolSize = execCfg.ClaudeCode, execCfg.Type, execCfg.WorktreePoolSize
+	}
 	if claudeCode == nil {
 		claudeCode = &executor.ClaudeCodeConfig{}
 	}
@@ -457,7 +463,7 @@ func applyReadGuardConfig(claudeCode *executor.ClaudeCodeConfig, configPath, bac
 	executor.SetReadGuardConfig(claudeCode)
 	// TASK-651: fail-closed check of claude_code.run_as_user at every
 	// entrypoint that can spawn a model process. Does nothing when empty.
-	executor.PreflightRunAsUser(claudeCode, backendType)
+	executor.PreflightRunAsUser(claudeCode, backendType, execCfg.EffectiveUseWorktree(), poolSize)
 }
 
 // applyReadGuardConfigFromFile is applyReadGuardConfig for entrypoints that do
@@ -470,20 +476,20 @@ func applyReadGuardConfigFromFile(cfgPath string) {
 	}
 	var doc struct {
 		Executor *struct {
-			Type       string                     `yaml:"type"`
-			ClaudeCode *executor.ClaudeCodeConfig `yaml:"claude_code"`
+			Type             string                     `yaml:"type"`
+			ClaudeCode       *executor.ClaudeCodeConfig `yaml:"claude_code"`
+			UseWorktree      *bool                      `yaml:"use_worktree"`
+			WorktreePoolSize int                        `yaml:"worktree_pool_size"`
 		} `yaml:"executor"`
 	}
 	if raw, err := os.ReadFile(cfgPath); err == nil {
 		_ = yaml.Unmarshal(raw, &doc)
 	}
-	var claudeCode *executor.ClaudeCodeConfig
-	var backendType string
-	if doc.Executor != nil {
-		claudeCode = doc.Executor.ClaudeCode
-		backendType = doc.Executor.Type
+	var execCfg *executor.BackendConfig
+	if e := doc.Executor; e != nil {
+		execCfg = &executor.BackendConfig{Type: e.Type, ClaudeCode: e.ClaudeCode, UseWorktree: e.UseWorktree, WorktreePoolSize: e.WorktreePoolSize}
 	}
-	applyReadGuardConfig(claudeCode, cfgPath, backendType)
+	applyReadGuardConfig(execCfg, cfgPath)
 }
 
 // gatewayChatNeedsOwnRunner reports whether gateway mode must build a
@@ -564,13 +570,7 @@ Examples:
 			}
 
 			// GH-6252: tell the executor read guard which config file is loaded.
-			var claudeCode *executor.ClaudeCodeConfig
-			var backendType string
-			if cfg.Executor != nil {
-				claudeCode = cfg.Executor.ClaudeCode
-				backendType = cfg.Executor.Type
-			}
-			applyReadGuardConfig(claudeCode, configPath, backendType)
+			applyReadGuardConfig(cfg.Executor, configPath)
 
 			secretCount := secretpatterns.SecretValueCount()
 
