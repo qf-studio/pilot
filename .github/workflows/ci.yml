@@ -72,6 +72,20 @@ jobs:
       - name: Run setup-agent-user test suite
         run: ./scripts/box/setup-agent-user_test.sh
 
+  # The host script against a real iptables, ip6tables, sudo and systemd: the
+  # runner is a disposable VM with sudo for the runner user. The test changes
+  # users, sudoers and the firewall of the host, so it refuses to start unless
+  # CI=true (set by Actions, passed through sudo).
+  box-scripts-real:
+    name: Box Scripts (real iptables and systemd)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run setup-agent-user real test (root)
+        run: sudo --preserve-env=CI ./scripts/box/setup-agent-user_real_test.sh
+
   test:
     runs-on: ubuntu-latest
     steps:
