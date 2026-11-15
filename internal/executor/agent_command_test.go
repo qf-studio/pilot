@@ -337,14 +337,17 @@ func TestRunAsUserKillFailureLogsOneErrorWithPgid(t *testing.T) {
 	if err := killProcessGroup(cmd, syscall.SIGKILL); err == nil {
 		t.Fatal("a failed sudo kill returned nil")
 	}
+	// Count only the lines of this kill: a late line of an earlier test can
+	// land in buf, it holds another pgid.
+	want := fmt.Sprintf("pgid=%d ", pid)
 	var errLines []string
 	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
-		if strings.Contains(l, "level=ERROR") {
+		if strings.Contains(l, "level=ERROR") && strings.Contains(l+" ", want) {
 			errLines = append(errLines, l)
 		}
 	}
-	if want := fmt.Sprintf("pgid=%d", pid); len(errLines) != 1 || !strings.Contains(errLines[0], want) {
-		t.Errorf("want one Error line with %s, got %q", want, errLines)
+	if len(errLines) != 1 {
+		t.Errorf("want one Error line with %s, got %q (log %q)", strings.TrimSpace(want), errLines, buf.String())
 	}
 }
 
