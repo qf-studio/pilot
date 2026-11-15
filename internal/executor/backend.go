@@ -1347,6 +1347,11 @@ type ClaudeCodeConfig struct {
 	// group of the run guard files.
 	RunAsUser  string `yaml:"run_as_user,omitempty"`
 	RunAsGroup string `yaml:"run_as_group,omitempty"`
+	// RunAsWorkspaceDir is the root of the agent workspaces (TASK-651): with
+	// run_as_user set, every git command of the executor in a directory below
+	// it runs as the agent user. Empty: /var/lib/pilot/agent-workspaces. Has
+	// no effect while run_as_user is empty.
+	RunAsWorkspaceDir string `yaml:"run_as_workspace_dir,omitempty"`
 
 	// PilotHome and ConfigPath tell the read guard what to protect. Set by the
 	// daemon from the loaded config; empty means ~/.pilot and

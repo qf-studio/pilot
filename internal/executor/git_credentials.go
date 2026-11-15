@@ -50,7 +50,18 @@ func getGitCredentialProvider() GitTokenProvider {
 // (PILOT_GIT_TOKEN), never in argv or a log line — the askpass helper
 // script itself contains no secret material, it just echoes the env var
 // git already handed it.
+//
+// TASK-651: a command of the agent route (gitCommand) gets no token and no
+// variable: its Err is set and it never starts, until the hand-over leg. A
+// command the constructor failed closed is returned unchanged.
 func withGitCredentials(ctx context.Context, cmd *exec.Cmd) *exec.Cmd {
+	if gitRouteFailed(cmd) {
+		return cmd
+	}
+	if _, agent := agentCmdUser(cmd); agent {
+		cmd.Err = errGitCredentialsAgentRoute
+		return cmd
+	}
 	provider := getGitCredentialProvider()
 	if provider == nil {
 		return cmd

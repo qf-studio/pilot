@@ -951,6 +951,12 @@ executor:
   #                                # empty until the agent workspace legs of TASK-651 are released. A failed
   #                                # startup check (user, sudo, home) stops every model spawn; there is no
   #                                # fallback to the daemon user.
+  #   run_as_workspace_dir: ""    # TASK-651 - root of the agent workspaces. With run_as_user set, every
+  #                                # git command of the executor in a directory below this root runs as
+  #                                # the agent user (sudo, allowlisted environment, no git credentials yet).
+  #                                # Empty = /var/lib/pilot/agent-workspaces. Absolute path only.
+  #                                # run_as_user must stay empty on every host until the hand-over leg and
+  #                                # the gates leg of TASK-651 merge.
   #   # env_passthrough (GH-5277): names of environment variables that survive
   #   # the model-subprocess env scrub (GH-5275/GH-5276) even though their name
   #   # looks secret-shaped (matches *_TOKEN/*_SECRET/*_API_KEY/etc). The scrub

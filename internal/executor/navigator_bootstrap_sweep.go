@@ -5,7 +5,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -188,8 +187,7 @@ func gitDirtyEntries(ctx context.Context, dir, prefix string) ([]dirtyEntry, err
 }
 
 func sweepGitOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
+	cmd := gitCommandIn(ctx, dir, args...)
 	return cmd.Output()
 }
 

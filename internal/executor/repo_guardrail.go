@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -116,7 +115,7 @@ func resolveGitRemote(ctx context.Context, dir string) (string, string, error) {
 	if dir == "" {
 		return "", "", fmt.Errorf("%w: empty directory", ErrNoOriginRemote)
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", "origin")
+	cmd := gitCommand(ctx, dir, "-C", dir, "remote", "get-url", "origin")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", "", fmt.Errorf("%w: git remote get-url origin: %v", ErrNoOriginRemote, err)

@@ -54,6 +54,10 @@ type runAsSettings struct {
 	group string
 	home  string // home of the agent user
 	gid   int    // gid of group, -1 when no group is set
+	// workspaceRoot is run_as_workspace_dir, defaultRunAsWorkspaceDir when
+	// empty: a git command in a directory below it runs as the agent user
+	// (gitCommand).
+	workspaceRoot string
 }
 
 // runAsState is the process-wide state of the option: the settings and the
@@ -295,11 +299,15 @@ func resolveRunAs(userName, group string) (*runAsSettings, string) {
 // earlier state and does nothing else. Called at the same place as the read
 // guard config, for every entrypoint that spawns.
 func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
-	var rawUser, rawGroup string
+	var rawUser, rawGroup, rawRoot string
 	if cfg != nil {
-		rawUser, rawGroup = cfg.RunAsUser, cfg.RunAsGroup
+		rawUser, rawGroup, rawRoot = cfg.RunAsUser, cfg.RunAsGroup, cfg.RunAsWorkspaceDir
 	}
 	userName, group := strings.TrimSpace(rawUser), strings.TrimSpace(rawGroup)
+	root := strings.TrimSpace(rawRoot)
+	if root == "" {
+		root = defaultRunAsWorkspaceDir
+	}
 	// A value of white space only is a mistake, not an empty option: the
 	// model would run as the daemon user without a word.
 	var blank string
@@ -318,7 +326,8 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
 
 	runAsMu.RLock()
 	same := blank == "" && runAsCur.checked && runAsCur.settings != nil && runAsCur.backend == backendType &&
-		runAsCur.settings.user == userName && runAsCur.settings.group == group
+		runAsCur.settings.user == userName && runAsCur.settings.group == group &&
+		runAsCur.settings.workspaceRoot == root
 	runAsMu.RUnlock()
 	if same {
 		return
@@ -335,6 +344,8 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
 		failed = "run_as_group is required with run_as_user"
 	case !validRunAsName(group):
 		failed = "run_as_group name is not valid"
+	case !filepath.IsAbs(root):
+		failed = "run_as_workspace_dir is not an absolute path"
 	case backendRunsToolsInProcess(backendType):
 		failed = "run_as_user is not supported with the " + backendType + " backend"
 	case runAsGOOS != "linux":
@@ -351,6 +362,7 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string) {
 			failed = "home exists"
 		}
 	}
+	s.workspaceRoot = root
 	if failed != "" {
 		slog.Default().Error("run_as_user preflight failed: no model process and no tool of the model will run",
 			slog.String("check", failed),
@@ -516,12 +528,18 @@ func setAgentEnv(cmd *exec.Cmd, env []string) {
 	}
 	out := s.agentEnvFor(env)
 	cmd.Env = out
+	setPreserveEnvNames(cmd, out)
+}
+
+// setPreserveEnvNames writes the names of env into the --preserve-env flag of
+// a command made by agentCommand with the option set.
+func setPreserveEnvNames(cmd *exec.Cmd, env []string) {
 	for i, a := range cmd.Args {
 		if a == "--" {
 			break
 		}
 		if strings.HasPrefix(a, runAsPreserveFlag) {
-			cmd.Args[i] = runAsPreserveFlag + strings.Join(agentEnvNames(out), ",")
+			cmd.Args[i] = runAsPreserveFlag + strings.Join(agentEnvNames(env), ",")
 			return
 		}
 	}

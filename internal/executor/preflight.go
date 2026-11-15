@@ -200,8 +200,7 @@ func checkOpenAIAPIKey(backendType string) error {
 // tree for preflight purposes either. Genuinely dirty user files (anything
 // NOT matching that exclude list) still block exactly as before.
 func checkGitClean(ctx context.Context, projectPath string) error {
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-z")
-	cmd.Dir = projectPath
+	cmd := gitCommandIn(ctx, projectPath, "status", "--porcelain", "-z")
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("git status failed: %w", err)
@@ -232,8 +231,7 @@ func checkGitClean(ctx context.Context, projectPath string) error {
 
 // checkGitRepo verifies the directory is a valid git repository.
 func checkGitRepo(ctx context.Context, projectPath string) error {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
-	cmd.Dir = projectPath
+	cmd := gitCommandIn(ctx, projectPath, "rev-parse", "--git-dir")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("not a git repository: %w (output: %s)", err, strings.TrimSpace(string(output)))

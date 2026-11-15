@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -105,8 +104,7 @@ func (m *WorktreeManager) resolveBaseBranch(ctx context.Context) string {
 // at, or "" when it is unset. It keeps any slashes in the branch name
 // ("release/1.x"), which a split on "/" would lose.
 func detectOriginDefaultBranch(ctx context.Context, repoDir string) string {
-	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
-	cmd.Dir = repoDir
+	cmd := gitCommandIn(ctx, repoDir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -158,8 +156,7 @@ func (m *WorktreeManager) CreateWorktree(ctx context.Context, taskID string) (*W
 	var output []byte
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		cmd := exec.CommandContext(ctx, "git", "worktree", "add", "--detach", worktreePath, "HEAD")
-		cmd.Dir = m.repoPath
+		cmd := gitCommandIn(ctx, m.repoPath, "worktree", "add", "--detach", worktreePath, "HEAD")
 		output, err = cmd.CombinedOutput()
 		if err == nil {
 			break
@@ -206,7 +203,7 @@ func (m *WorktreeManager) cleanupWorktree(taskID, worktreePath string) {
 
 	// Remove the git worktree reference
 	// Use --force to handle any uncommitted changes in the worktree
-	removeCmd := exec.Command("git", "-C", m.repoPath, "worktree", "remove", "--force", worktreePath)
+	removeCmd := gitCommand(context.Background(), m.repoPath, "-C", m.repoPath, "worktree", "remove", "--force", worktreePath)
 	_ = removeCmd.Run() // Ignore error - worktree may already be removed
 
 	// Belt and suspenders: also remove the directory if it still exists
@@ -214,7 +211,7 @@ func (m *WorktreeManager) cleanupWorktree(taskID, worktreePath string) {
 	_ = os.RemoveAll(worktreePath)
 
 	// Prune stale worktree references from git
-	pruneCmd := exec.Command("git", "-C", m.repoPath, "worktree", "prune")
+	pruneCmd := gitCommand(context.Background(), m.repoPath, "-C", m.repoPath, "worktree", "prune")
 	_ = pruneCmd.Run()
 }
 
@@ -291,8 +288,7 @@ func (m *WorktreeManager) createPooledWorktree(ctx context.Context, index int) (
 	_ = os.RemoveAll(worktreePath)
 
 	// Remove any stale git worktree reference
-	pruneCmd := exec.CommandContext(ctx, "git", "worktree", "prune")
-	pruneCmd.Dir = m.repoPath
+	pruneCmd := gitCommandIn(ctx, m.repoPath, "worktree", "prune")
 	_ = pruneCmd.Run()
 
 	// Fetch latest origin/<base branch> to ensure fresh base.
@@ -306,8 +302,7 @@ func (m *WorktreeManager) createPooledWorktree(ctx context.Context, index int) (
 	}
 
 	// Create worktree in detached HEAD state at the resolved base
-	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "--detach", worktreePath, baseRef)
-	cmd.Dir = m.repoPath
+	cmd := gitCommandIn(ctx, m.repoPath, "worktree", "add", "--detach", worktreePath, baseRef)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pooled worktree: %w: %s", err, output)
@@ -400,14 +395,12 @@ func (m *WorktreeManager) preparePooledWorktree(ctx context.Context, wt *PooledW
 	}
 
 	// Fetch latest to ensure we have fresh refs
-	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", branch)
-	fetchCmd.Dir = wt.Path
+	fetchCmd := gitCommandIn(ctx, wt.Path, "fetch", "origin", branch)
 	withGitCredentials(ctx, fetchCmd)
 	_, _ = fetchCmd.CombinedOutput() // Non-fatal
 
 	// Clean any leftover files from previous task
-	cleanCmd := exec.CommandContext(ctx, "git", "clean", "-fd")
-	cleanCmd.Dir = wt.Path
+	cleanCmd := gitCommandIn(ctx, wt.Path, "clean", "-fd")
 	if output, err := cleanCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git clean failed: %w: %s", err, output)
 	}
@@ -417,15 +410,13 @@ func (m *WorktreeManager) preparePooledWorktree(ctx context.Context, wt *PooledW
 	// branch. Unlike syncMainBranch (GH-3018), there are no local commits
 	// that could be silently lost here — the worktree is reused across tasks
 	// and reset to baseRef at the start of each one by design.
-	resetCmd := exec.CommandContext(ctx, "git", "reset", "--hard", baseRef)
-	resetCmd.Dir = wt.Path
+	resetCmd := gitCommandIn(ctx, wt.Path, "reset", "--hard", baseRef)
 	if output, err := resetCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git reset failed: %w: %s", err, output)
 	}
 
 	// Create/reset the target branch
-	checkoutCmd := exec.CommandContext(ctx, "git", "checkout", "-B", branchName, baseRef)
-	checkoutCmd.Dir = wt.Path
+	checkoutCmd := gitCommandIn(ctx, wt.Path, "checkout", "-B", branchName, baseRef)
 	if output, err := checkoutCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git checkout failed: %w: %s", err, output)
 	}
@@ -460,7 +451,7 @@ func (m *WorktreeManager) Release(taskID string, wt *PooledWorktree) {
 
 				// Clean up the broken worktree
 				_ = os.RemoveAll(wt.Path)
-				pruneCmd := exec.Command("git", "-C", m.repoPath, "worktree", "prune")
+				pruneCmd := gitCommand(context.Background(), m.repoPath, "-C", m.repoPath, "worktree", "prune")
 				_ = pruneCmd.Run()
 
 				// Create a new one
@@ -503,8 +494,7 @@ func (m *WorktreeManager) validatePooledWorktree(wt *PooledWorktree) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
-	statusCmd.Dir = wt.Path
+	statusCmd := gitCommandIn(ctx, wt.Path, "status", "--porcelain")
 	if err := statusCmd.Run(); err != nil {
 		return false
 	}
@@ -529,7 +519,7 @@ func (m *WorktreeManager) Close() {
 
 	for _, wt := range m.pool {
 		// Remove the git worktree reference
-		removeCmd := exec.Command("git", "-C", m.repoPath, "worktree", "remove", "--force", wt.Path)
+		removeCmd := gitCommand(context.Background(), m.repoPath, "-C", m.repoPath, "worktree", "remove", "--force", wt.Path)
 		_ = removeCmd.Run()
 
 		// Remove directory if still exists
@@ -540,7 +530,7 @@ func (m *WorktreeManager) Close() {
 	m.pool = m.pool[:0]
 
 	// Prune any stale references
-	pruneCmd := exec.Command("git", "-C", m.repoPath, "worktree", "prune")
+	pruneCmd := gitCommand(context.Background(), m.repoPath, "-C", m.repoPath, "worktree", "prune")
 	_ = pruneCmd.Run()
 
 	slog.Info("Worktree pool drained")
@@ -621,8 +611,7 @@ func fetchOriginBranchForWorktree(ctx context.Context, repoDir, branch string) (
 	baseRef := "origin/" + branch
 
 	runFetch := func() (output string, headWritten bool, err error) {
-		fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", branch)
-		fetchCmd.Dir = repoDir
+		fetchCmd := gitCommandIn(ctx, repoDir, "fetch", "origin", branch)
 		withGitCredentials(ctx, fetchCmd)
 		out, fetchErr := fetchCmd.CombinedOutput()
 		return string(out), fetchHeadWasWritten(string(out)), fetchErr
@@ -666,7 +655,7 @@ func fetchOriginBranchForWorktree(ctx context.Context, repoDir, branch string) (
 // GH-5449: makes a stale base visible directly in the daemon log without
 // having to cross-reference the intent judge's "diff base resolved" line.
 func logWorktreeBaseResolved(taskID, branchName, worktreePath, baseRef string) {
-	shaCmd := exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD")
+	shaCmd := gitCommand(context.Background(), worktreePath, "-C", worktreePath, "rev-parse", "HEAD")
 	shaOutput, err := shaCmd.Output()
 	if err != nil {
 		slog.Warn("Failed to resolve worktree base SHA for logging",
@@ -678,7 +667,7 @@ func logWorktreeBaseResolved(taskID, branchName, worktreePath, baseRef string) {
 	}
 	baseSHA := strings.TrimSpace(string(shaOutput))
 
-	dateCmd := exec.Command("git", "-C", worktreePath, "log", "-1", "--format=%cI", "HEAD")
+	dateCmd := gitCommand(context.Background(), worktreePath, "-C", worktreePath, "log", "-1", "--format=%cI", "HEAD")
 	baseDate := ""
 	if dateOutput, dateErr := dateCmd.Output(); dateErr == nil {
 		baseDate = strings.TrimSpace(string(dateOutput))
@@ -751,8 +740,7 @@ func (m *WorktreeManager) CreateWorktreeWithBranch(ctx context.Context, taskID, 
 	// Use -B to force create/reset the branch atomically
 	// git worktree add -B <branch> <path> <base>
 	// -B creates the branch if it doesn't exist, or resets it if it does
-	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "-B", branchName, worktreePath, baseRef)
-	cmd.Dir = m.repoPath
+	cmd := gitCommandIn(ctx, m.repoPath, "worktree", "add", "-B", branchName, worktreePath, baseRef)
 	output, err := cmd.CombinedOutput()
 
 	if err != nil {
@@ -789,7 +777,7 @@ func (m *WorktreeManager) cleanupWorktreeAndBranch(taskID, worktreePath, branchN
 
 	// Then delete the local branch (it was created for this worktree)
 	// Use -D to force delete even if not merged
-	deleteCmd := exec.Command("git", "-C", m.repoPath, "branch", "-D", branchName)
+	deleteCmd := gitCommand(context.Background(), m.repoPath, "-C", m.repoPath, "branch", "-D", branchName)
 	_ = deleteCmd.Run() // Ignore error - branch may have been pushed and deleted elsewhere
 }
 
@@ -807,8 +795,7 @@ func (m *WorktreeManager) cleanupWorktreeAndBranch(taskID, worktreePath, branchN
 // stale state before creating a new worktree.
 func (m *WorktreeManager) cleanupStaleWorktreeForBranch(ctx context.Context, branchName string) {
 	// GH-1017: Run prune first to clean up any orphaned worktree references
-	pruneCmd := exec.CommandContext(ctx, "git", "worktree", "prune", "-v")
-	pruneCmd.Dir = m.repoPath
+	pruneCmd := gitCommandIn(ctx, m.repoPath, "worktree", "prune", "-v")
 	_ = pruneCmd.Run()
 
 	// GH-1017: Scan temp directory for orphaned pilot worktree directories
@@ -826,8 +813,7 @@ func (m *WorktreeManager) cleanupStaleWorktreeForBranch(ctx context.Context, bra
 			if strings.HasPrefix(name, "pilot-worktree-") && strings.Contains(name, branchSafe) {
 				orphanPath := filepath.Join(tmpDir, name)
 				// Try to remove the worktree via git first
-				removeCmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", orphanPath)
-				removeCmd.Dir = m.repoPath
+				removeCmd := gitCommandIn(ctx, m.repoPath, "worktree", "remove", "--force", orphanPath)
 				_ = removeCmd.Run()
 				// Then remove directory
 				_ = os.RemoveAll(orphanPath)
@@ -836,8 +822,7 @@ func (m *WorktreeManager) cleanupStaleWorktreeForBranch(ctx context.Context, bra
 	}
 
 	// Get list of all worktrees in porcelain format
-	listCmd := exec.CommandContext(ctx, "git", "worktree", "list", "--porcelain")
-	listCmd.Dir = m.repoPath
+	listCmd := gitCommandIn(ctx, m.repoPath, "worktree", "list", "--porcelain")
 	output, err := listCmd.Output()
 	if err != nil {
 		return // Ignore - best effort cleanup
@@ -874,8 +859,7 @@ func (m *WorktreeManager) cleanupStaleWorktreeForBranch(ctx context.Context, bra
 	}
 
 	// Found a stale worktree - remove it
-	removeCmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", staleWorktreePath)
-	removeCmd.Dir = m.repoPath
+	removeCmd := gitCommandIn(ctx, m.repoPath, "worktree", "remove", "--force", staleWorktreePath)
 	_ = removeCmd.Run() // Ignore error - may already be partially removed
 
 	// Belt and suspenders: also remove the directory if it still exists
@@ -883,22 +867,19 @@ func (m *WorktreeManager) cleanupStaleWorktreeForBranch(ctx context.Context, bra
 
 	// GH-1017: Clean up stale branch ref if it has no commits ahead of main
 	// Check if branch has commits not in main
-	revListCmd := exec.CommandContext(ctx, "git", "rev-list", "--count", "main.."+branchName)
-	revListCmd.Dir = m.repoPath
+	revListCmd := gitCommandIn(ctx, m.repoPath, "rev-list", "--count", "main.."+branchName)
 	countOutput, err := revListCmd.Output()
 	if err == nil {
 		count := strings.TrimSpace(string(countOutput))
 		if count == "0" {
 			// Branch has no unique commits - safe to delete
-			deleteCmd := exec.CommandContext(ctx, "git", "branch", "-D", branchName)
-			deleteCmd.Dir = m.repoPath
+			deleteCmd := gitCommandIn(ctx, m.repoPath, "branch", "-D", branchName)
 			_ = deleteCmd.Run()
 		}
 	}
 
 	// Final prune to clean up any remaining references
-	finalPruneCmd := exec.CommandContext(ctx, "git", "worktree", "prune")
-	finalPruneCmd.Dir = m.repoPath
+	finalPruneCmd := gitCommandIn(ctx, m.repoPath, "worktree", "prune")
 	_ = finalPruneCmd.Run()
 }
 
@@ -906,16 +887,14 @@ func (m *WorktreeManager) cleanupStaleWorktreeForBranch(ctx context.Context, bra
 // This is useful for pre-flight validation before long-running tasks.
 func (m *WorktreeManager) VerifyRemoteAccess(ctx context.Context, worktreePath string) error {
 	// Check that 'origin' remote exists and is accessible
-	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
-	cmd.Dir = worktreePath
+	cmd := gitCommandIn(ctx, worktreePath, "remote", "get-url", "origin")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("remote 'origin' not accessible from worktree: %w: %s", err, output)
 	}
 
 	// Verify we can ls-remote (lightweight check without fetching)
-	lsCmd := exec.CommandContext(ctx, "git", "ls-remote", "--exit-code", "origin", "HEAD")
-	lsCmd.Dir = worktreePath
+	lsCmd := gitCommandIn(ctx, worktreePath, "ls-remote", "--exit-code", "origin", "HEAD")
 	withGitCredentials(ctx, lsCmd)
 	if lsOutput, lsErr := lsCmd.CombinedOutput(); lsErr != nil {
 		return fmt.Errorf("cannot reach remote 'origin': %w: %s", lsErr, lsOutput)
@@ -1203,7 +1182,7 @@ func gitListPaths(repo, pathspec string, extra ...string) (map[string]bool, erro
 
 	args := append([]string{"-C", repo, "ls-files", "-z"}, extra...)
 	args = append(args, "--", pathspec)
-	out, err := exec.CommandContext(ctx, "git", args...).Output()
+	out, err := gitCommand(ctx, repo, args...).Output()
 	if err != nil {
 		return nil, err
 	}
@@ -1398,8 +1377,7 @@ func CleanupOrphanedWorktrees(ctx context.Context, repoPath string) (int, int64,
 			slog.String("size_mb", fmt.Sprintf("%.1f", float64(dirSize)/(1024*1024))),
 		)
 
-		removeCmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", worktreePath)
-		removeCmd.Dir = repoPath
+		removeCmd := gitCommandIn(ctx, repoPath, "worktree", "remove", "--force", worktreePath)
 		_ = removeCmd.Run()
 
 		// Belt and suspenders: also remove the directory if git worktree remove didn't fully clean up
@@ -1411,8 +1389,7 @@ func CleanupOrphanedWorktrees(ctx context.Context, repoPath string) (int, int64,
 	// Run git worktree prune to clean up any stale references in .git/worktrees/
 	// This removes references to worktrees that no longer exist on disk
 	if repoPath != "" {
-		pruneCmd := exec.CommandContext(ctx, "git", "worktree", "prune", "-v")
-		pruneCmd.Dir = repoPath
+		pruneCmd := gitCommandIn(ctx, repoPath, "worktree", "prune", "-v")
 		// Ignore errors - prune is best-effort cleanup
 		_ = pruneCmd.Run()
 	}
@@ -1454,8 +1431,7 @@ func PruneOrphanedWorktreeForTask(ctx context.Context, repoPath, taskID string) 
 		}
 		worktreePath := filepath.Join(tmpDir, entry.Name())
 
-		removeCmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", worktreePath)
-		removeCmd.Dir = repoPath
+		removeCmd := gitCommandIn(ctx, repoPath, "worktree", "remove", "--force", worktreePath)
 		_ = removeCmd.Run()
 
 		if rmErr := os.RemoveAll(worktreePath); rmErr != nil {
@@ -1470,8 +1446,7 @@ func PruneOrphanedWorktreeForTask(ctx context.Context, repoPath, taskID string) 
 	}
 
 	if removed > 0 && repoPath != "" {
-		pruneCmd := exec.CommandContext(ctx, "git", "worktree", "prune", "-v")
-		pruneCmd.Dir = repoPath
+		pruneCmd := gitCommandIn(ctx, repoPath, "worktree", "prune", "-v")
 		_ = pruneCmd.Run()
 	}
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -32,8 +31,7 @@ func (r *Runner) syncMainBranch(ctx context.Context, repoPath string) error {
 	log.Debug("Syncing main branch with origin")
 
 	// Detect current branch first so we target the correct remote ref.
-	branchCmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
-	branchCmd.Dir = repoPath
+	branchCmd := gitCommandIn(ctx, repoPath, "rev-parse", "--abbrev-ref", "HEAD")
 	branchOutput, err := branchCmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to get current branch: %w", err)
@@ -49,16 +47,14 @@ func (r *Runner) syncMainBranch(ctx context.Context, repoPath string) error {
 	remoteRef := "origin/" + currentBranch
 
 	// Fetch the matching remote ref.
-	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", currentBranch)
-	fetchCmd.Dir = repoPath
+	fetchCmd := gitCommandIn(ctx, repoPath, "fetch", "origin", currentBranch)
 	if output, err := fetchCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to fetch %s: %w: %s", remoteRef, err, output)
 	}
 
 	// GH-3018: --ff-only prevents silent commit loss when local is ahead of origin.
 	// Fails safely on: (a) local ahead, (b) divergence, (c) dirty working tree.
-	mergeCmd := exec.CommandContext(ctx, "git", "merge", "--ff-only", remoteRef)
-	mergeCmd.Dir = repoPath
+	mergeCmd := gitCommandIn(ctx, repoPath, "merge", "--ff-only", remoteRef)
 	output, mergeErr := mergeCmd.CombinedOutput()
 	if mergeErr != nil {
 		// All failure modes are safe to skip. Raw git output lets operators

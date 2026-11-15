@@ -1,8 +1,8 @@
 package executor
 
 import (
+	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -255,13 +255,11 @@ func SimplifyModifiedFiles(projectPath string, config *SimplifyConfig) ([]string
 
 // getModifiedFiles returns files modified in git working directory.
 func getModifiedFiles(projectPath string) ([]string, error) {
-	cmd := exec.Command("git", "diff", "--name-only", "HEAD")
-	cmd.Dir = projectPath
+	cmd := gitCommandIn(context.Background(), projectPath, "diff", "--name-only", "HEAD")
 	output, err := cmd.Output()
 	if err != nil {
 		// Fallback to staged files
-		cmd = exec.Command("git", "diff", "--name-only", "--cached")
-		cmd.Dir = projectPath
+		cmd = gitCommandIn(context.Background(), projectPath, "diff", "--name-only", "--cached")
 		output, err = cmd.Output()
 		if err != nil {
 			return nil, err
@@ -280,8 +278,7 @@ func getModifiedFiles(projectPath string) ([]string, error) {
 
 // getAllTrackedFiles returns all files tracked by git.
 func getAllTrackedFiles(projectPath string) ([]string, error) {
-	cmd := exec.Command("git", "ls-files")
-	cmd.Dir = projectPath
+	cmd := gitCommandIn(context.Background(), projectPath, "ls-files")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
