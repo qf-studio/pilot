@@ -911,12 +911,13 @@ teardown_sandbox
 echo "=== test: the agent directories that are links, or leave the data dir, are refused by apply ==="
 setup_sandbox
 mkdir "${SANDBOX}/outside"
+outside_before="$(mode_of "${SANDBOX}/outside")"
 ln -s "${SANDBOX}/outside" "${DATA_DIR}/agent-home"
 expect_refused "agent-home is a symbolic link" --
 rm "${DATA_DIR}/agent-home"
 ln -s "${SANDBOX}/outside" "${DATA_DIR}/agent-workspaces"
 expect_refused "agent-workspaces is a symbolic link" --
-check "the directory outside is untouched" test "$(mode_of "${SANDBOX}/outside")" = "$(mode_of "${SANDBOX}/outside")"
+check "the directory outside is untouched" test "$(mode_of "${SANDBOX}/outside")" = "$outside_before"
 teardown_sandbox
 
 # ------------------------------------------- item 2: no access to the daemon

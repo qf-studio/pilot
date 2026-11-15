@@ -170,7 +170,9 @@ check_path_arg() {
 
 id -u "$DAEMON_USER" >/dev/null 2>&1 || die "daemon user '${DAEMON_USER}' does not exist"
 DAEMON_UID="$(id -u "$DAEMON_USER")"
-[ "$DAEMON_USER" != root ] && [ "$DAEMON_UID" -ge 1000 ] || die "the daemon user must not be root or have a uid below 1000 (${DAEMON_USER} has ${DAEMON_UID})"
+if [ "$DAEMON_USER" = root ] || [ "$DAEMON_UID" -lt 1000 ]; then
+    die "the daemon user must not be root or have a uid below 1000 (${DAEMON_USER} has ${DAEMON_UID})"
+fi
 [ "$DAEMON_USER" != "$AGENT_USER" ] || die "the agent user must differ from the daemon user"
 [ "$AGENT_USER" != root ] || die "the agent user must not be root"
 ! is_privileged_group "$AGENT_USER" || die "--agent-user must not be ${AGENT_USER}: that is the name of a system group with privileges (${PRIVILEGED_GROUPS})"

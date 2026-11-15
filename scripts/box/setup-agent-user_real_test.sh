@@ -18,8 +18,9 @@
 # Usage (CI): sudo --preserve-env=CI ./scripts/box/setup-agent-user_real_test.sh
 
 # The single-quoted scripts run in a shell of the test user, not in this one;
-# the helpers are called through check and check_not.
-# shellcheck disable=SC2016,SC2329
+# the helpers are called through check, check_not and the trap (SC2317 in
+# ShellCheck 0.10, SC2329 from 0.11).
+# shellcheck disable=SC2016,SC2317,SC2329
 set -euo pipefail
 
 if [ "${CI:-}" != true ]; then
@@ -129,7 +130,6 @@ show_log() {
     sed 's/^/    | /' "$LOG"
 }
 
-# shellcheck disable=SC2329 # runs through the trap
 cleanup() {
     local pid
     for pid in ${LISTENERS[@]+"${LISTENERS[@]}"}; do kill "$pid" 2>/dev/null || true; done
