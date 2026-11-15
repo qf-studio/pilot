@@ -230,6 +230,13 @@ else
 fi
 
 echo "=== real test: the host of the daemon user ==="
+# The ubuntu-24.04 runner image has /etc/sudoers.d/runner with a mode that the
+# classic visudo -c rejects ("bad permissions, should be mode 0440"). The script
+# is right to stop on a host whose sudoers files do not validate, so give the
+# files of the image the mode visudo wants before the first check.
+for f in /etc/sudoers.d/*; do
+    [ -f "$f" ] && [ ! -L "$f" ] && chmod 0440 "$f"
+done
 # A daemon user with a data dir as on a host: open to others (0755), a
 # repository that git made with the default umask (0755 directories, 0644
 # files), an untracked file at 0644, a remote URL in .git/config, the binary.
