@@ -9201,6 +9201,18 @@
         ],
         "created": "2026-11-15",
         "last_validated": "2026-11-15"
+      },
+      "mem-318": {
+        "type": "learning",
+        "summary": "Founder feedback 2026-11-15: leg codes such as U2, F3, L9 are unreadable in status reports. In every report to the founder, name work by what it does in plain words and by its GitHub issue or PR number. Report shape: the goal; the roadmap as numbered steps (what it does, ticket, state); side tracks; the queue now; what waits for the founder. Mark each change since the last update. Leg codes stay inside task documents. Navigator feature request: qf-studio/navigator#50.",
+        "path": "memories/learnings/mem-318.md",
+        "confidence": 0.95,
+        "concepts": [
+          "workflow-discipline",
+          "workflow"
+        ],
+        "created": "2026-11-15",
+        "last_validated": "2026-11-15"
       }
     }
   },
@@ -13469,6 +13481,11 @@
       "from": "mem-317",
       "to": "TASK-653",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-318",
+      "to": "TASK-651",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -15650,7 +15667,8 @@
       "mem-294",
       "TASK-647",
       "TASK-650",
-      "TASK-651"
+      "TASK-651",
+      "mem-318"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -15690,7 +15708,8 @@
       "nav-task-id-generator-ignores-archive-returns-used-id",
       "dispatch-leg-hygiene-test-names-shipped-symbols-refs-boundary",
       "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread",
-      "public-repo-agent-tree-holds-public-product-docs-only"
+      "public-repo-agent-tree-holds-public-product-docs-only",
+      "mem-318"
     ],
     "worktree": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -16158,11 +16177,11 @@
       "TASK-651"
     ]
   },
-  "last_updated": "2026-11-15T13:00:15.998460+00:00",
+  "last_updated": "2026-11-15T14:51:45.371911+00:00",
   "stats": {
-    "total_nodes": 795,
-    "total_edges": 853,
-    "memory_count": 442
+    "total_nodes": 796,
+    "total_edges": 854,
+    "memory_count": 443
   },
   "metadata": {
     "last_updated": null
