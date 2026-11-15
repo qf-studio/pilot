@@ -65,6 +65,15 @@ func agentSites(cli string) []agentSite {
 			defer srv.Close()
 			b := NewOpenCodeBackend(&OpenCodeConfig{ServerURL: srv.URL, AutoStartServer: true, ServerCommand: "opencode serve"})
 			_ = b.startServer(ctx)
+			// Stop and reap the server here, while the mock sudo is still on
+			// PATH: a Wait before the cancel of ctx also ends the watch of ctx,
+			// so no cancel can run the real sudo after the subtest. Kill the
+			// process directly: StopServer kills through sudo and would
+			// overwrite the argv the case checks.
+			if b.serverCmd != nil {
+				_ = b.serverCmd.Process.Kill()
+				_ = b.serverCmd.Wait()
+			}
 		}},
 		{"qwen backend", cli, func(ctx context.Context, t *testing.T, proj, sudoLog string) {
 			_, _ = NewQwenCodeBackend(&QwenCodeConfig{Command: cli}).Execute(ctx, ExecuteOptions{ProjectPath: proj, Prompt: "p"})
