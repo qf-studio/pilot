@@ -81,8 +81,7 @@ func (g *GitOperations) ProjectPath() string {
 
 // CreateBranch creates a new branch
 func (g *GitOperations) CreateBranch(ctx context.Context, branchName string) error {
-	cmd := exec.CommandContext(ctx, "git", "checkout", "-b", branchName)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "checkout", "-b", branchName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create branch: %w: %s", err, output)
@@ -94,8 +93,7 @@ func (g *GitOperations) CreateBranch(ctx context.Context, branchName string) err
 // Uses git checkout -B (uppercase) which force-creates the branch.
 // This is safe when worktree already created the branch (GH-1235).
 func (g *GitOperations) CreateOrResetBranch(ctx context.Context, branchName string) error {
-	cmd := exec.CommandContext(ctx, "git", "checkout", "-B", branchName)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "checkout", "-B", branchName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to create/reset branch: %w: %s", err, output)
@@ -120,8 +118,7 @@ func (g *GitOperations) CreateOrResetBranch(ctx context.Context, branchName stri
 func (g *GitOperations) CreateOrResetBranchFromOrigin(ctx context.Context, branchName, baseBranch string) (string, error) {
 	baseRef := g.resolveGuardBaseRef(ctx, baseBranch)
 
-	cmd := exec.CommandContext(ctx, "git", "checkout", "-B", branchName, baseRef)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "checkout", "-B", branchName, baseRef)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("failed to create/reset branch %s from %s: %w: %s", branchName, baseRef, err, output)
@@ -214,8 +211,7 @@ func (g *GitOperations) EnsureBranchFromOrigin(ctx context.Context, branchName, 
 
 // detachHeadAt runs `git checkout --detach <ref>`.
 func (g *GitOperations) detachHeadAt(ctx context.Context, ref string) error {
-	cmd := exec.CommandContext(ctx, "git", "checkout", "--detach", ref)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "checkout", "--detach", ref)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, output)
@@ -228,8 +224,7 @@ func (g *GitOperations) detachHeadAt(ctx context.Context, ref string) error {
 // responsible for that precondition — EnsureBranchFromOrigin only calls this
 // after confirming absence or deleting a stale branch).
 func (g *GitOperations) checkoutNewBranchFrom(ctx context.Context, branchName, startPoint string) error {
-	cmd := exec.CommandContext(ctx, "git", "checkout", "-b", branchName, startPoint)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "checkout", "-b", branchName, startPoint)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, output)
@@ -243,8 +238,7 @@ func (g *GitOperations) checkoutNewBranchFrom(ctx context.Context, branchName, s
 // missing baseRef commits (diverged) is also reported stale here, matching
 // CommitsBehindMain's prior GH-912 semantics.
 func (g *GitOperations) branchIsBehind(ctx context.Context, branchName, baseRef string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-list", "--count", branchName+".."+baseRef)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "rev-list", "--count", branchName+".."+baseRef)
 	output, err := cmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("failed to count commits behind: %w", err)
@@ -258,8 +252,7 @@ func (g *GitOperations) branchIsBehind(ctx context.Context, branchName, baseRef 
 
 // SwitchBranch switches to an existing branch
 func (g *GitOperations) SwitchBranch(ctx context.Context, branchName string) error {
-	cmd := exec.CommandContext(ctx, "git", "checkout", branchName)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "checkout", branchName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to switch branch: %w: %s", err, output)
@@ -272,8 +265,7 @@ func (g *GitOperations) SwitchBranch(ctx context.Context, branchName string) err
 // (wrapped) when all dirty paths are excluded.
 func (g *GitOperations) Commit(ctx context.Context, message string) (string, error) {
 	// Enumerate dirty paths via NUL-delimited porcelain output.
-	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-z")
-	statusCmd.Dir = g.projectPath
+	statusCmd := g.gitCmd(ctx, "status", "--porcelain", "-z")
 	statusOut, err := statusCmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to enumerate dirty paths: %w", err)
@@ -300,22 +292,19 @@ func (g *GitOperations) Commit(ctx context.Context, message string) (string, err
 
 	// Stage filtered set; -- disambiguates paths from flags.
 	addArgs := append([]string{"add", "--"}, stage...)
-	addCmd := exec.CommandContext(ctx, "git", addArgs...)
-	addCmd.Dir = g.projectPath
+	addCmd := g.gitCmd(ctx, addArgs...)
 	if output, err := addCmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("failed to stage changes: %w: %s", err, output)
 	}
 
 	// Commit
-	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", message)
-	commitCmd.Dir = g.projectPath
+	commitCmd := g.gitCmd(ctx, "commit", "-m", message)
 	if output, err := commitCmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("failed to commit: %w: %s", err, output)
 	}
 
 	// Get commit SHA
-	shaCmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-	shaCmd.Dir = g.projectPath
+	shaCmd := g.gitCmd(ctx, "rev-parse", "HEAD")
 	output, err := shaCmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get commit SHA: %w", err)
@@ -380,8 +369,7 @@ func (g *GitOperations) loadMemoryGraph() (*memoryGraphDoc, error) {
 // doc part of the curated knowledge graph before this branch touched it?
 // Returns (nil, nil) when graph.json didn't exist at ref.
 func (g *GitOperations) loadMemoryGraphAtRef(ctx context.Context, ref string) (*memoryGraphDoc, error) {
-	cmd := exec.CommandContext(ctx, "git", "show", ref+":"+graphJSONRelPath)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "show", ref+":"+graphJSONRelPath)
 	raw, err := cmd.Output()
 	if err != nil {
 		// Most common cause: graph.json didn't exist at ref. Treat the same
@@ -439,9 +427,8 @@ func indexedMemorySlugs(graph *memoryGraphDoc) map[string]bool {
 // scripts/check-graph.py's find_unindexed_memory_files: only *.md files,
 // skipping the "resolved" archive subtree and README*.
 func (g *GitOperations) addedMemoryDocs(ctx context.Context, baseBranch string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "--diff-filter=A",
+	cmd := g.gitCmd(ctx, "diff", "--name-only", "--diff-filter=A",
 		baseBranch+"...HEAD", "--", memoryDocsRelDir)
-	cmd.Dir = g.projectPath
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to diff added memory docs: %w", err)
@@ -574,8 +561,7 @@ func (g *GitOperations) StripUnindexedMemoryDocs(ctx context.Context, baseBranch
 	}
 
 	rmArgs := append([]string{"rm", "--"}, unindexed...)
-	rmCmd := exec.CommandContext(ctx, "git", rmArgs...)
-	rmCmd.Dir = g.projectPath
+	rmCmd := g.gitCmd(ctx, rmArgs...)
 	if output, err := rmCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("failed to remove unindexed memory doc(s): %w: %s", err, output)
 	}
@@ -584,8 +570,7 @@ func (g *GitOperations) StripUnindexedMemoryDocs(ctx context.Context, baseBranch
 		"GH-4286: memory docs must be indexed in .agent/knowledge/graph.json in the\n" +
 		"same commit or they trip the Knowledge Graph Drift Gate. Removed:\n" +
 		strings.Join(unindexed, "\n")
-	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", message)
-	commitCmd.Dir = g.projectPath
+	commitCmd := g.gitCmd(ctx, "commit", "-m", message)
 	if output, err := commitCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("failed to commit removal of unindexed memory doc(s): %w: %s", err, output)
 	}
@@ -614,13 +599,11 @@ func (g *GitOperations) StripUnindexedMemoryDocs(ctx context.Context, baseBranch
 // tests), returns the local <baseBranch> ref unchanged, preserving prior
 // behavior in that environment.
 func (g *GitOperations) resolveGuardBaseRef(ctx context.Context, baseBranch string) string {
-	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", baseBranch)
-	fetchCmd.Dir = g.projectPath
+	fetchCmd := g.gitCmd(ctx, "fetch", "origin", baseBranch)
 	withGitCredentials(ctx, fetchCmd)
 	_ = fetchCmd.Run() // best-effort; fall back to whatever origin/<base> already resolves to (or local base)
 
-	verifyCmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "-q", "origin/"+baseBranch)
-	verifyCmd.Dir = g.projectPath
+	verifyCmd := g.gitCmd(ctx, "rev-parse", "--verify", "-q", "origin/"+baseBranch)
 	if err := verifyCmd.Run(); err == nil {
 		return "origin/" + baseBranch
 	}
@@ -634,9 +617,8 @@ func (g *GitOperations) resolveGuardBaseRef(ctx context.Context, baseBranch stri
 // an already-resolved ref (see resolveGuardBaseRef) rather than a raw branch
 // name.
 func (g *GitOperations) deletedMemoryDocs(ctx context.Context, baseRef string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "--diff-filter=D",
+	cmd := g.gitCmd(ctx, "diff", "--name-only", "--diff-filter=D",
 		baseRef+"...HEAD", "--", memoryDocsRelDir)
-	cmd.Dir = g.projectPath
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to diff deleted memory docs: %w", err)
@@ -750,15 +732,13 @@ func (g *GitOperations) RestoreDeletedIndexedMemoryDocs(ctx context.Context, bas
 	// not the raw baseBranch — a doc merged to origin after the local branch
 	// last synced exists there even though the stale local ref never saw it.
 	checkoutArgs := append([]string{"checkout", baseRef, "--"}, restoredPaths(restored)...)
-	checkoutCmd := exec.CommandContext(ctx, "git", checkoutArgs...)
-	checkoutCmd.Dir = g.projectPath
+	checkoutCmd := g.gitCmd(ctx, checkoutArgs...)
 	if output, err := checkoutCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("failed to restore protected memory doc(s): %w: %s", err, output)
 	}
 
 	addArgs := append([]string{"add", "--"}, restoredPaths(restored)...)
-	addCmd := exec.CommandContext(ctx, "git", addArgs...)
-	addCmd.Dir = g.projectPath
+	addCmd := g.gitCmd(ctx, addArgs...)
 	if output, err := addCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("failed to stage restored memory doc(s): %w: %s", err, output)
 	}
@@ -768,8 +748,7 @@ func (g *GitOperations) RestoreDeletedIndexedMemoryDocs(ctx context.Context, bas
 		"still referenced by .agent/knowledge/graph.json and restored them as a\n" +
 		"fail-safe so the Knowledge Graph Drift Gate does not wedge this PR.\n" +
 		"Restored:\n" + strings.Join(restoredPaths(restored), "\n")
-	commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", message)
-	commitCmd.Dir = g.projectPath
+	commitCmd := g.gitCmd(ctx, "commit", "-m", message)
 	if output, err := commitCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("failed to commit restored memory doc(s): %w: %s", err, output)
 	}
@@ -963,9 +942,8 @@ func (g *GitOperations) gitHardened(ctx context.Context, args ...string) *exec.C
 		args = append([]string{args[0], "--no-show-signature"}, args[1:]...)
 	}
 	full := append(secretpatterns.GitScanConfig(), "-c", "commit.gpgSign=false", "-c", "core.fsmonitor=false")
-	cmd := exec.CommandContext(ctx, "git", append(full, args...)...)
-	cmd.Dir = g.projectPath
-	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
+	cmd := g.gitCmd(ctx, append(full, args...)...)
+	appendGitEnv(cmd, "GIT_NO_REPLACE_OBJECTS=1")
 	return cmd
 }
 
@@ -1090,7 +1068,7 @@ func (g *GitOperations) rewriteCommitMessages(ctx context.Context, commits []str
 		}
 		args = append(args, "-F", "-")
 		cmd := g.gitHardened(ctx, args...)
-		cmd.Env = append(cmd.Env,
+		appendGitEnv(cmd,
 			"GIT_AUTHOR_NAME="+f[0], "GIT_AUTHOR_EMAIL="+f[1], "GIT_AUTHOR_DATE="+f[2],
 			"GIT_COMMITTER_NAME="+f[3], "GIT_COMMITTER_EMAIL="+f[4], "GIT_COMMITTER_DATE="+f[5])
 		cmd.Stdin = strings.NewReader(stripAnthropicCoAuthorLines(msg))
@@ -1175,8 +1153,7 @@ func (g *GitOperations) Push(ctx context.Context, branchName, taskID string) err
 	if err := CheckSecretGate(ctx, g.projectPath, branchName, taskID); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "git", pushArgs("-u", "origin", branchRefspec(branchName))...)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, pushArgs("-u", "origin", branchRefspec(branchName))...)
 	withGitCredentials(ctx, cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1196,8 +1173,7 @@ func (g *GitOperations) PushForceWithLease(ctx context.Context, branchName, expe
 		return err
 	}
 	lease := fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", branchName, expectedRemoteSHA)
-	cmd := exec.CommandContext(ctx, "git", pushArgs("-u", lease, "origin", branchRefspec(branchName))...)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, pushArgs("-u", lease, "origin", branchRefspec(branchName))...)
 	withGitCredentials(ctx, cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1223,8 +1199,7 @@ func (g *GitOperations) CreatePR(ctx context.Context, title, body, baseBranch st
 	// In worktree mode, gh may see uncommitted changes and refuse to infer the head branch.
 	// Using --head bypasses the dirty working tree check.
 	headBranch := ""
-	if branchCmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD"); branchCmd != nil {
-		branchCmd.Dir = g.projectPath
+	if branchCmd := g.gitCmd(ctx, "rev-parse", "--abbrev-ref", "HEAD"); branchCmd != nil {
 		if out, err := branchCmd.Output(); err == nil {
 			headBranch = strings.TrimSpace(string(out))
 		}
@@ -1412,8 +1387,7 @@ func isBorrowedOriginPR(task *Task, prURL string) bool {
 
 // GetCurrentBranch returns the current branch name
 func (g *GitOperations) GetCurrentBranch(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "branch", "--show-current")
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "branch", "--show-current")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get current branch: %w", err)
@@ -1423,8 +1397,7 @@ func (g *GitOperations) GetCurrentBranch(ctx context.Context) (string, error) {
 
 // GetDefaultBranch returns the default branch (main or master)
 func (g *GitOperations) GetDefaultBranch(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "refs/remotes/origin/HEAD")
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "symbolic-ref", "refs/remotes/origin/HEAD")
 	output, err := cmd.Output()
 	if err != nil {
 		// Fallback to checking for main or master
@@ -1444,15 +1417,13 @@ func (g *GitOperations) GetDefaultBranch(ctx context.Context) (string, error) {
 
 // branchExists checks if a branch exists
 func (g *GitOperations) branchExists(ctx context.Context, branch string) bool {
-	cmd := exec.CommandContext(ctx, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	return cmd.Run() == nil
 }
 
 // GetChangedFiles returns list of changed files
 func (g *GitOperations) GetChangedFiles(ctx context.Context) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", "HEAD")
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "diff", "--name-only", "HEAD")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get changed files: %w", err)
@@ -1467,8 +1438,7 @@ func (g *GitOperations) GetChangedFiles(ctx context.Context) ([]string, error) {
 
 // HasUncommittedChanges checks if there are uncommitted changes
 func (g *GitOperations) HasUncommittedChanges(ctx context.Context) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "status", "--porcelain")
 	output, err := cmd.Output()
 	if err != nil {
 		return false, fmt.Errorf("failed to check status: %w", err)
@@ -1486,8 +1456,7 @@ func (g *GitOperations) PushToMain(ctx context.Context, taskID string) error {
 	if err := CheckSecretGate(ctx, g.projectPath, defaultBranch, taskID); err != nil {
 		return err
 	}
-	cmd := exec.CommandContext(ctx, "git", pushArgs("origin", branchRefspec(defaultBranch))...)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, pushArgs("origin", branchRefspec(defaultBranch))...)
 	withGitCredentials(ctx, cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1500,8 +1469,7 @@ func (g *GitOperations) PushToMain(ctx context.Context, taskID string) error {
 // that are not on the base branch. Uses `git rev-list --count base..HEAD`.
 // Returns 0 if the base branch doesn't exist or there are no new commits.
 func (g *GitOperations) CountNewCommits(ctx context.Context, baseBranch string) (int, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-list", "--count", baseBranch+"..HEAD")
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "rev-list", "--count", baseBranch+"..HEAD")
 	output, err := cmd.Output()
 	if err != nil {
 		return 0, fmt.Errorf("failed to count new commits: %w", err)
@@ -1533,8 +1501,7 @@ func (g *GitOperations) CountNewCommits(ctx context.Context, baseBranch string) 
 // against the local <baseBranch> ref, preserving CountNewCommits' original
 // behavior in that environment.
 func (g *GitOperations) CountNewCommitsAgainstOrigin(ctx context.Context, baseBranch string) (int, error) {
-	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", baseBranch)
-	fetchCmd.Dir = g.projectPath
+	fetchCmd := g.gitCmd(ctx, "fetch", "origin", baseBranch)
 	withGitCredentials(ctx, fetchCmd)
 	_ = fetchCmd.Run() // best-effort; fall back to the existing tracking ref on failure
 
@@ -1546,8 +1513,7 @@ func (g *GitOperations) CountNewCommitsAgainstOrigin(ctx context.Context, baseBr
 
 // GetCurrentCommitSHA returns the SHA of the current HEAD commit
 func (g *GitOperations) GetCurrentCommitSHA(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "rev-parse", "HEAD")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get current commit SHA: %w", err)
@@ -1574,8 +1540,7 @@ func (g *GitOperations) GetCurrentCommitSHA(ctx context.Context) (string, error)
 // excludes — the same allowlist Commit() and checkGitClean() already use to
 // decide what isn't really a project change.
 func (g *GitOperations) ResetHardToCommit(ctx context.Context, sha string) error {
-	resetCmd := exec.CommandContext(ctx, "git", "reset", "--hard", sha)
-	resetCmd.Dir = g.projectPath
+	resetCmd := g.gitCmd(ctx, "reset", "--hard", sha)
 	if output, err := resetCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to reset to %s: %w: %s", sha, err, output)
 	}
@@ -1587,8 +1552,7 @@ func (g *GitOperations) ResetHardToCommit(ctx context.Context, sha string) error
 	for _, glob := range defaultExcludeGlobs {
 		cleanArgs = append(cleanArgs, "-e", glob)
 	}
-	cleanCmd := exec.CommandContext(ctx, "git", cleanArgs...)
-	cleanCmd.Dir = g.projectPath
+	cleanCmd := g.gitCmd(ctx, cleanArgs...)
 	if output, err := cleanCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to clean untracked files after reset to %s: %w: %s", sha, err, output)
 	}
@@ -1598,8 +1562,7 @@ func (g *GitOperations) ResetHardToCommit(ctx context.Context, sha string) error
 // GetDiff returns the diff between the base branch and HEAD.
 // Uses three-dot notation (base...HEAD) to show changes on the current branch.
 func (g *GitOperations) GetDiff(ctx context.Context, baseBranch string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", baseBranch+"...HEAD")
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "diff", baseBranch+"...HEAD")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git diff failed: %w", err)
@@ -1628,8 +1591,7 @@ func (g *GitOperations) GetDiff(ctx context.Context, baseBranch string) (string,
 // Returns the diff and the base SHA it was computed against, so callers can
 // log which commit the judge actually evaluated from.
 func (g *GitOperations) GetDiffAgainstOrigin(ctx context.Context, baseBranch string) (diff string, baseSHA string, err error) {
-	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", baseBranch)
-	fetchCmd.Dir = g.projectPath
+	fetchCmd := g.gitCmd(ctx, "fetch", "origin", baseBranch)
 	withGitCredentials(ctx, fetchCmd)
 	_ = fetchCmd.Run() // best-effort; fall back to whatever origin/<baseBranch> already resolves to locally
 
@@ -1638,8 +1600,7 @@ func (g *GitOperations) GetDiffAgainstOrigin(ctx context.Context, baseBranch str
 		return "", "", err
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "diff", baseSHA+"...HEAD")
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "diff", baseSHA+"...HEAD")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", baseSHA, fmt.Errorf("git diff failed: %w", err)
@@ -1654,8 +1615,7 @@ func (g *GitOperations) GetDiffAgainstOrigin(ctx context.Context, baseBranch str
 // CountNewCommitsAgainstOrigin uses.
 func (g *GitOperations) resolveMergeBaseSHA(ctx context.Context, baseBranch string) (string, error) {
 	for _, ref := range []string{"origin/" + baseBranch, baseBranch} {
-		cmd := exec.CommandContext(ctx, "git", "merge-base", ref, "HEAD")
-		cmd.Dir = g.projectPath
+		cmd := g.gitCmd(ctx, "merge-base", ref, "HEAD")
 		output, err := cmd.Output()
 		if err == nil {
 			return strings.TrimSpace(string(output)), nil
@@ -1666,8 +1626,7 @@ func (g *GitOperations) resolveMergeBaseSHA(ctx context.Context, baseBranch stri
 
 // Pull fetches and merges changes from remote for the specified branch
 func (g *GitOperations) Pull(ctx context.Context, branch string) error {
-	cmd := exec.CommandContext(ctx, "git", "pull", "origin", branch)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "pull", "origin", branch)
 	withGitCredentials(ctx, cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1722,8 +1681,7 @@ func (g *GitOperations) SwitchToDefaultBranchAndPull(ctx context.Context) (strin
 // GH-912: Used to detect stale branches that need to be recreated.
 func (g *GitOperations) CommitsBehindMain(ctx context.Context, branchName string) (int, error) {
 	// First fetch to ensure we have latest remote state
-	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin")
-	fetchCmd.Dir = g.projectPath
+	fetchCmd := g.gitCmd(ctx, "fetch", "origin")
 	withGitCredentials(ctx, fetchCmd)
 	_ = fetchCmd.Run() // Ignore fetch errors - might be offline
 
@@ -1735,8 +1693,7 @@ func (g *GitOperations) CommitsBehindMain(ctx context.Context, branchName string
 
 	// Count commits that are in origin/main but not in the branch
 	// git rev-list --count <branch>..origin/main
-	cmd := exec.CommandContext(ctx, "git", "rev-list", "--count", branchName+"..origin/"+defaultBranch)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "rev-list", "--count", branchName+"..origin/"+defaultBranch)
 	output, err := cmd.Output()
 	if err != nil {
 		return 0, fmt.Errorf("failed to count commits behind: %w", err)
@@ -1754,8 +1711,7 @@ func (g *GitOperations) CommitsBehindMain(ctx context.Context, branchName string
 // DeleteBranch deletes a local branch.
 // GH-912: Used to remove stale branches before recreating them fresh from main.
 func (g *GitOperations) DeleteBranch(ctx context.Context, branchName string) error {
-	cmd := exec.CommandContext(ctx, "git", "branch", "-D", branchName)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "branch", "-D", branchName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to delete branch: %w: %s", err, output)
@@ -1779,8 +1735,7 @@ func (g *GitOperations) CreateRecoveryRef(ctx context.Context, taskID, fromRef s
 		fromRef = "HEAD"
 	}
 	refName := "refs/pilot-recovery/" + sanitizeBranchName(taskID)
-	cmd := exec.CommandContext(ctx, "git", "update-ref", refName, fromRef)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "update-ref", refName, fromRef)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("failed to create recovery ref %s: %w: %s", refName, err, output)
@@ -1801,8 +1756,7 @@ type GitDiff struct {
 // GetDiffStats returns line-level diff statistics between origin/baseBranch and HEAD.
 // Uses three-dot notation so only commits on the current branch are counted.
 func (g *GitOperations) GetDiffStats(ctx context.Context, baseBranch string) (GitDiff, error) {
-	cmd := exec.CommandContext(ctx, "git", "diff", "--numstat", "origin/"+baseBranch+"...HEAD")
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "diff", "--numstat", "origin/"+baseBranch+"...HEAD")
 	output, err := cmd.Output()
 	if err != nil {
 		return GitDiff{}, fmt.Errorf("git diff --numstat failed: %w", err)
@@ -1838,8 +1792,7 @@ func (g *GitOperations) GetDiffStats(ctx context.Context, baseBranch string) (Gi
 // parser silently drops from Files — this check must see every changed
 // path, binary or not.
 func (g *GitOperations) ChangedFilesAgainstOrigin(ctx context.Context, baseBranch string) (files []string, baseSHA string, err error) {
-	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", baseBranch)
-	fetchCmd.Dir = g.projectPath
+	fetchCmd := g.gitCmd(ctx, "fetch", "origin", baseBranch)
 	withGitCredentials(ctx, fetchCmd)
 	_ = fetchCmd.Run() // best-effort; fall back to whatever origin/<baseBranch> already resolves to locally
 
@@ -1848,8 +1801,7 @@ func (g *GitOperations) ChangedFilesAgainstOrigin(ctx context.Context, baseBranc
 		return nil, "", err
 	}
 
-	cmd := exec.CommandContext(ctx, "git", "diff", "--name-only", baseSHA+"...HEAD")
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "diff", "--name-only", baseSHA+"...HEAD")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, baseSHA, fmt.Errorf("git diff --name-only failed: %w", err)
@@ -1874,8 +1826,7 @@ func (g *GitOperations) ChangedFilesAgainstOrigin(ctx context.Context, baseBranc
 // class of finding rather than this check's, so "false" is the correct
 // answer for both cases.
 func (g *GitOperations) FileExistsAtRef(ctx context.Context, ref, path string) bool {
-	cmd := exec.CommandContext(ctx, "git", "cat-file", "-e", ref+":"+path)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "cat-file", "-e", ref+":"+path)
 	return cmd.Run() == nil
 }
 
@@ -1893,8 +1844,7 @@ func (g *GitOperations) RemoteBranchExists(ctx context.Context, branchName strin
 // (network, auth), so that failure is never mistaken for an absent branch
 // (GH-6191).
 func (g *GitOperations) ProbeRemoteBranch(ctx context.Context, branchName string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--heads", "origin", branchName)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "ls-remote", "--heads", "origin", branchName)
 	withGitCredentials(ctx, cmd)
 	output, err := cmd.Output()
 	if err != nil {
@@ -1909,8 +1859,7 @@ func (g *GitOperations) ProbeRemoteBranch(ctx context.Context, branchName string
 // Unlike RemoteBranchExists it distinguishes "pushed my commit" from "a branch
 // by that name exists", which is what a rejected push must be checked against.
 func (g *GitOperations) RemoteBranchHead(ctx context.Context, branchName string) (sha string, ok bool) {
-	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--heads", "origin", "refs/heads/"+branchName)
-	cmd.Dir = g.projectPath
+	cmd := g.gitCmd(ctx, "ls-remote", "--heads", "origin", "refs/heads/"+branchName)
 	withGitCredentials(ctx, cmd)
 	output, err := cmd.Output()
 	if err != nil {
@@ -1958,13 +1907,11 @@ func (g *GitOperations) LocalHead(ctx context.Context) (sha string, err error) {
 // the existing origin/<branchName>-or-nothing behavior.
 func (g *GitOperations) ResolveFixContinuationBaseRef(ctx context.Context, branchName, fallbackSHA string) string {
 	if branchName != "" {
-		fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", branchName)
-		fetchCmd.Dir = g.projectPath
+		fetchCmd := g.gitCmd(ctx, "fetch", "origin", branchName)
 		withGitCredentials(ctx, fetchCmd)
 		_ = fetchCmd.Run() // best-effort; fall through to the SHA (or "") if the branch is gone
 
-		verifyCmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "-q", "origin/"+branchName)
-		verifyCmd.Dir = g.projectPath
+		verifyCmd := g.gitCmd(ctx, "rev-parse", "--verify", "-q", "origin/"+branchName)
 		if err := verifyCmd.Run(); err == nil {
 			return "origin/" + branchName
 		}
@@ -1974,8 +1921,7 @@ func (g *GitOperations) ResolveFixContinuationBaseRef(ctx context.Context, branc
 		return ""
 	}
 
-	fetchShaCmd := exec.CommandContext(ctx, "git", "fetch", "origin", fallbackSHA)
-	fetchShaCmd.Dir = g.projectPath
+	fetchShaCmd := g.gitCmd(ctx, "fetch", "origin", fallbackSHA)
 	withGitCredentials(ctx, fetchShaCmd)
 	if output, err := fetchShaCmd.CombinedOutput(); err != nil {
 		// GH-5351: this no longer means "the caller falls back to main" — a
@@ -1992,8 +1938,7 @@ func (g *GitOperations) ResolveFixContinuationBaseRef(ctx context.Context, branc
 		return ""
 	}
 
-	verifyShaCmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "-q", fallbackSHA)
-	verifyShaCmd.Dir = g.projectPath
+	verifyShaCmd := g.gitCmd(ctx, "rev-parse", "--verify", "-q", fallbackSHA)
 	if err := verifyShaCmd.Run(); err != nil {
 		return ""
 	}

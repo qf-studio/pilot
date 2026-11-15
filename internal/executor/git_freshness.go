@@ -159,7 +159,7 @@ func commitSHAIsNew(ctx context.Context, repoPath, sha, baseBranch string) (bool
 	}
 	// `git merge-base --is-ancestor SHA origin/BASE` exits 0 when SHA is an ancestor of BASE.
 	// We want the opposite: exit 1 means SHA is NOT an ancestor — it's a fresh commit.
-	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "merge-base", "--is-ancestor", sha, "origin/"+baseBranch)
+	cmd := gitCommand(ctx, repoPath, "-C", repoPath, "merge-base", "--is-ancestor", sha, "origin/"+baseBranch)
 	err := cmd.Run()
 	if err == nil {
 		return false, nil // exit 0: SHA is ancestor of base — parent SHA, not fresh

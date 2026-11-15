@@ -123,15 +123,13 @@ func (g *GitOperations) runGoLint(ctx context.Context, baseBranch string) (strin
 // stageAndAmendCommit stages all changes and amends the last commit
 func (g *GitOperations) stageAndAmendCommit(ctx context.Context, message string) error {
 	// Stage all changes
-	stageCmd := exec.CommandContext(ctx, "git", "add", "-A")
-	stageCmd.Dir = g.projectPath
+	stageCmd := g.gitCmd(ctx, "add", "-A")
 	if _, err := stageCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to stage changes: %w", err)
 	}
 
 	// Amend commit
-	amendCmd := exec.CommandContext(ctx, "git", "commit", "--amend", "--no-edit")
-	amendCmd.Dir = g.projectPath
+	amendCmd := g.gitCmd(ctx, "commit", "--amend", "--no-edit")
 	if _, err := amendCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to amend commit: %w", err)
 	}

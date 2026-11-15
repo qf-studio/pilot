@@ -547,9 +547,9 @@ func isGitHubHost(host string) bool {
 // expands url.<base>.insteadOf rewrites) so host classification reflects what
 // the operator configured.
 func originURL(ctx context.Context, dir string) string {
-	out, err := exec.CommandContext(ctx, "git", "-C", dir, "config", "--get", "remote.origin.url").Output()
+	out, err := gitCommand(ctx, dir, "-C", dir, "config", "--get", "remote.origin.url").Output()
 	if err != nil {
-		out, err = exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", "origin").Output()
+		out, err = gitCommand(ctx, dir, "-C", dir, "remote", "get-url", "origin").Output()
 		if err != nil {
 			return ""
 		}
@@ -631,7 +631,7 @@ const localProbeFetchTimeout = 60 * time.Second
 var localProbeFetchOrigin = func(ctx context.Context, dir string) error {
 	fctx, cancel := context.WithTimeout(ctx, localProbeFetchTimeout)
 	defer cancel()
-	if out, err := exec.CommandContext(fctx, "git", "-C", dir, "fetch", "-q", "origin").CombinedOutput(); err != nil {
+	if out, err := gitCommand(fctx, dir, "-C", dir, "fetch", "-q", "origin").CombinedOutput(); err != nil {
 		return fmt.Errorf("git fetch origin in %s: %w (output: %s)", dir, err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -720,7 +720,7 @@ func (p *localCheckoutBasePresenceProbe) resolve(ctx context.Context) (string, e
 		return "", err
 	}
 	candidates := []string{}
-	out, err := exec.CommandContext(ctx, "git", "-C", p.dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
+	out, err := gitCommand(ctx, p.dir, "-C", p.dir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
 	if err == nil {
 		if ref := strings.TrimSpace(string(out)); ref != "" {
 			candidates = append(candidates, ref)
@@ -730,7 +730,7 @@ func (p *localCheckoutBasePresenceProbe) resolve(ctx context.Context) (string, e
 	}
 	candidates = append(candidates, "origin/main", "origin/master")
 	for _, ref := range candidates {
-		rerr := exec.CommandContext(ctx, "git", "-C", p.dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}").Run()
+		rerr := gitCommand(ctx, p.dir, "-C", p.dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}").Run()
 		if rerr == nil {
 			return ref, nil
 		}
@@ -750,7 +750,7 @@ func (p *localCheckoutBasePresenceProbe) FileExistsOnDefaultBranch(ctx context.C
 	if err != nil {
 		return false, err
 	}
-	err = exec.CommandContext(ctx, "git", "-C", p.dir, "cat-file", "-e", ref+":"+path).Run()
+	err = gitCommand(ctx, p.dir, "-C", p.dir, "cat-file", "-e", ref+":"+path).Run()
 	if err == nil {
 		return true, nil
 	}

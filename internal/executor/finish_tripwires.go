@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -183,7 +182,7 @@ func checkRootClean(row *memory.Execution) tripwireCheckResult {
 
 	// -uall lists every untracked file (not a collapsed `?? .agent/`) so the
 	// copy-back exemption below can judge each path; -z avoids path quoting.
-	out, err := exec.CommandContext(ctx, "git", "-C", row.ProjectPath, "status", "--porcelain", "-z", "-uall").Output()
+	out, err := gitCommand(ctx, row.ProjectPath, "-C", row.ProjectPath, "status", "--porcelain", "-z", "-uall").Output()
 	if err != nil {
 		return tripwireCheckResult{}
 	}
