@@ -1,6 +1,6 @@
 # TASK-654: Lane starvation alert — count only what the poller would pick, name the issues, one cooldown per lane
 
-**Status**: 🚀 L1 DISPATCHED 2026-11-16 → [pilot#6391](https://github.com/qf-studio/pilot/issues/6391) (`pilot` + `no-decompose`). The cause of the wrong count is unknown; L1 makes the alert name its issues.
+**Status**: 🚀 L1 DISPATCHED 2026-11-16 → [pilot#6391](https://github.com/qf-studio/pilot/issues/6391) (`pilot` + `no-decompose`). The cause of the wrong count is unknown; L1 makes the alert name its issues. L1 merged 11-16 14:48Z as PR#6395 (not on the box yet); post-merge minors in pilot issue 6396.
 **Created**: 2026-11-16
 **Assignee**: Pilot
 

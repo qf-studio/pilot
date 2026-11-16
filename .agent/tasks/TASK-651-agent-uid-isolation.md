@@ -56,7 +56,7 @@
 - [x] **F2** (PR#6361 merged 11-15 12:59Z) ([#6354](https://github.com/qf-studio/pilot/issues/6354), dispatched 11-13) blockers from the run-it review of F1: kill under a sudo terminal, API backends refused as a whole, gh guard journal. Must merge before U2.
 - [x] **F1** (PR#6349 merged 11-13) ([#6344](https://github.com/qf-studio/pilot/issues/6344), dispatched 11-13) fixes from the run-it review of U1: cancel through the process group in the constructor, anthropic-api refused, `run_as_group` required, guard files fail closed, name check. Must merge before U2 (same file `agent_command.go`).
 - [x] **B1** (PR#6359 merged 11-14; **no host run yet**, see status) ([#6345](https://github.com/qf-studio/pilot/issues/6345), dispatched 11-13) host script, second run; replaces #6328.
-- [ ] **B3** ([#6389](https://github.com/qf-studio/pilot/issues/6389), dispatched 11-16; PR held as a draft; blocks O4; founder calls 11-16: agent root at DATA_DIR/agent, the daemon binary reaches the gh shim as a copy for each run) host script, fourth run, part 1: agent root owned by root, no root step in an agent-owned directory, the daemon's entries closed with printed chmod lines, a proof as the agent user.
+- [ ] **B3** ([#6389](https://github.com/qf-studio/pilot/issues/6389), dispatched 11-16; the first attempt pushed one commit to its branch and opened no PR, the second attempt could not push over it, Pilot parked the issue; waits for a founder call: a draft PR by hand from the branch, or a new run; blocks O4; founder calls 11-16: agent root at DATA_DIR/agent, the daemon binary reaches the gh shim as a copy for each run) host script, fourth run, part 1: agent root owned by root, no root step in an agent-owned directory, the daemon's entries closed with printed chmod lines, a proof as the agent user.
 - [ ] **B4** (dispatch-ready, below; needs B3; blocks O4) host script, fourth run, part 2: a sudo proof that reads the rules, the firewall before the sudo rule, a warning for the groups of the daemon user, undo that goes on and stops the agent processes.
 - [ ] **P1** (NOT specified yet; Go, after N4; needs B3 for the paths) from the research of 11-16: the daemon copies its binary into the gh shim directory of each run (today the shim runs the daemon binary as the agent user, and the script closes that binary); the preflight probes the firewall as the agent user (a connection to the metadata address and to the gateway port must fail) because the daemon starts from tmux and no unit can require the firewall; the preflight checks the modes of the daemon's entries at each start; the default of `run_as_workspace_dir` follows the agent root; the Go cache variables of the daemon do not reach the agent.
 - **Box fact 11-16 (read-only check):** the daemon user is in the group docker, which is a path to root, so O1 did not fully remove root from the daemon user. Founder discusses the removal with the infrastructure owner.
@@ -65,13 +65,14 @@
 - [x] **G1** (PR#6375 merged 11-15 17:19Z after a run-it review, GO-WITH-NOTES; the notes go to U2 item 10 and to U4; the post-merge minors issue 6377 was closed as not planned on 11-15: its branch ran the secret gate through sudo as the agent user, which is the opposite of the hand-over design, and the pre-PR review held it; its useful items are in U2 items 10 and 11) ([#6372](https://github.com/qf-studio/pilot/issues/6372), dispatched 11-15; split from U2 on 11-15 after a spec check against `origin/main` 1e99ccbe0) one constructor for every git command of the executor package (110 inline sites), with the route to the agent user for a directory inside the workspace root; config field `run_as_workspace_dir`; fail-closed; a source test.
 - [x] **U2** (PR#6383 merged 11-16 06:43Z after a run-it review, GO-WITH-NOTES; notes go to N1 items 7 and 8) ([#6380](https://github.com/qf-studio/pilot/issues/6380), dispatched 11-15 ~20:00Z) workspace as an agent-owned clone under the workspace root (base commit as a bundle that the daemon sends, no alternates, no read of the daemon's repository), cleanup and sweeps as the agent user with the project in the directory name, preflight for the root, `use_worktree` and the pool.
 - **N1** (issue 6385, dispatched 11-16) ran into the one-hour task limit twice and pushed no branch; closed as not planned and split into N2, N3, N4 on 11-16.
-- [ ] **N2** ([#6387](https://github.com/qf-studio/pilot/issues/6387), dispatched 11-16 ~10:10Z; PR held as a draft) the preflight refuses the option until the gates leg merges; the corrections of the workspace leg from its review; the macOS test fix.
+- [ ] **N2** (PR#6397, after the CI fix issue 6394 replaced PR#6393: run-it review GO-WITH-NOTES 11-16, marked ready; three notes go to N5) ([#6387](https://github.com/qf-studio/pilot/issues/6387), dispatched 11-16 ~10:10Z)
+- [ ] **N5** (dispatch-ready, below; needs N2; small) a test for the production default of the refusal, no workspace sweep after a refused preflight, the config example sentence. the preflight refuses the option until the gates leg merges; the corrections of the workspace leg from its review; the macOS test fix.
 - [ ] **N3** (dispatch-ready, below; needs N2) the daemon writes the task document, the Navigator files and the settings file through a helper that runs as the agent user.
 - [ ] **N4** (dispatch-ready, below; needs N3) Navigator copy in as a tar stream, copy out without a followed link at any path element.
 - [ ] **U3** (dispatch-ready, below; needs U2) hand-over as a bundle that the agent writes and the daemon fetches into `refs/pilot/handover/<task>`; the secret gate and the push run only in the daemon's repository, with replace refs ignored and hooks off; PR creation, recovery ref and the preserve commit follow. Closes the gate-trust class of mem-308 when the option is set (seven shapes; the tamper table is the test list of the leg).
 - [ ] **U4** (dispatch-ready, below; needs U2) quality gates, workflow hooks, evidence commands and the lint fix as the agent user with the allowlist environment; `run_as_env` for values such as the Go caches.
 - [ ] **U5** (dispatch-ready, below; needs U3 and, on the box, O2) read-only installation token per run in a file for the `gh` shim and a git credential helper (also serves the fetch of a private module); per-project override of the option.
-- **Order (founder call 11-12; U2 split into G1 → U2 → N1 on 11-15):** U1 → F1 → F2 → G1 → U2 → N2 → N3 → N4 → U3 → U4 → U5, one at a time. `run_as_user` stays empty on every host until U3 **and** U4 merge: until then the gate, the quality gates and the hooks run as the daemon inside the agent-owned clone. The poller holds legs that touch the same directory, so a parallel dispatch gains nothing. Check for an open post-merge-review issue on the same files before each dispatch (mem-301).
+- **Order (founder call 11-12; U2 split into G1 → U2 → N1 on 11-15):** U1 → F1 → F2 → G1 → U2 → N2 → N5 → N3 → N4 → U3 → U4 → U5, one at a time. `run_as_user` stays empty on every host until U3 **and** U4 merge: until then the gate, the quality gates and the hooks run as the daemon inside the agent-owned clone. The poller holds legs that touch the same directory, so a parallel dispatch gains nothing. Check for an open post-merge-review issue on the same files before each dispatch (mem-301).
 
 ### Phase S — switch
 
@@ -298,6 +299,42 @@ Files that the daemon writes into the workspace and the Navigator copy (next two
 ## Refs
 
 - Navigator TASK-651 in this repo · design section 4.2
+
+### LEG N5 — repo: qf-studio/pilot — title: fix(executor): run_as_user — a test reads the production default of the preflight refusal, the workspace sweep waits for a passed preflight, the config example says that the option is refused
+
+probe: present qf-studio/pilot runAsIncompleteRefusal
+probe: present qf-studio/pilot func[[:space:]]CleanupOrphanedWorktreesKeepAgentWorkspaces\(
+probe: absent  qf-studio/pilot runAsIncompleteRefusalDefaul[t]
+
+## Context
+
+Navigator TASK-651. With run_as_user set, PreflightRunAsUser in `internal/executor/agent_command.go` refuses the option on every host until the hand-over leg and the gates leg merge; the package variable runAsIncompleteRefusal holds the switch and is true in production. A run-it review of that leg found three small points. This is a small leg: only the items below. With the option empty nothing changes.
+
+1. No test reads the production default. TestMain in `internal/executor/gitenv_testmain_test.go` sets the variable to false for every test of the package, and the refusal test sets it to true itself. A change of the declaration to false passes every test.
+2. The sweep of agent workspaces at daemon start (CleanupOrphanedWorktrees in `internal/executor/worktree.go`) starts `sudo … rm -rf` for a matching directory in the workspace root also when the preflight refused the option, and it takes the user name from the config without the name check of the preflight.
+3. `configs/pilot.example.yaml` says that run_as_user must stay empty. It does not say that the startup check refuses the option on every host.
+
+## Scope
+
+1. A test that fails when the declaration of runAsIncompleteRefusal is not true. TestMain stores the value that the variable has before it changes it, in a test variable with the name runAsIncompleteRefusalDefault, and one test asserts that this value is true.
+2. With the option set, the workspace sweep and the removal of a workspace start no process when the preflight did not pass. They log one Warn line that names the directory count. A test with the mock sudo helper shows zero sudo calls after a refused preflight and one call after a passed preflight.
+3. The config example: the comment of run_as_user says that the startup check refuses the option on every host until the hand-over leg and the gates leg of TASK-651 merge, and that a run then fails with one Error line.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ ./cmd/pilot/ -run 'RunAsUser|AgentWorkspace|OrphanedWorktree|Preflight'` passes; paste the output into the PR body.
+- [ ] Set the declaration of runAsIncompleteRefusal to false -> the test of item 1 fails.
+- [ ] Let the sweep run after a refused preflight -> the test of item 2 fails.
+- [ ] With the option empty, the tests that exist today pass without a change to their assertions.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+Files that the daemon writes into the workspace and the Navigator copy (other legs). The single-instance lock of the gateway form of pilot start. The push, the secret gate, quality gates and workflow hooks.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comment of PR#6397
 
 ### LEG N3 — repo: qf-studio/pilot — title: feat(executor): run_as_user workspace files — the daemon writes the task document, the Navigator files and the settings file through a helper that runs as the agent user (off by default)
 
