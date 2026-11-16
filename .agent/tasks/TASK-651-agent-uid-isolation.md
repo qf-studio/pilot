@@ -1,6 +1,6 @@
 # TASK-651: Agent isolation — agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM
 
-**Status**: 🚀 **U0, U1, F1, F2, F3 and B1 merged. Step 5 is split into G1 → U2 → N1 after a spec check against `origin/main` 1e99ccbe0 (2026-11-15); 🚀 N2 DISPATCHED 2026-11-16 → [pilot#6387](https://github.com/qf-studio/pilot/issues/6387) (`pilot` + `no-decompose`, PR held as a draft). N1 (pilot issue 6385) ran into the one-hour task limit twice and is split into N2 → N3 → N4. Merged: G1 PR#6375, U2 PR#6383 (pilot#6380), B2 PR#6378 (real job on ubuntu-24.04 with the classic sudo; two hand commits by founder call). B3 (host script, fourth run) is not specified and blocks O4. Earlier: G1 DISPATCHED 2026-11-15 → [pilot#6372](https://github.com/qf-studio/pilot/issues/6372) and B2 DISPATCHED 2026-11-15 → [pilot#6373](https://github.com/qf-studio/pilot/issues/6373) (`pilot` + `no-decompose`); both PRs are held as drafts until a run-it review; U2 and N1 are held until G1 merges (same directory).** The check found 110 inline git sites (not about 70), about ten daemon writes into the workspace, a base ref that can be a SHA only FETCH_HEAD holds, and a Navigator copy that follows a link above the last path element. Design change 11-15 (founder approved): the base commit reaches the workspace as a bundle on a stream and the agent user reads no repository of the daemon, so B2 removes the shared read of the host script. **O4 is still NO-GO** until B2 merges and its real iptables and systemd job passes. `run_as_user` stays empty on every host until U3 and U4 merge. Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. Order: G1 → U2 → N1 → U3 → U4 → U5, B2 beside them (other directory). **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
+**Status**: 🚀 **U0, U1, F1, F2, F3 and B1 merged. Step 5 is split into G1 → U2 → N1 after a spec check against `origin/main` 1e99ccbe0 (2026-11-15); 🚀 N2 DISPATCHED 2026-11-16 → [pilot#6387](https://github.com/qf-studio/pilot/issues/6387) (`pilot` + `no-decompose`, PR held as a draft). B3 DISPATCHED 2026-11-16 → [pilot#6389](https://github.com/qf-studio/pilot/issues/6389) (host script, fourth run, part 1; `pilot` + `no-decompose`, PR held as a draft); B4 (part 2) and P1 (Go side) wait. N1 (pilot issue 6385) ran into the one-hour task limit twice and is split into N2 → N3 → N4. Merged: G1 PR#6375, U2 PR#6383 (pilot#6380), B2 PR#6378 (real job on ubuntu-24.04 with the classic sudo; two hand commits by founder call). B3 (host script, fourth run) is not specified and blocks O4. Earlier: G1 DISPATCHED 2026-11-15 → [pilot#6372](https://github.com/qf-studio/pilot/issues/6372) and B2 DISPATCHED 2026-11-15 → [pilot#6373](https://github.com/qf-studio/pilot/issues/6373) (`pilot` + `no-decompose`); both PRs are held as drafts until a run-it review; U2 and N1 are held until G1 merges (same directory).** The check found 110 inline git sites (not about 70), about ten daemon writes into the workspace, a base ref that can be a SHA only FETCH_HEAD holds, and a Navigator copy that follows a link above the last path element. Design change 11-15 (founder approved): the base commit reaches the workspace as a bundle on a stream and the agent user reads no repository of the daemon, so B2 removes the shared read of the host script. **O4 is still NO-GO** until B2 merges and its real iptables and systemd job passes. `run_as_user` stays empty on every host until U3 and U4 merge. Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. Order: G1 → U2 → N1 → U3 → U4 → U5, B2 beside them (other directory). **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
 **Created**: 2026-11-12
 **Assignee**: Pilot (one leg at a time) + operator steps by a Navigator session with founder consent
 **Parent**: TASK-650 leg H1
@@ -56,7 +56,10 @@
 - [x] **F2** (PR#6361 merged 11-15 12:59Z) ([#6354](https://github.com/qf-studio/pilot/issues/6354), dispatched 11-13) blockers from the run-it review of F1: kill under a sudo terminal, API backends refused as a whole, gh guard journal. Must merge before U2.
 - [x] **F1** (PR#6349 merged 11-13) ([#6344](https://github.com/qf-studio/pilot/issues/6344), dispatched 11-13) fixes from the run-it review of U1: cancel through the process group in the constructor, anthropic-api refused, `run_as_group` required, guard files fail closed, name check. Must merge before U2 (same file `agent_command.go`).
 - [x] **B1** (PR#6359 merged 11-14; **no host run yet**, see status) ([#6345](https://github.com/qf-studio/pilot/issues/6345), dispatched 11-13) host script, second run; replaces #6328.
-- [ ] **B3** (NOT specified yet; blocks O4) host script, fourth run, from the run-it review of PR#6378: (1) a positive proof that the agent user enters its home (a data directory under a 0700 home passes today); (2) the sudo proof also lists the rules (`sudo -l -U` shows only the agent rule), because `sudo -n true` passes with a NOPASSWD rule for one command; (3) daemon files stay closed after apply time (today `daemon-private` checks top-level entries once; decide: one 0700 directory for daemon state, or the agent home and workspaces outside the data directory; settle the conflict with design sections 4.3 and 6 on group-readable guard files and the binary for the gh shim); (4) the firewall fails closed: firewall steps before the sudoers rule, a missing ip6tables is a failure, the daemon service requires the boot unit, the jump position is checked again, UDP on port 9091; (5) directories below the agent home are created as the agent user (`ensure_dir` has a link race as root); an IPv6 connection check in the real test.
+- [ ] **B3** ([#6389](https://github.com/qf-studio/pilot/issues/6389), dispatched 11-16; PR held as a draft; blocks O4; founder calls 11-16: agent root at DATA_DIR/agent, the daemon binary reaches the gh shim as a copy for each run) host script, fourth run, part 1: agent root owned by root, no root step in an agent-owned directory, the daemon's entries closed with printed chmod lines, a proof as the agent user.
+- [ ] **B4** (dispatch-ready, below; needs B3; blocks O4) host script, fourth run, part 2: a sudo proof that reads the rules, the firewall before the sudo rule, a warning for the groups of the daemon user, undo that goes on and stops the agent processes.
+- [ ] **P1** (NOT specified yet; Go, after N4; needs B3 for the paths) from the research of 11-16: the daemon copies its binary into the gh shim directory of each run (today the shim runs the daemon binary as the agent user, and the script closes that binary); the preflight probes the firewall as the agent user (a connection to the metadata address and to the gateway port must fail) because the daemon starts from tmux and no unit can require the firewall; the preflight checks the modes of the daemon's entries at each start; the default of `run_as_workspace_dir` follows the agent root; the Go cache variables of the daemon do not reach the agent.
+- **Box fact 11-16 (read-only check):** the daemon user is in the group docker, which is a path to root, so O1 did not fully remove root from the daemon user. Founder discusses the removal with the infrastructure owner.
 - [x] **B2** (merged 11-15 21:02Z) (PR#6378: real job green on ubuntu-24.04 with the classic sudo, 94 passed; run-it review GO-WITH-NOTES for the merge, NOT ready for a host run; marked ready 11-15) ([#6373](https://github.com/qf-studio/pilot/issues/6373), dispatched 11-15) host script, third run: undo that the agent user cannot block, shared read removed, sudo proof by behaviour, macOS test fix, real iptables and systemd test in CI. O4 waits for it.
 - [x] **U1** (PR#6335 + PR#6342 merged 11-12) config option, one spawn constructor for every model process, allowlist environment, kill through sudo, fail-closed preflight, group-readable guard files (dispatch-ready, below).
 - [x] **G1** (PR#6375 merged 11-15 17:19Z after a run-it review, GO-WITH-NOTES; the notes go to U2 item 10 and to U4; the post-merge minors issue 6377 was closed as not planned on 11-15: its branch ran the secret gate through sudo as the agent user, which is the opposite of the hand-over design, and the pre-PR review held it; its useful items are in U2 items 10 and 11) ([#6372](https://github.com/qf-studio/pilot/issues/6372), dispatched 11-15; split from U2 on 11-15 after a spec check against `origin/main` 1e99ccbe0) one constructor for every git command of the executor package (110 inline sites), with the route to the agent user for a directory inside the workspace root; config field `run_as_workspace_dir`; fail-closed; a source test.
@@ -426,6 +429,108 @@ A run of the script on a real host (operator step). Go code. The network rules b
 ## Refs
 
 - Navigator TASK-651 in this repo · review comments of PR#6359
+
+### LEG B3 — repo: qf-studio/pilot — title: fix(box): agent user setup script, fourth run, part 1 — an agent root owned by root, no root step in a directory of the agent user, the daemon's entries closed, a proof as the agent user
+
+probe: present qf-studio/pilot ^step_daemon_private\(\)
+probe: present qf-studio/pilot ^ensure_dir\(\)
+probe: present qf-studio/pilot box-scripts-real:
+probe: absent  qf-studio/pilot --agent-roo[t]
+
+## Context
+
+Navigator TASK-651. The script `scripts/box/setup-agent-user.sh` prepares a host for an agent that runs as a second Unix user: the agent user and a group, a sudo rule from the daemon user to the agent user, the removal of the daemon user's root sudo, firewall rules for the agent user and a boot unit, with --undo. Tests: `scripts/box/setup-agent-user_test.sh` (mocked commands) and `scripts/box/setup-agent-user_real_test.sh` (real, as root, CI job box-scripts-real on ubuntu-24.04 with the classic sudo). No host has run the script. A run-it review of the third run found the points below; each one blocks a run on a real host.
+
+Facts of the target host (Amazon Linux 2023, read on 2026-11-16): the data directory of the daemon is the mount point of a data volume, it belongs to the daemon user and has mode 0755, and its entries (the binary directory, the Go caches, the state directory, the repositories) have mode 0755; the home of the daemon user has mode 0700; the daemon starts by hand in a tmux session, no systemd unit starts it; sudo is 1.9.15; iptables is the nft variant; the daemon user is a member of the groups wheel, adm and docker.
+
+1. Nothing proves that the agent user can enter its home. With a data directory below a 0700 home every root step passes and the agent user stays outside.
+2. prove_sudo_removed runs only `sudo -n true` as the daemon user. A rule such as `USER ALL=(root) NOPASSWD: /usr/bin/dnf` passes it.
+3. step_daemon_private looks at the top-level entries of the data directory once. The agent home and the workspace root are inside the data directory, between the entries of the daemon.
+4. The sudo rule is installed before the firewall steps, so a failed firewall step leaves an agent user that the daemon can use and no firewall. A missing ip6tables is a skip. check_managed_dirs stops an apply before the firewall steps when the agent user put a link, a file or a FIFO at a managed directory.
+5. ensure_dir tests the last path element for a symbolic link and then runs `install -d -o AGENT` as root inside a directory that the agent user owns. The agent user can swap the parent for a link between two calls.
+
+This leg is one of two parts of the fourth run, so that each part stays inside the one-hour task limit. Keep the change small: only the items below. This part covers points 1, 3 and 5. Points 2 and 4 are the next leg.
+
+## Scope
+
+1. Nothing proves that the agent user can enter its home. With a data directory below a 0700 home every root step passes and the agent user stays outside.
+2. prove_sudo_removed runs only `sudo -n true` as the daemon user. A rule such as `USER ALL=(root) NOPASSWD: /usr/bin/dnf` passes it.
+3. step_daemon_private looks at the top-level entries of the data directory once. The agent home and the workspace root are inside the data directory, between the entries of the daemon.
+4. The sudo rule is installed before the firewall steps, so a failed firewall step leaves an agent user that the daemon can use and no firewall. A missing ip6tables is a skip. check_managed_dirs stops an apply before the firewall steps when the agent user put a link, a file or a FIFO at a managed directory.
+5. Real test additions: the case of context point 1 (a data directory below a 0700 directory fails the apply at the proof of item 4 with the path in the message); a file that the daemon user creates with umask 022 inside one of its entries after the apply cannot be read by the agent user.
+6. The apply summary prints the three config values for the operator: run_as_user, run_as_group and run_as_workspace_dir (the workspaces directory of item 1).
+
+## Acceptance
+
+- [ ] The jobs box-scripts and box-scripts-real pass on the PR; paste the summary lines of both test scripts into the PR body.
+- [ ] `./scripts/box/setup-agent-user_test.sh` passes on macOS and on Linux with the same count.
+- [ ] Create a Go cache directory with `install -d` as root again -> the test of item 2 fails or the mocked test shows the root call.
+- [ ] Remove the proof of item 4 -> the test with the 0700 directory fails.
+- [ ] ShellCheck passes for `scripts/box`.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The sudo proof, the order of the firewall steps, the warning for the groups of the daemon user and the undo changes (next leg). A run of the script on a real host (operator step). Go code: the copy of the daemon binary into the gh shim directory of a run, a firewall probe in the daemon preflight, the default of run_as_workspace_dir and the Go cache variables of the agent are another leg. The removal of the daemon user from a group.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comment of PR#6378
+
+### LEG B4 — repo: qf-studio/pilot — title: fix(box): agent user setup script, fourth run, part 2 — a sudo proof that also reads the rules, the firewall before the sudo rule, an undo that goes on and stops the agent processes
+
+probe: present qf-studio/pilot ^prove_sudo_removed\(\)
+probe: present qf-studio/pilot ^step_firewall_ipv6\(\)
+probe: present qf-studio/pilot --agent-root
+probe: absent  qf-studio/pilot sudo[[:space:]]-ll[[:space:]]-[U]
+
+## Context
+
+Navigator TASK-651. The script `scripts/box/setup-agent-user.sh` prepares a host for an agent that runs as a second Unix user: the agent user and a group, a sudo rule from the daemon user to the agent user, the removal of the daemon user's root sudo, firewall rules for the agent user and a boot unit, with --undo. Tests: `scripts/box/setup-agent-user_test.sh` (mocked commands) and `scripts/box/setup-agent-user_real_test.sh` (real, as root, CI job box-scripts-real on ubuntu-24.04 with the classic sudo). No host has run the script. A run-it review of the third run found the points below; each one blocks a run on a real host.
+
+Facts of the target host (Amazon Linux 2023, read on 2026-11-16): the data directory of the daemon is the mount point of a data volume, it belongs to the daemon user and has mode 0755, and its entries (the binary directory, the Go caches, the state directory, the repositories) have mode 0755; the home of the daemon user has mode 0700; the daemon starts by hand in a tmux session, no systemd unit starts it; sudo is 1.9.15; iptables is the nft variant; the daemon user is a member of the groups wheel, adm and docker.
+
+1. Nothing proves that the agent user can enter its home. With a data directory below a 0700 home every root step passes and the agent user stays outside.
+2. prove_sudo_removed runs only `sudo -n true` as the daemon user. A rule such as `USER ALL=(root) NOPASSWD: /usr/bin/dnf` passes it.
+3. step_daemon_private looks at the top-level entries of the data directory once. The agent home and the workspace root are inside the data directory, between the entries of the daemon.
+4. The sudo rule is installed before the firewall steps, so a failed firewall step leaves an agent user that the daemon can use and no firewall. A missing ip6tables is a skip. check_managed_dirs stops an apply before the firewall steps when the agent user put a link, a file or a FIFO at a managed directory.
+5. ensure_dir tests the last path element for a symbolic link and then runs `install -d -o AGENT` as root inside a directory that the agent user owns. The agent user can swap the parent for a link between two calls.
+
+This leg is one of two parts of the fourth run, so that each part stays inside the one-hour task limit. Keep the change small: only the items below. This part covers points 2 and 4; the earlier leg did points 1, 3 and 5 and added the agent root.
+
+## Scope
+
+1. ensure_dir tests the last path element for a symbolic link and then runs `install -d -o AGENT` as root inside a directory that the agent user owns. The agent user can swap the parent for a link between two calls.
+
+## Scope
+
+1. Agent root. A new option --agent-root, default DATA_DIR/agent. Root creates it with owner root:root and mode 0755. Below it: home (the home directory of the agent user, agent user and group, 0750) and workspaces (agent user and group, 2770). Root creates these two directories only; their parent belongs to root. Remove the old locations of the agent home and the workspace root from the script and from both tests.
+2. No root step inside a directory that the agent user owns. The Go cache directories below the agent home are created by a command that runs as the agent user. ensure_dir is used only where every parent belongs to root. Real test: while an apply runs in a loop, a process of the agent user swaps a directory of its home for a link to a root-owned directory; after 20 applies no file outside the agent root has a new owner.
+3. The daemon's entries. Replace the body of step_daemon_private with this rule: the data directory itself gives other users traverse at most (mode 0711 or stricter, never write), and every top-level entry of the data directory other than the agent root gives other users and the shared group nothing. The step changes no mode by itself. On a failed check it prints one `chmod` line for each entry and, before those lines, each process of a user other than the daemon user and root that has a file open below the data directory (from /proc), because such a process loses its access. The apply fails until the operator runs the lines. Undo prints the lines that restore the earlier modes when it finds a record of them; keep the record in a root-owned file outside the data directory.
+4. Proof for the agent user, as the last step of an apply: a command that runs as the agent user creates and removes a file in its home and in the workspace root, and fails to list the data directory, the state directory of the daemon and one repository directory. A failure fails the apply and names the path. Dry run prints the commands.
+5. Sudo proof, two parts, both needed. Behaviour: as today. Rules: read `sudo -ll -U DAEMON_USER`; every entry must name the agent user as the only run-as user (and no run-as group other than the shared group); an entry without a run-as line, a line that the parser does not know, or a count of entries that differs from the count of run-as lines fails the step. Print the entry that fails. Real test, three cases in a second sudoers file: a NOPASSWD rule for one command as root; a rule through a group of the daemon user; only the agent rule (passes).
+2. Order and firewall. The firewall steps and the boot unit run before the sudo rule; a failed firewall step leaves no sudo rule. A missing ip6tables fails the step, unless IPv6 is off on the host (the kernel setting disable_ipv6 of all interfaces is 1). A link, a file or a FIFO at a directory that the agent user owns never stops the firewall steps. Real test: with ip6tables hidden from PATH the apply fails and no sudo rule file exists.
+3. The daemon user. When the daemon user is a member of a group of the privileged list (the list that the script has for the agent user), the apply prints one WARNING block that names each group and says that this membership is a path to root; it does not fail. The summary repeats the line.
+4. Undo. Undo goes on after a failed step, runs every remaining step, prints which steps failed and exits non-zero. Before it removes the firewall it stops every process of the agent user (TERM, then KILL after 5 seconds) and says how many.
+5. Real test addition: a connection check over IPv6 loopback to port 9091 as the agent user (refused) and as the daemon user (accepted).
+
+## Acceptance
+
+- [ ] The jobs box-scripts and box-scripts-real pass on the PR; paste the summary lines of both test scripts into the PR body.
+- [ ] `./scripts/box/setup-agent-user_test.sh` passes on macOS and on Linux with the same count.
+- [ ] Let prove_sudo_removed skip the rule list -> the case with the rule for one command fails.
+- [ ] Run the sudo rule step before the firewall steps -> the test of item 2 fails.
+- [ ] Stop undo at the first failed step -> its test fails.
+- [ ] ShellCheck passes for `scripts/box`.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+A run of the script on a real host (operator step). Go code. The removal of the daemon user from a group. The network rules beyond the metadata address and port 9091.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comment of PR#6378
 
 ### LEG U3 — repo: qf-studio/pilot — title: feat(executor): run_as_user hand-over — the daemon takes the branch from the agent workspace as a bundle, runs the secret gate on its own refs and pushes from its own repository with hooks off
 
@@ -817,3 +922,4 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - U2 → https://github.com/qf-studio/pilot/issues/6380
 - N1 → https://github.com/qf-studio/pilot/issues/6385
 - N2 → https://github.com/qf-studio/pilot/issues/6387
+- B3 → https://github.com/qf-studio/pilot/issues/6389
