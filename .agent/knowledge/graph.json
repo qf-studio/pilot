@@ -3208,7 +3208,8 @@
           "https://github.com/qf-studio/pilot/issues/6380",
           "https://github.com/qf-studio/pilot/issues/6385",
           "https://github.com/qf-studio/pilot/issues/6387",
-          "https://github.com/qf-studio/pilot/issues/6389"
+          "https://github.com/qf-studio/pilot/issues/6389",
+          "https://github.com/qf-studio/pilot/issues/6403"
         ]
       },
       "TASK-652": {
@@ -9235,6 +9236,18 @@
         ],
         "created": "2026-11-15",
         "last_validated": "2026-11-15"
+      },
+      "mem-319": {
+        "type": "learning",
+        "summary": "On the stage environment the Pilot daemon merges a PR by itself as soon as it is ready for review and CI is green (verified in the box log for PR 6397 on 2026-11-16; GitHub shows the founder account for daemon actions too). For a security PR the draft state is the only hold: post the run-it verdict, keep the PR in draft, mark it ready only after the founder writes merge for that PR.",
+        "path": "memories/learnings/mem-319.md",
+        "confidence": 0.95,
+        "concepts": [
+          "workflow-discipline",
+          "workflow"
+        ],
+        "created": "2026-11-16",
+        "last_validated": "2026-11-16"
       }
     }
   },
@@ -13528,6 +13541,11 @@
       "from": "TASK-654",
       "to": "api",
       "type": "implements"
+    },
+    {
+      "from": "mem-319",
+      "to": "TASK-651",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
