@@ -3189,19 +3189,37 @@
         "title": "Agent isolation \u2014 agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM",
         "status": "dispatched",
         "concepts": [
-          "context",
+          "database",
+          "authentication",
+          "simplification",
           "deployment",
-          "api",
-          "markers",
+          "workflow",
           "theory of mind",
           "testing",
-          "workflow",
-          "authentication",
+          "markers",
+          "context",
           "frontend",
+          "api",
           "knowledge",
-          "simplification",
-          "skills",
-          "database"
+          "skills"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6320",
+          "https://github.com/qf-studio/pilot/issues/6321",
+          "https://github.com/qf-studio/pilot/issues/6344",
+          "https://github.com/qf-studio/pilot/issues/6345",
+          "https://github.com/qf-studio/pilot/issues/6354",
+          "https://github.com/qf-studio/pilot/issues/6366",
+          "https://github.com/qf-studio/pilot/issues/6372",
+          "https://github.com/qf-studio/pilot/issues/6373",
+          "https://github.com/qf-studio/pilot/issues/6380",
+          "https://github.com/qf-studio/pilot/issues/6387",
+          "https://github.com/qf-studio/pilot/issues/6389",
+          "https://github.com/qf-studio/pilot/issues/6403",
+          "https://github.com/qf-studio/pilot/issues/6406",
+          "https://github.com/qf-studio/pilot/issues/6407",
+          "https://github.com/qf-studio/pilot/issues/6411",
+          "https://github.com/qf-studio/pilot/issues/6412"
         ]
       },
       "TASK-652": {
@@ -16239,7 +16257,7 @@
       "TASK-651"
     ]
   },
-  "last_updated": "2026-11-16T20:09:09.392539+00:00",
+  "last_updated": "2026-11-16T20:27:15.806355+00:00",
   "stats": {
     "total_nodes": 798,
     "total_edges": 860,
