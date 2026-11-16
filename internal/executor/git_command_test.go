@@ -14,8 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 )
 
 // TASK-651 (design 4.2): the one constructor of every git command of the
@@ -100,83 +98,51 @@ func assertSameCommand(t *testing.T, got, want *exec.Cmd) {
 	}
 }
 
+// TestGitCommandPlainRouteIsTheInlineCommand runs real site functions with the
+// option empty and with the option set for a directory outside the root, and
+// compares the git commands they build (argv, cmd.Dir, cmd.Env): the plain
+// route builds exactly the command of the option empty.
 func TestGitCommandPlainRouteIsTheInlineCommand(t *testing.T) {
 	stubRunAsGOOS(t)
 	root := t.TempDir()
-	dir := t.TempDir() // outside root
+	dir, remote := setupTestRepoWithRemote(t) // outside root
+	t.Cleanup(func() { _ = os.RemoveAll(dir); _ = os.RemoveAll(remote) })
 	g := NewGitOperations(dir)
-	hardenedArgs := func(args ...string) []string {
-		return append(append(secretpatterns.GitScanConfig(), "-c", "commit.gpgSign=false", "-c", "core.fsmonitor=false"), args...)
-	}
 	sites := []struct {
-		name  string
-		build func(ctx context.Context) *exec.Cmd
-		want  func(ctx context.Context) *exec.Cmd
-	}{
-		{"-C site (repo_guardrail)", func(ctx context.Context) *exec.Cmd {
-			return gitCommand(ctx, dir, "-C", dir, "remote", "get-url", "origin")
-		}, func(ctx context.Context) *exec.Cmd {
-			return exec.CommandContext(ctx, "git", "-C", dir, "remote", "get-url", "origin")
-		}},
-		{"cmd.Dir site (preflight)", func(ctx context.Context) *exec.Cmd {
-			return gitCommandIn(ctx, dir, "status", "--porcelain", "-z")
-		}, func(ctx context.Context) *exec.Cmd {
-			cmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-z")
-			cmd.Dir = dir
-			return cmd
-		}},
-		{"GitOperations site (push)", func(ctx context.Context) *exec.Cmd {
-			return g.gitCmd(ctx, "push", "-u", "origin", "b")
-		}, func(ctx context.Context) *exec.Cmd {
-			cmd := exec.CommandContext(ctx, "git", "push", "-u", "origin", "b")
-			cmd.Dir = dir
-			return cmd
-		}},
-		{"gitHardened", func(ctx context.Context) *exec.Cmd {
-			return g.gitHardened(ctx, "log", "-1")
-		}, func(ctx context.Context) *exec.Cmd {
-			cmd := exec.CommandContext(ctx, "git", hardenedArgs("log", "--no-show-signature", "-1")...)
-			cmd.Dir = dir
-			cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
-			return cmd
-		}},
-		{"gitHardened commit-tree with author env", func(ctx context.Context) *exec.Cmd {
-			cmd := g.gitHardened(ctx, "commit-tree", "t")
-			appendGitEnv(cmd, "GIT_AUTHOR_NAME=a", "GIT_COMMITTER_NAME=c")
-			return cmd
-		}, func(ctx context.Context) *exec.Cmd {
-			cmd := exec.CommandContext(ctx, "git", hardenedArgs("commit-tree", "t")...)
-			cmd.Dir = dir
-			cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
-			cmd.Env = append(cmd.Env, "GIT_AUTHOR_NAME=a", "GIT_COMMITTER_NAME=c")
-			return cmd
-		}},
-		{"secret gate site", func(ctx context.Context) *exec.Cmd {
-			cmd := gitCommandIn(ctx, dir, "rev-parse", "--git-common-dir")
-			appendGitEnv(cmd, "GIT_NO_REPLACE_OBJECTS=1")
-			return cmd
-		}, func(ctx context.Context) *exec.Cmd {
-			cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
-			cmd.Dir = dir
-			cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
-			return cmd
-		}},
-	}
-	states := []struct {
 		name string
-		s    *runAsSettings
+		run  func(ctx context.Context)
 	}{
-		{"option empty", nil},
-		{"option set, directory outside the root", gitRouteSettings(t, root)},
+		{"-C site (resolveGitRemote)", func(ctx context.Context) { _, _, _ = resolveGitRemote(ctx, dir) }},
+		{"cmd.Dir site (checkGitClean)", func(ctx context.Context) { _ = checkGitClean(ctx, dir) }},
+		{"GitOperations site (GetCurrentBranch)", func(ctx context.Context) { _, _ = g.GetCurrentBranch(ctx) }},
+		{"gitHardened site (commitMessage)", func(ctx context.Context) { _, _ = g.commitMessage(ctx, "HEAD") }},
+		{"-C site (logWorktreeBaseResolved)", func(ctx context.Context) { logWorktreeBaseResolved("GH-1", "b", dir, "HEAD") }},
 	}
-	for _, st := range states {
-		for _, site := range sites {
-			t.Run(st.name+"/"+site.name, func(t *testing.T) {
-				setRunAsStateForTest(t, st.s, "")
-				ctx := context.Background()
-				assertSameCommand(t, site.build(ctx), site.want(ctx))
-			})
+	build := func(t *testing.T, s *runAsSettings, run func(context.Context)) []*exec.Cmd {
+		t.Helper()
+		setRunAsStateForTest(t, s, "")
+		cmds := captureAgentCommands(t)
+		run(context.Background())
+		got := cmds()
+		if len(got) == 0 {
+			t.Fatal("the site built no command through the constructor")
 		}
+		return got
+	}
+	for _, site := range sites {
+		t.Run(site.name, func(t *testing.T) {
+			want := build(t, nil, site.run)
+			got := build(t, gitRouteSettings(t, root), site.run)
+			if len(got) != len(want) {
+				t.Fatalf("option set built %d commands, option empty %d", len(got), len(want))
+			}
+			for i := range want {
+				if want[i].Args[0] != "git" {
+					t.Errorf("option empty: argv %q is not a git command", want[i].Args)
+				}
+				assertSameCommand(t, got[i], want[i])
+			}
+		})
 	}
 }
 
@@ -224,15 +190,17 @@ func TestGitCommandRouteInsideRoot(t *testing.T) {
 		root      string
 		dir       string
 		wantAgent bool
+		wantErr   bool
 	}{
-		{"directory inside the root", realRoot, ws, true},
-		{"the root itself", realRoot, realRoot, true},
-		{"root behind a symbolic link", linkRoot, ws, true},
-		{"directory reached through the link", realRoot, filepath.Join(linkRoot, "ws-1"), true},
-		{"trailing slash on root and directory", realRoot + "/", ws + "/", true},
-		{"directory outside the root", realRoot, outside, false},
-		{"sibling with the root as name prefix", realRoot, realRoot + "-other", false},
-		{"root that does not exist", filepath.Join(outside, "gone"), ws, false},
+		{"directory inside the root", realRoot, ws, true, false},
+		{"the root itself", realRoot, realRoot, true, false},
+		{"root behind a symbolic link", linkRoot, ws, true, false},
+		{"directory reached through the link from outside", realRoot, filepath.Join(linkRoot, "ws-1"), false, true},
+		{"directory through the link of the root as given", linkRoot, filepath.Join(linkRoot, "ws-1"), true, false},
+		{"trailing slash on root and directory", realRoot + "/", ws + "/", true, false},
+		{"directory outside the root", realRoot, outside, false, false},
+		{"sibling with the root as name prefix", realRoot, realRoot + "-other", false, false},
+		{"root that does not exist", filepath.Join(outside, "gone"), ws, false, false},
 	}
 	if err := os.MkdirAll(realRoot+"-other", 0o755); err != nil {
 		t.Fatal(err)
@@ -243,6 +211,12 @@ func TestGitCommandRouteInsideRoot(t *testing.T) {
 			stubRunAsGOOS(t)
 			setRunAsStateForTest(t, gitRouteSettings(t, tc.root), "")
 			cmd := gitCommand(context.Background(), tc.dir, "-C", tc.dir, "status")
+			if tc.wantErr {
+				if cmd.Err == nil {
+					t.Fatalf("Err = nil, want an error (argv %q)", cmd.Args)
+				}
+				return
+			}
 			if cmd.Err != nil {
 				t.Fatalf("Err = %v", cmd.Err)
 			}
@@ -436,7 +410,7 @@ func TestRunAsUserPreflightWorkspaceRoot(t *testing.T) {
 			setRunAsStateForTest(t, nil, "")
 			_ = mockSudo(t, 0)
 			stubRunAsHost(t, "linux", "1000", map[string]string{"pilot-agent": t.TempDir()})
-			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents", RunAsWorkspaceDir: tc.dir}, "")
+			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents", RunAsWorkspaceDir: tc.dir}, "", true, 0)
 			if s := runAsSettingsNow(); s == nil || s.workspaceRoot != tc.wantRoot {
 				t.Fatalf("settings = %+v, want workspace root %q", s, tc.wantRoot)
 			}
@@ -453,15 +427,15 @@ func TestRunAsUserPreflightReRunsWhenWorkspaceRootChanges(t *testing.T) {
 	logPath := mockSudo(t, 0)
 	stubRunAsHost(t, "linux", "1000", map[string]string{"pilot-agent": t.TempDir()})
 	cfg := &ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents"}
-	PreflightRunAsUser(cfg, "")
+	PreflightRunAsUser(cfg, "", true, 0)
 	_ = sudoArgv(t, logPath)
 
-	PreflightRunAsUser(cfg, "")
+	PreflightRunAsUser(cfg, "", true, 0)
 	if got := sudoArgv(t, logPath); got != nil {
 		t.Errorf("same settings ran the preflight again: %q", got)
 	}
 	cfg.RunAsWorkspaceDir = "/srv/other-root"
-	PreflightRunAsUser(cfg, "")
+	PreflightRunAsUser(cfg, "", true, 0)
 	if got := sudoArgv(t, logPath); got == nil {
 		t.Error("a new workspace root did not run the preflight again")
 	}
@@ -471,8 +445,10 @@ func TestRunAsUserPreflightReRunsWhenWorkspaceRootChanges(t *testing.T) {
 }
 
 // TestGitSourceNoInlineGitCommand fails for every call of exec.Command or
-// exec.CommandContext with the literal "git" as command in a non-test file of
-// the package other than git_command.go.
+// exec.CommandContext with the literal "git" as command, and for every git
+// command built through the wrapper execCommandContext or through
+// agentCommand or agentCommandAs, in a non-test file of the package other than
+// git_command.go.
 func TestGitSourceNoInlineGitCommand(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -500,7 +476,8 @@ func TestGitSourceNoInlineGitCommand(t *testing.T) {
 }
 
 // inlineGitCommandLines returns the lines of the exec.Command(..."git"...) and
-// exec.CommandContext(<any context>, "git", ...) calls in f.
+// exec.CommandContext(<any context>, "git", ...) calls in f, and of the git
+// commands built through execCommandContext, agentCommand or agentCommandAs.
 func inlineGitCommandLines(f *ast.File, fset *token.FileSet) []int {
 	execName := ""
 	for _, imp := range f.Imports {
@@ -511,13 +488,30 @@ func inlineGitCommandLines(f *ast.File, fset *token.FileSet) []int {
 			}
 		}
 	}
-	if execName == "" {
-		return nil
-	}
 	var lines []int
+	isGitLit := func(e ast.Expr) bool {
+		lit, ok := e.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return false
+		}
+		v, err := strconv.Unquote(lit.Value)
+		return err == nil && v == "git"
+	}
 	ast.Inspect(f, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
+			return true
+		}
+		// The wrappers of the package: execCommandContext(ctx, "git", ...),
+		// agentCommand(ctx, "git", ...), agentCommandAs(ctx, s, "git", ...).
+		if id, ok := call.Fun.(*ast.Ident); ok {
+			idx := map[string]int{"execCommandContext": 1, "agentCommand": 1, "agentCommandAs": 2}
+			if i, known := idx[id.Name]; known && len(call.Args) > i && isGitLit(call.Args[i]) {
+				lines = append(lines, fset.Position(call.Pos()).Line)
+			}
+			return true
+		}
+		if execName == "" {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
@@ -537,12 +531,36 @@ func inlineGitCommandLines(f *ast.File, fset *token.FileSet) []int {
 		if argIdx < 0 || len(call.Args) <= argIdx {
 			return true
 		}
-		if lit, ok := call.Args[argIdx].(*ast.BasicLit); ok && lit.Kind == token.STRING {
-			if v, err := strconv.Unquote(lit.Value); err == nil && v == "git" {
-				lines = append(lines, fset.Position(call.Pos()).Line)
-			}
+		if isGitLit(call.Args[argIdx]) {
+			lines = append(lines, fset.Position(call.Pos()).Line)
 		}
 		return true
 	})
 	return lines
+}
+
+// TestGitSourceCheckSeesWrapperBuilds feeds the source check a file with every
+// form it must report and one it must not.
+func TestGitSourceCheckSeesWrapperBuilds(t *testing.T) {
+	src := `package executor
+
+import "os/exec"
+
+func a(ctx context.Context, s *runAsSettings) {
+	_ = exec.CommandContext(ctx, "git", "status")
+	_ = exec.Command("git", "status")
+	_ = execCommandContext(ctx, "git", "status")
+	_, _ = agentCommand(ctx, "git", "status")
+	_, _ = agentCommandAs(ctx, s, "git", "status")
+	_, _ = agentCommand(ctx, "rm", "-rf", "x")
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "x.go", src, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := fmt.Sprint(inlineGitCommandLines(f, fset)), "[6 7 8 9 10]"; got != want {
+		t.Errorf("reported lines %s, want %s", got, want)
+	}
 }

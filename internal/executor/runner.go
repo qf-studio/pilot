@@ -4069,6 +4069,26 @@ func (r *Runner) resumeDecomposedParent(ctx context.Context, task *Task, executi
 	return epicResult, nil
 }
 
+// agentWorkspaceRefusal returns why a run of task cannot get an agent
+// workspace while run_as_user is set, "" when it can or the option is empty:
+// the conditions under which executeWithOptions creates no worktree.
+func (r *Runner) agentWorkspaceRefusal(task *Task, allowWorktree bool) string {
+	if runAsSettingsNow() == nil {
+		return ""
+	}
+	switch {
+	case !allowWorktree:
+		return "worktree creation is off for this run (sub-issue or decomposed task)"
+	case r.config == nil || !r.config.EffectiveUseWorktree():
+		return "use_worktree is false (or no executor config)"
+	case task.Branch == "":
+		return "the task has no branch"
+	case task.DirectCommit:
+		return "direct commit is set"
+	}
+	return ""
+}
+
 // executeWithOptions is the internal implementation that allows controlling worktree creation.
 // When allowWorktree is false, it skips worktree creation even if configured.
 // This prevents recursive worktree creation in sub-issues and decomposed tasks.
@@ -4116,6 +4136,21 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	// GH-1599: Log task started milestone
 	r.saveLogEntry(task.LogExecutionID(), "info", "Task started: "+task.Title)
+
+	// TASK-651 (4.2): with run_as_user set a run happens in an agent
+	// workspace only. A run for which no worktree would be created stops here,
+	// before any process starts.
+	if reason := r.agentWorkspaceRefusal(task, allowWorktree); reason != "" {
+		r.log.Error("run_as_user: task stopped, it would run without an agent workspace",
+			slog.String("task_id", task.ID),
+			slog.String("reason", reason),
+		)
+		return &ExecutionResult{
+			TaskID:  task.ID,
+			Success: false,
+			Error:   "run_as_user: no agent workspace for this run: " + reason,
+		}, fmt.Errorf("run_as_user: no agent workspace for task %s: %s", task.ID, reason)
+	}
 
 	// GH-386: Validate source repo matches project path to prevent cross-project execution
 	if task.SourceRepo != "" && task.ProjectPath != "" {
@@ -4279,7 +4314,13 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		// worktreeBaseRef is based on. Without it the manager assumed "main",
 		// so a repo whose default branch is anything else failed every task
 		// here with "couldn't find remote ref main".
-		if r.worktreeManager != nil && r.worktreeManager.PoolSize() > 0 {
+		if runAsSettingsNow() != nil {
+			// TASK-651 (4.2): an agent-owned clone under the workspace root
+			// instead of a worktree of the daemon's repository.
+			manager := NewWorktreeManager(task.ProjectPath)
+			manager.SetBaseBranch(task.BaseBranch)
+			worktreePath, cleanup, err = manager.createAgentWorkspace(ctx, task.ID, task.Branch, worktreeBaseRef)
+		} else if r.worktreeManager != nil && r.worktreeManager.PoolSize() > 0 {
 			r.log.Debug("Using worktree pool",
 				slog.Int("pool_available", r.worktreeManager.PoolAvailable()),
 			)

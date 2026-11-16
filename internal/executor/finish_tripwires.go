@@ -298,7 +298,7 @@ func checkChildrenTerminal(store *memory.Store, row *memory.Execution) tripwireC
 //     tripwire would otherwise fire a false alert on the exact GH-4794
 //     shape (alert-only variant).
 func checkWorktreePruned(row *memory.Execution) tripwireCheckResult {
-	if dirs, err := findOrphanedWorktreeDirs(row.TaskID); err == nil && len(dirs) > 0 {
+	if dirs, err := findOrphanedWorktreeDirs(row.ProjectPath, row.TaskID); err == nil && len(dirs) > 0 {
 		return tripwireCheckResult{
 			violated: true,
 			reason: fmt.Sprintf("worktree director%s still present after execution %s finished: %s",
@@ -333,8 +333,10 @@ func pluralY(n int) string {
 // directories matching taskID's "pilot-worktree-<sanitized-taskID>-"
 // naming convention (CreateWorktree/CreateWorktreeWithBranch) without
 // removing anything — this sweep only reports, it never mutates disk state,
-// consistent with "alert-never-block".
-func findOrphanedWorktreeDirs(taskID string) ([]string, error) {
+// consistent with "alert-never-block". TASK-651: with run_as_user set it also
+// reports the agent workspaces of the task and of the project of projectPath
+// (agentWorkspaceOrphans).
+func findOrphanedWorktreeDirs(projectPath, taskID string) ([]string, error) {
 	if taskID == "" {
 		return nil, nil
 	}
@@ -350,6 +352,13 @@ func findOrphanedWorktreeDirs(taskID string) ([]string, error) {
 	for _, entry := range entries {
 		if entry.IsDir() && strings.HasPrefix(entry.Name(), prefix) {
 			found = append(found, filepath.Join(tmpDir, entry.Name()))
+		}
+	}
+	// TASK-651: the agent workspaces of the task (run_as_user set), reported
+	// only.
+	if projectPath != "" {
+		if _, ws, err := agentWorkspaceOrphans(projectPath, taskID); err == nil {
+			found = append(found, ws...)
 		}
 	}
 	return found, nil

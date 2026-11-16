@@ -955,6 +955,10 @@ executor:
   #                                # git command of the executor in a directory below this root runs as
   #                                # the agent user (sudo, allowlisted environment, no git credentials yet).
   #                                # Empty = /var/lib/pilot/agent-workspaces. Absolute path only.
+  #                                # Each task run gets its own clone here (pilot-ws-*), created and removed
+  #                                # as the agent user; needs use_worktree true and worktree_pool_size 0,
+  #                                # and a root the agent user owns (not /, the daemon home, the Pilot home
+  #                                # or a parent of one of them).
   #                                # run_as_user must stay empty on every host until the hand-over leg and
   #                                # the gates leg of TASK-651 merge.
   #   # env_passthrough (GH-5277): names of environment variables that survive

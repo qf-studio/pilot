@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,7 +17,9 @@ import (
 //
 //   - plain route: run_as_user empty, or a directory outside the workspace
 //     root. The command is exactly the inline exec.CommandContext(ctx, "git",
-//     ...) of the site: same argv, same cmd.Dir, same cmd.Env.
+//     ...) of the site (through execCommandContext, which tests wrap): same
+//     argv, same cmd.Dir, same cmd.Env. A `-C` or `--git-dir` into the root
+//     from a directory outside it fails closed (gitArgIntoRoot).
 //   - agent route: run_as_user set and a directory inside the workspace root.
 //     The command comes from agentCommand (sudo, as the agent user) and its
 //     environment is the allowlist plus the git variables of gitAgentEnv, so
@@ -71,14 +72,17 @@ func gitCommandIn(ctx context.Context, dir string, args ...string) *exec.Cmd {
 func gitCommand(ctx context.Context, routeDir string, args ...string) *exec.Cmd {
 	s := runAsSettingsNow()
 	if s == nil {
-		return exec.CommandContext(ctx, "git", args...)
+		return execCommandContext(ctx, "git", args...)
 	}
 	agent, err := gitRoutesToAgent(s.workspaceRoot, routeDir)
 	if err != nil {
 		return failedGitCommand(args, err)
 	}
 	if !agent {
-		return exec.CommandContext(ctx, "git", args...)
+		if target := gitArgIntoRoot(s.workspaceRoot, routeDir, args); target != "" {
+			return failedGitCommand(args, fmt.Errorf("run_as_user: git argument %q points inside the workspace root %q, the command runs in %q", target, s.workspaceRoot, routeDir))
+		}
+		return execCommandContext(ctx, "git", args...)
 	}
 	cmd, err := agentCommand(ctx, "git", args...)
 	if err != nil {
@@ -167,11 +171,15 @@ func lastEnvWins(env []string) []string {
 	return out
 }
 
-// gitRoutesToAgent reports whether a git command in dir takes the agent route:
-// dir is root or below it, both compared after filepath.EvalSymlinks and
-// filepath.Clean, so a root behind a symbolic link, a trailing slash or a
-// /private prefix still matches. A dir that cannot be resolved is an error. A
-// root that does not exist holds no workspace: plain route.
+// gitRoutesToAgent reports whether a git command in dir takes the agent route.
+// A directory is inside the root when its cleaned absolute path as given is
+// below the root (as given or resolved), or when its resolved path is below
+// the resolved root; the root itself counts. The two answers must agree: a
+// symbolic link inside a workspace that points at a repository of the daemon,
+// or a path from outside that reaches a workspace through a link, is an error,
+// never a command that runs as the daemon user. A dir that cannot be resolved
+// is an error. A root that cannot be resolved fails only the directories
+// inside it as given; every other directory takes the plain route.
 func gitRoutesToAgent(root, dir string) (bool, error) {
 	realDir, err := resolveGitRoutePath(dir)
 	if err != nil {
@@ -180,27 +188,130 @@ func gitRoutesToAgent(root, dir string) (bool, error) {
 	if root == "" {
 		return false, nil
 	}
+	givenDir, err := absCleanPath(dir)
+	if err != nil {
+		return false, fmt.Errorf("run_as_user: git directory %q: %w", dir, err)
+	}
+	givenRoot, err := absCleanPath(root)
+	if err != nil {
+		return false, fmt.Errorf("run_as_user: run_as_workspace_dir %q: %w", root, err)
+	}
 	realRoot, err := resolveGitRoutePath(root)
-	if errors.Is(err, fs.ErrNotExist) {
+	if err != nil {
+		if pathInside(givenRoot, givenDir) || pathInside(givenRoot, realDir) {
+			return false, fmt.Errorf("run_as_user: resolve run_as_workspace_dir %q: %w", root, err)
+		}
 		return false, nil
 	}
-	if err != nil {
-		return false, fmt.Errorf("run_as_user: resolve run_as_workspace_dir %q: %w", root, err)
+	givenIn := pathInside(givenRoot, givenDir) || pathInside(realRoot, givenDir)
+	realIn := pathInside(realRoot, realDir)
+	if givenIn != realIn {
+		return false, fmt.Errorf("run_as_user: git directory %q resolves to %q: inside the workspace root %q in only one of the two forms", dir, realDir, root)
 	}
-	rel, err := filepath.Rel(realRoot, realDir)
-	if err != nil {
-		return false, nil
+	return realIn, nil
+}
+
+// gitArgIntoRoot returns the first `-C` or `--git-dir` (also `--work-tree`)
+// value among the global options of args that points inside the workspace
+// root, as given or resolved, "" when none does. Relative values are taken
+// from routeDir; `-C` values add up as git adds them.
+func gitArgIntoRoot(root, routeDir string, args []string) string {
+	if root == "" {
+		return ""
 	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)), nil
+	base := routeDir
+	if base == "" {
+		base = "."
+	}
+	join := func(v string) string {
+		if filepath.IsAbs(v) {
+			return v
+		}
+		return filepath.Join(base, v)
+	}
+	inside := func(p string) bool {
+		for _, r := range pathForms(root) {
+			for _, f := range pathForms(p) {
+				if pathInside(r, f) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		var target string
+		switch {
+		case a == "-C" && i+1 < len(args):
+			i++
+			base = join(args[i])
+			target = base
+		case (a == "--git-dir" || a == "--work-tree") && i+1 < len(args):
+			i++
+			target = join(args[i])
+		case strings.HasPrefix(a, "--git-dir="), strings.HasPrefix(a, "--work-tree="):
+			_, v, _ := strings.Cut(a, "=")
+			target = join(v)
+		case a == "-c" && i+1 < len(args):
+			i++
+			continue
+		case strings.HasPrefix(a, "-"):
+			continue
+		default:
+			return "" // the subcommand: its own options are not paths of git
+		}
+		if inside(target) {
+			return target
+		}
+	}
+	return ""
+}
+
+// pathForms returns the absolute clean form of p and, when it differs and
+// can be resolved, its resolved form. Nil when p has no absolute form.
+func pathForms(p string) []string {
+	given, err := absCleanPath(p)
+	if err != nil {
+		return nil
+	}
+	forms := []string{given}
+	if real, err := resolveGitRoutePath(p); err == nil && real != given {
+		forms = append(forms, real)
+	}
+	return forms
+}
+
+// pathInside reports whether p is root or below it; both must be clean and
+// absolute.
+func pathInside(root, p string) bool {
+	if root == "" || p == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, p)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// absCleanPath is the absolute, clean form of p without resolving links; ""
+// is the working directory of the daemon.
+func absCleanPath(p string) (string, error) {
+	if p == "" {
+		p = "."
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs), nil
 }
 
 // resolveGitRoutePath is the absolute, symlink-free, clean form of p; "" is
 // the working directory of the daemon, where such a command runs.
 func resolveGitRoutePath(p string) (string, error) {
-	if p == "" {
-		p = "."
-	}
-	abs, err := filepath.Abs(p)
+	abs, err := absCleanPath(p)
 	if err != nil {
 		return "", err
 	}

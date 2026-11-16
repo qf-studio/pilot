@@ -281,7 +281,7 @@ func TestRunAsUserPreflightTerminalProbe(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 			t.Cleanup(func() { slog.SetDefault(prev) })
 
-			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents"}, "")
+			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents"}, "", true, 0)
 
 			if got := sudoArgv(t, logPath+".tty"); got == nil {
 				t.Fatal("the terminal probe did not run")
@@ -335,7 +335,7 @@ func TestRunAsUserPreflightBlankValue(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 			t.Cleanup(func() { slog.SetDefault(prev) })
 
-			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: tc.user, RunAsGroup: tc.group}, "")
+			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: tc.user, RunAsGroup: tc.group}, "", true, 0)
 
 			if n := strings.Count(buf.String(), "level=ERROR"); n != 1 || !strings.Contains(buf.String(), tc.wantCheck) {
 				t.Errorf("want one Error line naming %q, got:\n%s", tc.wantCheck, buf.String())
