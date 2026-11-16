@@ -19,6 +19,10 @@
 #                     with a file open below the data dir, then one chmod for each
 #                     path, records the modes it found in DAEMON_MODES_RECORD and
 #                     fails; the apply passes once the operator ran the chmods.
+#                     Every path it prints is shell-quoted. An entry whose name or
+#                     resolved path is not a plain path in the data dir ([A-Za-z0-9
+#                     ._/-], a link out of the data dir included) gets no chmod and
+#                     no record: the step fails with one line that names it.
 #   group             system group (default: pilot)
 #   agent-user        system user, no login shell, home AGENT_ROOT/home
 #   daemon-membership daemon user joins the group
@@ -68,7 +72,9 @@
 #                        sudoers rule; the user, the group and the directories stay
 #                        (the commands to delete them are printed, not run), and so
 #                        do the modes of the daemon's entries (the chmods that put
-#                        back the recorded modes are printed, not run). Undo
+#                        back the recorded modes are printed, not run; a record
+#                        line with a special bit or a path that is not a plain
+#                        path in --data-dir is skipped, by its number). Undo
 #                        reads no path that the agent user or the daemon user can
 #                        write: each undo step checks the root files it changes.
 #   --keep-daemon-sudo   leave the cloud-init sudoers file alone
@@ -266,6 +272,7 @@ check_agent_user() {
 check_data_dir() {
     [ -e "$DATA_DIR" ] || die "--data-dir does not exist: '${DATA_DIR}'"
     DATA_DIR="$(realpath "$DATA_DIR")" || die "cannot resolve --data-dir"
+    plain_data_path "$DATA_DIR" || die "--data-dir resolves to $(shq "$DATA_DIR"), not an absolute path of [A-Za-z0-9._/-]"
     refuse_system_dir "$DATA_DIR"
     [ -d "$DATA_DIR" ] || die "--data-dir is not a directory: '${DATA_DIR}'"
     [ "$(stat -c %U "$DATA_DIR")" = "$DAEMON_USER" ] || die "--data-dir '${DATA_DIR}' is not owned by the daemon user (${DAEMON_USER})"
@@ -310,6 +317,29 @@ check_agent_root() {
         [ -d "$AGENT_ROOT" ] || die "--agent-root '${AGENT_ROOT}' is not a directory"
         [ "$(stat -c %U "$AGENT_ROOT")" = root ] || die "--agent-root '${AGENT_ROOT}' exists and is not owned by root; choose another path"
     fi
+}
+
+# shq S — S quoted for a shell, on one line: in single quotes, or in the form of
+# printf %q ($'...') when S has a control character (a newline) or a quote.
+shq() {
+    case "$1" in
+        *[[:cntrl:]]* | *\'*) printf '%q' "$1" ;;
+        *) printf "'%s'" "$1" ;;
+    esac
+}
+
+# plain_data_path PATH — true when PATH, a resolved path, is the data dir or is
+# below it and holds only letters, digits, dot, underscore, hyphen and slash,
+# with no empty, "." or ".." part. Only such a path is recorded (the record has
+# one entry on each line) or printed in a chmod line or in a line about an
+# entry: the daemon user names the entries and the targets of the links there.
+plain_data_path() {
+    local base="$DATA_DIR"
+    while [ "$base" != / ] && [ "${base%/}" != "$base" ]; do base="${base%/}"; done
+    [[ "$1" =~ ^/[A-Za-z0-9._/-]*$ ]] || return 1
+    case "${1}/" in */./* | */../* | *//*) return 1 ;; esac
+    case "$1" in "$base" | "$base"/*) return 0 ;; esac
+    return 1
 }
 
 # contained PATH — true when the resolved form of PATH is strictly inside the
@@ -421,7 +451,7 @@ open_below_data_dir() {
             esac
             name="$(getent passwd "$uid" 2>/dev/null | cut -d: -f1 || true)"
             printf 'a process of %s (pid %s, %s) has %s open; it loses its access with the chmods below\n' \
-                "${name:-uid ${uid}}" "${p##*/}" "$(cat "$p/comm" 2>/dev/null || true)" "$t" >&2
+                "${name:-uid ${uid}}" "${p##*/}" "$(shq "$(cat "$p/comm" 2>/dev/null || true)")" "$(shq "$t")" >&2
             break
         done
     done
@@ -452,19 +482,27 @@ record_modes() {
 # the shared group, no bit for the group. A link is followed (the agent user
 # follows it too). The top level is enough: nothing of the agent user is
 # between the entries of the daemon, and a closed directory closes all below it.
-# The step changes no mode itself.
+# The step changes no mode itself. An entry whose name or resolved path is not
+# a plain path in the data dir (plain_data_path; a link out of it is one) is
+# neither recorded nor given a chmod: one line names it, for a look by hand.
 step_daemon_private() {
-    local e meta grp mode fix lines=() records=()
+    local e real meta grp mode fix lines=() records=()
     meta="$(stat -L -c '%G:%a' "$DATA_DIR")" || return 1
     if [ $((8#${meta#*:} & 8#066)) -ne 0 ]; then
-        lines+=("$(printf 'the data dir %s gives more than traverse (group %s, mode %s): chmod go-rw %q' \
-            "$DATA_DIR" "${meta%%:*}" "${meta#*:}" "$DATA_DIR")")
+        lines+=("$(printf 'the data dir %s gives more than traverse (group %s, mode %s): chmod go-rw %s' \
+            "$(shq "$DATA_DIR")" "${meta%%:*}" "${meta#*:}" "$(shq "$DATA_DIR")")")
         records+=("${meta#*:}"$'\t'"${DATA_DIR}")
     fi
     for e in "$DATA_DIR"/* "$DATA_DIR"/.[!.]* "$DATA_DIR"/..?*; do
         [ "$e" != "$AGENT_ROOT" ] || continue
         # an unmatched glob, or a dangling link: nothing to reach
         [ -e "$e" ] || continue
+        real="$(realpath "$e" 2>/dev/null)" || real=""
+        if ! plain_data_path "$e" || ! plain_data_path "$real"; then
+            lines+=("$(printf 'the entry %s is not a plain path in the data dir (a name or a link target outside [A-Za-z0-9._/-], or a link out of the data dir): no chmod is printed, look at it by hand' \
+                "$(shq "$e")")")
+            continue
+        fi
         meta="$(stat -L -c '%G:%a' "$e")" || return 1
         grp="${meta%%:*}"
         mode=$((8#${meta#*:}))
@@ -475,14 +513,14 @@ step_daemon_private() {
             fix="o-rwx"
         fi
         [ -n "$fix" ] || continue
-        lines+=("$(printf 'the agent user can reach %s (group %s, mode %s): chmod %s %q' \
-            "$e" "$grp" "${meta#*:}" "$fix" "$(realpath "$e")")")
-        records+=("${meta#*:}"$'\t'"$(realpath "$e")")
+        lines+=("$(printf 'the agent user can reach %s (group %s, mode %s): chmod %s %s' \
+            "$(shq "$e")" "$grp" "${meta#*:}" "$fix" "$(shq "$real")")")
+        records+=("${meta#*:}"$'\t'"${real}")
     done
     if [ "${#lines[@]}" -gt 0 ]; then
         open_below_data_dir
         printf '%s\n' "${lines[@]}" >&2
-        record_modes "${records[@]}" || true
+        if [ "${#records[@]}" -gt 0 ]; then record_modes "${records[@]}" || true; fi
         echo "no mode was changed; run each chmod above and run again" >&2
         return 1
     fi
@@ -1226,9 +1264,12 @@ print_config() {
 
 # print_mode_restore — the chmods that put back the modes daemon-private found,
 # from root's record; printed, not run. A record that is a link or not root's
-# is passed over.
+# is passed over. A line is printed only when its path passes plain_data_path
+# for the data dir of this run (as given) and its mode is three or four octal
+# digits with no setuid, setgid or sticky bit; a line that fails is named by its
+# number, its content is not printed.
 print_mode_restore() {
-    local mode path
+    local mode path n=0
     [ -e "$MODES_RECORD" ] || [ -L "$MODES_RECORD" ] || return 0
     echo
     echo "== earlier modes of the daemon's entries (not run)"
@@ -1238,8 +1279,13 @@ print_mode_restore() {
     fi
     echo "The apply asked for chmods on these paths; to put the earlier modes back:"
     while IFS=$'\t' read -r mode path; do
-        if ! [[ "$mode" =~ ^[0-7]{3,4}$ && "$path" =~ ^/[A-Za-z0-9._/-]*$ ]]; then continue; fi
-        printf '  chmod %s %q\n' "$mode" "$path"
+        n=$((n + 1))
+        if ! [[ "$mode" =~ ^0?[0-7]{3}$ ]] || ! plain_data_path "$path"; then
+            printf '  # line %s of the record is skipped: not a mode without a special bit and a plain path in the data dir %s\n' \
+                "$n" "$(shq "$DATA_DIR")"
+            continue
+        fi
+        printf '  chmod %s %s\n' "$mode" "$(shq "$path")"
     done <"$MODES_RECORD"
 }
 

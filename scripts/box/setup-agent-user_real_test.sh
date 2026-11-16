@@ -9,7 +9,8 @@
 # unless CI=true.
 #
 # Cases: the data dir check (the data dir itself and its entries, a process of
-# another user with a file open below it, the record of the modes); apply
+# another user with a file open below it, the record of the modes, a link of
+# the daemon user whose target path holds a newline and a forged line); apply
 # (agent root, chains, jumps, unit, systemd-analyze verify, the config lines);
 # connections as the agent user and as the daemon user (metadata address, port
 # 9091, another local port); the boot unit rebuilds a deleted chain; the agent
@@ -288,17 +289,30 @@ for try in $(seq 1 50); do
 done
 NOBODY_PID="$(cat "$PIDFILE")"
 LISTENERS+=("$NOBODY_PID")
+# The daemon user names the entries and the targets of the links: a link whose
+# target path holds a newline must forge no second line in the record of root
+# ("4755<TAB>/usr/bin/sudo"), nor in the output of undo below.
+FORGED_TOP="${DATA_DIR}/x"$'\n'"4755"$'\t'
+mkdir -p "${FORGED_TOP}/usr/bin/sudo"
+ln -s "${FORGED_TOP}/usr/bin/sudo" "${DATA_DIR}/evil"
+chown -hR "${DAEMON}:${DAEMON}" "$FORGED_TOP" "${DATA_DIR}/evil"
 rc=0
 run_setup --confirm-root-path || rc=$?
 if [ "$rc" = 1 ]; then pass "apply exits 1"; else show_log; fail_test "apply: exit ${rc}, want 1"; fi
 expect_step daemon-private failed
+check "the link with a newline in its target is named, quoted, for a look by hand" grep -qxF "the entry '${DATA_DIR}/evil' is not a plain path in the data dir (a name or a link target outside [A-Za-z0-9._/-], or a link out of the data dir): no chmod is printed, look at it by hand" "$LOG"
+check_not "no line of the apply output starts with the forged mode" grep -qE '^4755' "$LOG"
+check_not "the record of root has no forged line" grep -qF "/usr/bin/sudo" "$RECORD"
+check_not "every line of the record is a mode and a plain path in the data dir" grep -qvE "^[0-7]+	${DATA_DIR}(/[A-Za-z0-9._-]+)*\$" "$RECORD"
+# The operator's look by hand.
+rm -rf "$FORGED_TOP" "${DATA_DIR}/evil"
 check_not "no group was created" getent group "$GROUP"
 check_not "no agent user was created" id -u "$AGENT"
-check "the line for the data dir with its chmod" grep -qxF "the data dir ${DATA_DIR} gives more than traverse (group ${DAEMON}, mode 755): chmod go-rw ${DATA_DIR}" "$LOG"
+check "the line for the data dir with its chmod" grep -qxF "the data dir '${DATA_DIR}' gives more than traverse (group ${DAEMON}, mode 755): chmod go-rw '${DATA_DIR}'" "$LOG"
 for entry in repos bin; do
-    check "the line for ${entry} with its chmod" grep -qxF "the agent user can reach ${DATA_DIR}/${entry} (group ${DAEMON}, mode 755): chmod o-rwx ${DATA_DIR}/${entry}" "$LOG"
+    check "the line for ${entry} with its chmod" grep -qxF "the agent user can reach '${DATA_DIR}/${entry}' (group ${DAEMON}, mode 755): chmod o-rwx '${DATA_DIR}/${entry}'" "$LOG"
 done
-proc_n="$(grep -n -m1 -F "a process of nobody (pid ${NOBODY_PID}, sleep) has ${DATA_DIR}/repos/alpha/.env open" "$LOG" | cut -d: -f1 || true)"
+proc_n="$(grep -n -m1 -F "a process of nobody (pid ${NOBODY_PID}, 'sleep') has '${DATA_DIR}/repos/alpha/.env' open" "$LOG" | cut -d: -f1 || true)"
 chmod_n="$(grep -n -m1 ': chmod ' "$LOG" | cut -d: -f1 || true)"
 if [ -n "$proc_n" ] && [ -n "$chmod_n" ] && [ "$proc_n" -lt "$chmod_n" ]; then
     pass "the process of nobody with a file open below the data dir is named before the chmods"
@@ -311,11 +325,10 @@ check "the data dir keeps its mode (the check changes no mode)" test "$(stat -c 
 check "the record of root holds the mode of the data dir" grep -qxF "755	${DATA_DIR}" "$RECORD"
 check "the record of root holds the mode of the repos directory" grep -qxF "755	${DATA_DIR}/repos" "$RECORD"
 check "the record is root's, mode 0600" test "$(stat -c %U:%a "$RECORD")" = root:600
-# The operator's fix, as printed.
+# The operator's fix, as printed: a shell reads the quoted path.
 while IFS= read -r fix; do
-    # shellcheck disable=SC2086 # "chmod o-rwx PATH" as printed, a list of words
-    $fix
-done < <(sed -nE 's/^(the agent user can reach|the data dir) .*: (chmod [go]+-rwx? \/.*)$/\2/p' "$LOG")
+    bash -c "$fix"
+done < <(sed -nE "s/^(the agent user can reach|the data dir) .*: (chmod [go]+-rwx? '\/.*)\$/\2/p" "$LOG")
 check "the data dir is 0711 after the printed chmod" test "$(stat -c %a "$DATA_DIR")" = 711
 
 echo "=== real test: apply ==="
@@ -507,8 +520,10 @@ else
     fail_test "undo exited non-zero"
 fi
 check "the sudoers file of the daemon user is restored (active root line)" grep -qxF "${DAEMON} ALL=(ALL) NOPASSWD:ALL" "$CLOUD_INIT"
-check "undo prints the chmod that puts back the mode of the data dir" grep -qxF "  chmod 755 ${DATA_DIR}" "$LOG"
-check "undo prints the chmod that puts back the mode of the repos directory" grep -qxF "  chmod 755 ${DATA_DIR}/repos" "$LOG"
+check "undo prints the chmod that puts back the mode of the data dir" grep -qxF "  chmod 755 '${DATA_DIR}'" "$LOG"
+check "undo prints the chmod that puts back the mode of the repos directory" grep -qxF "  chmod 755 '${DATA_DIR}/repos'" "$LOG"
+check_not "undo prints no chmod 4755" grep -qF "chmod 4755" "$LOG"
+check_not "undo prints nothing of the forged path" grep -qF "/usr/bin/sudo" "$LOG"
 check "the data dir keeps 0711 (undo prints the chmod, it does not run it)" test "$(stat -c %a "$DATA_DIR")" = 711
 check "the daemon user has root without a password again" as "$DAEMON" sudo -n true
 check "nothing outside the data dir changed" test "$OUTSIDE_BEFORE" = "$(find "$OUTSIDE" -printf '%p %m %U:%G %s\n' | sort)"

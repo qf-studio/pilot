@@ -951,9 +951,9 @@ mkdir "${DATA_DIR}/pilot-home"
 chmod 711 "${DATA_DIR}/pilot-home"
 printf 'x\n' >"${DATA_DIR}/.hidden"
 chmod 604 "${DATA_DIR}/.hidden"
-mkdir "${SANDBOX}/elsewhere"
-chmod 755 "${SANDBOX}/elsewhere"
-ln -s "${SANDBOX}/elsewhere" "${DATA_DIR}/linked"
+mkdir "${DATA_DIR}/target"
+chmod 755 "${DATA_DIR}/target"
+ln -s "${DATA_DIR}/target" "${DATA_DIR}/linked"
 ln -s "${SANDBOX}/gone" "${DATA_DIR}/dangling"
 before="$(tree_listing)"
 : >"$MUT_LOG"
@@ -966,16 +966,17 @@ expect_step daemon-private failed
 expect_step group skipped
 check "nothing was mutated" test ! -s "$MUT_LOG"
 check "nothing changed in the temp root" test "$before" = "$(tree_listing)"
-for want in "the agent user can reach ${R} (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): chmod o-rwx ${R}" \
-    "the agent user can reach ${DATA_DIR}/bin (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): chmod o-rwx ${DATA_DIR}/bin"; do
+# mutation pin: a chmod path is printed without shell quoting -> this test fails
+for want in "the agent user can reach '${R}' (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): chmod o-rwx '${R}'" \
+    "the agent user can reach '${DATA_DIR}/bin' (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): chmod o-rwx '${DATA_DIR}/bin'"; do
     check "prints: ${want#the agent user can reach }" has_line "$OUT" "$want"
 done
-check "the pilot home at 0711 is reported (traverse is enough)" grep -qF "can reach ${DATA_DIR}/pilot-home " "$OUT"
-check "a hidden file is reported" grep -qF "can reach ${DATA_DIR}/.hidden " "$OUT"
-check "a link is followed and its target named" grep -qE "can reach ${DATA_DIR}/linked .*: chmod o-rwx ${SANDBOX}/elsewhere\$" "$OUT"
-check_not "a dangling link is not reported" grep -qF "can reach ${DATA_DIR}/dangling" "$OUT"
-check "five lines, one per open entry" test "$(grep -c 'can reach ' "$OUT" | tr -d ' ')" = 5
-chmod o-rwx "$R" "${DATA_DIR}/bin" "${DATA_DIR}/pilot-home" "${DATA_DIR}/.hidden" "${SANDBOX}/elsewhere"
+check "the pilot home at 0711 is reported (traverse is enough)" grep -qF "can reach '${DATA_DIR}/pilot-home' " "$OUT"
+check "a hidden file is reported" grep -qF "can reach '${DATA_DIR}/.hidden' " "$OUT"
+check "a link is followed and its target named" grep -qF "can reach '${DATA_DIR}/linked' (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): chmod o-rwx '${DATA_DIR}/target'" "$OUT"
+check_not "a dangling link is not reported" grep -qF "${DATA_DIR}/dangling" "$OUT"
+check "six lines, one per open entry" test "$(grep -c 'can reach ' "$OUT" | tr -d ' ')" = 6
+chmod o-rwx "$R" "${DATA_DIR}/bin" "${DATA_DIR}/pilot-home" "${DATA_DIR}/.hidden" "${DATA_DIR}/target"
 if run_setup -- ; then
     pass "apply passes once each entry is closed"
 else
@@ -995,7 +996,114 @@ if run_setup -- ; then
 else
     pass "apply exits non-zero"
 fi
-check "prints the chmod for group and others" has_line "$OUT" "the agent user can reach ${DATA_DIR}/shared (group pilot, mode 750): chmod go-rwx ${DATA_DIR}/shared"
+check "prints the chmod for group and others" has_line "$OUT" "the agent user can reach '${DATA_DIR}/shared' (group pilot, mode 750): chmod go-rwx '${DATA_DIR}/shared'"
+teardown_sandbox
+
+# ------------------------------------------- the record and the chmod lines take plain paths only
+
+# mutation pin: the result of realpath is recorded without plain_data_path -> this test fails
+echo "=== test: a link whose target path holds a newline forges no line in the record nor in the undo output ==="
+setup_sandbox
+build_repos
+chmod 755 "$R"
+FORGED_TOP="${DATA_DIR}/x"$'\n'"4755"$'\t'
+mkdir -p "${FORGED_TOP}/usr/bin/su"
+chmod 700 "$FORGED_TOP"
+chmod 755 "${FORGED_TOP}/usr/bin/su"
+ln -s "${FORGED_TOP}/usr/bin/su" "${DATA_DIR}/evil"
+if run_setup -- ; then
+    fail_test "apply must fail on a link with a newline in its target"
+else
+    pass "apply exits non-zero"
+fi
+expect_step daemon-private failed
+check "the record holds the plain line only" test "$(cat "$RECORD" 2>/dev/null)" = "755	${R}"
+check_not "the record has no forged line" grep -qF "/usr/bin/su" "$RECORD"
+check "the link is named, quoted, for a look by hand" has_line "$OUT" "the entry '${DATA_DIR}/evil' is not a plain path in the data dir (a name or a link target outside [A-Za-z0-9._/-], or a link out of the data dir): no chmod is printed, look at it by hand"
+check_not "no line of the apply output starts with the forged mode" grep -qE '^4755' "$OUT"
+check_not "no chmod for the target of the link" grep -qE 'chmod [go]+-rwx? .*usr/bin/su' "$OUT"
+run_setup -- --undo >/dev/null || true
+check "undo prints the plain line" has_line "$OUT" "  chmod 755 '${R}'"
+check_not "undo prints no chmod 4755" grep -qF "chmod 4755" "$OUT"
+check_not "undo prints nothing of the forged path" grep -qF "/usr/bin/su" "$OUT"
+teardown_sandbox
+
+echo "=== test: an entry name with a newline forges no line in the apply output ==="
+setup_sandbox
+build_repos
+# a name holds no slash: the forged line names a relative path
+FORGED_LINE="the agent user can reach etc (group root, mode 755): chmod o-rwx etc"
+mkdir "${DATA_DIR}/a"$'\n'"${FORGED_LINE}"
+chmod 755 "${DATA_DIR}/a"$'\n'"${FORGED_LINE}"
+if run_setup -- ; then
+    fail_test "apply must fail on an entry name with a newline"
+else
+    pass "apply exits non-zero"
+fi
+expect_step daemon-private failed
+check_not "no forged line in the apply output" grep -qE "^the agent user can reach etc " "$OUT"
+check "the name is printed on one line, quoted" grep -qE "^the entry [\$]'${DATA_DIR}/a.*the agent user can reach etc .*' is not a plain path in the data dir" "$OUT"
+check "one line names the entry" test "$(grep -c '^the entry .* is not a plain path in the data dir' "$OUT" | tr -d ' ')" = 1
+check "no record is written for it" test ! -e "$RECORD"
+teardown_sandbox
+
+echo "=== test: a link to a directory outside the data dir fails the apply and names the entry ==="
+setup_sandbox
+build_repos
+mkdir "${SANDBOX}/elsewhere"
+chmod 755 "${SANDBOX}/elsewhere"
+ln -s "${SANDBOX}/elsewhere" "${DATA_DIR}/linked"
+: >"$MUT_LOG"
+if run_setup -- ; then
+    fail_test "apply must fail on a link out of the data dir"
+else
+    pass "apply exits non-zero"
+fi
+expect_step daemon-private failed
+check "nothing was mutated" test ! -s "$MUT_LOG"
+check "the entry is named" grep -qF "the entry '${DATA_DIR}/linked' is not a plain path in the data dir" "$OUT"
+check_not "no chmod on the target outside" grep -qF "${SANDBOX}/elsewhere" "$OUT"
+check "no record is written for it" test ! -e "$RECORD"
+chmod 700 "${SANDBOX}/elsewhere"
+check_not "a closed target outside fails the apply too" run_setup --
+rm "${DATA_DIR}/linked"
+if run_setup -- ; then
+    pass "apply passes once the link is gone"
+else
+    cat "$OUT"
+    fail_test "apply failed after the link was removed"
+fi
+teardown_sandbox
+
+echo "=== test: a path with a space is printed quoted ==="
+setup_sandbox
+build_repos
+mkdir "${DATA_DIR}/with space"
+chmod 755 "${DATA_DIR}/with space"
+if run_setup -- ; then
+    fail_test "apply must fail on an entry with a space"
+else
+    pass "apply exits non-zero"
+fi
+check "the entry is printed in quotes" grep -qF "the entry '${DATA_DIR}/with space' is not a plain path in the data dir" "$OUT"
+check_not "it is printed nowhere without quotes" grep -qE "(^|[^'])${DATA_DIR}/with space" "$OUT"
+check "no record is written for it" test ! -e "$RECORD"
+teardown_sandbox
+
+# mutation pin: the line filter of undo is removed -> this test fails
+echo "=== test: undo skips a record line with a special bit or a path outside the data dir, by its number ==="
+setup_sandbox
+build_repos
+printf '755\t%s\n4755\t%s\n755\t/usr/bin\n0750\t%s\n' "$R" "${DATA_DIR}/bin" "${DATA_DIR}/bin" >"$RECORD"
+chmod 600 "$RECORD"
+run_setup -- --undo >/dev/null || true
+check "line 1 is printed" has_line "$OUT" "  chmod 755 '${R}'"
+check "line 4 is printed (a leading zero is no special bit)" has_line "$OUT" "  chmod 0750 '${DATA_DIR}/bin'"
+check_not "the mode 4755 is not printed" grep -qF "4755" "$OUT"
+check_not "the path outside the data dir is not printed" grep -qE "chmod [0-7]+ '?/usr/bin" "$OUT"
+check "line 2 is named as skipped" has_line "$OUT" "  # line 2 of the record is skipped: not a mode without a special bit and a plain path in the data dir '${DATA_DIR}'"
+check "line 3 is named as skipped" has_line "$OUT" "  # line 3 of the record is skipped: not a mode without a special bit and a plain path in the data dir '${DATA_DIR}'"
+check "two lines are skipped" test "$(grep -c '^  # line [0-9]* of the record is skipped' "$OUT" | tr -d ' ')" = 2
 teardown_sandbox
 
 # ------------------------------------------- item 3: the sudo proof by behaviour
@@ -1434,7 +1542,7 @@ else
     pass "apply exits non-zero"
 fi
 expect_step daemon-private failed
-check "prints the chmod for the data dir" has_line "$OUT" "the data dir ${DATA_DIR} gives more than traverse (group ec2-user, mode 755): chmod go-rw ${DATA_DIR}"
+check "prints the chmod for the data dir" has_line "$OUT" "the data dir '${DATA_DIR}' gives more than traverse (group ec2-user, mode 755): chmod go-rw '${DATA_DIR}'"
 check "the data dir keeps its mode (the step changes no mode)" test "$(mode_of "$DATA_DIR")" = 755
 check "nothing was mutated" test ! -s "$MUT_LOG"
 check "the record holds the mode of the data dir" grep -qxF "755	${DATA_DIR}" "$RECORD"
@@ -1448,8 +1556,8 @@ else
     fail_test "apply failed after the chmods"
 fi
 run_setup -- --undo >/dev/null || true
-check "undo prints the chmod that puts back the mode of the data dir" has_line "$OUT" "  chmod 755 ${DATA_DIR}"
-check "undo prints the chmod that puts back the mode of the repos directory" has_line "$OUT" "  chmod 755 ${R}"
+check "undo prints the chmod that puts back the mode of the data dir" has_line "$OUT" "  chmod 755 '${DATA_DIR}'"
+check "undo prints the chmod that puts back the mode of the repos directory" has_line "$OUT" "  chmod 755 '${R}'"
 check "the data dir keeps its mode after undo (printed, not run)" test "$(mode_of "$DATA_DIR")" = 711
 restore_n="$(grep -n -m1 '^== earlier modes' "$OUT" | cut -d: -f1 || true)"
 left_n="$(grep -n -m1 '^== left in place' "$OUT" | cut -d: -f1 || true)"
@@ -1457,7 +1565,7 @@ check "the chmods come before the cleanup section" test -n "$restore_n" -a -n "$
 set_meta "$RECORD" ec2-user:ec2-user
 run_setup -- --undo >/dev/null || true
 check "a record that is not root's is passed over" grep -qF "${RECORD} is not a regular file of root; passed over" "$OUT"
-check_not "and no chmod is printed from it" has_line "$OUT" "  chmod 755 ${DATA_DIR}"
+check_not "and no chmod is printed from it" has_line "$OUT" "  chmod 755 '${DATA_DIR}'"
 teardown_sandbox
 
 # mutation pin: the proof as the agent user is removed -> this test fails
