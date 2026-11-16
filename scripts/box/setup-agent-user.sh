@@ -47,13 +47,20 @@
 #                     nobody else) sudo to root in the cloud-init sudoers file
 #                     (numbered backups, validated), then prove by behaviour that
 #                     the daemon user has no root left: `sudo -n true` as the
-#                     daemon user must fail (and `sudo -n -u AGENT true` succeed).
-#                     Needs --confirm-root-path.
+#                     daemon user must fail (and `sudo -n -u AGENT true` succeed);
+#                     and by the rules: in `sudo -ll -U DAEMON` every entry has the
+#                     agent user as the only run-as user and no run-as group but
+#                     the shared group (a rule for one command as root fails, so
+#                     does a line the check does not know). Needs
+#                     --confirm-root-path.
 #   agent-proof       LAST, a check: as the agent user, create and remove a file in
 #                     its home and in the workspace root, and fail to list the data
 #                     dir, each directory in it but the agent root and one directory
 #                     below those (a repository). A closed directory above the data
 #                     dir (a home at 0700) passes every root step and fails here.
+#
+# A daemon user in a system group with privileges (wheel, adm, docker, ...) gets
+# a WARNING before the steps and in the summary: a path to root; not a failure.
 #
 # On success the summary ends with the values for the executor section of the
 # daemon config: run_as_user, run_as_group and run_as_workspace_dir.
@@ -143,6 +150,7 @@ PRIVILEGED_GROUPS="root wheel sudo adm disk docker shadow"
 SUMMARY=()
 RESULT=""
 NOTE=""
+DAEMON_GROUP_WARNING=""
 
 die() {
     echo "setup-agent-user: $*" >&2
@@ -757,15 +765,89 @@ remaining_rules() {
     done
 }
 
+# The rule list of `sudo -ll -U DAEMON_USER` (the long form of sudo 1.9), one
+# pass. Every entry ("Sudoers entry:" or "LDAP Role:") must have one RunAsUsers
+# line that names the agent user alone and at most a RunAsGroups line that
+# names the shared group alone; Options, Commands and the command lines (a tab
+# in front) are passed over, so are the Defaults sections. Any other line, an
+# entry without its RunAsUsers line, or a count of entries that differs from the
+# count of RunAsUsers lines fails. Output: one line per failure, an entry with
+# its lines below it; exit 1 on a failure.
+# shellcheck disable=SC2016 # the awk program is single-quoted on purpose
+RULES_AWK='
+function fail(msg) { print msg; failed = 1 }
+function flush(   i) {
+    if (n == 0) return
+    if (bad == "" && runas != 1) bad = (runas == 0 ? "no RunAsUsers line" : "more than one RunAsUsers line")
+    if (bad != "") {
+        fail("entry " entries " (" bad "):")
+        for (i = 1; i <= n; i++) print "    | " text[i]
+    }
+    n = 0; bad = ""; runas = 0; cmds = 0
+}
+/^Matching Defaults entries for / || /^Runas and Command-specific defaults for / { flush(); sec = "defaults"; next }
+/^User .* may run the following commands on / { flush(); sec = "rules"; listed = 1; next }
+/^User .* is not allowed to run sudo on / { flush(); sec = "none"; listed = 1; next }
+/^$/ { flush(); next }
+sec == "defaults" && /^    / { next }
+sec == "rules" && (/^Sudoers entry:/ || /^LDAP Role:/) { flush(); entries++; text[++n] = $0; next }
+n > 0 {
+    text[++n] = $0
+    if (/^    RunAsUsers: /) {
+        runas++; total++
+        v = substr($0, 17)
+        if (v != agent && bad == "") bad = "run-as user " v ", not " agent " alone"
+    } else if (/^    RunAsGroups: /) {
+        v = substr($0, 18)
+        if (v != group && bad == "") bad = "run-as group " v ", not " group " alone"
+    } else if (/^    Options: /) {
+    } else if (/^    Commands:$/) {
+        cmds = 1
+    } else if (cmds && /^\t/) {
+    } else if (bad == "") {
+        bad = "a line the check does not know: " $0
+    }
+    next
+}
+{ fail("a line the check does not know: " $0) }
+END {
+    flush()
+    if (!listed) fail("no \"User ... may run\" or \"is not allowed\" line in the list")
+    if (entries != total) fail(entries " entries, " total " RunAsUsers lines")
+    exit failed
+}'
+
+# check_rule_list — read the rules of the daemon user (sudo -ll -U, as root) and
+# check them with RULES_AWK: the only path left from the daemon user is the
+# agent user. A rule that `sudo -n true` does not show (one command as root, a
+# rule that needs a password, a rule through a group) fails here.
+check_rule_list() {
+    local list rc=0 report
+    list="$(sudo -n -ll -U "$DAEMON_USER")" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "sudo -ll -U ${DAEMON_USER} failed (exit ${rc}); the sudo removal is not proven" >&2
+        return 1
+    fi
+    if report="$(printf '%s\n' "$list" | awk -v agent="$AGENT_USER" -v group="$GROUP" "$RULES_AWK")"; then
+        return 0
+    fi
+    echo "the sudo rules of ${DAEMON_USER} (sudo -ll -U ${DAEMON_USER}) hold more than the agent rule: each entry must have ${AGENT_USER} as the only run-as user and no run-as group but ${GROUP}" >&2
+    printf '%s\n' "$report" | sed 's/^/  /' >&2
+    return 1
+}
+
 # prove_sudo_removed — by behaviour, whatever the text of the rules is: as the
 # daemon user, `sudo -n -u AGENT true` must succeed (the same path reaches sudo
 # and the agent rule works, so a failure below is not a broken sudo) and
-# `sudo -n true` must fail (no command as root without a password).
+# `sudo -n true` must fail (no command as root without a password). Then by the
+# rules (check_rule_list): both parts are needed.
 prove_sudo_removed() {
     local out rc=0 where
     if [ "$DRY_RUN" = 1 ]; then
         printf '+ runuser -u %q -- sudo -n true  (after the edit: must fail; sudo -n -u %q true must succeed)\n' \
             "$DAEMON_USER" "$AGENT_USER"
+        printf '+ sudo -n -ll -U %q  (each entry: run-as user %q only, run-as group %q at most)\n' \
+            "$DAEMON_USER" "$AGENT_USER" "$GROUP"
         return 0
     fi
     out="$(runuser -u "$DAEMON_USER" -- sudo -n -u "$AGENT_USER" true 2>&1)" || rc=$?
@@ -775,7 +857,8 @@ prove_sudo_removed() {
         return 1
     fi
     if ! out="$(runuser -u "$DAEMON_USER" -- sudo -n true 2>&1)"; then
-        return 0
+        check_rule_list
+        return
     fi
     echo "${DAEMON_USER} still runs a command as root without a password: sudo -n true succeeded" >&2
     where="$(remaining_rules)"
@@ -1243,6 +1326,7 @@ print_summary() {
     for line in "${SUMMARY[@]}"; do
         echo "step ${line}"
     done
+    [ -z "$DAEMON_GROUP_WARNING" ] || echo "$DAEMON_GROUP_WARNING"
 }
 
 run_step() {
@@ -1356,6 +1440,21 @@ check_agent_user
 check_data_dir
 check_agent_root
 check_managed_dirs
+
+# warn_daemon_groups — the daemon user in a group of PRIVILEGED_GROUPS: a warning
+# before the steps, repeated in the summary; no failure (the script removes no
+# membership, and the daemon user has root during the apply anyway).
+warn_daemon_groups() {
+    local g found=""
+    for g in $(id -nG "$DAEMON_USER"); do
+        if is_privileged_group "$g"; then found="${found:+${found}, }${g}"; fi
+    done
+    [ -n "$found" ] || return 0
+    DAEMON_GROUP_WARNING="WARNING: the daemon user ${DAEMON_USER} is a member of ${found}: each of these memberships is a path to root (this script removes none of them)"
+    echo "== warning"
+    echo "$DAEMON_GROUP_WARNING"
+}
+warn_daemon_groups
 
 # The removal of the daemon user's general sudo needs --confirm-root-path. It is
 # asked here, before the first change, and only when the cloud-init file still

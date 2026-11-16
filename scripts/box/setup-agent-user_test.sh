@@ -286,6 +286,7 @@ for want in "+ groupadd --system pilot" "+ useradd --system" "+ usermod -aG pilo
     "+ visudo -cf" "+ iptables -w -N PILOT_AGENT_EGRESS" "+ ip6tables -w -N PILOT_AGENT_EGRESS" \
     "+ systemctl enable pilot-agent-firewall.service" "$EXPECTED_RULE" \
     "+ runuser -u ec2-user -- sudo -n true" \
+    "+ sudo -n -ll -U ec2-user  (each entry: run-as user pilot-agent only, run-as group pilot at most)" \
     "+ runuser -u pilot-agent -- mkdir -p -m 750 ${AHOME}/go ${AHOME}/go/cache ${AHOME}/go/mod" \
     "+ runuser -u pilot-agent -- touch ${AHOME}/.setup-agent-user-proof" \
     "+ runuser -u pilot-agent -- touch ${AWS}/.setup-agent-user-proof" \
@@ -335,7 +336,7 @@ else
     fail_test "apply exited non-zero"
 fi
 prev=0
-for pattern in '^groupadd ' '^useradd ' '^usermod ' '^install -d ' '^runuser -u pilot-agent -- mkdir ' '^visudo -cf ' '^iptables -w -N ' '^ip6tables -w -N ' '^systemctl enable ' '^install -m 0600 -o root -g root .*\.pilot-agent\.bak$' '^visudo -c$' '^runuser -u ec2-user -- sudo -n true$' '^runuser -u pilot-agent -- touch ' '^runuser -u pilot-agent -- ls '; do
+for pattern in '^groupadd ' '^useradd ' '^usermod ' '^install -d ' '^runuser -u pilot-agent -- mkdir ' '^visudo -cf ' '^iptables -w -N ' '^ip6tables -w -N ' '^systemctl enable ' '^install -m 0600 -o root -g root .*\.pilot-agent\.bak$' '^visudo -c$' '^runuser -u ec2-user -- sudo -n true$' '^sudo -n -ll -U ec2-user$' '^runuser -u pilot-agent -- touch ' '^runuser -u pilot-agent -- ls '; do
     n="$(first_line "$pattern" || true)"
     if [ -n "$n" ] && [ "$n" -gt "$prev" ]; then
         pass "in order: ${pattern}"
@@ -1238,7 +1239,7 @@ check "the alias line is reported" grep -qF "left untouched (several users, an a
 expect_step cloud-init-sudoers "done"
 teardown_sandbox
 
-echo "=== test: a rule with the run-as part (deploy) is left untouched and reported; it gives no root, so the proof passes ==="
+echo "=== test: a rule with the run-as part (deploy) is left untouched and reported; the rule list fails the proof ==="
 setup_sandbox
 cat >"${SUDOERS_DIR}/90-cloud-init-users" <<'EOF'
 # Created by cloud-init
@@ -1246,11 +1247,12 @@ ec2-user ALL=(ALL) NOPASSWD:ALL
 ec2-user ALL=(deploy) NOPASSWD: ALL
 EOF
 if run_setup -- ; then
-    pass "apply exits 0"
+    fail_test "apply must fail: the (deploy) rule has a run-as user other than the agent user"
 else
-    cat "$OUT"
-    fail_test "apply failed on a (deploy) rule"
+    pass "apply exits non-zero on a (deploy) rule"
 fi
+expect_step cloud-init-sudoers failed
+check "the (deploy) entry is named" grep -qE '^  entry [0-9]+ \(run-as user deploy, not pilot-agent alone\):$' "$OUT"
 check "the (deploy) line is untouched" grep -qxF "ec2-user ALL=(deploy) NOPASSWD: ALL" "${SUDOERS_DIR}/90-cloud-init-users"
 check "the root line is commented out" grep -qxF "# disabled by setup-agent-user: ec2-user ALL=(ALL) NOPASSWD:ALL" "${SUDOERS_DIR}/90-cloud-init-users"
 check "the (deploy) line is reported as left untouched" grep -qF "left untouched (run-as part (deploy) is not ALL or root): ${SUDOERS_DIR}/90-cloud-init-users:3: ec2-user ALL=(deploy) NOPASSWD: ALL" "$OUT"
@@ -1287,11 +1289,12 @@ check "the Defaults line is named" has_line "$OUT" "  ${SUDOERS_DIR}/05-defaults
 check "the rule is named" has_line "$OUT" "  ${SUDOERS_DIR}/10-other:1: ec2-user ALL=(ALL) ALL"
 rm "${SUDOERS_DIR}/05-defaults"
 if run_setup -- ; then
-    pass "without the Defaults line the rule needs a password and the proof passes"
+    fail_test "apply must fail: the rule needs a password, but the rule list holds it"
 else
-    cat "$OUT"
-    fail_test "apply failed without the Defaults line"
+    pass "without the Defaults line sudo -n true fails, the rule list fails the step"
 fi
+check_not "sudo -n true did not succeed" grep -qF "sudo -n true succeeded" "$OUT"
+check "the rule list names the entry" grep -qE '^  entry [0-9]+ \(run-as user ALL, not pilot-agent alone\):$' "$OUT"
 printf 'Defaults !authenticate\n' >"${SUDOERS_DIR}/05-defaults"
 if run_setup -- ; then
     fail_test "apply must fail with a global Defaults !authenticate"
@@ -1309,6 +1312,88 @@ else
     cat "$OUT"
     fail_test "apply failed on a rule that gives no root"
 fi
+teardown_sandbox
+
+# rule_list FILE ENTRY... — a rule list as sudo -ll -U ec2-user prints it: the
+# agent rule, then each ENTRY (printf %b: \n and \t in it are expanded).
+rule_list() {
+    local f="$1" e
+    shift
+    {
+        printf 'Matching Defaults entries for ec2-user on host:\n    !visiblepw, always_set_home\n\n'
+        printf 'User ec2-user may run the following commands on host:\n\n'
+        printf 'Sudoers entry: %s/90-pilot-agent-runas\n    RunAsUsers: pilot-agent\n    Options: setenv, !authenticate\n    Commands:\n\tALL\n' "$SUDOERS_DIR"
+        for e in "$@"; do printf '\n%b\n' "$e"; done
+    } >"$f"
+}
+
+# mutation pin: prove_sudo_removed skips the rule list -> this test fails
+echo "=== test: the rule list — a NOPASSWD rule for one command as root fails the step, the entry is printed ==="
+setup_sandbox
+rule_list "${SANDBOX}/list" 'Sudoers entry: /etc/sudoers.d/10-dnf\n    RunAsUsers: root\n    Options: !authenticate\n    Commands:\n\t/usr/bin/dnf'
+if run_setup MOCK_SUDO_LIST="${SANDBOX}/list" -- ; then
+    fail_test "apply must fail: a rule for one command as root is left"
+else
+    pass "apply exits non-zero"
+fi
+expect_step cloud-init-sudoers failed
+check_not "sudo -n true failed: the behaviour part passed" grep -qF "sudo -n true succeeded" "$OUT"
+check "the message names the rule list" grep -qF "the sudo rules of ec2-user (sudo -ll -U ec2-user) hold more than the agent rule" "$OUT"
+check "the entry and its reason are printed" has_line "$OUT" "  entry 2 (run-as user root, not pilot-agent alone):"
+check "the lines of the entry are printed" has_line "$OUT" "      | Sudoers entry: /etc/sudoers.d/10-dnf"
+check "its command is printed" has_line "$OUT" "      | "$'\t'"/usr/bin/dnf"
+check_not "the agent rule is not named" grep -qF "entry 1 (" "$OUT"
+teardown_sandbox
+
+echo "=== test: the rule list — an entry without a run-as line fails the step ==="
+setup_sandbox
+rule_list "${SANDBOX}/list" 'Sudoers entry: /etc/sudoers.d/10-x\n    Options: !authenticate\n    Commands:\n\tALL'
+if run_setup MOCK_SUDO_LIST="${SANDBOX}/list" -- ; then
+    fail_test "apply must fail on an entry without a RunAsUsers line"
+else
+    pass "apply exits non-zero"
+fi
+expect_step cloud-init-sudoers failed
+check "the entry is named" has_line "$OUT" "  entry 2 (no RunAsUsers line):"
+check "the counts are named" has_line "$OUT" "  2 entries, 1 RunAsUsers lines"
+teardown_sandbox
+
+echo "=== test: the rule list — a line the check does not know fails the step ==="
+setup_sandbox
+rule_list "${SANDBOX}/list" 'Sudoers entry: /etc/sudoers.d/10-x\n    RunAsUsers: pilot-agent\n    Chroot: /srv\n    Commands:\n\tALL'
+if run_setup MOCK_SUDO_LIST="${SANDBOX}/list" -- ; then
+    fail_test "apply must fail on an unknown line in an entry"
+else
+    pass "apply exits non-zero on an unknown line in an entry"
+fi
+check "the entry and the line are named" has_line "$OUT" "  entry 2 (a line the check does not know:     Chroot: /srv):"
+rule_list "${SANDBOX}/list" 'Host ALL may run anything'
+if run_setup MOCK_SUDO_LIST="${SANDBOX}/list" -- ; then
+    fail_test "apply must fail on an unknown line outside an entry"
+else
+    pass "apply exits non-zero on an unknown line outside an entry"
+fi
+check "the line is named" has_line "$OUT" "  a line the check does not know: Host ALL may run anything"
+teardown_sandbox
+
+echo "=== test: the rule list — only the agent user (a run-as group pilot too) passes ==="
+setup_sandbox
+rule_list "${SANDBOX}/list" 'Sudoers entry: /etc/sudoers.d/10-x\n    RunAsUsers: pilot-agent\n    RunAsGroups: pilot\n    Commands:\n\t/usr/bin/true'
+if run_setup MOCK_SUDO_LIST="${SANDBOX}/list" -- ; then
+    pass "apply exits 0"
+else
+    cat "$OUT"
+    fail_test "apply failed on a list with only the agent user"
+fi
+expect_step cloud-init-sudoers "done"
+check "the rule list was read" grep -qE '^sudo -n -ll -U ec2-user$' "$CALL_LOG"
+rule_list "${SANDBOX}/list" 'Sudoers entry: /etc/sudoers.d/10-x\n    RunAsUsers: pilot-agent\n    RunAsGroups: wheel\n    Commands:\n\tALL'
+if run_setup MOCK_SUDO_LIST="${SANDBOX}/list" -- ; then
+    fail_test "apply must fail on a run-as group other than pilot"
+else
+    pass "a run-as group other than pilot fails the step"
+fi
+check "the group is named" has_line "$OUT" "  entry 2 (run-as group wheel, not pilot alone):"
 teardown_sandbox
 
 # mutation pin: the error of the positive control is swallowed, so a broken sudo counts as proof -> this test fails
@@ -1345,6 +1430,38 @@ else
     pass "apply without a cloud-init file fails when sudo -n true succeeds"
 fi
 check "the proof ran" grep -qE '^runuser -u ec2-user -- sudo -n true$' "$CALL_LOG"
+teardown_sandbox
+
+# ------------------------------------- the daemon user in a privileged group
+
+echo "=== test: the daemon user in wheel and docker — one WARNING block, repeated in the summary, no failure ==="
+setup_sandbox
+mock_run usermod -aG wheel ec2-user
+mock_run usermod -aG docker ec2-user
+if run_setup -- ; then
+    pass "apply exits 0"
+else
+    cat "$OUT"
+    fail_test "apply failed for a daemon user in wheel"
+fi
+WANT_WARNING="WARNING: the daemon user ec2-user is a member of docker, wheel: each of these memberships is a path to root (this script removes none of them)"
+check "the warning names each group" has_line "$OUT" "$WANT_WARNING"
+check "one warning block" test "$(grep -c '^== warning$' "$OUT")" = 1
+check "the line is printed twice: the block and the summary" test "$(grep -cxF "$WANT_WARNING" "$OUT")" = 2
+check "the summary repeats it" has_line <(sed -n '/^== summary$/,$p' "$OUT") "$WANT_WARNING"
+check "the block comes before the first step" test "$(grep -n -m1 '^== warning$' "$OUT" | cut -d: -f1)" -lt "$(grep -n -m1 '^== daemon-private$' "$OUT" | cut -d: -f1)"
+teardown_sandbox
+
+echo "=== test: the daemon user in no privileged group — no warning ==="
+setup_sandbox
+if run_setup -- ; then
+    pass "apply exits 0"
+else
+    cat "$OUT"
+    fail_test "apply failed"
+fi
+check_not "no WARNING line" grep -q 'WARNING' "$OUT"
+check_not "no warning block" grep -q '^== warning$' "$OUT"
 teardown_sandbox
 
 # ----------------------------------------------- order, firewall

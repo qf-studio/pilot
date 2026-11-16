@@ -19,8 +19,8 @@
 # invoking user is root, or the user that runuser named (MOCK_INVOKER); a rule
 # for that user (its name, ALL or %group) with the target in its run-as part
 # runs the command when it has NOPASSWD or a Defaults line turns authenticate
-# off, and else fails with "a password is required". `sudo -l -U` prints the
-# listing built from the same files.
+# off, and else fails with "a password is required". `sudo -ll -U` prints the
+# long listing built from the same files (MOCK_SUDO_LIST: a file printed instead).
 #
 # runuser -u USER -- ls|touch|rm|mkdir PATH... decides access as the kernel
 # does for USER, from the owner:group records (meta/), the real modes and the
@@ -34,6 +34,7 @@
 # (`visudo -cf` fails), MOCK_VISUDO_C_FAIL=1 (`visudo -c` fails),
 # MOCK_SUDO_BROKEN=1 (sudo fails whatever the rules), MOCK_SUDO_ROOT_OK=1 (sudo
 # to root succeeds whatever the files hold: a rule from another source),
+# MOCK_SUDO_LIST (a file that `sudo -ll -U` prints as the rule list),
 # MOCK_REAL_PATH (PATH for the real tools the mocks delegate to).
 
 set -euo pipefail
@@ -454,7 +455,7 @@ case "$cmd" in
         while [ $# -gt 0 ]; do
             case "$1" in
                 -n) ;;
-                -l) listing=1 ;;
+                -l | -ll) listing=1 ;;
                 -U) user="$2"; shift ;;
                 -u) target="$2"; shift ;;
                 --) shift; break ;;
@@ -475,42 +476,65 @@ case "$cmd" in
             esac
             exit 1
         fi
-        # sudo -n -l -U USER: the listing is built from the sudoers files, so it
-        # follows every edit the script makes.
+        # sudo -n -ll -U USER: the long listing of sudo 1.9, built from the
+        # sudoers files (the user, ALL or one of its groups), so it follows
+        # every edit the script makes; MOCK_SUDO_LIST names a file printed
+        # instead.
+        if [ -n "${MOCK_SUDO_LIST:-}" ]; then
+            cat "$MOCK_SUDO_LIST"
+            exit 0
+        fi
+        groups=" $("${0%/*}/id" -nG "$user" 2>/dev/null || true) "
         rules=""
         for f in "${SUDOERS_DIR:?}"/*; do
             [ -f "$f" ] || continue
             case "$(basename "$f")" in *.* | *~) continue ;; esac
-            rules="${rules}$(awk -v u="$user" '
-                /^[ \t]*#/ || !/=/ { next }
+            rules="${rules}$(awk -v u="$user" -v groups="$groups" '
+                function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+                /^[ \t]*#/ || /^[ \t]*Defaults/ || !/=/ { next }
                 {
-                    line = $0; sub(/^[ \t]+/, "", line)
+                    line = trim($0)
                     eq = index(line, "=")
-                    left = substr(line, 1, eq - 1); right = substr(line, eq + 1)
-                    sub(/^[ \t]+/, "", right); sub(/[ \t]+$/, "", right)
+                    left = substr(line, 1, eq - 1); right = trim(substr(line, eq + 1))
                     split(left, w, /[ \t]+/)
                     n = split(w[1], users, ",")
-                    for (i = 1; i <= n; i++) if (users[i] == u || users[i] == "ALL") hit = 1
-                    if (!hit) next
                     hit = 0
-                    if (substr(right, 1, 1) != "(") right = "(root) " right
-                    gsub(/NOPASSWD:[ \t]*/, "NOPASSWD: ", right)
-                    gsub(/SETENV:[ \t]*/, "SETENV: ", right)
-                    # sudo prints the tags in its own order
-                    sub(/NOPASSWD: SETENV:/, "SETENV: NOPASSWD:", right)
-                    print "    " right
+                    for (i = 1; i <= n; i++) {
+                        if (users[i] == u || users[i] == "ALL") hit = 1
+                        if (substr(users[i], 1, 1) == "%" && index(groups, " " substr(users[i], 2) " ") > 0) hit = 1
+                    }
+                    if (!hit) next
+                    ru = "root"; rg = ""
+                    if (substr(right, 1, 1) == "(") {
+                        rp = index(right, ")")
+                        runas = substr(right, 2, rp - 2)
+                        right = trim(substr(right, rp + 1))
+                        if (index(runas, ":")) { rg = trim(substr(runas, index(runas, ":") + 1)); runas = substr(runas, 1, index(runas, ":") - 1) }
+                        ru = trim(runas)
+                        if (ru == "") ru = u
+                    }
+                    opts = ""
+                    if (right ~ /SETENV:/) opts = "setenv"
+                    if (right ~ /NOPASSWD:/) opts = opts (opts == "" ? "" : ", ") "!authenticate"
+                    gsub(/(NOPASSWD|SETENV):[ \t]*/, "", right)
+                    printf "\nSudoers entry: %s\n    RunAsUsers: %s\n", FILENAME, ru
+                    if (rg != "") printf "    RunAsGroups: %s\n", rg
+                    if (opts != "") printf "    Options: %s\n", opts
+                    printf "    Commands:\n"
+                    n = split(right, c, ",")
+                    for (i = 1; i <= n; i++) printf "\t%s\n", trim(c[i])
                 }' "$f")"$'\n'
         done
-        [ "${MOCK_SUDO_ROOT_OK:-0}" != 1 ] || rules="${rules}    (ALL) NOPASSWD: ALL"
+        [ "${MOCK_SUDO_ROOT_OK:-0}" != 1 ] || rules="${rules}"$'\n''Sudoers entry: another source'$'\n''    RunAsUsers: ALL'$'\n''    Options: !authenticate'$'\n''    Commands:'$'\n\t''ALL'
         if [ -z "$(printf '%s' "$rules" | tr -d '[:space:]')" ]; then
             echo "User ${user} is not allowed to run sudo on host."
-            exit 1
+            exit 0
         fi
         echo "Matching Defaults entries for ${user} on host:"
         echo "    !visiblepw, always_set_home"
         echo
         echo "User ${user} may run the following commands on host:"
-        printf '%s\n' "$rules" | grep -v '^$'
+        printf '%s\n' "$rules" | grep -v '^$' | awk '/^Sudoers entry:/ { print "" } { print }'
         ;;
     iptables | ip6tables) fw "$@" ;;
     systemctl)
