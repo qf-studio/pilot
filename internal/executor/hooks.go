@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -174,9 +175,12 @@ func coAuthorSettings() map[string]interface{} {
 }
 
 // WriteClaudeSettings writes the .claude/settings.json file
+// TASK-651: inside the workspace root it writes as the agent user
+// (agent_files.go).
 func WriteClaudeSettings(settingsPath string, settings map[string]interface{}) error {
+	ctx := context.Background()
 	// Create directory if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+	if err := agentMkdirAll(ctx, filepath.Dir(settingsPath), 0755); err != nil {
 		return fmt.Errorf("failed to create .claude directory: %w", err)
 	}
 
@@ -186,7 +190,7 @@ func WriteClaudeSettings(settingsPath string, settings map[string]interface{}) e
 		return fmt.Errorf("failed to marshal settings: %w", err)
 	}
 
-	if err := os.WriteFile(settingsPath, data, 0644); err != nil {
+	if err := agentWriteFile(ctx, settingsPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write settings file: %w", err)
 	}
 
@@ -198,13 +202,16 @@ func WriteClaudeSettings(settingsPath string, settings map[string]interface{}) e
 // before this call (GH-5460 — callers use this to decide whether they're
 // allowed to delete the file entirely once Pilot's own entries are gone), and
 // any error. Handles both old format (map[string]HookDefinition) and new
-// format (map[string][]HookMatcherEntry).
+// format (map[string][]HookMatcherEntry). TASK-651: inside the workspace
+// root the read, the write and the restore run as the agent user
+// (agent_files.go).
 func MergeWithExisting(settingsPath string, pilotSettings map[string]interface{}) (restoreFunc func() error, preExisted bool, err error) {
 	var originalData []byte
 	var originalExists bool
+	ctx := context.Background()
 
 	// Read existing settings if they exist
-	if data, readErr := os.ReadFile(settingsPath); readErr == nil {
+	if data, readErr := agentReadFile(ctx, settingsPath); readErr == nil {
 		originalData = data
 		originalExists = true
 	} else if !os.IsNotExist(readErr) {
@@ -277,10 +284,10 @@ func MergeWithExisting(settingsPath string, pilotSettings map[string]interface{}
 			// WriteClaudeSettings already reformatted the file once during the
 			// merge above, so a JSON round-trip on the way back out would keep
 			// losing the caller's original formatting/key order.
-			return os.WriteFile(settingsPath, originalData, 0644)
+			return agentWriteFile(ctx, settingsPath, originalData, 0644)
 		} else {
 			// Remove file we created
-			if err := os.Remove(settingsPath); err != nil && !os.IsNotExist(err) {
+			if err := agentRemove(ctx, settingsPath); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("failed to remove settings file: %w", err)
 			}
 		}
@@ -297,21 +304,7 @@ func MergeWithExisting(settingsPath string, pilotSettings map[string]interface{}
 // (GH-5460). Not required for `git status --porcelain` cleanliness — git
 // doesn't track empty directories — but keeps the filesystem tidy.
 func removeClaudeDirIfEmpty(settingsPath string) error {
-	dir := filepath.Dir(settingsPath)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("failed to read %s: %w", dir, err)
-	}
-	if len(entries) != 0 {
-		return nil
-	}
-	if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove empty %s: %w", dir, err)
-	}
-	return nil
+	return agentRemoveDirIfEmpty(context.Background(), filepath.Dir(settingsPath))
 }
 
 // RestoreHookSettings reverts the effects of a MergeWithExisting call and
@@ -512,9 +505,10 @@ func isPilotManagedHook(cmd string) bool {
 //   - isPilotManagedHook(cmd) is true AND hookFileExists(cmd) is false (dead script paths)
 //   - OR the entry has an old object-format matcher ({"tools": [...]}) instead of a string
 //
-// Non-pilot user hooks are always preserved.
+// Non-pilot user hooks are always preserved. TASK-651: inside the workspace
+// root the read and the write run as the agent user (agent_files.go).
 func CleanStalePilotHooks(settingsPath string) error {
-	data, err := os.ReadFile(settingsPath)
+	data, err := agentReadFile(context.Background(), settingsPath)
 	if os.IsNotExist(err) {
 		return nil
 	}

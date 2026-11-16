@@ -172,8 +172,9 @@ func SimplifyFile(path string, rules []SimplificationRule, config *SimplifyConfi
 		}
 	}
 
-	// Read file
-	content, err := os.ReadFile(path)
+	// Read file. TASK-651: inside the workspace root the read and the write
+	// run as the agent user (agent_files.go).
+	content, err := agentReadFile(context.Background(), path)
 	if err != nil {
 		return false, err
 	}
@@ -199,7 +200,7 @@ func SimplifyFile(path string, rules []SimplificationRule, config *SimplifyConfi
 
 	// Write if changed
 	if modified {
-		if err := os.WriteFile(path, []byte(code), 0644); err != nil {
+		if err := agentWriteFile(context.Background(), path, []byte(code), 0644); err != nil {
 			return false, err
 		}
 	}

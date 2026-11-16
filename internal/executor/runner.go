@@ -5145,6 +5145,24 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		}
 	}
 
+	// TASK-651: with run_as_user set the settings file is written as the
+	// agent user (agent_files.go) and a failed write stops the run with one
+	// Error line: the session would run without the hooks and with the
+	// co-author trailer on.
+	runAsSet := runAsSettingsNow() != nil
+	stopOnSettingsWrite := func(path string, err error) (*ExecutionResult, error) {
+		log.Error("Claude settings write failed with run_as_user set: the run stops",
+			slog.String("task_id", task.ID),
+			slog.String("path", path),
+			slog.Any("error", err),
+		)
+		return &ExecutionResult{
+			TaskID:  task.ID,
+			Success: false,
+			Error:   fmt.Sprintf("claude settings write failed: %v", err),
+		}, fmt.Errorf("claude settings write failed: %w", err)
+	}
+
 	// Setup Claude Code hooks if enabled (GH-1266)
 	var hookRestoreFunc func() error
 	if r.config != nil && r.config.Hooks != nil && r.config.Hooks.Enabled {
@@ -5171,6 +5189,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				// Merge with existing settings.json (worktree-safe path)
 				settingsPath := filepath.Join(executionPath, ".claude", "settings.json")
 				restoreFunc, preExisted, mergeErr := MergeWithExisting(settingsPath, hookSettings)
+				if mergeErr != nil && runAsSet {
+					if rmErr := os.RemoveAll(scriptDir); rmErr != nil {
+						log.Warn("Failed to clean up hook scripts after merge error", slog.Any("error", rmErr))
+					}
+					return stopOnSettingsWrite(settingsPath, mergeErr)
+				}
 				if mergeErr != nil {
 					log.Error("Failed to setup Claude hooks", slog.Any("error", mergeErr))
 					// Clean up script directory
@@ -5205,6 +5229,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	if hookRestoreFunc == nil {
 		coAuthorSettingsPath := filepath.Join(executionPath, ".claude", "settings.json")
 		coRestore, coPreExisted, coErr := MergeWithExisting(coAuthorSettingsPath, coAuthorSettings())
+		if coErr != nil && runAsSet {
+			return stopOnSettingsWrite(coAuthorSettingsPath, coErr)
+		}
 		if coErr != nil {
 			log.Warn("Failed to disable co-author trailer in Claude settings", slog.Any("error", coErr))
 		} else {
@@ -7541,55 +7568,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 		// Sync Navigator index (GH-57) - update DEVELOPMENT-README.md
 		if state.hasNavigator {
-			if syncErr := r.syncNavigatorIndex(task, "completed", executionPath); syncErr != nil {
-				log.Warn("Failed to sync Navigator index", slog.Any("error", syncErr))
-			}
-
-			// GH-1063: Archive completed task documentation
-			agentPath := filepath.Join(executionPath, ".agent")
-			if archiveErr := ArchiveTaskDoc(agentPath, task.ID); archiveErr != nil {
-				log.Warn("Failed to archive task documentation", slog.Any("error", archiveErr))
-			}
-
-			// GH-1388: Update feature matrix for feature tasks
-			if strings.HasPrefix(strings.ToLower(task.Title), "feat(") {
-				ver := "unknown"
-				if r.config != nil && r.config.Version != "" {
-					ver = r.config.Version
-				}
-				if fmErr := UpdateFeatureMatrix(agentPath, task, ver); fmErr != nil {
-					log.Warn("Failed to update feature matrix", slog.Any("error", fmErr))
-				}
-			}
-
-			// GH-1064: Create context marker for completed task
-			marker := &ContextMarker{
-				Name:        fmt.Sprintf("task-completed-%s", task.ID),
-				Description: fmt.Sprintf("Task completed: %s", task.Title),
-				TaskID:      task.ID,
-				CurrentFocus: fmt.Sprintf("Completed %s. %d files changed, %d lines added, %d removed. Cost: $%.2f.",
-					task.Title, result.FilesChanged, result.LinesAdded, result.LinesRemoved,
-					result.EstimatedCostUSD),
-			}
-
-			// Add modified files list (GH-1388)
-			if len(state.modifiedFiles) > 0 {
-				marker.CurrentFocus += fmt.Sprintf(" Modified: %s.", strings.Join(state.modifiedFiles, ", "))
-			}
-
-			// Add commit SHA and PR info if available
-			if result.CommitSHA != "" {
-				marker.Commits = append(marker.Commits, result.CommitSHA)
-			}
-			if result.PRUrl != "" {
-				marker.CurrentFocus += fmt.Sprintf(" PR: %s", result.PRUrl)
-			}
-
-			if createMarkerErr := CreateMarker(agentPath, marker); createMarkerErr != nil {
-				log.Warn("Failed to create completion marker", slog.Any("error", createMarkerErr))
-			} else {
-				log.Debug("Created completion context marker", slog.String("marker_path", marker.FilePath))
-			}
+			r.updateNavigatorDocsAfterTask(log, task, result, state.modifiedFiles, executionPath)
 		}
 
 		// GH-1018: Sync main branch with origin after task completion

@@ -2,6 +2,7 @@
 package executor
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -165,7 +166,9 @@ func (n *NavigatorInitializer) IsInitialized(projectPath string) bool {
 	return true
 }
 
-// Initialize creates .agent/ structure from templates.
+// Initialize creates .agent/ structure from templates. TASK-651: inside the
+// workspace root every file of the scaffold is written as the agent user
+// (agent_files.go).
 func (n *NavigatorInitializer) Initialize(projectPath string) error {
 	if n.IsInitialized(projectPath) {
 		n.log.Debug("Navigator already initialized", slog.String("path", projectPath))
@@ -209,8 +212,9 @@ func (n *NavigatorInitializer) Initialize(projectPath string) error {
 		filepath.Join(memoriesDir, "learnings"),
 	}
 
+	ctx := context.Background()
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := agentMkdirAll(ctx, dir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 	}
@@ -231,7 +235,7 @@ func (n *NavigatorInitializer) Initialize(projectPath string) error {
 
 	for _, dir := range gitkeepDirs {
 		gitkeep := filepath.Join(dir, ".gitkeep")
-		if err := os.WriteFile(gitkeep, []byte{}, 0644); err != nil {
+		if err := agentWriteFile(ctx, gitkeep, []byte{}, 0644); err != nil {
 			n.log.Warn("Failed to create .gitkeep", slog.String("path", gitkeep))
 		}
 	}
@@ -275,7 +279,7 @@ func (n *NavigatorInitializer) Initialize(projectPath string) error {
 .context-markers/
 *.log
 `
-	if err := os.WriteFile(filepath.Join(agentDir, ".gitignore"), []byte(gitignoreContent), 0644); err != nil {
+	if err := agentWriteFile(ctx, filepath.Join(agentDir, ".gitignore"), []byte(gitignoreContent), 0644); err != nil {
 		n.log.Warn("Failed to create .gitignore", slog.Any("error", err))
 	}
 
@@ -310,7 +314,7 @@ func (n *NavigatorInitializer) copyTemplate(templateName, destPath string, info 
 	// Customize template
 	customized := n.customizeTemplate(string(content), info)
 
-	return os.WriteFile(destPath, []byte(customized), 0644)
+	return agentWriteFile(context.Background(), destPath, []byte(customized), 0644)
 }
 
 // customizeTemplate replaces placeholders with project info.
@@ -388,7 +392,8 @@ func hasContextSectionHeader(text, header string) bool {
 // running it again on a README that already has all three headers is a
 // no-op (exact-header check, append-only, never reorders existing content).
 func ensureContextSections(readmePath string) error {
-	content, err := os.ReadFile(readmePath)
+	ctx := context.Background()
+	content, err := agentReadFile(ctx, readmePath)
 	if err != nil {
 		return fmt.Errorf("failed to read %s: %w", readmePath, err)
 	}
@@ -407,6 +412,19 @@ func ensureContextSections(readmePath string) error {
 	}
 
 	if toAppend.Len() == 0 {
+		return nil
+	}
+
+	// TASK-651: inside the workspace root the agent user writes the whole
+	// file: the read content plus the sections.
+	agent, err := agentFileRoute(readmePath)
+	if err != nil {
+		return fmt.Errorf("failed to open %s for append: %w", readmePath, err)
+	}
+	if agent {
+		if err := agentWriteFile(ctx, readmePath, append(content, toAppend.String()...), 0644); err != nil {
+			return fmt.Errorf("failed to append context sections to %s: %w", readmePath, err)
+		}
 		return nil
 	}
 
@@ -442,7 +460,7 @@ func (n *NavigatorInitializer) createNavConfig(agentDir string, info *ProjectInf
 		return err
 	}
 
-	return os.WriteFile(filepath.Join(agentDir, ".nav-config.json"), data, 0644)
+	return agentWriteFile(context.Background(), filepath.Join(agentDir, ".nav-config.json"), data, 0644)
 }
 
 // createFeatureMatrix seeds system/FEATURE-MATRIX.md with a "## Core
@@ -459,7 +477,7 @@ func (n *NavigatorInitializer) createFeatureMatrix(systemDir string, info *Proje
 |---------|--------|---------|-------|------|------|
 `, info.Name, time.Now().Format("2006-01-02"))
 
-	return os.WriteFile(filepath.Join(systemDir, "FEATURE-MATRIX.md"), []byte(content), 0644)
+	return agentWriteFile(context.Background(), filepath.Join(systemDir, "FEATURE-MATRIX.md"), []byte(content), 0644)
 }
 
 // createKnowledgeGraph seeds knowledge/graph.json with the minimal valid
@@ -480,7 +498,7 @@ func (n *NavigatorInitializer) createKnowledgeGraph(knowledgeDir string) error {
 		return err
 	}
 
-	return os.WriteFile(filepath.Join(knowledgeDir, "graph.json"), data, 0644)
+	return agentWriteFile(context.Background(), filepath.Join(knowledgeDir, "graph.json"), data, 0644)
 }
 
 // DetectProjectInfo extracts project name and tech stack from config files.
@@ -510,7 +528,7 @@ func (n *NavigatorInitializer) DetectProjectInfo(projectPath string) (*ProjectIn
 // detectFromGoMod detects Go projects.
 func (n *NavigatorInitializer) detectFromGoMod(projectPath string) *ProjectInfo {
 	goModPath := filepath.Join(projectPath, "go.mod")
-	content, err := os.ReadFile(goModPath)
+	content, err := agentReadFile(context.Background(), goModPath)
 	if err != nil {
 		return nil
 	}
@@ -554,7 +572,7 @@ func (n *NavigatorInitializer) detectFromGoMod(projectPath string) *ProjectInfo 
 // detectFromPackageJSON detects Node.js projects.
 func (n *NavigatorInitializer) detectFromPackageJSON(projectPath string) *ProjectInfo {
 	pkgPath := filepath.Join(projectPath, "package.json")
-	content, err := os.ReadFile(pkgPath)
+	content, err := agentReadFile(context.Background(), pkgPath)
 	if err != nil {
 		return nil
 	}
@@ -616,7 +634,7 @@ func (n *NavigatorInitializer) detectFromPackageJSON(projectPath string) *Projec
 // detectFromPyprojectToml detects Python projects.
 func (n *NavigatorInitializer) detectFromPyprojectToml(projectPath string) *ProjectInfo {
 	pyprojectPath := filepath.Join(projectPath, "pyproject.toml")
-	content, err := os.ReadFile(pyprojectPath)
+	content, err := agentReadFile(context.Background(), pyprojectPath)
 	if err != nil {
 		return nil
 	}
@@ -653,7 +671,7 @@ func (n *NavigatorInitializer) detectFromPyprojectToml(projectPath string) *Proj
 // detectFromCargoToml detects Rust projects.
 func (n *NavigatorInitializer) detectFromCargoToml(projectPath string) *ProjectInfo {
 	cargoPath := filepath.Join(projectPath, "Cargo.toml")
-	content, err := os.ReadFile(cargoPath)
+	content, err := agentReadFile(context.Background(), cargoPath)
 	if err != nil {
 		return nil
 	}
