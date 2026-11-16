@@ -18,8 +18,10 @@
 # the daemon user makes with umask 022 after the apply; 20 applies while the
 # agent user swaps a directory of its home for a link to a directory of root;
 # a data dir below a 0700 directory fails at the proof of the agent user; the
-# sudo proof fails on a Defaults !authenticate line in a second file; a second
-# apply skips every step; undo with go/cache a link outside the data dir (it
+# sudo proof fails on a Defaults !authenticate line in a second file; the rule
+# list of the sudo proof, in a second sudoers file: a NOPASSWD rule for one
+# command as root fails, a rule through a group of the daemon user fails, only
+# the agent user passes; a second apply skips every step; undo with go/cache a link outside the data dir (it
 # prints the recorded modes; an entry of the daemon user at 0777 before the
 # apply, replaced by a link to a file of root before the undo: the printed undo
 # line, run as root, leaves the file of root as it is), a second undo, then the
@@ -64,6 +66,8 @@ UNIT_FILE="/etc/systemd/system/${UNIT}"
 RUNAS_FILE="/etc/sudoers.d/90-pilot-agent-runas"
 CLOUD_INIT="/etc/sudoers.d/91-pilotrt-cloud-init"
 DEFAULTS_FILE="/etc/sudoers.d/92-pilotrt-defaults"
+RULES_FILE="/etc/sudoers.d/93-pilotrt-rules"
+OPS_GROUP="pilotrt-ops"
 METADATA="169.254.169.254"
 OTHER_PORT="18080"
 
@@ -73,7 +77,7 @@ for name in "$DAEMON" "$AGENT"; do
         exit 2
     fi
 done
-if getent group "$GROUP" >/dev/null 2>&1 || [ -e "$RUNAS_FILE" ] || [ -e "$UNIT_FILE" ] || iptables -w -S "$CHAIN" >/dev/null 2>&1; then
+if getent group "$GROUP" >/dev/null 2>&1 || getent group "$OPS_GROUP" >/dev/null 2>&1 || [ -e "$RUNAS_FILE" ] || [ -e "$UNIT_FILE" ] || iptables -w -S "$CHAIN" >/dev/null 2>&1; then
     echo "setup-agent-user_real_test: the group, the sudoers file, the unit or the chain exists already; refusing to start" >&2
     exit 2
 fi
@@ -163,11 +167,12 @@ cleanup() {
     local pid
     for pid in ${LISTENERS[@]+"${LISTENERS[@]}"}; do kill "$pid" 2>/dev/null || true; done
     [ "$METADATA_ADDED" = 0 ] || ip addr del "${METADATA}/32" dev lo 2>/dev/null || true
-    rm -f "$DEFAULTS_FILE"
+    rm -f "$DEFAULTS_FILE" "$RULES_FILE"
     run_setup --undo || true
     userdel "$AGENT" 2>/dev/null || true
     userdel -r "$DAEMON" 2>/dev/null || true
     groupdel "$GROUP" 2>/dev/null || true
+    groupdel "$OPS_GROUP" 2>/dev/null || true
     rm -f "$CLOUD_INIT" "${CLOUD_INIT}".pilot-agent.bak* "$RECORD" "$STOP" "$PIDFILE"
     rm -rf "$DATA_DIR" "$OUTSIDE" "$ROOTDIR" "$CLOSED" "$WEB" "$LOG"
 }
@@ -501,6 +506,47 @@ expect_step cloud-init-sudoers failed
 check "the proof says sudo -n true succeeded" grep -qF "${DAEMON} still runs a command as root without a password: sudo -n true succeeded" "$LOG"
 check "the second file is named" grep -qF "  ${DEFAULTS_FILE}:1: Defaults:${DAEMON} !authenticate" "$LOG"
 rm -f "$DEFAULTS_FILE"
+
+echo "=== real test: the sudo proof by the rules — a NOPASSWD rule for one command as root in a second file ==="
+printf '%s ALL=(root) NOPASSWD: /usr/bin/id\n' "$DAEMON" >"$RULES_FILE"
+chmod 0440 "$RULES_FILE"
+check "visudo accepts the second file" visudo -c
+check_not "sudo -n true still fails for the daemon user" as "$DAEMON" sudo -n true
+check "the daemon user runs /usr/bin/id as root" as "$DAEMON" sudo -n /usr/bin/id -u
+rc=0
+run_setup || rc=$?
+if [ "$rc" = 1 ]; then pass "apply exits 1"; else show_log; fail_test "apply: exit ${rc}, want 1"; fi
+expect_step cloud-init-sudoers failed
+check "the rule list is named" grep -qF "the sudo rules of ${DAEMON} (sudo -ll -U ${DAEMON}) hold more than the agent rule" "$LOG"
+check "the entry and its reason are printed" grep -qE "^  entry [0-9]+ \(run-as user root, not ${AGENT} alone\):\$" "$LOG"
+check "the file of the entry is printed" grep -qxF "      | Sudoers entry: ${RULES_FILE}" "$LOG"
+check "the command of the entry is printed" grep -qxF "      | "$'\t'"/usr/bin/id" "$LOG"
+
+echo "=== real test: the sudo proof by the rules — a rule through a group of the daemon user ==="
+groupadd "$OPS_GROUP"
+usermod -aG "$OPS_GROUP" "$DAEMON"
+# Run-as root, not ALL: sudo takes the last rule that matches, and a later
+# (ALL) rule that needs a password would cover the agent user too.
+printf '%%%s ALL=(root) ALL\n' "$OPS_GROUP" >"$RULES_FILE"
+check "visudo accepts the group rule" visudo -c
+check_not "sudo -n true fails (the rule needs a password)" as "$DAEMON" sudo -n true
+check "sudo -n -u the agent user still works" as "$DAEMON" sudo -n -u "$AGENT" true
+rc=0
+run_setup || rc=$?
+if [ "$rc" = 1 ]; then pass "apply exits 1"; else show_log; fail_test "apply: exit ${rc}, want 1"; fi
+expect_step cloud-init-sudoers failed
+check "the entry and its reason are printed" grep -qE "^  entry [0-9]+ \(run-as user root, not ${AGENT} alone\):\$" "$LOG"
+check "the file of the entry is printed" grep -qxF "      | Sudoers entry: ${RULES_FILE}" "$LOG"
+
+echo "=== real test: the sudo proof by the rules — a second rule to the agent user alone passes ==="
+printf '%s ALL=(%s) NOPASSWD: /usr/bin/true\n' "$DAEMON" "$AGENT" >"$RULES_FILE"
+check "visudo accepts the agent rule" visudo -c
+if run_setup; then pass "apply exits 0"; else show_log; fail_test "apply failed with only rules to the agent user"; fi
+expect_step cloud-init-sudoers skipped
+check_not "no entry is named" grep -qE '^  entry [0-9]+ ' "$LOG"
+rm -f "$RULES_FILE"
+gpasswd -d "$DAEMON" "$OPS_GROUP" >/dev/null
+groupdel "$OPS_GROUP"
 
 echo "=== real test: second apply (no --confirm-root-path: nothing is left to remove) ==="
 if run_setup; then
