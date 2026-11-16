@@ -8,13 +8,19 @@
 # sudoers files and the firewall of the host it runs on: it refuses to start
 # unless CI=true.
 #
-# Cases: the data dir check; apply (chains, jumps, unit, systemd-analyze verify);
+# Cases: the data dir check (the data dir itself and its entries, a process of
+# another user with a file open below it, the record of the modes); apply
+# (agent root, chains, jumps, unit, systemd-analyze verify, the config lines);
 # connections as the agent user and as the daemon user (metadata address, port
 # 9091, another local port); the boot unit rebuilds a deleted chain; the agent
-# user has no sudo and no access to a repository of the daemon; the sudo proof
-# fails on a Defaults !authenticate line in a second file; a second apply skips
-# every step; undo with go/cache a link outside the data dir, a second undo,
-# then the printed cleanup; invalid arguments.
+# user has no sudo and no access to a repository of the daemon, also to a file
+# the daemon user makes with umask 022 after the apply; 20 applies while the
+# agent user swaps a directory of its home for a link to a directory of root;
+# a data dir below a 0700 directory fails at the proof of the agent user; the
+# sudo proof fails on a Defaults !authenticate line in a second file; a second
+# apply skips every step; undo with go/cache a link outside the data dir (it
+# prints the recorded modes), a second undo, then the printed cleanup; invalid
+# arguments.
 #
 # Usage (CI): sudo --preserve-env=CI ./scripts/box/setup-agent-user_real_test.sh
 
@@ -71,8 +77,16 @@ fi
 
 DATA_DIR="$(mktemp -d /var/lib/pilotrt-data.XXXXXX)"
 OUTSIDE="$(mktemp -d /var/lib/pilotrt-outside.XXXXXX)"
+ROOTDIR="$(mktemp -d /var/lib/pilotrt-rootdir.XXXXXX)"
+CLOSED="$(mktemp -d /var/lib/pilotrt-closed.XXXXXX)"
 WEB="$(mktemp -d)"
 LOG="$(mktemp)"
+STOP="$(mktemp)"
+PIDFILE="$(mktemp)"
+RECORD="$(mktemp -u /root/.pilotrt-modes.XXXXXX)"
+AROOT="${DATA_DIR}/agent"
+AHOME="${AROOT}/home"
+AWS="${AROOT}/workspaces"
 LISTENERS=()
 METADATA_ADDED=0
 
@@ -119,7 +133,7 @@ as() {
 
 # run_setup ARGS... — the script with the test names; output in $LOG.
 run_setup() {
-    CLOUD_INIT_SUDOERS="$CLOUD_INIT" "$SETUP" --daemon-user "$DAEMON" --agent-user "$AGENT" \
+    CLOUD_INIT_SUDOERS="$CLOUD_INIT" DAEMON_MODES_RECORD="$RECORD" "$SETUP" --daemon-user "$DAEMON" --agent-user "$AGENT" \
         --group "$GROUP" --data-dir "$DATA_DIR" "$@" >"$LOG" 2>&1
 }
 
@@ -151,8 +165,8 @@ cleanup() {
     userdel "$AGENT" 2>/dev/null || true
     userdel -r "$DAEMON" 2>/dev/null || true
     groupdel "$GROUP" 2>/dev/null || true
-    rm -f "$CLOUD_INIT" "${CLOUD_INIT}".pilot-agent.bak*
-    rm -rf "$DATA_DIR" "$OUTSIDE" "$WEB" "$LOG"
+    rm -f "$CLOUD_INIT" "${CLOUD_INIT}".pilot-agent.bak* "$RECORD" "$STOP" "$PIDFILE"
+    rm -rf "$DATA_DIR" "$OUTSIDE" "$ROOTDIR" "$CLOSED" "$WEB" "$LOG"
 }
 trap cleanup EXIT
 
@@ -262,21 +276,47 @@ check "the untracked file has mode 0644 and the daemon user reads it" test "$(st
 USR_BIN_GROUP="$(stat -c %G /usr/bin)"
 SUDO_MODE="$(stat -c %a "$(command -v sudo)")"
 
-echo "=== real test: the data dir check — open entries fail the apply, nothing changed ==="
+echo "=== real test: the data dir check — an open data dir and open entries fail the apply, no mode changed ==="
+# A process of another user that reads a file below the data dir: the chmods
+# take its access away, so the check names it before the chmods.
+chmod 0666 "$PIDFILE"
+runuser -u nobody -- bash -c 'exec 3<"$1"; echo "$$" >"$2"; exec sleep 300' _ "${DATA_DIR}/repos/alpha/.env" "$PIDFILE" &
+LISTENERS+=("$!")
+for try in $(seq 1 50); do
+    if [ -s "$PIDFILE" ] && [ -e "/proc/$(cat "$PIDFILE")/fd/3" ]; then break; fi
+    sleep 0.2
+done
+NOBODY_PID="$(cat "$PIDFILE")"
+LISTENERS+=("$NOBODY_PID")
 rc=0
 run_setup --confirm-root-path || rc=$?
 if [ "$rc" = 1 ]; then pass "apply exits 1"; else show_log; fail_test "apply: exit ${rc}, want 1"; fi
 expect_step daemon-private failed
 check_not "no group was created" getent group "$GROUP"
 check_not "no agent user was created" id -u "$AGENT"
+check "the line for the data dir with its chmod" grep -qxF "the data dir ${DATA_DIR} gives more than traverse (group ${DAEMON}, mode 755): chmod go-rw ${DATA_DIR}" "$LOG"
 for entry in repos bin; do
     check "the line for ${entry} with its chmod" grep -qxF "the agent user can reach ${DATA_DIR}/${entry} (group ${DAEMON}, mode 755): chmod o-rwx ${DATA_DIR}/${entry}" "$LOG"
 done
+proc_n="$(grep -n -m1 -F "a process of nobody (pid ${NOBODY_PID}, sleep) has ${DATA_DIR}/repos/alpha/.env open" "$LOG" | cut -d: -f1 || true)"
+chmod_n="$(grep -n -m1 ': chmod ' "$LOG" | cut -d: -f1 || true)"
+if [ -n "$proc_n" ] && [ -n "$chmod_n" ] && [ "$proc_n" -lt "$chmod_n" ]; then
+    pass "the process of nobody with a file open below the data dir is named before the chmods"
+else
+    show_log
+    fail_test "no line for the process of nobody before the chmods (process line '${proc_n}', chmod line '${chmod_n}')"
+fi
+kill "$NOBODY_PID" 2>/dev/null || true
+check "the data dir keeps its mode (the check changes no mode)" test "$(stat -c %a "$DATA_DIR")" = 755
+check "the record of root holds the mode of the data dir" grep -qxF "755	${DATA_DIR}" "$RECORD"
+check "the record of root holds the mode of the repos directory" grep -qxF "755	${DATA_DIR}/repos" "$RECORD"
+check "the record is root's, mode 0600" test "$(stat -c %U:%a "$RECORD")" = root:600
 # The operator's fix, as printed.
 while IFS= read -r fix; do
     # shellcheck disable=SC2086 # "chmod o-rwx PATH" as printed, a list of words
     $fix
-done < <(sed -nE 's/^the agent user can reach .*: (chmod [go]+-rwx .*)$/\1/p' "$LOG")
+done < <(sed -nE 's/^(the agent user can reach|the data dir) .*: (chmod [go]+-rwx? \/.*)$/\2/p' "$LOG")
+check "the data dir is 0711 after the printed chmod" test "$(stat -c %a "$DATA_DIR")" = 711
 
 echo "=== real test: apply ==="
 if run_setup --confirm-root-path; then
@@ -288,9 +328,17 @@ fi
 for s in group agent-user daemon-membership directories sudoers-rule firewall-ipv4 firewall-ipv6 firewall-unit cloud-init-sudoers; do
     expect_step "$s" "done"
 done
+expect_step agent-proof skipped
+for want in "  run_as_user: ${AGENT}" "  run_as_group: ${GROUP}" "  run_as_workspace_dir: ${AWS}"; do
+    check "the summary prints the config line:${want#' '}" grep -qxF "$want" "$LOG"
+done
 check "the agent user exists with a no-login shell" bash -c "getent passwd ${AGENT} | grep -q 'nologin\$'"
+check "the home of the agent user is ${AHOME}" test "$(getent passwd "$AGENT" | cut -d: -f6)" = "$AHOME"
+check "the agent root is root:root 755" test "$(stat -c %U:%G:%a "$AROOT")" = "root:root:755"
+check "the agent home is ${AGENT}:${GROUP} 750" test "$(stat -c %U:%G:%a "$AHOME")" = "${AGENT}:${GROUP}:750"
+check "go/cache belongs to the agent user (it made it)" test "$(stat -c %U:%G "${AHOME}/go/cache")" = "${AGENT}:${GROUP}"
 check "the daemon user is in the group" bash -c "id -nG ${DAEMON} | tr ' ' '\n' | grep -qx ${GROUP}"
-check "the workspace root is ${AGENT}:${GROUP} 2770" test "$(stat -c %U:%G:%a "${DATA_DIR}/agent-workspaces")" = "${AGENT}:${GROUP}:2770"
+check "the workspace root is ${AGENT}:${GROUP} 2770" test "$(stat -c %U:%G:%a "$AWS")" = "${AGENT}:${GROUP}:2770"
 check "the cloud-init line is commented out" grep -qxF "# disabled by setup-agent-user: ${DAEMON} ALL=(ALL) NOPASSWD:ALL" "$CLOUD_INIT"
 check "visudo accepts the sudoers files" visudo -c
 for bin in iptables ip6tables; do
@@ -357,7 +405,11 @@ check_not "the agent user cannot read a 0644 file in the working tree of the dae
 check_not "the agent user cannot read .git/config of that repository" as "$AGENT" cat "${DATA_DIR}/repos/alpha/.git/config"
 check_not "the agent user cannot list the repository directory" as "$AGENT" ls "${DATA_DIR}/repos/alpha"
 check_not "the agent user cannot run the binary of the daemon" as "$AGENT" "${DATA_DIR}/bin/pilot"
-check "the agent user writes in its workspace root" as "$AGENT" touch "${DATA_DIR}/agent-workspaces/probe"
+check "the agent user writes in its workspace root" as "$AGENT" touch "${AWS}/probe"
+check_not "the agent user cannot list the data dir" as "$AGENT" ls "$DATA_DIR"
+as "$DAEMON" bash -c 'umask 022 && echo "secret" >"$1/repos/alpha/after-apply.txt"' _ "$DATA_DIR"
+check "the daemon user made a file with mode 0644 after the apply" test "$(stat -c %a "${DATA_DIR}/repos/alpha/after-apply.txt")" = 644
+check_not "the agent user cannot read that file" as "$AGENT" cat "${DATA_DIR}/repos/alpha/after-apply.txt"
 check "the daemon user still reads its own file" as "$DAEMON" cat "${DATA_DIR}/repos/alpha/.env"
 if [ "$(as "$DAEMON" sudo -n -u "$AGENT" id -un 2>/dev/null)" = "$AGENT" ]; then
     pass "the daemon user runs a command as the agent user through the installed rule"
@@ -365,6 +417,56 @@ else
     fail_test "the daemon user cannot run a command as the agent user"
 fi
 check_not "the daemon user: sudo -n true fails (no root left)" as "$DAEMON" sudo -n true
+
+echo "=== real test: no root step in a directory of the agent user — 20 applies while it swaps go/cache for a link ==="
+chmod 0755 "$ROOTDIR"
+printf 'root file\n' >"${ROOTDIR}/file"
+# every file outside the agent root that an apply could reach through the link
+owners() {
+    find "$ROOTDIR" "$OUTSIDE" "$DATA_DIR" -path "$AROOT" -prune -o -printf '%p %U:%G %m\n' | sort
+}
+OWNERS_BEFORE="$(owners)"
+chmod 0644 "$STOP"
+as "$AGENT" bash -c '
+    while [ -e "$3" ]; do
+        rm -rf "$1/go/cache"
+        ln -s "$2" "$1/go/cache"
+        rm -f "$1/go/cache"
+        mkdir "$1/go/cache"
+    done' _ "$AHOME" "$ROOTDIR" "$STOP" &
+SWAP_PID=$!
+LISTENERS+=("$SWAP_PID")
+outcomes=""
+for i in $(seq 1 20); do
+    rc=0
+    run_setup || rc=$?
+    outcomes="${outcomes} ${rc}"
+done
+rm -f "$STOP"
+wait "$SWAP_PID" 2>/dev/null || true
+echo "    exit codes of the 20 applies:${outcomes}"
+as "$AGENT" bash -c 'if [ -L "$1" ] || [ ! -d "$1" ]; then rm -rf "$1" && mkdir "$1"; fi' _ "${AHOME}/go/cache"
+check "no file outside the agent root has a new owner or mode" test "$OWNERS_BEFORE" = "$(owners)"
+check_not "no file of the agent user in the directory of root" bash -c "find '${ROOTDIR}' -user '${AGENT}' | grep -q ."
+if run_setup; then
+    pass "an apply passes after the loop"
+else
+    show_log
+    fail_test "an apply failed after the loop"
+fi
+
+echo "=== real test: a data dir below a 0700 directory fails the apply at the proof of the agent user ==="
+mkdir "${CLOSED}/data"
+chown "${DAEMON}:${DAEMON}" "$CLOSED" "${CLOSED}/data"
+chmod 0700 "$CLOSED"
+chmod 0711 "${CLOSED}/data"
+rc=0
+run_setup --data-dir "${CLOSED}/data" || rc=$?
+if [ "$rc" = 1 ]; then pass "apply exits 1"; else show_log; fail_test "apply: exit ${rc}, want 1"; fi
+expect_step directories "done"
+expect_step agent-proof failed
+check "the message names the agent home" grep -qF "the agent user cannot create a file in ${CLOSED}/data/agent/home;" "$LOG"
+check "the agent root was made, root:root 755" test "$(stat -c %U:%G:%a "${CLOSED}/data/agent")" = "root:root:755"
 
 echo "=== real test: the sudo proof — a Defaults line in a second file ==="
 printf 'Defaults:%s !authenticate\n%s ALL=(ALL) ALL\n' "$DAEMON" "$DAEMON" >"$DEFAULTS_FILE"
@@ -387,16 +489,16 @@ else
     fail_test "second apply exited non-zero"
 fi
 skipped="$(grep -c '^step .*: skipped' "$LOG" || true)"
-if [ "$skipped" = 10 ]; then
-    pass "second apply skips all 10 steps"
+if [ "$skipped" = 11 ]; then
+    pass "second apply skips all 11 steps"
 else
     show_log
-    fail_test "second apply: ${skipped} of 10 steps skipped"
+    fail_test "second apply: ${skipped} of 11 steps skipped"
 fi
 
 echo "=== real test: undo with go/cache a link to a directory outside the data dir ==="
-as "$AGENT" bash -c 'rmdir "$1/agent-home/go/cache" && ln -s "$2" "$1/agent-home/go/cache"' _ "$DATA_DIR" "$OUTSIDE"
-check "go/cache is a link outside the data dir" test -L "${DATA_DIR}/agent-home/go/cache"
+as "$AGENT" bash -c 'rmdir "$1/go/cache" && ln -s "$2" "$1/go/cache"' _ "$AHOME" "$OUTSIDE"
+check "go/cache is a link outside the data dir" test -L "${AHOME}/go/cache"
 OUTSIDE_BEFORE="$(find "$OUTSIDE" -printf '%p %m %U:%G %s\n' | sort)"
 if run_setup --undo; then
     pass "undo exits 0"
@@ -405,6 +507,9 @@ else
     fail_test "undo exited non-zero"
 fi
 check "the sudoers file of the daemon user is restored (active root line)" grep -qxF "${DAEMON} ALL=(ALL) NOPASSWD:ALL" "$CLOUD_INIT"
+check "undo prints the chmod that puts back the mode of the data dir" grep -qxF "  chmod 755 ${DATA_DIR}" "$LOG"
+check "undo prints the chmod that puts back the mode of the repos directory" grep -qxF "  chmod 755 ${DATA_DIR}/repos" "$LOG"
+check "the data dir keeps 0711 (undo prints the chmod, it does not run it)" test "$(stat -c %a "$DATA_DIR")" = 711
 check "the daemon user has root without a password again" as "$DAEMON" sudo -n true
 check "nothing outside the data dir changed" test "$OUTSIDE_BEFORE" = "$(find "$OUTSIDE" -printf '%p %m %U:%G %s\n' | sort)"
 check "visudo accepts the sudoers files" visudo -c
@@ -444,7 +549,7 @@ while IFS= read -r cmd; do
 done < <(sed -n '/^== left in place/,$ s/^  //p' "$LOG")
 check_not "after the printed cleanup: no agent user" id -u "$AGENT"
 check_not "after the printed cleanup: no group" getent group "$GROUP"
-check_not "after the printed cleanup: no agent home" test -e "${DATA_DIR}/agent-home"
+check_not "after the printed cleanup: no agent root" test -e "$AROOT"
 check "nothing outside the data dir changed by the cleanup" test "$OUTSIDE_BEFORE" = "$(find "$OUTSIDE" -printf '%p %m %U:%G %s\n' | sort)"
 
 echo "=== real test: invalid arguments change nothing ==="
