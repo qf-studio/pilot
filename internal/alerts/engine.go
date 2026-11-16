@@ -24,7 +24,7 @@ type Engine struct {
 
 	// State tracking
 	mu                  sync.RWMutex
-	lastAlertTimes      map[string]time.Time     // rule name -> last fired time
+	lastAlertTimes      map[string]time.Time     // cooldownKey(rule, project) -> last fired time
 	consecutiveFailures map[string]int           // project -> consecutive failure count
 	taskLastProgress    map[string]progressState // task ID -> last progress state
 	alertHistory        []AlertHistory
@@ -461,14 +461,15 @@ func (e *Engine) rehydrateActiveAlerts() {
 			// active.channels, bypassing resolveChannels).
 			channels: row.Channels,
 		}
-		// GH-5095: seed the cooldown clock (shouldFire, keyed by rule.Name
-		// alone) from the persisted fire time — without this, a restart
-		// while a rule is still actively firing resets its cooldown to
-		// "never fired", letting the same condition re-fire and re-notify
-		// immediately post-restart instead of respecting the rule's
-		// configured Cooldown.
-		if existing, ok := e.lastAlertTimes[row.RuleName]; !ok || row.CreatedAt.After(existing) {
-			e.lastAlertTimes[row.RuleName] = row.CreatedAt
+		// GH-5095: seed the cooldown clock (shouldFire) from the persisted
+		// fire time — without this, a restart while a rule is still actively
+		// firing resets its cooldown to "never fired", letting the same
+		// condition re-fire and re-notify immediately post-restart instead
+		// of respecting the rule's configured Cooldown. GH-6391: seeded
+		// under the same cooldownKey fireAlert writes.
+		key := cooldownKey(AlertRule{Name: row.RuleName, Type: AlertType(row.AlertType)}, row.ProjectPath)
+		if existing, ok := e.lastAlertTimes[key]; !ok || row.CreatedAt.After(existing) {
+			e.lastAlertTimes[key] = row.CreatedAt
 		}
 	}
 	e.mu.Unlock()
@@ -1244,6 +1245,7 @@ func (e *Engine) handleLaneStarvation(ctx context.Context, event Event) {
 		_, _ = fmt.Sscanf(v, "%d", &streak)
 	}
 	openIssues := event.Metadata["open_issue_count"]
+	issueNumbers := event.Metadata["open_issue_numbers"]
 	repo := event.Metadata["repo"]
 
 	for _, rule := range e.config.Rules {
@@ -1256,13 +1258,43 @@ func (e *Engine) handleLaneStarvation(ctx context.Context, event Event) {
 			threshold = 3
 		}
 
-		if streak >= threshold && e.shouldFire(rule) {
+		if streak >= threshold && e.shouldFireFor(rule, event.Project) {
 			alert := e.createAlert(rule, event,
-				fmt.Sprintf("Lane %s has %s open pilot-labeled issue(s) but nothing queued/running for %d consecutive poll cycles",
-					repo, openIssues, streak))
+				fmt.Sprintf("Lane %s has %s open pilot-labeled issue(s) (%s) but nothing queued/running for %d consecutive poll cycles",
+					repo, openIssues, issueNumbers, streak))
 			e.fireAlert(ctx, rule, alert)
 		}
 	}
+}
+
+// LaneStarvationAlertStatus reports, for the enabled lane_starvation rules,
+// whether streak equals a rule's threshold (reached) and whether an event
+// with this streak for project would fire now (due) — same threshold
+// default and cooldown key as handleLaneStarvation. The emitter calls it
+// before ProcessEvent to log the evidence of each alert (GH-6391).
+func (e *Engine) LaneStarvationAlertStatus(project string, streak int) (reached, due bool) {
+	// Called from the controller goroutine, not the event loop: read the
+	// rules under mu (UpdateConfig swaps e.config under it).
+	e.mu.RLock()
+	rules := e.config.Rules
+	e.mu.RUnlock()
+
+	for _, rule := range rules {
+		if !rule.Enabled || rule.Type != AlertTypeLaneStarvation {
+			continue
+		}
+		threshold := rule.Condition.LaneStarvationPollCycles
+		if threshold <= 0 {
+			threshold = 3
+		}
+		if streak == threshold {
+			reached = true
+		}
+		if streak >= threshold && e.shouldFireFor(rule, project) {
+			due = true
+		}
+	}
+	return reached, due
 }
 
 // handleDispatchLoopBreaker fires AlertTypeDispatchLoopBreaker rules when a
@@ -1818,14 +1850,21 @@ func (e *Engine) evictStaleRetryTrackers(now time.Time) {
 	}
 }
 
-// shouldFire checks if a rule should fire based on cooldown
+// shouldFire checks if a rule should fire based on cooldown. Rules whose
+// cooldown is per project (cooldownKey) must use shouldFireFor instead.
 func (e *Engine) shouldFire(rule AlertRule) bool {
+	return e.shouldFireFor(rule, "")
+}
+
+// shouldFireFor checks if a rule should fire for project based on the
+// cooldown kept under cooldownKey(rule, project).
+func (e *Engine) shouldFireFor(rule AlertRule, project string) bool {
 	if rule.Cooldown == 0 {
 		return true
 	}
 
 	e.mu.RLock()
-	lastFired, exists := e.lastAlertTimes[rule.Name]
+	lastFired, exists := e.lastAlertTimes[cooldownKey(rule, project)]
 	e.mu.RUnlock()
 
 	if !exists {
@@ -1833,6 +1872,17 @@ func (e *Engine) shouldFire(rule AlertRule) bool {
 	}
 
 	return time.Since(lastFired) >= rule.Cooldown
+}
+
+// cooldownKey returns the lastAlertTimes key for rule. lane_starvation keys
+// on the rule name and the project of the event (GH-6391), so one starved
+// lane inside its cooldown window does not hide another; every other rule
+// keys on the rule name alone.
+func cooldownKey(rule AlertRule, project string) string {
+	if rule.Type == AlertTypeLaneStarvation {
+		return rule.Name + "|" + project
+	}
+	return rule.Name
 }
 
 // eventSource returns the key used to scope per-source engine state (active
@@ -1912,7 +1962,7 @@ func (e *Engine) fireAlert(ctx context.Context, rule AlertRule, alert *Alert) {
 		e.recentAlerts[key] = now
 		e.pruneRecentAlertsLocked(now)
 	}
-	e.lastAlertTimes[rule.Name] = now
+	e.lastAlertTimes[cooldownKey(rule, alert.ProjectPath)] = now
 	e.mu.Unlock()
 
 	e.metrics.RecordFired(rule.Name, string(alert.Severity))

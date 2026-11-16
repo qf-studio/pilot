@@ -1401,11 +1401,10 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 }
 
 // labelPilotNeedsHumanSDK mirrors internal/executor's labelPilotNeedsHuman
-// and internal/autopilot's labelNeedsHuman, defined locally here for the
-// same import-cycle-avoidance reason both of those document — cmd/pilot is
-// the one place all three can't simply share one package-level constant
-// without introducing a dependency between the other two.
-const labelPilotNeedsHumanSDK = "pilot-needs-human"
+// and internal/autopilot's labelNeedsHuman. It aliases ghissue.LabelNeedsHuman
+// (GH-6391) so the admission gate below and the lane-starvation count
+// (ghissue.PollerAdmits) read one constant.
+const labelPilotNeedsHumanSDK = ghissue.LabelNeedsHuman
 
 // skipReasonNeedsHuman is the sdkcore.IssueResult.SkipReason value for the
 // needs-human admission park (GH-5056). sdkcore's registry.go documents
@@ -1437,20 +1436,34 @@ const (
 // (state + label names re-fetched after the slot wait) must not be admitted,
 // or "" when it is still eligible (GH-5849). liveLabels must come from the
 // fresh fetch, not the pre-wait ev.Labels snapshot.
+//
+// The refused labels come from ghissue.AdmissionGateLabels (GH-6391), the
+// list the lane-starvation count (ghissue.PollerAdmits) reads, so the two
+// cannot disagree on which labels park an issue.
 func githubLiveAdmissionSkipReason(state string, liveLabels []string, triggerLabel string) string {
 	switch {
 	case state == githubSDK.StateClosed:
 		return skipReasonIssueClosed
 	case !githubEventHasLabel(liveLabels, triggerLabel):
 		return skipReasonTriggerLabelRemoved
-	case githubEventHasNeedsHumanLabel(liveLabels):
-		return skipReasonNeedsHuman
-	case githubEventHasLabel(liveLabels, githubSDK.LabelBlocked):
-		return skipReasonPilotBlocked
-	case githubEventHasLabel(liveLabels, githubSDK.LabelNeedsClarification):
-		return skipReasonNeedsClarification
+	}
+	for _, l := range ghissue.AdmissionGateLabels {
+		if githubEventHasLabel(liveLabels, l) {
+			if reason, ok := admissionGateSkipReasons[l]; ok {
+				return reason
+			}
+			return l
+		}
 	}
 	return ""
+}
+
+// admissionGateSkipReasons maps each ghissue.AdmissionGateLabels entry to the
+// skip reason githubLiveAdmissionSkipReason reports for it.
+var admissionGateSkipReasons = map[string]string{
+	labelPilotNeedsHumanSDK:           skipReasonNeedsHuman,
+	githubSDK.LabelBlocked:            skipReasonPilotBlocked,
+	githubSDK.LabelNeedsClarification: skipReasonNeedsClarification,
 }
 
 // githubEventHasNeedsHumanLabel reports whether labels carries

@@ -1,10 +1,13 @@
 package autopilot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/alerts"
@@ -17,6 +20,7 @@ import (
 type laneStarvationFakeIssue struct {
 	number int
 	labels []string
+	pr     bool // served with a pull_request field, as the issues list API does for PRs
 }
 
 // laneStarvationServer serves GET /repos/owner/repo/issues (what ListIssues
@@ -37,7 +41,11 @@ func laneStarvationServer(t *testing.T, issues []laneStarvationFakeIssue) *httpt
 			for _, name := range iss.labels {
 				labels = append(labels, github.Label{Name: name})
 			}
-			out = append(out, github.Issue{Number: iss.number, State: github.StateOpen, Labels: labels})
+			item := github.Issue{Number: iss.number, State: github.StateOpen, Labels: labels}
+			if iss.pr {
+				item.PullRequest = &struct{}{}
+			}
+			out = append(out, item)
 		}
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(out)
@@ -217,5 +225,157 @@ func TestReconcileLaneStarvation_RecoveryResetsStreak(t *testing.T) {
 	}
 	if len(sink.events) != 1 {
 		t.Errorf("expected no additional event once recovered, got %d total", len(sink.events))
+	}
+}
+
+// TestReconcileLaneStarvation_CountRule pins GH-6391: only issues the GitHub
+// poller would admit (ghissue.PollerAdmits) are counted, and the event names
+// the counted numbers in ascending order, at most 10, then "+N more".
+func TestReconcileLaneStarvation_CountRule(t *testing.T) {
+	twelve := make([]laneStarvationFakeIssue, 0, 12)
+	for n := 12; n >= 1; n-- { // served out of order: the metadata must sort
+		twelve = append(twelve, laneStarvationFakeIssue{number: n, labels: []string{github.LabelPilot}})
+	}
+
+	tests := []struct {
+		name        string
+		issues      []laneStarvationFakeIssue
+		wantEvent   bool
+		wantCount   string
+		wantNumbers string
+	}{
+		{
+			name: "two open issues without the trigger label",
+			issues: []laneStarvationFakeIssue{
+				{number: 1, labels: []string{"bug"}},
+				{number: 2},
+			},
+		},
+		{
+			name:   "open pull request with the trigger label",
+			issues: []laneStarvationFakeIssue{{number: 3, labels: []string{github.LabelPilot}, pr: true}},
+		},
+		{
+			name:   "issue with the trigger label and pilot-needs-human",
+			issues: []laneStarvationFakeIssue{{number: 4, labels: []string{github.LabelPilot, "pilot-needs-human"}}},
+		},
+		{
+			name:   "issue with the trigger label and pilot-spec-incomplete",
+			issues: []laneStarvationFakeIssue{{number: 5, labels: []string{github.LabelPilot, github.LabelSpecIncomplete}}},
+		},
+		{
+			name:        "issue with only the trigger label",
+			issues:      []laneStarvationFakeIssue{{number: 6, labels: []string{github.LabelPilot}}},
+			wantEvent:   true,
+			wantCount:   "1",
+			wantNumbers: "#6",
+		},
+		{
+			name: "pull request and parked issues are not counted beside an admissible one",
+			issues: []laneStarvationFakeIssue{
+				{number: 9, labels: []string{github.LabelPilot}, pr: true},
+				{number: 8, labels: []string{github.LabelPilot}},
+				{number: 7, labels: []string{github.LabelPilot, github.LabelBlocked}},
+			},
+			wantEvent:   true,
+			wantCount:   "1",
+			wantNumbers: "#8",
+		},
+		{
+			name:        "twelve counted issues",
+			issues:      twelve,
+			wantEvent:   true,
+			wantCount:   "12",
+			wantNumbers: "#1, #2, #3, #4, #5, #6, #7, #8, #9, #10, +2 more",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, sink, _ := newLaneStarvationController(t, tt.issues)
+
+			c.reconcileLaneStarvation(context.Background())
+
+			if !tt.wantEvent {
+				if len(sink.events) != 0 {
+					t.Fatalf("expected no event, got %d (metadata %v)", len(sink.events), sink.events[0].Metadata)
+				}
+				if c.laneStarvationStreak != 0 {
+					t.Errorf("expected streak 0, got %d", c.laneStarvationStreak)
+				}
+				return
+			}
+			if len(sink.events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(sink.events))
+			}
+			md := sink.events[0].Metadata
+			if md["open_issue_count"] != tt.wantCount {
+				t.Errorf("open_issue_count = %q, want %q", md["open_issue_count"], tt.wantCount)
+			}
+			if md["open_issue_numbers"] != tt.wantNumbers {
+				t.Errorf("open_issue_numbers = %q, want %q", md["open_issue_numbers"], tt.wantNumbers)
+			}
+		})
+	}
+}
+
+// fakeLaneStarvationGateSink is an alert sink that also answers the
+// laneStarvationAlertGate query with fixed values.
+type fakeLaneStarvationGateSink struct {
+	fakeAlertSink
+	reached, due bool
+	asked        []string
+}
+
+func (f *fakeLaneStarvationGateSink) LaneStarvationAlertStatus(project string, streak int) (bool, bool) {
+	f.asked = append(f.asked, project)
+	return f.reached, f.due
+}
+
+// TestReconcileLaneStarvation_EvidenceLog pins GH-6391's Info line: written
+// when the streak reaches the threshold or an alert is due, naming the repo,
+// the streak, the counted numbers and each number's labels; absent otherwise.
+func TestReconcileLaneStarvation_EvidenceLog(t *testing.T) {
+	tests := []struct {
+		name         string
+		reached, due bool
+		wantLine     bool
+	}{
+		{name: "below threshold, not due", wantLine: false},
+		{name: "threshold reached", reached: true, wantLine: true},
+		{name: "alert due", due: true, wantLine: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := laneStarvationServer(t, []laneStarvationFakeIssue{
+				{number: 42, labels: []string{github.LabelPilot, "bug"}},
+			})
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			c := NewController(DefaultConfig(), github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL), nil,
+				"owner", "repo", WithProjectPath("/proj"), WithLogger(logger))
+			sink := &fakeLaneStarvationGateSink{reached: tt.reached, due: tt.due}
+			c.SetAlertsEngine(sink)
+			c.SetLaneQueueStatus(&fakeLaneQueueStatus{counts: map[string]int{}})
+
+			c.reconcileLaneStarvation(context.Background())
+
+			if len(sink.asked) != 1 || sink.asked[0] != "owner/repo" {
+				t.Fatalf("expected one status query for owner/repo, got %v", sink.asked)
+			}
+			out := buf.String()
+			hasLine := strings.Contains(out, "lane starved with open admissible issues")
+			if hasLine != tt.wantLine {
+				t.Fatalf("evidence line present = %v, want %v; log:\n%s", hasLine, tt.wantLine, out)
+			}
+			if !tt.wantLine {
+				return
+			}
+			for _, want := range []string{"repo=owner/repo", "streak=1", "open_issue_numbers=#42", "#42:[pilot bug]"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("evidence line missing %q; log:\n%s", want, out)
+				}
+			}
+		})
 	}
 }
