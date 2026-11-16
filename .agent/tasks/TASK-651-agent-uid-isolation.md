@@ -515,11 +515,50 @@ The sudo proof, the order of the firewall steps, the warning for the groups of t
 
 - Navigator TASK-651 in this repo · review comment of PR#6378
 
+### LEG B5 — repo: qf-studio/pilot — title: fix(box): agent user setup script — the mode record and the printed chmod lines accept only plain paths inside the data directory
+
+probe: present qf-studio/pilot ^step_daemon_private\(\)
+probe: present qf-studio/pilot ^record_modes\(\)
+probe: present qf-studio/pilot [-]-agent-root\)
+probe: absent  qf-studio/pilot ^plain_data_pat[h]\(\)
+
+## Context
+
+Navigator TASK-651. The script `scripts/box/setup-agent-user.sh` checks in step_daemon_private that the entries of the daemon's data directory are closed to other users. It changes no mode: it prints one `chmod` line for each entry, and record_modes writes the earlier mode and the resolved path of each entry to a record file that belongs to root. --undo reads the record and prints the `chmod` lines that put the earlier modes back. Tests: `scripts/box/setup-agent-user_test.sh` (mocked) and `scripts/box/setup-agent-user_real_test.sh` (real, CI job box-scripts-real). No host has run the script. This is a small leg: only the items below.
+
+A run-it review found one defect that blocks a run on a host. The daemon user owns the data directory, so it controls the names of the entries and the targets of links there. The script writes the result of realpath for each entry into the record without a check, and the record has one entry on each line. A link whose target path holds a newline gives a second line, for example the mode 4755 and the path of a system binary. Undo then prints a `chmod 4755` line for that binary under the text that tells the operator to put the earlier modes back. The same class: an entry name with a newline forges a line in the apply output, because the descriptive part of that line is printed without quoting; and a link to a directory outside the data directory makes the apply demand a `chmod` on the target.
+
+## Scope
+
+1. One function with the name plain_data_path decides if a path can be recorded or printed: the resolved path is the data directory or is below it, and it holds only letters, digits, dot, underscore, hyphen and slash. Every place that records a path or prints a path in a `chmod` line or in a line about an entry uses it.
+2. An entry that fails the function is not recorded and gets no `chmod` line. The apply fails with one line that names the entry with shell quoting and says that the operator must look at it by hand. A link in the data directory whose target is outside the data directory fails the function.
+3. Undo prints a line of the record only when its path passes the function for the data directory of this run and its mode is three or four octal digits with no setuid, setgid or sticky bit. For each line that it skips it prints one line that says so, with the line number and no content of the line.
+4. Every path that the script prints in a `chmod` line or in the descriptive text of such a line is shell-quoted.
+5. Tests in the mocked suite: a link whose target path holds a newline and a second record line (the case of the Context) gives no forged line in the record and none in the undo output; an entry name with a newline gives no second line in the apply output; a link to a directory outside the data directory fails the apply and names the entry; a path with a space is printed quoted; a record line with the mode 4755 is skipped by undo. One real test case: the first of these, as root on the CI host.
+
+## Acceptance
+
+- [ ] The jobs box-scripts and box-scripts-real pass on the PR; paste the summary lines of both test scripts into the PR body.
+- [ ] `./scripts/box/setup-agent-user_test.sh` passes on macOS and on Linux with the same count.
+- [ ] Print a `chmod` path without shell quoting -> a test fails.
+- [ ] Remove the line filter of undo -> a test fails.
+- [ ] Record the result of realpath without the check -> the test of the Context case fails.
+- [ ] ShellCheck passes for `scripts/box`.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The sudo proof, the order of the firewall steps, the warning for the groups of the daemon user and the undo of other steps (next leg). ACLs and groups of the agent user other than the shared group. A run of the script on a real host. Go code.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comment of PR#6401
+
 ### LEG B4 — repo: qf-studio/pilot — title: fix(box): agent user setup script, fourth run, part 2 — a sudo proof that also reads the rules, the firewall before the sudo rule, an undo that goes on and stops the agent processes
 
 probe: present qf-studio/pilot ^prove_sudo_removed\(\)
 probe: present qf-studio/pilot ^step_firewall_ipv6\(\)
-probe: present qf-studio/pilot --agent-root
+probe: present qf-studio/pilot [-]-agent-root\)
 probe: absent  qf-studio/pilot sudo[[:space:]]-ll[[:space:]]-[U]
 
 ## Context

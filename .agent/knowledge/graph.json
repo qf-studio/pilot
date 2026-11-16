@@ -3185,31 +3185,22 @@
         ]
       },
       "TASK-651": {
-        "path": ".agent/tasks/TASK-651-agent-uid-isolation.md",
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.claude/worktrees/task-651-step5-spec/.agent/tasks/TASK-651-agent-uid-isolation.md",
         "title": "Agent isolation \u2014 agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM",
         "status": "dispatched",
         "concepts": [
-          "api",
           "theory of mind",
-          "database",
-          "deployment",
-          "markers",
-          "workflow",
           "simplification",
+          "api",
           "skills",
-          "frontend",
-          "context",
+          "markers",
+          "deployment",
           "testing",
-          "authentication"
-        ],
-        "issues": [
-          "https://github.com/qf-studio/pilot/issues/6372",
-          "https://github.com/qf-studio/pilot/issues/6373",
-          "https://github.com/qf-studio/pilot/issues/6380",
-          "https://github.com/qf-studio/pilot/issues/6385",
-          "https://github.com/qf-studio/pilot/issues/6387",
-          "https://github.com/qf-studio/pilot/issues/6389",
-          "https://github.com/qf-studio/pilot/issues/6403"
+          "authentication",
+          "database",
+          "frontend",
+          "workflow",
+          "context"
         ]
       },
       "TASK-652": {
@@ -16241,11 +16232,11 @@
       "TASK-651"
     ]
   },
-  "last_updated": "2026-11-16T10:37:55.253172+00:00",
+  "last_updated": "2026-11-16T17:36:46.942170+00:00",
   "stats": {
-    "total_nodes": 797,
-    "total_edges": 858,
-    "memory_count": 443
+    "total_nodes": 798,
+    "total_edges": 859,
+    "memory_count": 444
   },
   "metadata": {
     "last_updated": null
