@@ -1350,9 +1350,17 @@ type ClaudeCodeConfig struct {
 	// RunAsWorkspaceDir is the root of the agent workspaces (TASK-651): with
 	// run_as_user set, every git command of the executor in a directory below
 	// it runs as the agent user, and each task run gets an agent-owned clone
-	// there (agent_workspace.go). Empty: /var/lib/pilot/agent-workspaces. Has
-	// no effect while run_as_user is empty.
+	// there (agent_workspace.go). Empty: /var/lib/pilot/agent/workspaces, the
+	// layout of scripts/box/setup-agent-user.sh. Has no effect while
+	// run_as_user is empty.
 	RunAsWorkspaceDir string `yaml:"run_as_workspace_dir,omitempty"`
+	// RunAsDataDir is the data directory of the daemon (TASK-651), the
+	// --data-dir of scripts/box/setup-agent-user.sh. With run_as_user set, the
+	// preflight and every agent workspace creation check that it and its
+	// top-level entries are closed to the agent user (checkRunAsDataDirModes);
+	// the entry that holds the workspace root is skipped. Empty:
+	// /var/lib/pilot. Has no effect while run_as_user is empty.
+	RunAsDataDir string `yaml:"run_as_data_dir,omitempty"`
 
 	// PilotHome and ConfigPath tell the read guard what to protect. Set by the
 	// daemon from the loaded config; empty means ~/.pilot and

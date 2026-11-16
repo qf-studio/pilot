@@ -956,11 +956,21 @@ executor:
   #   run_as_workspace_dir: ""    # TASK-651 - root of the agent workspaces. With run_as_user set, every
   #                                # git command of the executor in a directory below this root runs as
   #                                # the agent user (sudo, allowlisted environment, no git credentials yet).
-  #                                # Empty = /var/lib/pilot/agent-workspaces. Absolute path only.
+  #                                # Empty = /var/lib/pilot/agent/workspaces (the layout that
+  #                                # scripts/box/setup-agent-user.sh builds). Absolute path only.
   #                                # Each task run gets its own clone here (pilot-ws-*), created and removed
   #                                # as the agent user; needs use_worktree true and worktree_pool_size 0,
   #                                # and a root the agent user owns (not /, the daemon home, the Pilot home
   #                                # or a parent of one of them).
+  #   run_as_data_dir: ""         # TASK-651 - data directory of the daemon (the --data-dir of the setup
+  #                                # script). Empty = /var/lib/pilot. Absolute path only. With run_as_user
+  #                                # set, the startup check and every agent workspace creation check the
+  #                                # modes, and read them only: the directory gives group and others no
+  #                                # read or write bit; each top-level entry gives others no bit, and no
+  #                                # group bit when its group is run_as_group. The entry that holds the
+  #                                # workspace root is skipped; a link is checked by its target. A failure
+  #                                # names the entry and its mode and stops the run. Go caches of the agent
+  #                                # go to go/cache and go/mod below the agent home (GOPATH = go there).
   #   # env_passthrough (GH-5277): names of environment variables that survive
   #   # the model-subprocess env scrub (GH-5275/GH-5276) even though their name
   #   # looks secret-shaped (matches *_TOKEN/*_SECRET/*_API_KEY/etc). The scrub

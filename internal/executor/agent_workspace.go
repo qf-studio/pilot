@@ -138,6 +138,11 @@ func (m *WorktreeManager) createAgentWorkspace(ctx context.Context, taskID, bran
 	if err != nil {
 		return "", nil, err
 	}
+	// The preflight result lives as long as the process; the daemon creates
+	// data entries at run time, so the modes are read again for each run.
+	if failed := checkRunAsDataDirModes(s); failed != "" {
+		return "", nil, fmt.Errorf("agent workspace: %s", failed)
+	}
 	if taskID == "" {
 		// A name without TASK is never parsed, so no sweep would remove it.
 		return "", nil, errors.New("agent workspace: no task ID")
