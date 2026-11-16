@@ -211,10 +211,17 @@ func gitRoutesToAgent(root, dir string) (bool, error) {
 	return realIn, nil
 }
 
+// gitValueOptions are the global options of git that take their value as the
+// next argument, besides -C, --git-dir and --work-tree: that argument is not
+// the subcommand.
+var gitValueOptions = map[string]bool{"-c": true, "--namespace": true, "--attr-source": true, "--config-env": true}
+
 // gitArgIntoRoot returns the first `-C` or `--git-dir` (also `--work-tree`)
 // value among the global options of args that points inside the workspace
-// root, as given or resolved, "" when none does. Relative values are taken
-// from routeDir; `-C` values add up as git adds them.
+// root, as given or resolved, "" when none does. Every argument before the
+// subcommand is read, also after an option that takes a value
+// (gitValueOptions). Relative values are taken from routeDir; `-C` values add
+// up as git adds them.
 func gitArgIntoRoot(root, routeDir string, args []string) string {
 	if root == "" {
 		return ""
@@ -253,7 +260,7 @@ func gitArgIntoRoot(root, routeDir string, args []string) string {
 		case strings.HasPrefix(a, "--git-dir="), strings.HasPrefix(a, "--work-tree="):
 			_, v, _ := strings.Cut(a, "=")
 			target = join(v)
-		case a == "-c" && i+1 < len(args):
+		case gitValueOptions[a] && i+1 < len(args):
 			i++
 			continue
 		case strings.HasPrefix(a, "-"):

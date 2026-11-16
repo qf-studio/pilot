@@ -222,8 +222,8 @@ func TestCreateAgentWorkspaceBaseForms(t *testing.T) {
 			if _, err := os.Lstat(filepath.Join(ws, ".git", "objects", "info", "alternates")); !os.IsNotExist(err) {
 				t.Errorf("alternates file present: %v", err)
 			}
-			if refs := wsGit(t, ws, "for-each-ref", "--format=%(refname)"); refs != "refs/heads/"+branch {
-				t.Errorf("refs = %q, want only the task branch", refs)
+			if refs := wsGit(t, ws, "for-each-ref", "--format=%(refname) %(objectname)"); refs != "refs/heads/"+branch+" "+wantSHA+"\nrefs/remotes/origin/main "+wantSHA {
+				t.Errorf("refs = %q, want only the task branch and origin/main, both at the base", refs)
 			}
 			if got := wsGit(t, ws, "remote", "get-url", "origin"); got != e.remote {
 				t.Errorf("origin = %q, want %q", got, e.remote)
@@ -326,19 +326,49 @@ func TestCreateAgentWorkspaceFailureLeavesNothing(t *testing.T) {
 	tests := []struct {
 		name    string
 		branch  string
-		hook    func(t *testing.T) func(string)
+		hook    func(t *testing.T, e *agentWorkspaceEnv) func(string)
 		wantErr string
 	}{
 		{"transport fails at the task branch", "bad..branch", nil, "task branch"},
-		{"head differs from the resolved SHA", "pilot/GH-3", func(t *testing.T) func(string) {
+		{"head differs from the resolved SHA", "pilot/GH-3", func(t *testing.T, e *agentWorkspaceEnv) func(string) {
 			return func(ws string) { gitTestCommit(t, ws, "moved by the agent") }
 		}, "head of pilot/GH-3"},
+		{"objects directory is a symbolic link", "pilot/GH-3", func(t *testing.T, e *agentWorkspaceEnv) func(string) {
+			return func(ws string) {
+				objects := filepath.Join(ws, ".git", "objects")
+				if err := os.Rename(objects, objects+"-real"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(objects+"-real", objects); err != nil {
+					t.Skipf("symlink: %v", err)
+				}
+			}
+		}, "objects directory"},
+		{"alternates file", "pilot/GH-3", func(t *testing.T, e *agentWorkspaceEnv) func(string) {
+			alt := t.TempDir()
+			return func(ws string) {
+				if err := os.WriteFile(filepath.Join(ws, ".git", "objects", "info", "alternates"), []byte(alt+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}, "objects/info/alternates"},
+		{"object file hard-linked into the daemon repository", "pilot/GH-3", func(t *testing.T, e *agentWorkspaceEnv) func(string) {
+			return func(ws string) { linkDaemonObject(t, e.repo, ws) }
+		}, "hard link"},
+		{"extra ref", "pilot/GH-3", func(t *testing.T, e *agentWorkspaceEnv) func(string) {
+			return func(ws string) { wsGit(t, ws, "update-ref", "refs/tags/extra", "HEAD") }
+		}, "refs are"},
+		{"origin/BASE not at the base", "pilot/GH-3", func(t *testing.T, e *agentWorkspaceEnv) func(string) {
+			return func(ws string) {
+				wsGit(t, ws, "update-ref", "refs/remotes/origin/main", gitTestCommitDetached(t, ws))
+			}
+		}, "refs are"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newAgentWorkspaceEnv(t)
 			if tc.hook != nil {
-				agentWorkspaceAfterTransport = tc.hook(t)
+				agentWorkspaceAfterTransport = tc.hook(t, e)
 				t.Cleanup(func() { agentWorkspaceAfterTransport = nil })
 			}
 			ws, cleanup, err := NewWorktreeManager(e.repo).createAgentWorkspace(context.Background(), "GH-3", tc.branch, "HEAD")
@@ -354,6 +384,32 @@ func TestCreateAgentWorkspaceFailureLeavesNothing(t *testing.T) {
 			e.assertNoTempRef(t)
 		})
 	}
+}
+
+// linkDaemonObject hard-links the first object file of the daemon repository
+// repo into the objects directory of the workspace ws.
+func linkDaemonObject(t *testing.T, repo, ws string) {
+	t.Helper()
+	var src string
+	_ = filepath.WalkDir(filepath.Join(repo, ".git", "objects"), func(p string, d os.DirEntry, err error) error {
+		if err == nil && src == "" && d.Type().IsRegular() {
+			src = p
+		}
+		return nil
+	})
+	if src == "" {
+		t.Fatal("no object file in the daemon repository")
+	}
+	if err := os.Link(src, filepath.Join(ws, ".git", "objects", "pilot-test-link")); err != nil {
+		t.Skipf("hard link: %v", err)
+	}
+}
+
+// gitTestCommitDetached writes a commit object on top of HEAD of dir without
+// moving any ref and returns its SHA.
+func gitTestCommitDetached(t *testing.T, dir string) string {
+	t.Helper()
+	return wsGit(t, dir, "commit-tree", "-p", "HEAD", "-m", "detached", "HEAD^{tree}")
 }
 
 func TestCreateAgentWorkspaceRefusesWithoutTheOption(t *testing.T) {
@@ -969,5 +1025,154 @@ func TestAgentWorkspaceRunnerRunsInWorkspace(t *testing.T) {
 	}
 	if gitBranchExists(t, e.repo, "pilot/GH-9") {
 		t.Error("the daemon repository got the task branch")
+	}
+}
+
+// TestCreateAgentWorkspaceOriginBaseRef is item 2a: a new workspace holds
+// refs/remotes/origin/BASE at the base commit, so the commit count and the
+// merge-base of a run work in it (the agent user has no credential to fetch
+// origin; the fetch of CountNewCommitsAgainstOrigin fails closed).
+func TestCreateAgentWorkspaceOriginBaseRef(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseRef string
+		commits int
+	}{
+		{"empty base, no commit yet", "", 0},
+		{"empty base, one commit", "", 1},
+		{"origin/main, two commits", "origin/main", 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newAgentWorkspaceEnv(t)
+			m := NewWorktreeManager(e.repo)
+			m.SetBaseBranch("main")
+			ws, cleanup, err := m.createAgentWorkspace(context.Background(), "GH-10", "pilot/GH-10", tc.baseRef)
+			if err != nil {
+				t.Fatalf("createAgentWorkspace: %v", err)
+			}
+			defer cleanup()
+			base := wsGit(t, e.repo, "rev-parse", "origin/main")
+			if got := wsGit(t, ws, "rev-parse", "refs/remotes/origin/main"); got != base {
+				t.Errorf("origin/main in the workspace = %s, want the base commit %s", got, base)
+			}
+			for i := 0; i < tc.commits; i++ {
+				gitTestCommit(t, ws, fmt.Sprintf("work %d", i))
+			}
+			g := NewGitOperations(ws)
+			ctx := context.Background()
+			if n, err := g.CountNewCommitsAgainstOrigin(ctx, "main"); err != nil || n != tc.commits {
+				t.Errorf("CountNewCommitsAgainstOrigin = %d, %v; want %d", n, err, tc.commits)
+			}
+			if mb, err := g.resolveMergeBaseSHA(ctx, "main"); err != nil || mb != base {
+				t.Errorf("merge-base = %q, %v; want the base commit %s", mb, err, base)
+			}
+		})
+	}
+}
+
+// TestCreateAgentWorkspaceRefusesEmptyTaskID is item 2d: a workspace name
+// without TASK is never parsed, so no sweep would remove it.
+func TestCreateAgentWorkspaceRefusesEmptyTaskID(t *testing.T) {
+	e := newAgentWorkspaceEnv(t)
+	ws, cleanup, err := NewWorktreeManager(e.repo).createAgentWorkspace(context.Background(), "", "pilot/GH-11", "HEAD")
+	if err == nil || !strings.Contains(err.Error(), "no task ID") {
+		t.Fatalf("err = %v, want one naming the missing task ID", err)
+	}
+	if ws != "" || cleanup != nil {
+		t.Errorf("refusal returned a workspace %q", ws)
+	}
+	if names := e.rootEntries(t); len(names) != 0 {
+		t.Errorf("workspace root holds %q, want nothing", names)
+	}
+	if calls := sudoCalls(t, e.sudoLog); len(calls) != 0 {
+		t.Errorf("a command ran as the agent user: %q", calls)
+	}
+	e.assertNoTempRef(t)
+}
+
+// TestCleanupOrphanedWorktreesKeepAgentWorkspaces is item 2c: the sweep of a
+// one-shot command removes the worktree orphans of the project and no agent
+// workspace; only the daemon sweeps those.
+func TestCleanupOrphanedWorktreesKeepAgentWorkspaces(t *testing.T) {
+	tests := []struct {
+		name  string
+		sweep func(ctx context.Context, repo string) (int, int64, error)
+		gone  func(f *sweepFixture) []string
+	}{
+		{"one-shot command", CleanupOrphanedWorktreesKeepAgentWorkspaces, func(*sweepFixture) []string { return nil }},
+		{"daemon start", CleanupOrphanedWorktrees, func(f *sweepFixture) []string { return []string{f.a1, f.a1Bundle, f.a2, f.a12} }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSweepFixture(t)
+			orphanWT := filepath.Join(os.TempDir(), fmt.Sprintf("pilot-worktree-gh6387-sweep-%d", time.Now().UnixNano()))
+			if err := os.MkdirAll(orphanWT, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(orphanWT) })
+			if _, _, err := tc.sweep(context.Background(), f.repoA); err != nil {
+				t.Fatal(err)
+			}
+			gone := append(tc.gone(f), orphanWT)
+			all := []string{f.a1, f.a1Bundle, f.a2, f.a12, f.b1, f.other}
+			var kept []string
+			for _, p := range all {
+				removed := false
+				for _, g := range gone {
+					removed = removed || g == p
+				}
+				if !removed {
+					kept = append(kept, p)
+				}
+			}
+			assertPresence(t, gone, kept)
+		})
+	}
+}
+
+// TestRunAsUserPreflightRefusal is item 1: until the hand-over leg and the
+// gates leg merge, the preflight fails for every host, a host that passes
+// every check included, with one Error line naming the legs, and no git
+// command in the workspace root runs.
+func TestRunAsUserPreflightRefusal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file owners")
+	}
+	me := strconv.Itoa(os.Getuid())
+	tests := []struct {
+		name    string
+		refusal bool
+		root    func(t *testing.T) string
+		wantErr string // empty: passes
+	}{
+		{"refusal on, a host that passes every check", true, func(t *testing.T) string { return t.TempDir() }, runAsIncompleteCheck},
+		{"refusal on, a host without the root", true, func(t *testing.T) string { return filepath.Join(t.TempDir(), "gone") }, runAsIncompleteCheck},
+		{"refusal off, a host that passes every check", false, func(t *testing.T) string { return t.TempDir() }, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			prev := runAsIncompleteRefusal
+			runAsIncompleteRefusal = tc.refusal
+			t.Cleanup(func() { runAsIncompleteRefusal = prev })
+			root := tc.root(t)
+			_ = mockSudoAgent(t, "", "")
+			buf, err := workspacePreflight(t, root, me, nil, true, 0)
+			if tc.wantErr == "" {
+				if err != nil || strings.Contains(buf.String(), "level=ERROR") {
+					t.Fatalf("preflight failed: %v\n%s", err, buf.String())
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("preflight error = %v, want one naming %q", err, tc.wantErr)
+			}
+			if n := strings.Count(buf.String(), "level=ERROR"); n != 1 || !strings.Contains(buf.String(), "hand-over leg and the gates leg") {
+				t.Errorf("want one Error line naming the legs, got:\n%s", buf.String())
+			}
+			if cmd := gitCommandIn(context.Background(), root, "status"); cmd.Err == nil {
+				t.Errorf("a git command in the workspace root was built after the refusal: %q", cmd.Args)
+			}
+		})
 	}
 }

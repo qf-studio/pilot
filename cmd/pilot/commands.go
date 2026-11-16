@@ -832,9 +832,10 @@ Examples:
 			// GH-4670: post-run GitHub side-effect audit — see GH-4649 incident.
 			runner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
 
-			// GH-962: Clean up orphaned worktree directories from previous crashed executions
+			// GH-962: Clean up orphaned worktree directories from previous crashed executions.
+			// TASK-651: a one-shot command keeps the agent workspaces; only the daemon sweeps them.
 			if cfg.Executor != nil && cfg.Executor.EffectiveUseWorktree() {
-				removed, freedBytes, err := executor.CleanupOrphanedWorktrees(ctx, projectPath)
+				removed, freedBytes, err := executor.CleanupOrphanedWorktreesKeepAgentWorkspaces(ctx, projectPath)
 				if err != nil {
 					// Real failure (e.g. temp dir unreadable) — don't fail startup.
 					fmt.Printf("   Worktree:  ! cleanup error (%s)\n", err.Error())
@@ -1645,9 +1646,10 @@ Examples:
 			// GH-4670: post-run GitHub side-effect audit — see GH-4649 incident.
 			runner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
 
-			// GH-962: Clean up orphaned worktree directories from previous crashed executions
+			// GH-962: Clean up orphaned worktree directories from previous crashed executions.
+			// TASK-651: a one-shot command keeps the agent workspaces; only the daemon sweeps them.
 			if cfg.Executor != nil && cfg.Executor.EffectiveUseWorktree() {
-				removed, freedBytes, err := executor.CleanupOrphanedWorktrees(ctx, projectPath)
+				removed, freedBytes, err := executor.CleanupOrphanedWorktreesKeepAgentWorkspaces(ctx, projectPath)
 				if err != nil {
 					fmt.Printf("▸ Worktree cleanup error (%s)\n", err.Error())
 				} else if removed > 0 {
