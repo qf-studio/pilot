@@ -5131,24 +5131,10 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	backendName := r.backend.Name()
 	r.reportProgress(task.ID, "Starting", 0, fmt.Sprintf("Initializing %s...", backendName))
 
-	// Clean stale pilot hooks unconditionally — even when hooks.enabled is false.
-	// Prevents dead entries from accumulating after OS reboots clear temp dirs (GH-1749).
-	// Clean project root first (always), then worktree path if different (GH-1884).
-	projectSettingsPath := filepath.Join(task.ProjectPath, ".claude", "settings.json")
-	if cleanErr := CleanStalePilotHooks(projectSettingsPath); cleanErr != nil {
-		log.Warn("Failed to clean stale pilot hooks in project root", slog.Any("error", cleanErr))
-	}
-	if executionPath != task.ProjectPath {
-		worktreeSettingsPath := filepath.Join(executionPath, ".claude", "settings.json")
-		if cleanErr := CleanStalePilotHooks(worktreeSettingsPath); cleanErr != nil {
-			log.Warn("Failed to clean stale pilot hooks in worktree", slog.Any("error", cleanErr))
-		}
-	}
-
 	// TASK-651: with run_as_user set the settings file is written as the
 	// agent user (agent_files.go) and a failed write stops the run with one
 	// Error line: the session would run without the hooks and with the
-	// co-author trailer on.
+	// co-author trailer on, or with the stale hook entries of the workspace.
 	runAsSet := runAsSettingsNow() != nil
 	stopOnSettingsWrite := func(path string, err error) (*ExecutionResult, error) {
 		log.Error("Claude settings write failed with run_as_user set: the run stops",
@@ -5161,6 +5147,23 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			Success: false,
 			Error:   fmt.Sprintf("claude settings write failed: %v", err),
 		}, fmt.Errorf("claude settings write failed: %w", err)
+	}
+
+	// Clean stale pilot hooks unconditionally — even when hooks.enabled is false.
+	// Prevents dead entries from accumulating after OS reboots clear temp dirs (GH-1749).
+	// Clean project root first (always), then worktree path if different (GH-1884).
+	projectSettingsPath := filepath.Join(task.ProjectPath, ".claude", "settings.json")
+	if cleanErr := CleanStalePilotHooks(projectSettingsPath); cleanErr != nil {
+		log.Warn("Failed to clean stale pilot hooks in project root", slog.Any("error", cleanErr))
+	}
+	if executionPath != task.ProjectPath {
+		worktreeSettingsPath := filepath.Join(executionPath, ".claude", "settings.json")
+		if cleanErr := CleanStalePilotHooks(worktreeSettingsPath); cleanErr != nil && runAsSet {
+			// TASK-651: with the option set this is the agent workspace.
+			return stopOnSettingsWrite(worktreeSettingsPath, cleanErr)
+		} else if cleanErr != nil {
+			log.Warn("Failed to clean stale pilot hooks in worktree", slog.Any("error", cleanErr))
+		}
 	}
 
 	// Setup Claude Code hooks if enabled (GH-1266)
