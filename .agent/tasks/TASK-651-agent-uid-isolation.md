@@ -57,7 +57,9 @@
 - [x] **F1** (PR#6349 merged 11-13) ([#6344](https://github.com/qf-studio/pilot/issues/6344), dispatched 11-13) fixes from the run-it review of U1: cancel through the process group in the constructor, anthropic-api refused, `run_as_group` required, guard files fail closed, name check. Must merge before U2 (same file `agent_command.go`).
 - [x] **B1** (PR#6359 merged 11-14; **no host run yet**, see status) ([#6345](https://github.com/qf-studio/pilot/issues/6345), dispatched 11-13) host script, second run; replaces #6328.
 - [ ] **B3** ([#6389](https://github.com/qf-studio/pilot/issues/6389), dispatched 11-16; the first attempt pushed one commit and opened no PR, the second could not push over it; founder call 11-16: draft PR#6401 opened by hand from that branch, CI and run-it review pending; blocks O4; founder calls 11-16: agent root at DATA_DIR/agent, the daemon binary reaches the gh shim as a copy for each run) host script, fourth run, part 1: agent root owned by root, no root step in an agent-owned directory, the daemon's entries closed with printed chmod lines, a proof as the agent user.
-- [ ] **B4** (dispatch-ready, below; needs B3; blocks O4) host script, fourth run, part 2: a sudo proof that reads the rules, the firewall before the sudo rule, a warning for the groups of the daemon user, undo that goes on and stops the agent processes.
+- **B3 result:** PR#6401 merged 11-16 17:36Z on the founder's instruction with one open blocker from the run-it review (NO-GO as it was): the daemon user can forge a line of the mode record, and undo prints it as a `chmod` line. B5 fixes it; no host runs the script before B5 and B4 merge.
+- [ ] **B5** ([#6407](https://github.com/qf-studio/pilot/issues/6407), dispatched 11-16; PR held as a draft; blocks O4) the mode record and the printed chmod lines accept only plain paths inside the data directory; undo skips a line with a setuid mode.
+- [ ] **B4** (dispatch-ready, below; needs B5; blocks O4) host script, fourth run, part 2: a sudo proof that reads the rules, the firewall before the sudo rule, a warning for the groups of the daemon user, undo that goes on and stops the agent processes.
 - [ ] **P1** (NOT specified yet; Go, after N4; needs B3 for the paths) from the research of 11-16: the daemon copies its binary into the gh shim directory of each run (today the shim runs the daemon binary as the agent user, and the script closes that binary); the preflight probes the firewall as the agent user (a connection to the metadata address and to the gateway port must fail) because the daemon starts from tmux and no unit can require the firewall; the preflight checks the modes of the daemon's entries at each start; the default of `run_as_workspace_dir` follows the agent root; the Go cache variables of the daemon do not reach the agent.
 - **Box fact 11-16 (read-only check):** the daemon user is in the group docker, which is a path to root, so O1 did not fully remove root from the daemon user. Founder discusses the removal with the infrastructure owner.
 - [x] **B2** (merged 11-15 21:02Z) (PR#6378: real job green on ubuntu-24.04 with the classic sudo, 94 passed; run-it review GO-WITH-NOTES for the merge, NOT ready for a host run; marked ready 11-15) ([#6373](https://github.com/qf-studio/pilot/issues/6373), dispatched 11-15) host script, third run: undo that the agent user cannot block, shared read removed, sudo proof by behaviour, macOS test fix, real iptables and systemd test in CI. O4 waits for it.
@@ -67,7 +69,8 @@
 - **N1** (issue 6385, dispatched 11-16) ran into the one-hour task limit twice and pushed no branch; closed as not planned and split into N2, N3, N4 on 11-16.
 - [x] **N2** (PR#6397 merged 11-16 15:14Z by the daemon two minutes after it was marked ready; run-it review GO-WITH-NOTES; three notes go to N5) ([#6387](https://github.com/qf-studio/pilot/issues/6387), dispatched 11-16 ~10:10Z)
 - [ ] **N5** ([#6403](https://github.com/qf-studio/pilot/issues/6403), dispatched 11-16; PR held as a draft; small) a test for the production default of the refusal, no workspace sweep after a refused preflight, the config example sentence. the preflight refuses the option until the gates leg merges; the corrections of the workspace leg from its review; the macOS test fix.
-- [ ] **N3** (dispatch-ready, below; needs N2) the daemon writes the task document, the Navigator files and the settings file through a helper that runs as the agent user.
+- **N5 result:** PR#6405 merged 11-16 17:35Z after a run-it review (GO-WITH-NOTES) and the founder's "merge".
+- [ ] **N3** ([#6406](https://github.com/qf-studio/pilot/issues/6406), dispatched 11-16; PR held as a draft; needs N2) the daemon writes the task document, the Navigator files and the settings file through a helper that runs as the agent user.
 - [ ] **N4** (dispatch-ready, below; needs N3) Navigator copy in as a tar stream, copy out without a followed link at any path element.
 - [ ] **U3** (dispatch-ready, below; needs U2) hand-over as a bundle that the agent writes and the daemon fetches into `refs/pilot/handover/<task>`; the secret gate and the push run only in the daemon's repository, with replace refs ignored and hooks off; PR creation, recovery ref and the preserve commit follow. Closes the gate-trust class of mem-308 when the option is set (seven shapes; the tamper table is the test list of the leg).
 - [ ] **U4** (dispatch-ready, below; needs U2) quality gates, workflow hooks, evidence commands and the lint fix as the agent user with the allowlist environment; `run_as_env` for values such as the Go caches.
@@ -515,11 +518,50 @@ The sudo proof, the order of the firewall steps, the warning for the groups of t
 
 - Navigator TASK-651 in this repo · review comment of PR#6378
 
+### LEG B5 — repo: qf-studio/pilot — title: fix(box): agent user setup script — the mode record and the printed chmod lines accept only plain paths inside the data directory
+
+probe: present qf-studio/pilot ^step_daemon_private\(\)
+probe: present qf-studio/pilot ^record_modes\(\)
+probe: present qf-studio/pilot [-]-agent-root\)
+probe: absent  qf-studio/pilot ^plain_data_pat[h]\(\)
+
+## Context
+
+Navigator TASK-651. The script `scripts/box/setup-agent-user.sh` checks in step_daemon_private that the entries of the daemon's data directory are closed to other users. It changes no mode: it prints one `chmod` line for each entry, and record_modes writes the earlier mode and the resolved path of each entry to a record file that belongs to root. --undo reads the record and prints the `chmod` lines that put the earlier modes back. Tests: `scripts/box/setup-agent-user_test.sh` (mocked) and `scripts/box/setup-agent-user_real_test.sh` (real, CI job box-scripts-real). No host has run the script. This is a small leg: only the items below.
+
+A run-it review found one defect that blocks a run on a host. The daemon user owns the data directory, so it controls the names of the entries and the targets of links there. The script writes the result of realpath for each entry into the record without a check, and the record has one entry on each line. A link whose target path holds a newline gives a second line, for example the mode 4755 and the path of a system binary. Undo then prints a `chmod 4755` line for that binary under the text that tells the operator to put the earlier modes back. The same class: an entry name with a newline forges a line in the apply output, because the descriptive part of that line is printed without quoting; and a link to a directory outside the data directory makes the apply demand a `chmod` on the target.
+
+## Scope
+
+1. One function with the name plain_data_path decides if a path can be recorded or printed: the resolved path is the data directory or is below it, and it holds only letters, digits, dot, underscore, hyphen and slash. Every place that records a path or prints a path in a `chmod` line or in a line about an entry uses it.
+2. An entry that fails the function is not recorded and gets no `chmod` line. The apply fails with one line that names the entry with shell quoting and says that the operator must look at it by hand. A link in the data directory whose target is outside the data directory fails the function.
+3. Undo prints a line of the record only when its path passes the function for the data directory of this run and its mode is three or four octal digits with no setuid, setgid or sticky bit. For each line that it skips it prints one line that says so, with the line number and no content of the line.
+4. Every path that the script prints in a `chmod` line or in the descriptive text of such a line is shell-quoted.
+5. Tests in the mocked suite: a link whose target path holds a newline and a second record line (the case of the Context) gives no forged line in the record and none in the undo output; an entry name with a newline gives no second line in the apply output; a link to a directory outside the data directory fails the apply and names the entry; a path with a space is printed quoted; a record line with the mode 4755 is skipped by undo. One real test case: the first of these, as root on the CI host.
+
+## Acceptance
+
+- [ ] The jobs box-scripts and box-scripts-real pass on the PR; paste the summary lines of both test scripts into the PR body.
+- [ ] `./scripts/box/setup-agent-user_test.sh` passes on macOS and on Linux with the same count.
+- [ ] Print a `chmod` path without shell quoting -> a test fails.
+- [ ] Remove the line filter of undo -> a test fails.
+- [ ] Record the result of realpath without the check -> the test of the Context case fails.
+- [ ] ShellCheck passes for `scripts/box`.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The sudo proof, the order of the firewall steps, the warning for the groups of the daemon user and the undo of other steps (next leg). ACLs and groups of the agent user other than the shared group. A run of the script on a real host. Go code.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comment of PR#6401
+
 ### LEG B4 — repo: qf-studio/pilot — title: fix(box): agent user setup script, fourth run, part 2 — a sudo proof that also reads the rules, the firewall before the sudo rule, an undo that goes on and stops the agent processes
 
 probe: present qf-studio/pilot ^prove_sudo_removed\(\)
 probe: present qf-studio/pilot ^step_firewall_ipv6\(\)
-probe: present qf-studio/pilot --agent-root
+probe: present qf-studio/pilot [-]-agent-root\)
 probe: absent  qf-studio/pilot sudo[[:space:]]-ll[[:space:]]-[U]
 
 ## Context
@@ -962,3 +1004,5 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - N2 → https://github.com/qf-studio/pilot/issues/6387
 - B3 → https://github.com/qf-studio/pilot/issues/6389
 - N5 → https://github.com/qf-studio/pilot/issues/6403
+- N3 → https://github.com/qf-studio/pilot/issues/6406
+- B5 → https://github.com/qf-studio/pilot/issues/6407
