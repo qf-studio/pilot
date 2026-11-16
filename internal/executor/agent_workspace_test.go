@@ -1176,3 +1176,91 @@ func TestRunAsUserPreflightRefusal(t *testing.T) {
 		})
 	}
 }
+
+// TestRunAsUserPreflightRefusalDefaultOn pins the production default of the
+// refusal: TestMain switches it off for every test of the package, so only
+// the value kept before that switch shows the declaration.
+func TestRunAsUserPreflightRefusalDefaultOn(t *testing.T) {
+	if !runAsIncompleteRefusalDefault {
+		t.Fatal("runAsIncompleteRefusal is declared false: run_as_user would pass the preflight before the hand-over leg and the gates leg of TASK-651 merge")
+	}
+}
+
+// TestAgentWorkspaceSweepWaitsForThePreflight: with the option set, the sweep
+// at daemon start and the removal of a workspace start no sudo process after
+// a refused preflight (one Warn line with the directory count), and one rm -rf
+// as the agent user after a passed one.
+func TestAgentWorkspaceSweepWaitsForThePreflight(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file owners")
+	}
+	me := strconv.Itoa(os.Getuid())
+	tests := []struct {
+		name      string
+		refusal   bool
+		wantCalls int
+	}{
+		{"refused preflight", true, 0},
+		{"passed preflight", false, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stubRunAsGOOS(t)
+			prev := runAsIncompleteRefusal
+			runAsIncompleteRefusal = tc.refusal
+			t.Cleanup(func() { runAsIncompleteRefusal = prev })
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			repo := setupTestRepo(t)
+			t.Cleanup(func() { _ = os.RemoveAll(repo) })
+			project, err := workspaceProjectID(repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ws := filepath.Join(root, "pilot-ws-"+project+"-GH-1-100")
+			if err := os.MkdirAll(filepath.Join(ws, "src"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			logPath := mockSudoAgent(t, "", "")
+			if _, err := workspacePreflight(t, root, me, nil, true, 0); (err != nil) != tc.refusal {
+				t.Fatalf("preflight error = %v, want refused = %v", err, tc.refusal)
+			}
+			_ = os.Remove(logPath) // the probes of the preflight
+			buf := captureLog(t)
+
+			if _, _, err := CleanupOrphanedWorktrees(context.Background(), repo); err != nil {
+				t.Fatal(err)
+			}
+
+			calls := sudoCalls(t, logPath)
+			if len(calls) != tc.wantCalls {
+				t.Fatalf("sudo calls = %q, want %d", calls, tc.wantCalls)
+			}
+			if !tc.refusal {
+				if !strings.HasSuffix(calls[0], "-- rm -rf -- "+ws) {
+					t.Errorf("sudo call = %q, want rm -rf of the workspace", calls[0])
+				}
+				assertPresence(t, []string{ws}, nil)
+				return
+			}
+			assertPresence(t, nil, []string{ws})
+			out := buf.String()
+			if n := strings.Count(out, "level=WARN msg=\"agent workspace sweep skipped"); n != 1 || !strings.Contains(out, "directories=1") {
+				t.Errorf("want one Warn line naming the directory count, got:\n%s", out)
+			}
+			buf.Reset()
+			if err := removeAgentWorkspace(runAsSettingsNow(), ws); err == nil {
+				t.Error("removal after a refused preflight: no error")
+			}
+			if calls := sudoCalls(t, logPath); len(calls) != 0 {
+				t.Errorf("removal after a refused preflight started sudo: %q", calls)
+			}
+			assertPresence(t, nil, []string{ws})
+			if n := strings.Count(buf.String(), "level=WARN"); n != 1 || !strings.Contains(buf.String(), "directories=1") {
+				t.Errorf("want one Warn line naming the directory count, got:\n%s", buf.String())
+			}
+		})
+	}
+}

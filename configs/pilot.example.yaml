@@ -947,8 +947,10 @@ executor:
   #                                # separate uid is the real fix. Set false only to debug.
   #   run_as_user: ""             # TASK-651 - start every model process as this Unix user through
   #   run_as_group: ""            # `sudo -n -u <user> [-g <group>]` (run_as_group also owns the run guard
-  #                                # files). Empty (default) = run as the daemon user. Linux only; leave
-  #                                # empty until the agent workspace legs of TASK-651 are released. A failed
+  #                                # files). Empty (default) = run as the daemon user. Linux only. Leave it
+  #                                # empty: until the hand-over leg and the gates leg of TASK-651 merge, the
+  #                                # startup check refuses this option on every host, and a run then fails
+  #                                # with one Error line ("run_as_user preflight failed"). A failed
   #                                # startup check (user, sudo, home) stops every model spawn; there is no
   #                                # fallback to the daemon user.
   #   run_as_workspace_dir: ""    # TASK-651 - root of the agent workspaces. With run_as_user set, every
@@ -959,8 +961,6 @@ executor:
   #                                # as the agent user; needs use_worktree true and worktree_pool_size 0,
   #                                # and a root the agent user owns (not /, the daemon home, the Pilot home
   #                                # or a parent of one of them).
-  #                                # run_as_user must stay empty on every host until the hand-over leg and
-  #                                # the gates leg of TASK-651 merge.
   #   # env_passthrough (GH-5277): names of environment variables that survive
   #   # the model-subprocess env scrub (GH-5275/GH-5276) even though their name
   #   # looks secret-shaped (matches *_TOKEN/*_SECRET/*_API_KEY/etc). The scrub

@@ -489,8 +489,16 @@ func checkAgentWorkspacePath(s *runAsSettings, path string) error {
 // checkAgentWorkspacePath is not removed: one Error line. A path that does not
 // exist is nothing to remove. No branch of the daemon's repository is
 // deleted: the daemon's repository never got the task branch, and a local
-// branch with the same name belongs to another flow.
+// branch with the same name belongs to another flow. While the preflight
+// flag is set it starts no process and logs one Warn line: the settings then
+// hold names the preflight did not check (runAsIncompleteRefusal fails before
+// the name check).
 func removeAgentWorkspace(s *runAsSettings, path string) error {
+	if err := runAsSpawnError(); err != nil {
+		slog.Warn("agent workspace not removed: the run_as_user preflight did not pass",
+			slog.Int("directories", 1), slog.String("path", path), slog.Any("error", err))
+		return err
+	}
 	if err := checkAgentWorkspacePath(s, path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
@@ -553,11 +561,21 @@ func agentWorkspaceOrphans(repoPath, taskID string) (*runAsSettings, []string, e
 // sweepAgentWorkspaces removes the orphan workspaces of the project of
 // repoPath (of one task when taskID is set) through removeAgentWorkspace and
 // logs one Info line per removed workspace. It returns the count and the
-// bytes freed. Nothing happens with the option empty.
+// bytes freed. Nothing happens with the option empty. While the preflight
+// flag is set it removes nothing, starts no process and logs one Warn line
+// with the count of the workspaces it found.
 func sweepAgentWorkspaces(repoPath, taskID string) (int, int64) {
 	s, orphans, err := agentWorkspaceOrphans(repoPath, taskID)
 	if err != nil {
 		slog.Warn("agent workspace sweep skipped", slog.String("repo", repoPath), slog.Any("error", err))
+		return 0, 0
+	}
+	if s == nil {
+		return 0, 0
+	}
+	if err := runAsSpawnError(); err != nil {
+		slog.Warn("agent workspace sweep skipped: the run_as_user preflight did not pass",
+			slog.String("repo", repoPath), slog.Int("directories", len(orphans)), slog.Any("error", err))
 		return 0, 0
 	}
 	removed := 0
