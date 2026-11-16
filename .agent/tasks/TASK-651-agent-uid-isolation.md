@@ -1,6 +1,6 @@
 # TASK-651: Agent isolation — agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM
 
-**Status**: 🚀 **State 2026-11-16 22:00Z. In progress: B4 → [pilot#6416](https://github.com/qf-studio/pilot/issues/6416) and N4 → [pilot#6417](https://github.com/qf-studio/pilot/issues/6417) (`pilot` + `no-decompose`, PRs held as drafts until the run-it review).** Merged: U0, U1, F1, F2, F3, B1, G1 (PR#6375), U2 (PR#6383), B2 (PR#6378), N2 (PR#6397), N5 (PR#6405), B3 (PR#6401), B5 (PR#6409), N3 (PR#6410), N6 (PR#6414), B6 (PR#6415). Next in the plan: B7 after B4, B8 after B7 (same file); then P1 (Go side of the host layout, not specified), U3 (spec check against main first), U4 (removes the preflight refusal), U5. **O4 is NO-GO** until B4, B7 and P1 merge. `run_as_user` is refused by the preflight on every host until U3 and U4 merge. **Merge rule (founder, 11-16, mem-319):** the PR stays in draft during the review; with no blocker and green CI it is marked ready and the daemon merges it; the founder is asked only for a blocker, for work that leaves the plan, and for a step on the box. Legs stay small: the task limit of Pilot is one hour. Box fact 11-16: the daemon user is in the group docker (a path to root); the founder asked the infrastructure owner. Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
+**Status**: 🚀 **State 2026-11-16 22:00Z. In progress: B4 → [pilot#6416](https://github.com/qf-studio/pilot/issues/6416) and N4 → [pilot#6417](https://github.com/qf-studio/pilot/issues/6417) (`pilot` + `no-decompose`, PRs held as drafts until the run-it review).** Merged: U0, U1, F1, F2, F3, B1, G1 (PR#6375), U2 (PR#6383), B2 (PR#6378), N2 (PR#6397), N5 (PR#6405), B3 (PR#6401), B5 (PR#6409), N3 (PR#6410), N6 (PR#6414), B6 (PR#6415). Also with Pilot since ~22:30Z: P1 → [pilot#6419](https://github.com/qf-studio/pilot/issues/6419) (Go side of the host layout: data directory option, mode check, Go cache paths) and P3 → [pilot#6420](https://github.com/qf-studio/pilot/issues/6420) (gh shim binary copy, workspace reads as the agent user). Next in the plan: B7 after B4, B8 after B7 (same file); P2 after P1 (firewall probe in the preflight; the gateway part of its design waits for a founder look); then U3 (spec check against main first), U4 (removes the preflight refusal), U5. **O4 is NO-GO** until B4, B7, P1, P2 and P3 merge. `run_as_user` is refused by the preflight on every host until U3 and U4 merge. **Merge rule (founder, 11-16, mem-319):** the PR stays in draft during the review; with no blocker and green CI it is marked ready and the daemon merges it; the founder is asked only for a blocker, for work that leaves the plan, and for a step on the box. Legs stay small: the task limit of Pilot is one hour. Box fact 11-16: the daemon user is in the group docker (a path to root); the founder asked the infrastructure owner. Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
 **Created**: 2026-11-12
 **Assignee**: Pilot (one leg at a time) + operator steps by a Navigator session with founder consent
 **Parent**: TASK-650 leg H1
@@ -65,7 +65,11 @@
 - [ ] **B4** ([#6416](https://github.com/qf-studio/pilot/issues/6416), dispatched 11-16 ~21:55Z; PR held as a draft; blocks O4) host script: a sudo proof that also reads the rules, a warning for the groups of the daemon user. The old B4 block had five items and a damaged scope list; it was split on 11-16 into B4 and B7 so that each part stays inside the one-hour task limit.
 - [ ] **B7** (dispatch-ready, below; after B4, same file; blocks O4) host script: the firewall before the sudo rule, a missing ip6tables fails the apply, undo that goes on and stops the agent processes, a connection check over IPv6 loopback.
 - [ ] **B8** (dispatch-ready, below; after B7, same file) notes from the review of PR#6415: the quote function escapes every byte outside printable ASCII (with LC_ALL=C the class cntrl misses the bytes 0x80 to 0x9f), a test for the locale line, no chmod line for an entry of root, the closing sentence.
-- [ ] **P1** (NOT specified yet; Go, after N4; needs B3 for the paths) from the research of 11-16: the daemon copies its binary into the gh shim directory of each run (today the shim runs the daemon binary as the agent user, and the script closes that binary); the preflight probes the firewall as the agent user (a connection to the metadata address and to the gateway port must fail) because the daemon starts from tmux and no unit can require the firewall; the preflight checks the modes of the daemon's entries at each start; the default of `run_as_workspace_dir` follows the agent root; the Go cache variables of the daemon do not reach the agent.
+- [ ] **P1** ([#6419](https://github.com/qf-studio/pilot/issues/6419), dispatched 11-16 ~22:30Z; PR held as a draft; blocks O4) Go side of the host layout, part 1: the option `run_as_data_dir`, the workspace default below the agent root, a mode check of the daemon's entries at the preflight and before each run, Go cache paths in the agent home.
+- [ ] **P2** (dispatch-ready, below; after P1, same file `agent_command.go`; blocks O4) the preflight probes the firewall as the agent user: a control connection, the metadata address, the gateway port.
+- [ ] **P3** ([#6420](https://github.com/qf-studio/pilot/issues/6420), dispatched 11-16 ~22:30Z; PR held as a draft; before U4 and U5; blocks O4) the gh shim runs a copy of the daemon binary for each run; the workflow file and the project context are read as the agent user.
+- **P1 decisions 11-16 (defaults from the research, no founder call asked; each one can change before the option is turned on):** the data directory is a config field with the script's default, not derived from the workspace path; the mode check runs at the preflight and before each run; for the gateway probe the daemon opens the gateway port for the time of the probe, because the gateway starts after the preflight; the binary copy is for each run (founder call 11-16), about 30 MB of writes. Not checked on the box: the mount type of the temporary directory (a tmpfs makes each copy cost memory), and that bash is on the path of the agent user. The config default of the gateway port is 9090 and the script closes 9091; the probe uses the configured port, so a difference shows as a refusal.
+- **P1 research note of 11-16 (replaced by P1, P2, P3):** the daemon copies its binary into the gh shim directory of each run (today the shim runs the daemon binary as the agent user, and the script closes that binary); the preflight probes the firewall as the agent user (a connection to the metadata address and to the gateway port must fail) because the daemon starts from tmux and no unit can require the firewall; the preflight checks the modes of the daemon's entries at each start; the default of `run_as_workspace_dir` follows the agent root; the Go cache variables of the daemon do not reach the agent.
 - **Box fact 11-16 (read-only check):** the daemon user is in the group docker, which is a path to root, so O1 did not fully remove root from the daemon user. Founder discusses the removal with the infrastructure owner.
 - [x] **B2** (merged 11-15 21:02Z) (PR#6378: real job green on ubuntu-24.04 with the classic sudo, 94 passed; run-it review GO-WITH-NOTES for the merge, NOT ready for a host run; marked ready 11-15) ([#6373](https://github.com/qf-studio/pilot/issues/6373), dispatched 11-15) host script, third run: undo that the agent user cannot block, shared read removed, sudo proof by behaviour, macOS test fix, real iptables and systemd test in CI. O4 waits for it.
 - [x] **U1** (PR#6335 + PR#6342 merged 11-12) config option, one spawn constructor for every model process, allowlist environment, kill through sudo, fail-closed preflight, group-readable guard files (dispatch-ready, below).
@@ -766,6 +770,118 @@ The sudo proof, the firewall order, undo (other legs). A run of the script on a 
 
 - Navigator TASK-651 in this repo · review comment of PR#6415
 
+### LEG P1 — repo: qf-studio/pilot — title: feat(executor): run_as_user host layout — a data directory option, a workspace default below the agent root, a mode check of the daemon's entries, Go cache paths in the agent home (off by default)
+
+probe: present qf-studio/pilot func[[:space:]]refusedRunAsWorkspaceRoot\(
+probe: present qf-studio/pilot func[[:space:]]\(s[[:space:]]\*runAsSettings\)[[:space:]]envBase\(
+probe: present qf-studio/pilot func[[:space:]]fileOwnerUID\(
+probe: absent  qf-studio/pilot func[[:space:]]checkRunAsDataDirModes\(
+
+## Context
+
+Navigator TASK-651. With run_as_user set, the agent runs as a second Unix user. The host script `scripts/box/setup-agent-user.sh` builds this layout: a data directory of the daemon (script default `/var/lib/pilot`), and inside it an agent root that root owns, with `home` and `workspaces` below it. The script closes every other top-level entry of the data directory to other users. The Go side does not know this layout:
+
+- The default of `run_as_workspace_dir` is the constant defaultRunAsWorkspaceDir in `internal/executor/git_command.go`, `/var/lib/pilot/agent-workspaces`. The script creates `/var/lib/pilot/agent/workspaces`.
+- The Go code has no data directory setting, and nothing checks the modes of the daemon's entries. The daemon creates new entries at run time with mode 0755 (logs, state files), and such an entry is open to the agent user.
+- The allowlist runAsAllowedEnv in `internal/executor/agent_command.go` passes GOCACHE and GOMODCACHE with the paths of the daemon, which the agent user cannot write. The script prepares `go`, `go/cache` and `go/mod` below the agent home, and nothing points Go at them.
+
+The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below. With the option empty nothing changes.
+
+## Scope
+
+1. A config field `run_as_data_dir` next to `run_as_workspace_dir` in ClaudeCodeConfig, default `/var/lib/pilot`. Change the default of `run_as_workspace_dir` to `/var/lib/pilot/agent/workspaces`. Update the comments of both fields and the text in `configs/pilot.example.yaml` (no dollar sign followed by a word in that text: the config loader expands it).
+2. A function checkRunAsDataDirModes. Rule, the same as the script: the data directory gives the group and other users no read and no write bit; each top-level entry gives other users no bit, and gives its group no bit when the group is `run_as_group`. The entry that holds the workspace root is skipped. For a symbolic link the check reads the target. A data directory that does not exist fails the check. The result names the first entry that fails and its mode. Read the owner group with the pattern of fileOwnerUID (a Unix file and a stub for other systems).
+3. PreflightRunAsUser runs the check after the workspace root check and refuses the option on a failure. The creation of an agent workspace runs the check again before each run and fails the run on a failure, because the preflight result is kept for the life of the process.
+4. Go paths. With the option set, envBase adds GOCACHE=HOME/go/cache, GOMODCACHE=HOME/go/mod and GOPATH=HOME/go, where HOME is the home of the agent user. A value of the daemon for these three names never reaches the agent.
+5. Tests, table-driven, no root needed, with temporary directories: the data directory with mode 0755 fails and with 0711 passes; an entry with mode 0755 fails and with 0700 passes; an entry with group bits and the shared group fails; the entry that holds the workspace root is skipped; a link to an open directory fails; a missing data directory fails; the preflight refuses on a failed check; the agent environment has the three Go paths and not the daemon's values; with the option empty the environment and the defaults of today stay.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'RunAsDataDir|RunAsUser'` passes; paste the output into the PR body.
+- [ ] Skip the per-run call of the check -> its test fails.
+- [ ] Let a daemon value of GOCACHE pass -> the environment test fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The firewall probe (next leg). The gh shim and reads from the workspace (other leg). The option `run_as_env` (gates leg). A change of mode by the daemon: the check only reads. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo
+
+### LEG P2 — repo: qf-studio/pilot — title: feat(executor): run_as_user preflight — a firewall probe as the agent user for the metadata address and the gateway port (off by default)
+
+probe: present qf-studio/pilot func[[:space:]]sudoNoTerminal\(
+probe: present qf-studio/pilot func[[:space:]]agentCommandAs\(
+probe: present qf-studio/pilot func[[:space:]]checkRunAsDataDirModes\(
+probe: absent  qf-studio/pilot func[[:space:]]checkRunAsFirewall\(
+
+## Context
+
+Navigator TASK-651. With run_as_user set, the agent runs as a second Unix user. The host script installs firewall rules for that user: no connection to the metadata address 169.254.169.254 and no connection to the gateway port of the daemon on loopback (the script uses 9091 and rejects with a TCP reset). The daemon starts by hand in a tmux session, so no systemd unit can require the firewall. Nothing in Go proves that the rules are active: PreflightRunAsUser in `internal/executor/agent_command.go` checks sudo, the home and the workspace root only.
+
+Two facts shape the probe. The preflight runs before the gateway starts, so nothing listens on the gateway port at that time, and a closed port and a reject rule give the same error. A probe tool that is absent gives an error too, which looks like a blocked connection. The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below.
+
+## Scope
+
+1. A function checkRunAsFirewall, held in a variable so that a test can replace it (the pattern of runAsWorkspaceCheck). It runs each connection as the agent user through agentCommandAs with the agent environment: `bash -c` with a redirect to `/dev/tcp/HOST/PORT`, with a limit of 3 seconds for each connection.
+2. Control connection. The daemon opens a listener on 127.0.0.1 with a free port. The connection of the agent user to it must succeed. A failure means that the probe tool does not work, and the check fails with that reason.
+3. Metadata address. The connection of the agent user to 169.254.169.254 port 80 must fail.
+4. Gateway port. PreflightRunAsUser gets the gateway port of the config (a new parameter or a field without a YAML name, set where the caller has the config). The daemon opens a listener on 127.0.0.1 with that port for the time of the probe and closes it after; the connection of the agent user must fail. When the daemon cannot open the listener, the check fails and names the port. With port 0 this part is skipped with one Warn line.
+5. PreflightRunAsUser runs the check as the last probe and refuses the option on a failure; the refusal names the address or the port that the agent user reached. Tests with the fixture that runs commands for real (mockSudoAgent): the control connection fails -> refusal; a listener at the gateway port that the agent reaches -> refusal that names the port; a blocked gateway port (a replaced dial function or the replaced check variable) -> pass; port 0 -> the Warn line; with the option empty no probe runs.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'RunAsFirewall|RunAsUser'` passes; paste the output into the PR body.
+- [ ] Remove the control connection -> the test with the broken probe tool fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The IPv6 metadata address. A change of the firewall or of the host script. A probe at each run. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo
+
+### LEG P3 — repo: qf-studio/pilot — title: feat(executor): run_as_user — the gh shim runs a copy of the daemon binary for each run, the workflow file and the project context are read as the agent user (off by default)
+
+probe: present qf-studio/pilot func[[:space:]]setupGhGuardShim\(
+probe: present qf-studio/pilot func[[:space:]]agentReadFile\(
+probe: present qf-studio/pilot func[[:space:]]loadProjectContext\(
+probe: absent  qf-studio/pilot func[[:space:]]installGhGuardBinary\(
+
+## Context
+
+Navigator TASK-651. With run_as_user set, the agent runs as a second Unix user in a workspace that it owns, and the host script closes the daemon's binary directory to that user. Two things on the Go side do not fit that host:
+
+- setupGhGuardShim in `internal/executor/ghguard_spawn.go` writes a `gh` script that runs the daemon binary (the path from os.Executable) with the subcommand gh-guard. The agent user cannot read that binary on a prepared host, so each `gh` call of the agent fails. After a self-upgrade the path of a running binary on Linux ends in " (deleted)".
+- The daemon reads two files of the workspace as the daemon user and follows a link that the agent put there: `.pilot/workflow.yaml` (Load in `internal/executor/workflow/workflow.go`, called from `runner.go`; its content goes into the prompt and the hook list) and `.agent/DEVELOPMENT-README.md` (loadProjectContext in `internal/executor/prompt_builder.go`; its content goes into the prompt). A link to a file of the daemon moves that file into the prompt.
+
+Founder call 11-16: the daemon binary reaches the gh shim as a copy for each run. The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below. With the option empty nothing changes.
+
+## Scope
+
+1. A function installGhGuardBinary. With the option set, setupGhGuardShim copies the running binary into the shim directory of the run (source `/proc/self/exe`, and the path from os.Executable when that does not exist), with the mode and the group that applyGuardPerm gives the `gh` script. The `gh` script runs the copy. A failed copy fails the set-up of the shim. The clean-up of today removes the copy with the directory.
+2. Workflow file. Split Load into the read and a function that parses given bytes with the path for error text. With the option set and a workspace as the execution path, the runner reads the file through agentReadFile and parses the bytes. A file that does not exist gives the result of today.
+3. Project context. With the option set and a path inside the workspace root, loadProjectContext reads through agentReadFile. A read error gives the empty context of today and one Warn line.
+4. Tests, table-driven, no root needed, with the fixture of the earlier legs (mock sudo): with the option set the shim directory holds an executable copy and the script names it, and with the option empty the script names the daemon binary as today; a link at the workflow file and at the README that points at a file outside the workspace is read by the helper command as the agent user, not by the daemon process (the mock sudo log shows the read); a workflow file over the read limit of the helper stops with an error; with the option empty both reads make the calls of today.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/... -run 'GhGuard|Workflow|ProjectContext|RunAsUser'` passes; paste the output into the PR body.
+- [ ] Read the workflow file with os.ReadFile when the option is set -> its test fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The read of the memory graph in `git.go` (after the hand-over leg). Checks that only test if a path exists. The token file for the gh shim (GitHub access leg). Workflow hooks, gates, evidence commands (gates leg). Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo
+
 ### LEG U3 — repo: qf-studio/pilot — title: feat(executor): run_as_user hand-over — the daemon takes the branch from the agent workspace as a bundle, runs the secret gate on its own refs and pushes from its own repository with hooks off
 
 probe: present qf-studio/pilot \)[[:space:]]createAgentWorkspace\(
@@ -1164,3 +1280,5 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - B6 → https://github.com/qf-studio/pilot/issues/6412
 - B4 → https://github.com/qf-studio/pilot/issues/6416
 - N4 → https://github.com/qf-studio/pilot/issues/6417
+- P1 → https://github.com/qf-studio/pilot/issues/6419
+- P3 → https://github.com/qf-studio/pilot/issues/6420
