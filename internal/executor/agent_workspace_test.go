@@ -409,7 +409,7 @@ func linkDaemonObject(t *testing.T, repo, ws string) {
 // moving any ref and returns its SHA.
 func gitTestCommitDetached(t *testing.T, dir string) string {
 	t.Helper()
-	return wsGit(t, dir, "commit-tree", "-p", "HEAD", "-m", "detached", "HEAD^{tree}")
+	return wsGit(t, dir, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "-p", "HEAD", "-m", "detached", "HEAD^{tree}")
 }
 
 func TestCreateAgentWorkspaceRefusesWithoutTheOption(t *testing.T) {
