@@ -379,3 +379,32 @@ func TestReconcileLaneStarvation_EvidenceLog(t *testing.T) {
 		})
 	}
 }
+
+// mutation pin: the evidence line reports the pre-queue cooldown read as alert_due -> this test fails
+//
+// GH-6396: the gate is read before ProcessEvent, and the engine writes the
+// cooldown clock only when it fires on its event loop. With an earlier event
+// still queued the read is stale, so the line reports what it read
+// (cooldown_clear) and never claims the alert fires.
+func TestReconcileLaneStarvation_EvidenceLogDoesNotClaimTheAlert(t *testing.T) {
+	server := laneStarvationServer(t, []laneStarvationFakeIssue{
+		{number: 42, labels: []string{github.LabelPilot}},
+	})
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	c := NewController(DefaultConfig(), github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL), nil,
+		"owner", "repo", WithProjectPath("/proj"), WithLogger(logger))
+	sink := &fakeLaneStarvationGateSink{due: true}
+	c.SetAlertsEngine(sink)
+	c.SetLaneQueueStatus(&fakeLaneQueueStatus{counts: map[string]int{}})
+
+	c.reconcileLaneStarvation(context.Background())
+
+	out := buf.String()
+	if !strings.Contains(out, "cooldown_clear=true") {
+		t.Errorf("evidence line missing cooldown_clear=true; log:\n%s", out)
+	}
+	if strings.Contains(out, "alert_due") {
+		t.Errorf("evidence line claims alert_due from a read taken before the engine decides; log:\n%s", out)
+	}
+}

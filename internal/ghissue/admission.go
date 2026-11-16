@@ -19,15 +19,25 @@ var AdmissionGateLabels = []string{
 	github.LabelNeedsClarification,
 }
 
-// NotAdmittedLabels are the labels that keep an open trigger-labelled issue
-// out of dispatch on the GitHub poller path: the AdmissionGateLabels, the
-// unconditional skips of the SDK poller's candidate filter (pilot-in-progress,
-// pilot-done), and pilot-spec-incomplete — the spec guard set it on the first
-// strike and the next pick of an unchanged body escalates to pilot-blocked
-// instead of dispatching.
-var NotAdmittedLabels = append(append([]string{}, AdmissionGateLabels...),
+// SDKCandidateSkipLabels are the unconditional skips of the SDK poller's
+// candidate filter (studio-sdk poller.go, outside this checkout). Unlike
+// AdmissionGateLabels, nothing reads this list on the admission side: the SDK
+// filter checks its own constants, and cmd/pilot only hands it the trigger
+// label. Holding the SDK constants keeps a rename in step, but a skip the SDK
+// adds or drops is not picked up here.
+var SDKCandidateSkipLabels = []string{
 	github.LabelInProgress,
 	github.LabelDone,
+}
+
+// NotAdmittedLabels are the labels that keep an open trigger-labelled issue
+// out of dispatch on the GitHub poller path: the AdmissionGateLabels (shared
+// with the host gate), the SDKCandidateSkipLabels (a copy of the SDK filter,
+// see there), and pilot-spec-incomplete — the spec guard set it on the first
+// strike and the next pick of an unchanged body escalates to pilot-blocked
+// instead of dispatching.
+var NotAdmittedLabels = append(append(append([]string{}, AdmissionGateLabels...),
+	SDKCandidateSkipLabels...),
 	github.LabelSpecIncomplete,
 )
 

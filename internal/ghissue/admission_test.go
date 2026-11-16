@@ -1,6 +1,7 @@
 package ghissue
 
 import (
+	"slices"
 	"testing"
 
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
@@ -43,5 +44,21 @@ func TestPollerAdmits(t *testing.T) {
 				t.Errorf("PollerAdmits = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// mutation pin: NotAdmittedLabels lists the SDK candidate skips inline instead of through SDKCandidateSkipLabels -> this test fails
+func TestNotAdmittedLabels_Composition(t *testing.T) {
+	var want []string
+	want = append(want, AdmissionGateLabels...)
+	want = append(want, SDKCandidateSkipLabels...)
+	want = append(want, github.LabelSpecIncomplete)
+	if !slices.Equal(NotAdmittedLabels, want) {
+		t.Fatalf("NotAdmittedLabels = %v, want AdmissionGateLabels + SDKCandidateSkipLabels + %s = %v",
+			NotAdmittedLabels, github.LabelSpecIncomplete, want)
+	}
+	if !slices.Equal(SDKCandidateSkipLabels, []string{github.LabelInProgress, github.LabelDone}) {
+		t.Errorf("SDKCandidateSkipLabels = %v, want the SDK filter's unconditional skips [%s %s]",
+			SDKCandidateSkipLabels, github.LabelInProgress, github.LabelDone)
 	}
 }
