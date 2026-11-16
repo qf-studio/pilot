@@ -1,6 +1,6 @@
 # TASK-651: Agent isolation — agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM
 
-**Status**: 🚀 **U0, U1, F1, F2, F3 and B1 merged. Step 5 is split into G1 → U2 → N1 after a spec check against `origin/main` 1e99ccbe0 (2026-11-15); 🚀 N1 DISPATCHED 2026-11-16 → [pilot#6385](https://github.com/qf-studio/pilot/issues/6385) (`pilot` + `no-decompose`, PR held as a draft). Merged: G1 PR#6375, U2 PR#6383 (pilot#6380), B2 PR#6378 (real job on ubuntu-24.04 with the classic sudo; two hand commits by founder call). B3 (host script, fourth run) is not specified and blocks O4. Earlier: G1 DISPATCHED 2026-11-15 → [pilot#6372](https://github.com/qf-studio/pilot/issues/6372) and B2 DISPATCHED 2026-11-15 → [pilot#6373](https://github.com/qf-studio/pilot/issues/6373) (`pilot` + `no-decompose`); both PRs are held as drafts until a run-it review; U2 and N1 are held until G1 merges (same directory).** The check found 110 inline git sites (not about 70), about ten daemon writes into the workspace, a base ref that can be a SHA only FETCH_HEAD holds, and a Navigator copy that follows a link above the last path element. Design change 11-15 (founder approved): the base commit reaches the workspace as a bundle on a stream and the agent user reads no repository of the daemon, so B2 removes the shared read of the host script. **O4 is still NO-GO** until B2 merges and its real iptables and systemd job passes. `run_as_user` stays empty on every host until U3 and U4 merge. Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. Order: G1 → U2 → N1 → U3 → U4 → U5, B2 beside them (other directory). **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
+**Status**: 🚀 **U0, U1, F1, F2, F3 and B1 merged. Step 5 is split into G1 → U2 → N1 after a spec check against `origin/main` 1e99ccbe0 (2026-11-15); 🚀 N2 DISPATCHED 2026-11-16 → [pilot#6387](https://github.com/qf-studio/pilot/issues/6387) (`pilot` + `no-decompose`, PR held as a draft). N1 (pilot issue 6385) ran into the one-hour task limit twice and is split into N2 → N3 → N4. Merged: G1 PR#6375, U2 PR#6383 (pilot#6380), B2 PR#6378 (real job on ubuntu-24.04 with the classic sudo; two hand commits by founder call). B3 (host script, fourth run) is not specified and blocks O4. Earlier: G1 DISPATCHED 2026-11-15 → [pilot#6372](https://github.com/qf-studio/pilot/issues/6372) and B2 DISPATCHED 2026-11-15 → [pilot#6373](https://github.com/qf-studio/pilot/issues/6373) (`pilot` + `no-decompose`); both PRs are held as drafts until a run-it review; U2 and N1 are held until G1 merges (same directory).** The check found 110 inline git sites (not about 70), about ten daemon writes into the workspace, a base ref that can be a SHA only FETCH_HEAD holds, and a Navigator copy that follows a link above the last path element. Design change 11-15 (founder approved): the base commit reaches the workspace as a bundle on a stream and the agent user reads no repository of the daemon, so B2 removes the shared read of the host script. **O4 is still NO-GO** until B2 merges and its real iptables and systemd job passes. `run_as_user` stays empty on every host until U3 and U4 merge. Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. Order: G1 → U2 → N1 → U3 → U4 → U5, B2 beside them (other directory). **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
 **Created**: 2026-11-12
 **Assignee**: Pilot (one leg at a time) + operator steps by a Navigator session with founder consent
 **Parent**: TASK-650 leg H1
@@ -61,11 +61,14 @@
 - [x] **U1** (PR#6335 + PR#6342 merged 11-12) config option, one spawn constructor for every model process, allowlist environment, kill through sudo, fail-closed preflight, group-readable guard files (dispatch-ready, below).
 - [x] **G1** (PR#6375 merged 11-15 17:19Z after a run-it review, GO-WITH-NOTES; the notes go to U2 item 10 and to U4; the post-merge minors issue 6377 was closed as not planned on 11-15: its branch ran the secret gate through sudo as the agent user, which is the opposite of the hand-over design, and the pre-PR review held it; its useful items are in U2 items 10 and 11) ([#6372](https://github.com/qf-studio/pilot/issues/6372), dispatched 11-15; split from U2 on 11-15 after a spec check against `origin/main` 1e99ccbe0) one constructor for every git command of the executor package (110 inline sites), with the route to the agent user for a directory inside the workspace root; config field `run_as_workspace_dir`; fail-closed; a source test.
 - [x] **U2** (PR#6383 merged 11-16 06:43Z after a run-it review, GO-WITH-NOTES; notes go to N1 items 7 and 8) ([#6380](https://github.com/qf-studio/pilot/issues/6380), dispatched 11-15 ~20:00Z) workspace as an agent-owned clone under the workspace root (base commit as a bundle that the daemon sends, no alternates, no read of the daemon's repository), cleanup and sweeps as the agent user with the project in the directory name, preflight for the root, `use_worktree` and the pool.
-- [ ] **N1** ([#6385](https://github.com/qf-studio/pilot/issues/6385), dispatched 11-16; PR held as a draft; split from U2 on 11-15) the daemon writes no file into the workspace (task document, Navigator files, settings file go through a helper as the agent user); Navigator copy in as a tar stream, copy out without a followed link at any path element.
+- **N1** (issue 6385, dispatched 11-16) ran into the one-hour task limit twice and pushed no branch; closed as not planned and split into N2, N3, N4 on 11-16.
+- [ ] **N2** ([#6387](https://github.com/qf-studio/pilot/issues/6387), dispatched 11-16 ~10:10Z; PR held as a draft) the preflight refuses the option until the gates leg merges; the corrections of the workspace leg from its review; the macOS test fix.
+- [ ] **N3** (dispatch-ready, below; needs N2) the daemon writes the task document, the Navigator files and the settings file through a helper that runs as the agent user.
+- [ ] **N4** (dispatch-ready, below; needs N3) Navigator copy in as a tar stream, copy out without a followed link at any path element.
 - [ ] **U3** (dispatch-ready, below; needs U2) hand-over as a bundle that the agent writes and the daemon fetches into `refs/pilot/handover/<task>`; the secret gate and the push run only in the daemon's repository, with replace refs ignored and hooks off; PR creation, recovery ref and the preserve commit follow. Closes the gate-trust class of mem-308 when the option is set (seven shapes; the tamper table is the test list of the leg).
 - [ ] **U4** (dispatch-ready, below; needs U2) quality gates, workflow hooks, evidence commands and the lint fix as the agent user with the allowlist environment; `run_as_env` for values such as the Go caches.
 - [ ] **U5** (dispatch-ready, below; needs U3 and, on the box, O2) read-only installation token per run in a file for the `gh` shim and a git credential helper (also serves the fetch of a private module); per-project override of the option.
-- **Order (founder call 11-12; U2 split into G1 → U2 → N1 on 11-15):** U1 → F1 → F2 → G1 → U2 → N1 → U3 → U4 → U5, one at a time. `run_as_user` stays empty on every host until U3 **and** U4 merge: until then the gate, the quality gates and the hooks run as the daemon inside the agent-owned clone. The poller holds legs that touch the same directory, so a parallel dispatch gains nothing. Check for an open post-merge-review issue on the same files before each dispatch (mem-301).
+- **Order (founder call 11-12; U2 split into G1 → U2 → N1 on 11-15):** U1 → F1 → F2 → G1 → U2 → N2 → N3 → N4 → U3 → U4 → U5, one at a time. `run_as_user` stays empty on every host until U3 **and** U4 merge: until then the gate, the quality gates and the hooks run as the daemon inside the agent-owned clone. The poller holds legs that touch the same directory, so a parallel dispatch gains nothing. Check for an open post-merge-review issue on the same files before each dispatch (mem-301).
 
 ### Phase S — switch
 
@@ -259,12 +262,44 @@ Files that the daemon writes into the workspace (task document, Navigator files,
 
 - Navigator TASK-651 in this repo · design section 4.2
 
-### LEG N1 — repo: qf-studio/pilot — title: feat(executor): run_as_user workspace files — the daemon writes no file into the agent workspace and follows no link when it reads from it (off by default)
+### LEG N2 — repo: qf-studio/pilot — title: fix(executor): run_as_user — the preflight refuses the option until the gates leg merges; corrections of the agent workspace from its review (off by default)
 
 probe: present qf-studio/pilot \)[[:space:]]createAgentWorkspace\(
-probe: present qf-studio/pilot CopyNavigatorBackFromWorktree\(
-probe: present qf-studio/pilot EnsureNavigatorInWorktree\(
 probe: present qf-studio/pilot func[[:space:]]verifyAgentWorkspace\(
+probe: present qf-studio/pilot func[[:space:]]PreflightRunAsUser\(
+probe: absent  qf-studio/pilot runAsIncompleteRefusa[l]
+
+## Context
+
+Navigator TASK-651 (design in `.agent/system/agent-isolation-design.md`, section 4.2). With run_as_user set, the workspace of a run is a clone that the agent user owns (createAgentWorkspace in `internal/executor/agent_workspace.go`), and a git command inside the workspace root runs as the agent user (`internal/executor/git_command.go`). A run-it review of that leg found the points below. This leg is one of three parts of the earlier workspace-files leg (issue 6385 ran into the one-hour task limit twice). Keep the change small: only the items below. With the option empty nothing changes.
+
+## Scope
+
+1. Interlock (from the run-it review of the workspace leg). With run_as_user set, daemon-user processes still run inside the agent-owned workspace until the gates leg merges: workflow hooks and quality gates in `internal/executor/runner.go`, the gate commands of `internal/quality/runner.go`, and an inline git command in `internal/quality/scope.go`. PreflightRunAsUser therefore fails closed for every host with one Error line that names the legs that are not merged (hand-over, gates). One unexported package variable switches the refusal off for tests. The config example says that the option cannot be set yet. The gates leg removes the refusal. Name the switch runAsIncompleteRefusal.
+2. Corrections of the workspace leg, from the same review. (a) The workspace gets the ref refs/remotes/origin/BASE at the base commit, so that the commit count and the merge-base of a run work; a test runs both in a new workspace. (b) The check of `-C` and `--git-dir` in `internal/executor/git_command.go` reads every argument before the subcommand, also after an option that takes a value (--namespace, --attr-source, --config-env, -c); a test gives each form from an outside directory and gets Err. (c) The workspace sweep runs only in the daemon process at start and for a task that the daemon owns; the one-shot commands in `cmd/pilot/commands.go` do not remove workspaces. (d) An empty task ID is refused by createAgentWorkspace. (e) The check after the creation also fails when the objects directory of the workspace is a symbolic link; add tests that fail when the alternates check, the hard-link check or the refs check is removed. (f) The test TestGitCommandRouteInsideRoot resolves its temporary directory first, so that it passes on macOS.
+3. Tests, table-driven, no root needed, with the mock sudo helper that runs the command (mockSudoExec) and stubRunAsGOOS: one test for each lettered point of item 2 and one for item 1.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ ./cmd/pilot/ -run 'RunAsUser|AgentWorkspace|GitCommand|Preflight|OrphanedWorktree'` passes; paste the output into the PR body.
+- [ ] Remove the refusal of item 1 -> its test fails.
+- [ ] Remove the alternates check, the hard-link check or the refs check -> a test fails for each.
+- [ ] `go test -count=1 ./internal/executor/ -run TestGitCommandRouteInsideRoot` passes on macOS and on Linux.
+- [ ] With the option empty, the tests that exist today pass without a change to their assertions.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+Files that the daemon writes into the workspace and the Navigator copy (next two legs). The push, the secret gate, the PR creation, the recovery ref and the co-author strip (hand-over leg). Quality gates, workflow hooks, evidence commands and the lint fix (gates leg). The GitHub token for the agent. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · design section 4.2
+
+### LEG N3 — repo: qf-studio/pilot — title: feat(executor): run_as_user workspace files — the daemon writes the task document, the Navigator files and the settings file through a helper that runs as the agent user (off by default)
+
+probe: present qf-studio/pilot \)[[:space:]]createAgentWorkspace\(
+probe: present qf-studio/pilot runAsIncompleteRefusal
 probe: absent  qf-studio/pilot func[[:space:]]agentWriteFil[e]\(
 
 ## Context
@@ -280,26 +315,56 @@ Places at origin/main 1e99ccbe0 where the daemon process writes into the workspa
 
 The rule of this leg: with the option set, the daemon process creates, changes and removes no file inside the workspace root, and a read of the daemon from the workspace never leaves the workspace. With the option empty nothing changes. The option stays empty on every host until the hand-over leg and the gates leg merge.
 
+This leg is one of three parts of the earlier workspace-files leg (issue 6385 ran into the one-hour task limit twice). Keep the change small: only the items below. The Navigator copy in both directions is the next leg.
+
 ## Scope
 
 1. Helper, new file, plain text: internal/executor/agent_files.go. A function agentWriteFile(ctx, path, data, mode) and what the sites below need next to it (make a directory, rename, remove). With the option set and a path inside the workspace root (the path rule of the git constructor) the operation runs as the agent user through agentCommand, with the data on standard input and never in the argv. With the option empty, or outside the root, it is the os call of today. An error of agentCommand is returned; there is no fallback to a direct write.
-2. Move every write of the Context list to the helper. Go through each function to its last file operation. A site whose result the session reads or the commit holds goes through the helper. A site that only serves the daemon can be skipped with one Info line when the option is set. The PR body has a table: site, file and line, helper or skipped, reason.
+2. Move every write of the Context list to the helper. Go through each function to its last file operation. A site whose result the session reads or the commit holds goes through the helper. A site that only serves the daemon can be skipped with one Info line when the option is set. The PR body has a table: site, file and line, helper or skipped, reason. The Navigator copy functions EnsureNavigatorInWorktree and CopyNavigatorBackFromWorktree are NOT part of this leg.
 3. The settings file: with the option set, a failure of its write stops the run with one Error line. It is not a Warn line.
 4. Evidence commands: the mutate and revert writes in `internal/executor/acceptance_evidence_run.go` belong to the gates leg. With the option set, this leg makes them return an error that names that leg.
-5. Navigator copy into the workspace, option set: the daemon reads the files that EnsureNavigatorInWorktree selects today and sends them as one tar stream to a tar process that runs as the agent user in the workspace. The agent user needs no read access to the daemon's working tree, and the daemon writes no file into the workspace.
-6. Navigator copy out of the workspace, option set: the daemon reads data only. It opens each path element below the workspace without following a link (a check of every element, and O_NOFOLLOW on the file), accepts regular files only, and resolves each destination inside the Navigator directory of the daemon's repository (a path that leaves it is rejected). The list of tracked paths comes through the git constructor. A failure of that list stops the copy out with one Warn line that names the task; nothing is copied.
-7. Interlock (from the run-it review of the workspace leg). With run_as_user set, daemon-user processes still run inside the agent-owned workspace until the gates leg merges: workflow hooks and quality gates in `internal/executor/runner.go`, the gate commands of `internal/quality/runner.go`, and an inline git command in `internal/quality/scope.go`. PreflightRunAsUser therefore fails closed for every host with one Error line that names the legs that are not merged (hand-over, gates). One unexported package variable switches the refusal off for tests. The config example says that the option cannot be set yet. The gates leg removes the refusal.
-8. Corrections of the workspace leg, from the same review. (a) The workspace gets the ref refs/remotes/origin/BASE at the base commit, so that the commit count and the merge-base of a run work; a test runs both in a new workspace. (b) The check of `-C` and `--git-dir` in `internal/executor/git_command.go` reads every argument before the subcommand, also after an option that takes a value (--namespace, --attr-source, --config-env, -c); a test gives each form from an outside directory and gets Err. (c) The workspace sweep runs only in the daemon process at start and for a task that the daemon owns; the one-shot commands in `cmd/pilot/commands.go` do not remove workspaces. (d) An empty task ID is refused by createAgentWorkspace. (e) The check after the creation also fails when the objects directory of the workspace is a symbolic link; add tests that fail when the alternates check, the hard-link check or the refs check is removed. (f) The test TestGitCommandRouteInsideRoot resolves its temporary directory first, so that it passes on macOS.
-9. Tests, table-driven, no root needed, with a fixture that shows the boundary: the workspace root is not writable for the test process, and the mock sudo helper makes it writable only while its command runs. Cases: each site of item 2 that uses the helper produces its file in the workspace; a direct os.WriteFile into the workspace fails in the fixture (control case); the settings failure stops the run; the copy in gives the same files as today, with a file that git does not track; the copy out copies a regular file; the copy out copies nothing through a symbolic link at `.agent`, at a directory below it, and at a file, when each link points at a file outside the workspace; a failed tracked-path list copies nothing and logs the Warn line; with the option empty every site makes the os call of today.
+5. Tests, table-driven, no root needed, with a fixture that shows the boundary: the workspace root is not writable for the test process, and the mock sudo helper makes it writable only while its command runs. Cases: each site of item 2 that uses the helper produces its file in the workspace; a direct os.WriteFile into the workspace fails in the fixture (control case); the settings failure stops the run; a path outside the workspace root makes the os call of today; with the option empty every site makes the os call of today.
 
 ## Acceptance
 
-- [ ] `go test -race -count=1 ./internal/executor/ ./cmd/pilot/ -run 'AgentFiles|AgentWriteFile|NavigatorCopy|WorkspaceWrites|RunAsUser|AgentWorkspace|GitCommand|Preflight'` passes; paste the output into the PR body.
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'AgentFiles|AgentWriteFile|WorkspaceWrites|RunAsUser'` passes; paste the output into the PR body.
 - [ ] Change one helper site back to os.WriteFile -> its test fails in the fixture.
-- [ ] Check only the last path element in the copy out -> the test with the link at `.agent` fails.
 - [ ] Make the settings failure a Warn line again -> its test fails.
-- [ ] Remove the refusal of item 7 -> its test fails.
-- [ ] `go test -count=1 ./internal/executor/ -run TestGitCommandRouteInsideRoot` passes on macOS and on Linux.
+- [ ] With the option empty, the tests that exist today pass without a change to their assertions.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The Navigator copy into and out of the workspace (next leg). The push, the secret gate, the PR creation, the recovery ref and the co-author strip (hand-over leg). Quality gates, workflow hooks, evidence commands and the lint fix (gates leg). The GitHub token for the agent. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · design section 4.2
+
+### LEG N4 — repo: qf-studio/pilot — title: feat(executor): run_as_user Navigator copy — into the workspace as a tar stream to the agent user, out of it without a followed link at any path element (off by default)
+
+probe: present qf-studio/pilot \)[[:space:]]createAgentWorkspace\(
+probe: present qf-studio/pilot func[[:space:]]agentWriteFile\(
+probe: present qf-studio/pilot CopyNavigatorBackFromWorktree\(
+probe: present qf-studio/pilot EnsureNavigatorInWorktree\(
+probe: absent  qf-studio/pilot navigatorTarStrea[m]
+
+## Context
+
+Navigator TASK-651 (design in `.agent/system/agent-isolation-design.md`, section 4.2). With run_as_user set, the workspace of a run is a clone that the agent user owns, and the daemon writes its own files there through the helper agentWriteFile (earlier legs). Two functions in `internal/executor/worktree.go` still work as the daemon user inside the workspace. EnsureNavigatorInWorktree copies the `.agent` directory of the daemon's repository into the workspace, with files that git does not track; the agent user has no read access to that working tree. CopyNavigatorBackFromWorktree copies Navigator files out of the workspace: it checks the type of the last path element only, so a symbolic link in place of `.agent` or of a directory below it is followed, there is a window between its check and its read, and it runs `git -C WORKSPACE ls-files` (gitListPaths) and ignores a failure of that command.
+
+The rule of this leg: with the option set, the daemon process creates, changes and removes no file inside the workspace root, and a read of the daemon from the workspace never leaves the workspace. This leg is one of three parts of the earlier workspace-files leg (issue 6385 ran into the one-hour task limit twice). Keep the change small: only the items below. With the option empty nothing changes.
+
+## Scope
+
+1. Navigator copy into the workspace, option set: the daemon reads the files that EnsureNavigatorInWorktree selects today and sends them as one tar stream to a tar process that runs as the agent user in the workspace. The agent user needs no read access to the daemon's working tree, and the daemon writes no file into the workspace. Name the function that builds the stream navigatorTarStream.
+2. Navigator copy out of the workspace, option set: the daemon reads data only. It opens each path element below the workspace without following a link (a check of every element, and O_NOFOLLOW on the file), accepts regular files only, and resolves each destination inside the Navigator directory of the daemon's repository (a path that leaves it is rejected). The list of tracked paths comes through the git constructor. A failure of that list stops the copy out with one Warn line that names the task; nothing is copied.
+3. Tests, table-driven, no root needed, with the fixture of the earlier leg (the workspace root is writable only while a mock sudo command runs). Cases: the copy in gives the same files as today, with a file that git does not track; the copy out copies a regular file; the copy out copies nothing through a symbolic link at `.agent`, at a directory below it, and at a file, when each link points at a file outside the workspace; a failed tracked-path list copies nothing and logs the Warn line; with the option empty both functions make the calls of today.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'NavigatorCopy|NavigatorTar|RunAsUser'` passes; paste the output into the PR body.
+- [ ] Check only the last path element in the copy out -> the test with the link at `.agent` fails.
 - [ ] With the option empty, the Navigator copy tests that exist today pass without a change to their assertions.
 - [ ] Do not re-run make build, make test or make lint as evidence.
 
@@ -751,3 +816,4 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - B2 → https://github.com/qf-studio/pilot/issues/6373
 - U2 → https://github.com/qf-studio/pilot/issues/6380
 - N1 → https://github.com/qf-studio/pilot/issues/6385
+- N2 → https://github.com/qf-studio/pilot/issues/6387
