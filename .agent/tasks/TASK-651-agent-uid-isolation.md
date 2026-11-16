@@ -59,7 +59,10 @@
 - [ ] **B3** ([#6389](https://github.com/qf-studio/pilot/issues/6389), dispatched 11-16; the first attempt pushed one commit and opened no PR, the second could not push over it; founder call 11-16: draft PR#6401 opened by hand from that branch, CI and run-it review pending; blocks O4; founder calls 11-16: agent root at DATA_DIR/agent, the daemon binary reaches the gh shim as a copy for each run) host script, fourth run, part 1: agent root owned by root, no root step in an agent-owned directory, the daemon's entries closed with printed chmod lines, a proof as the agent user.
 - **B3 result:** PR#6401 merged 11-16 17:36Z on the founder's instruction with one open blocker from the run-it review (NO-GO as it was): the daemon user can forge a line of the mode record, and undo prints it as a `chmod` line. B5 fixes it; no host runs the script before B5 and B4 merge.
 - [ ] **B5** ([#6407](https://github.com/qf-studio/pilot/issues/6407), dispatched 11-16; PR held as a draft; blocks O4) the mode record and the printed chmod lines accept only plain paths inside the data directory; undo skips a line with a setuid mode.
-- [ ] **B4** (dispatch-ready, below; needs B5; blocks O4) host script, fourth run, part 2: a sudo proof that reads the rules, the firewall before the sudo rule, a warning for the groups of the daemon user, undo that goes on and stops the agent processes.
+- **B5 result:** PR#6409 merged 11-16 20:07Z after a run-it review (GO-WITH-NOTES) and the founder's "merge". **N3 result:** PR#6410 merged 11-16 20:07Z in the same way.
+- [ ] **B6** ([#6412](https://github.com/qf-studio/pilot/issues/6412), dispatched 11-16; PR held as a draft; blocks O4) the printed chmod lines run as the daemon user; a link to the data directory or the agent root is refused; LC_ALL=C.
+- [ ] **N6** ([#6411](https://github.com/qf-studio/pilot/issues/6411), dispatched 11-16; PR held as a draft) size limit for a read as the agent user; the settings clean-up failure stops the run; file mode; the rename helper removed. N4 follows it.
+- [ ] **B4** (dispatch-ready, below; needs B6; blocks O4) host script, fourth run, part 2: a sudo proof that reads the rules, the firewall before the sudo rule, a warning for the groups of the daemon user, undo that goes on and stops the agent processes.
 - [ ] **P1** (NOT specified yet; Go, after N4; needs B3 for the paths) from the research of 11-16: the daemon copies its binary into the gh shim directory of each run (today the shim runs the daemon binary as the agent user, and the script closes that binary); the preflight probes the firewall as the agent user (a connection to the metadata address and to the gateway port must fail) because the daemon starts from tmux and no unit can require the firewall; the preflight checks the modes of the daemon's entries at each start; the default of `run_as_workspace_dir` follows the agent root; the Go cache variables of the daemon do not reach the agent.
 - **Box fact 11-16 (read-only check):** the daemon user is in the group docker, which is a path to root, so O1 did not fully remove root from the daemon user. Founder discusses the removal with the infrastructure owner.
 - [x] **B2** (merged 11-15 21:02Z) (PR#6378: real job green on ubuntu-24.04 with the classic sudo, 94 passed; run-it review GO-WITH-NOTES for the merge, NOT ready for a host run; marked ready 11-15) ([#6373](https://github.com/qf-studio/pilot/issues/6373), dispatched 11-15) host script, third run: undo that the agent user cannot block, shared read removed, sudo proof by behaviour, macOS test fix, real iptables and systemd test in CI. O4 waits for it.
@@ -385,6 +388,46 @@ The Navigator copy into and out of the workspace (next leg). The push, the secre
 
 - Navigator TASK-651 in this repo · design section 4.2
 
+### LEG N6 — repo: qf-studio/pilot — title: fix(executor): run_as_user workspace files — a size limit for a read as the agent user, the settings clean-up failure stops the run, a new file keeps its mode, the unused rename helper is removed
+
+probe: present qf-studio/pilot func[[:space:]]agentWriteFile\(
+probe: present qf-studio/pilot func[[:space:]]agentReadFile\(
+probe: present qf-studio/pilot func[[:space:]]runAgentFileScript\(
+probe: absent  qf-studio/pilot agentFileReadLimi[t][[:space:]]*=
+
+## Context
+
+Navigator TASK-651. With run_as_user set, the daemon reads and writes files of the agent workspace through helpers in `internal/executor/agent_files.go` that run a small command as the agent user (agentWriteFile, agentReadFile, runAgentFileScript). A run-it review of that leg found the points below. This is a small leg: only the items below. With the option empty nothing changes.
+
+1. A read as the agent user has no size limit: runAgentFileScript collects the standard output and the standard error of the command in memory without a bound. The agent can put a symbolic link to an endless file at a path that the daemon reads (the settings file, go.mod), and the daemon collects data for the whole timeout.
+2. A failed write of CleanStalePilotHooks on the settings file of the workspace is a Warn line in `internal/executor/runner.go`. The earlier leg asked for a stop of the run for a failed settings write; only the two merge calls stop it.
+3. agentWriteFile with the mode 0755 creates a file with mode 0644, so a restored executable file loses its execute bit.
+4. agentRename uses `mv -f -T`, which only the GNU form of mv has. Its test fails on macOS. No production code calls agentRename.
+
+## Scope
+
+1. A limit for the read: a constant with the name agentFileReadLimit (4 MB) for the standard output of a read, and 64 KB for the standard error of every helper command. Over the limit the helper stops the command through the cancel path of agentCommand and returns an error that names the path and the limit. No partial content is returned.
+2. With the option set, a failed write of CleanStalePilotHooks on the settings file of the workspace stops the run with one Error line, as the two merge calls do.
+3. agentWriteFile gives a new file the requested mode: the permission bits of the result equal the requested bits and no more.
+4. Remove agentRename and its test.
+5. Tests with the fixture of the earlier leg: a read of a file over the limit returns the error and the mock records the kill; a read of a link to an endless source returns inside 5 seconds; a failed clean-up write stops the run; a file written with 0755 has 0755 and a file written with 0600 has 0600; the package tests pass on macOS.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'AgentFiles|AgentWriteFile|WorkspaceWrites|RunAsUser'` passes on macOS and on Linux; paste the output into the PR body.
+- [ ] Remove the limit of item 1 -> its test fails.
+- [ ] Make the clean-up failure a Warn line again -> its test fails.
+- [ ] With the option empty, the tests that exist today pass without a change to their assertions.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The Navigator copy into and out of the workspace (next leg). Other reads of the daemon from the workspace (the workflow file, the README and the environment context for the prompt): they belong to the gates leg. The push, the secret gate, quality gates and workflow hooks.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comment of PR#6410
+
 ### LEG N4 — repo: qf-studio/pilot — title: feat(executor): run_as_user Navigator copy — into the workspace as a tar stream to the agent user, out of it without a followed link at any path element (off by default)
 
 probe: present qf-studio/pilot \)[[:space:]]createAgentWorkspace\(
@@ -556,6 +599,49 @@ The sudo proof, the order of the firewall steps, the warning for the groups of t
 ## Refs
 
 - Navigator TASK-651 in this repo · review comment of PR#6401
+
+### LEG B6 — repo: qf-studio/pilot — title: fix(box): agent user setup script — the printed chmod lines run as the daemon user, a link to the data directory or the agent root is refused, the path check does not depend on the locale
+
+probe: present qf-studio/pilot ^plain_data_path\(\)
+probe: present qf-studio/pilot ^step_daemon_private\(\)
+probe: absent  qf-studio/pilot ^chmod_as_daemon_lin[e]\(\)
+
+## Context
+
+Navigator TASK-651. The script `scripts/box/setup-agent-user.sh` checks in step_daemon_private that the entries of the daemon's data directory are closed to other users. It changes no mode: it prints one `chmod` line for each entry for the operator, and --undo prints the lines that put the earlier modes back from a record that belongs to root. The function plain_data_path decides which paths can be recorded and printed. Tests: `scripts/box/setup-agent-user_test.sh` (mocked) and `scripts/box/setup-agent-user_real_test.sh` (real, CI job box-scripts-real). No host has run the script. This is a small leg: only the items below.
+
+A run-it review found these points.
+
+1. The printed lines follow a link. The daemon user owns its entries, so it can replace an entry with a symbolic link after the script printed the line. The operator runs the line as root. On apply, root removes permission bits on a path that the daemon user chose. On undo it is worse: the daemon user sets an entry to mode 777 before the apply, the record holds 777 for it, the daemon user replaces the entry with a link to a system file, and the printed `chmod 777` makes that file writable for all users.
+2. A link in the data directory that resolves to the data directory itself gives a `chmod o-rwx` line for the data directory, which removes the traverse that the agent user needs. A link that resolves to the agent root passes in the same way.
+3. The character class of plain_data_path depends on the locale of the shell.
+4. One line of the agent-proof step prints an entry path without the function.
+5. Three correct behaviours have no test: a link to a sibling directory whose name starts with the name of the data directory; a record line whose path has a `..` part; an undo with a data directory that differs from the one of the apply.
+
+## Scope
+
+1. One function with the name chmod_as_daemon_line builds every printed `chmod` line, for apply and for undo. The line runs chmod as the daemon user (through runuser), so that the command can change only what the daemon user owns. The text before the lines tells the operator to run them as root as they are.
+2. An entry that resolves to the data directory itself or to the agent root gets no `chmod` line. The apply fails with one line that names the entry, quoted, for a look by hand.
+3. The script sets LC_ALL=C before any path check.
+4. Every line that prints an entry path uses the quoting function of the script, also in the agent-proof step.
+5. Tests in the mocked suite: every printed chmod line of apply and of undo starts with the runuser form; the two cases of item 2; the three cases of Context point 5. One real test case: an entry of the daemon is set to 777 before the apply, the apply is run, the entry is replaced with a link to a file of root, the printed undo line is run as root, and the file of root keeps its mode.
+
+## Acceptance
+
+- [ ] The jobs box-scripts and box-scripts-real pass on the PR; paste the summary lines of both test scripts into the PR body.
+- [ ] `./scripts/box/setup-agent-user_test.sh` passes on macOS and on Linux with the same count.
+- [ ] Print one chmod line without the runuser form -> a test fails.
+- [ ] Accept a link to the data directory -> a test fails.
+- [ ] ShellCheck passes for `scripts/box`.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The sudo proof, the order of the firewall steps, the warning for the groups of the daemon user and the undo of other steps (next leg). ACLs. A run of the script on a real host. Go code.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comment of PR#6409
 
 ### LEG B4 — repo: qf-studio/pilot — title: fix(box): agent user setup script, fourth run, part 2 — a sudo proof that also reads the rules, the firewall before the sudo rule, an undo that goes on and stops the agent processes
 
@@ -1006,3 +1092,5 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - N5 → https://github.com/qf-studio/pilot/issues/6403
 - N3 → https://github.com/qf-studio/pilot/issues/6406
 - B5 → https://github.com/qf-studio/pilot/issues/6407
+- N6 → https://github.com/qf-studio/pilot/issues/6411
+- B6 → https://github.com/qf-studio/pilot/issues/6412
