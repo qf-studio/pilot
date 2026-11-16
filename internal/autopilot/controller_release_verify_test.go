@@ -7,10 +7,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/testutil"
 	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
@@ -216,5 +219,73 @@ func TestScanRecentlyMergedPRs_BackstopAlert(t *testing.T) {
 				t.Errorf("alert fired = %v (events=%d), want %v", gotAlert, len(sink.events), tt.wantAlert)
 			}
 		})
+	}
+}
+
+// mutation pin: the alertedMissingReleases comment says every rule's cooldown is keyed by rule name (lastAlertTimes[rule.Name]) -> this test fails
+//
+// GH-6396: since GH-6391 the engine keys the lane_starvation cooldown per
+// project, so the comment names release_missing — which still shares one
+// cooldown across repos — and cooldownKey. The engine half pins that claim:
+// two repos' release_missing inside one window alert once (hence this map),
+// two lanes' lane_starvation alert twice.
+func TestAlertedMissingReleasesComment_NamesTheRuleNameCooldown(t *testing.T) {
+	src, err := os.ReadFile("controller.go")
+	if err != nil {
+		t.Fatalf("read controller.go: %v", err)
+	}
+	m := regexp.MustCompile(`(?s)// alertedMissingReleases deduplicates.*?alertedMissingReleases map`).Find(src)
+	if m == nil {
+		t.Fatal("alertedMissingReleases field comment not found in controller.go")
+	}
+	doc := string(m)
+	if strings.Contains(doc, "lastAlertTimes[rule.Name]") {
+		t.Errorf("comment still claims the cooldown is lastAlertTimes[rule.Name] for every rule:\n%s", doc)
+	}
+	for _, want := range []string{"release_missing", "cooldownKey", "lane_starvation"} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("comment does not mention %q:\n%s", want, doc)
+		}
+	}
+
+	config := &alerts.AlertConfig{
+		Enabled:  true,
+		Channels: []alerts.ChannelConfig{{Name: "capture", Type: "webhook", Enabled: true}},
+		Rules: []alerts.AlertRule{
+			{Name: "release_missing", Type: alerts.AlertTypeReleaseMissing, Enabled: true,
+				Severity: alerts.SeverityWarning, Cooldown: time.Hour},
+			{Name: "lane_starvation", Type: alerts.AlertTypeLaneStarvation, Enabled: true,
+				Severity: alerts.SeverityWarning, Cooldown: time.Hour,
+				Condition: alerts.RuleCondition{LaneStarvationPollCycles: 1}},
+		},
+	}
+	capture := alertCapture{alerts: make(chan *alerts.Alert, 8)}
+	dispatcher := alerts.NewDispatcher(config)
+	dispatcher.RegisterChannel(capture)
+	engine := alerts.NewEngine(config, alerts.WithDispatcher(dispatcher))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := engine.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, repo := range []string{"owner/a", "owner/b"} {
+		engine.ProcessEvent(alerts.Event{Type: alerts.EventTypeReleaseMissing, Project: repo,
+			Metadata: map[string]string{"repo": repo, "tag": "v1.0.0", "pr": "1"}})
+		engine.ProcessEvent(alerts.Event{Type: alerts.EventTypeLaneStarvation, Project: repo,
+			Metadata: map[string]string{"repo": repo, "open_issue_count": "1", "open_issue_numbers": "#7", "poll_cycles_starved": "1"}})
+		engine.Flush(5 * time.Second)
+	}
+	close(capture.alerts)
+
+	got := map[alerts.AlertType]int{}
+	for a := range capture.alerts {
+		got[a.Type]++
+	}
+	if got[alerts.AlertTypeReleaseMissing] != 1 {
+		t.Errorf("release_missing alerts for two repos inside one window = %d, want 1 (one rule-name cooldown)", got[alerts.AlertTypeReleaseMissing])
+	}
+	if got[alerts.AlertTypeLaneStarvation] != 2 {
+		t.Errorf("lane_starvation alerts for two lanes inside one window = %d, want 2 (per-lane cooldown)", got[alerts.AlertTypeLaneStarvation])
 	}
 }

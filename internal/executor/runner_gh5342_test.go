@@ -479,6 +479,54 @@ func (c *manualDeadlineCtx) expire() {
 	})
 }
 
+// mutation pin: manualDeadlineCtx reports anything but DeadlineExceeded after expire(), or is done before it -> this test fails
+//
+// GH-6396: PR #6395 moved the timeout-salvage tests here and in
+// runner_gh5399_test.go onto manualDeadlineCtx without a test of its own.
+// The rework stays — the wall-clock timeout it replaced is the flake — so the
+// helper's contract is pinned instead: no deadline and not done until
+// expire(), then DeadlineExceeded on it and on a derived ctx (Execute derives
+// its own), and expire() is safe to call twice (the deferred call).
+func TestManualDeadlineCtx_Contract(t *testing.T) {
+	ctx := newManualDeadlineCtx()
+	child, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	if _, ok := ctx.Deadline(); ok {
+		t.Error("Deadline() reports a deadline before expire(); finalizeCtx would treat the parent as bounded")
+	}
+	if err := ctx.Err(); err != nil {
+		t.Errorf("Err() before expire() = %v, want nil", err)
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("Done() closed before expire()")
+	case <-child.Done():
+		t.Fatal("derived ctx done before expire()")
+	default:
+	}
+
+	ctx.expire()
+	ctx.expire()
+
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("Done() still open after expire()")
+	}
+	if err := ctx.Err(); err != context.DeadlineExceeded {
+		t.Errorf("Err() after expire() = %v, want context.DeadlineExceeded (the salvage path keys on it)", err)
+	}
+	select {
+	case <-child.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("derived ctx not done after expire()")
+	}
+	if err := child.Err(); err != context.DeadlineExceeded {
+		t.Errorf("derived ctx Err() after expire() = %v, want context.DeadlineExceeded", err)
+	}
+}
+
 // stubQualityChecker is a scriptable QualityChecker so the timeout-salvage
 // tests below can control the single (non-retrying) gate-check outcome
 // directly, instead of depending on a real build/test command being

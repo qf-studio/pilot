@@ -688,10 +688,11 @@ type Controller struct {
 	ciUnreadable  atomic.Bool
 
 	// alertedMissingReleases deduplicates release_missing alerts per
-	// "owner/repo@tag", guarded by mu. Needed because the alerts engine's
-	// cooldown is keyed by rule name (shouldFire -> lastAlertTimes[rule.Name]),
-	// not by source — without this map a second repo/tag breaking inside the
-	// same cooldown window would be silently swallowed. Both afterTagCreated
+	// "owner/repo@tag", guarded by mu. Needed because the alerts engine keeps
+	// the release_missing cooldown under the rule name alone (shouldFire ->
+	// cooldownKey; only lane_starvation adds the project, GH-6391), not by
+	// source — without this map a second repo/tag breaking inside the same
+	// cooldown window would be silently swallowed. Both afterTagCreated
 	// (goroutine path) and the ScanRecentlyMergedPRs backstop share it, since a
 	// hot-upgrade restart can kill the former mid-flight and let the scanner
 	// catch the same tag. GH-3927.
