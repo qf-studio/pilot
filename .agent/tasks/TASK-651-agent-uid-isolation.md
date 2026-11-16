@@ -1,6 +1,6 @@
 # TASK-651: Agent isolation — agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM
 
-**Status**: 🚀 **U0, U1, F1, F2, F3 and B1 merged. Step 5 is split into G1 → U2 → N1 after a spec check against `origin/main` 1e99ccbe0 (2026-11-15); 🚀 U2 DISPATCHED 2026-11-15 → [pilot#6380](https://github.com/qf-studio/pilot/issues/6380) (`pilot` + `no-decompose`, PR held as a draft). G1 merged as PR#6375 (pilot#6372). B2 PR#6378 is a draft: the real job ran against sudo-rs on ubuntu-latest, a hand commit (founder call) pins ubuntu-24.04. Earlier: G1 DISPATCHED 2026-11-15 → [pilot#6372](https://github.com/qf-studio/pilot/issues/6372) and B2 DISPATCHED 2026-11-15 → [pilot#6373](https://github.com/qf-studio/pilot/issues/6373) (`pilot` + `no-decompose`); both PRs are held as drafts until a run-it review; U2 and N1 are held until G1 merges (same directory).** The check found 110 inline git sites (not about 70), about ten daemon writes into the workspace, a base ref that can be a SHA only FETCH_HEAD holds, and a Navigator copy that follows a link above the last path element. Design change 11-15 (founder approved): the base commit reaches the workspace as a bundle on a stream and the agent user reads no repository of the daemon, so B2 removes the shared read of the host script. **O4 is still NO-GO** until B2 merges and its real iptables and systemd job passes. `run_as_user` stays empty on every host until U3 and U4 merge. Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. Order: G1 → U2 → N1 → U3 → U4 → U5, B2 beside them (other directory). **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
+**Status**: 🚀 **U0, U1, F1, F2, F3 and B1 merged. Step 5 is split into G1 → U2 → N1 after a spec check against `origin/main` 1e99ccbe0 (2026-11-15); 🚀 N1 DISPATCHED 2026-11-16 → [pilot#6385](https://github.com/qf-studio/pilot/issues/6385) (`pilot` + `no-decompose`, PR held as a draft). Merged: G1 PR#6375, U2 PR#6383 (pilot#6380), B2 PR#6378 (real job on ubuntu-24.04 with the classic sudo; two hand commits by founder call). B3 (host script, fourth run) is not specified and blocks O4. Earlier: G1 DISPATCHED 2026-11-15 → [pilot#6372](https://github.com/qf-studio/pilot/issues/6372) and B2 DISPATCHED 2026-11-15 → [pilot#6373](https://github.com/qf-studio/pilot/issues/6373) (`pilot` + `no-decompose`); both PRs are held as drafts until a run-it review; U2 and N1 are held until G1 merges (same directory).** The check found 110 inline git sites (not about 70), about ten daemon writes into the workspace, a base ref that can be a SHA only FETCH_HEAD holds, and a Navigator copy that follows a link above the last path element. Design change 11-15 (founder approved): the base commit reaches the workspace as a bundle on a stream and the agent user reads no repository of the daemon, so B2 removes the shared read of the host script. **O4 is still NO-GO** until B2 merges and its real iptables and systemd job passes. `run_as_user` stays empty on every host until U3 and U4 merge. Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. Order: G1 → U2 → N1 → U3 → U4 → U5, B2 beside them (other directory). **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
 **Created**: 2026-11-12
 **Assignee**: Pilot (one leg at a time) + operator steps by a Navigator session with founder consent
 **Parent**: TASK-650 leg H1
@@ -60,8 +60,8 @@
 - [x] **B2** (merged 11-15 21:02Z) (PR#6378: real job green on ubuntu-24.04 with the classic sudo, 94 passed; run-it review GO-WITH-NOTES for the merge, NOT ready for a host run; marked ready 11-15) ([#6373](https://github.com/qf-studio/pilot/issues/6373), dispatched 11-15) host script, third run: undo that the agent user cannot block, shared read removed, sudo proof by behaviour, macOS test fix, real iptables and systemd test in CI. O4 waits for it.
 - [x] **U1** (PR#6335 + PR#6342 merged 11-12) config option, one spawn constructor for every model process, allowlist environment, kill through sudo, fail-closed preflight, group-readable guard files (dispatch-ready, below).
 - [x] **G1** (PR#6375 merged 11-15 17:19Z after a run-it review, GO-WITH-NOTES; the notes go to U2 item 10 and to U4; the post-merge minors issue 6377 was closed as not planned on 11-15: its branch ran the secret gate through sudo as the agent user, which is the opposite of the hand-over design, and the pre-PR review held it; its useful items are in U2 items 10 and 11) ([#6372](https://github.com/qf-studio/pilot/issues/6372), dispatched 11-15; split from U2 on 11-15 after a spec check against `origin/main` 1e99ccbe0) one constructor for every git command of the executor package (110 inline sites), with the route to the agent user for a directory inside the workspace root; config field `run_as_workspace_dir`; fail-closed; a source test.
-- [ ] **U2** (PR#6383: run-it review GO-WITH-NOTES 11-15, marked ready; notes go to N1 items 7 and 8) ([#6380](https://github.com/qf-studio/pilot/issues/6380), dispatched 11-15 ~20:00Z) workspace as an agent-owned clone under the workspace root (base commit as a bundle that the daemon sends, no alternates, no read of the daemon's repository), cleanup and sweeps as the agent user with the project in the directory name, preflight for the root, `use_worktree` and the pool.
-- [ ] **N1** (dispatch-ready, below; needs U2; split from U2 on 11-15) the daemon writes no file into the workspace (task document, Navigator files, settings file go through a helper as the agent user); Navigator copy in as a tar stream, copy out without a followed link at any path element.
+- [x] **U2** (PR#6383 merged 11-16 06:43Z after a run-it review, GO-WITH-NOTES; notes go to N1 items 7 and 8) ([#6380](https://github.com/qf-studio/pilot/issues/6380), dispatched 11-15 ~20:00Z) workspace as an agent-owned clone under the workspace root (base commit as a bundle that the daemon sends, no alternates, no read of the daemon's repository), cleanup and sweeps as the agent user with the project in the directory name, preflight for the root, `use_worktree` and the pool.
+- [ ] **N1** ([#6385](https://github.com/qf-studio/pilot/issues/6385), dispatched 11-16; PR held as a draft; split from U2 on 11-15) the daemon writes no file into the workspace (task document, Navigator files, settings file go through a helper as the agent user); Navigator copy in as a tar stream, copy out without a followed link at any path element.
 - [ ] **U3** (dispatch-ready, below; needs U2) hand-over as a bundle that the agent writes and the daemon fetches into `refs/pilot/handover/<task>`; the secret gate and the push run only in the daemon's repository, with replace refs ignored and hooks off; PR creation, recovery ref and the preserve commit follow. Closes the gate-trust class of mem-308 when the option is set (seven shapes; the tamper table is the test list of the leg).
 - [ ] **U4** (dispatch-ready, below; needs U2) quality gates, workflow hooks, evidence commands and the lint fix as the agent user with the allowlist environment; `run_as_env` for values such as the Go caches.
 - [ ] **U5** (dispatch-ready, below; needs U3 and, on the box, O2) read-only installation token per run in a file for the `gh` shim and a git credential helper (also serves the fetch of a private module); per-project override of the option.
@@ -261,7 +261,7 @@ Files that the daemon writes into the workspace (task document, Navigator files,
 
 ### LEG N1 — repo: qf-studio/pilot — title: feat(executor): run_as_user workspace files — the daemon writes no file into the agent workspace and follows no link when it reads from it (off by default)
 
-probe: present qf-studio/pilot func[[:space:]]createAgentWorkspace\(
+probe: present qf-studio/pilot \)[[:space:]]createAgentWorkspace\(
 probe: present qf-studio/pilot CopyNavigatorBackFromWorktree\(
 probe: present qf-studio/pilot EnsureNavigatorInWorktree\(
 probe: present qf-studio/pilot func[[:space:]]verifyAgentWorkspace\(
@@ -364,7 +364,7 @@ A run of the script on a real host (operator step). Go code. The network rules b
 
 ### LEG U3 — repo: qf-studio/pilot — title: feat(executor): run_as_user hand-over — the daemon takes the branch from the agent workspace as a bundle, runs the secret gate on its own refs and pushes from its own repository with hooks off
 
-probe: present qf-studio/pilot func[[:space:]]createAgentWorkspace\(
+probe: present qf-studio/pilot \)[[:space:]]createAgentWorkspace\(
 probe: present qf-studio/pilot func[[:space:]]CheckSecretGate\(
 probe: present qf-studio/pilot func[[:space:]]withGitCredentials\(
 probe: absent  qf-studio/pilot func[[:space:]]handOverBranc[h]\(
@@ -411,7 +411,7 @@ The behaviour with the option empty (the gate still runs in the worktree there; 
 
 ### LEG U4 — repo: qf-studio/pilot — title: feat(executor): run_as_user gates — quality gates, workflow hooks, evidence commands and the lint fix run as the agent user with an allowlist environment
 
-probe: present qf-studio/pilot func[[:space:]]createAgentWorkspace\(
+probe: present qf-studio/pilot \)[[:space:]]createAgentWorkspace\(
 probe: present qf-studio/pilot func[[:space:]]sanitizedAcceptanceEnv\(
 probe: present qf-studio/pilot func[[:space:]]runScript\(
 probe: absent  qf-studio/pilot RunAsEn[v][[:space:]]+map
@@ -455,7 +455,7 @@ The GitHub token for the agent (a gate that fetches a private module has no cred
 
 ### LEG U5 — repo: qf-studio/pilot — title: feat(executor): run_as_user GitHub access — a read-only installation token per run in a file for the gh shim and git, and a per-project override of the option
 
-probe: present qf-studio/pilot func[[:space:]]createAgentWorkspace\(
+probe: present qf-studio/pilot \)[[:space:]]createAgentWorkspace\(
 probe: present qf-studio/pilot func[[:space:]]handOverBranch\(
 probe: present qf-studio/pilot func[[:space:]]setupGhGuardShim\(
 probe: absent  qf-studio/pilot func[[:space:]]mintAgentReadToke[n]\(
@@ -750,3 +750,4 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - G1 → https://github.com/qf-studio/pilot/issues/6372
 - B2 → https://github.com/qf-studio/pilot/issues/6373
 - U2 → https://github.com/qf-studio/pilot/issues/6380
+- N1 → https://github.com/qf-studio/pilot/issues/6385
