@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // TestSuccessPath_TaskCtxExpired_GatesFail_HoldsBranchNoReinvocation is the
@@ -203,6 +202,9 @@ func TestBackendTimeoutSalvage_PushFailure_PreservesWorktreeAndBranch(t *testing
 	var mu sync.Mutex
 	var capturedWorktreePath string
 
+	taskCtx := newManualDeadlineCtx()
+	defer taskCtx.expire()
+
 	backend := &ctxRespectingBackend{
 		run: func(ctx context.Context, _ int, opts ExecuteOptions) (*BackendResult, error) {
 			mu.Lock()
@@ -218,6 +220,7 @@ func TestBackendTimeoutSalvage_PushFailure_PreservesWorktreeAndBranch(t *testing
 			writeUncommittedFile(t, opts.ProjectPath, "salvaged.go")
 			runGit(t, opts.ProjectPath, "add", "salvaged.go")
 			runGit(t, opts.ProjectPath, "commit", "-m", "real work before the deadline hit")
+			taskCtx.expire()
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
@@ -230,10 +233,7 @@ func TestBackendTimeoutSalvage_PushFailure_PreservesWorktreeAndBranch(t *testing
 
 	task := newGH4964Task("GH-5399", branch, dir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	result, err := runner.Execute(ctx, task)
+	result, err := runner.Execute(taskCtx, task)
 	if err != nil {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
