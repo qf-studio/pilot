@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -237,20 +238,22 @@ func TestNoCommitRetry_PostRetryCommitCountFailure_NotRecordedAsNoOp(t *testing.
 	dir, _ := setupFreshnessRepo(t)
 	runGit(t, dir, "checkout", "-b", branch)
 
+	taskCtx := newManualDeadlineCtx()
+	defer taskCtx.expire()
+
 	backend := &mockGH4964Backend{
 		perCall: func(call int, _ ExecuteOptions) *BackendResult {
 			if call == 1 {
 				// Initial attempt: clean tree, no commit — triggers the GH-916 retry.
 				return &BackendResult{Success: true, Output: "looked at it, nothing yet"}
 			}
-			// Retry: lands a real commit, then keeps "running" long enough
-			// for the outer (short) task ctx to blow its deadline before
-			// returning — reproducing a backend call that legitimately used
-			// the remaining budget to land real work.
+			// Retry: lands a real commit, then the task ctx's deadline
+			// elapses before returning — reproducing a backend call that
+			// legitimately used the remaining budget to land real work.
 			writeUncommittedFile(t, dir, "real-work.go")
 			runGit(t, dir, "add", "real-work.go")
 			runGit(t, dir, "commit", "-m", "real work from retry")
-			time.Sleep(1200 * time.Millisecond)
+			taskCtx.expire()
 			return &BackendResult{Success: true, Output: "done"}
 		},
 	}
@@ -258,10 +261,7 @@ func TestNoCommitRetry_PostRetryCommitCountFailure_NotRecordedAsNoOp(t *testing.
 	task := newGH4964Task("GH-5342", branch, dir)
 	task.SkipQualityGates = true
 
-	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
-	defer cancel()
-
-	result, err := runner.Execute(ctx, task)
+	result, err := runner.Execute(taskCtx, task)
 	if err != nil {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
@@ -379,6 +379,9 @@ func TestNoCommitRetry_PostRetryExpiredCtx_NoDeadlineExceededLogNoise(t *testing
 	dir, _ := setupFreshnessRepo(t)
 	runGit(t, dir, "checkout", "-b", branch)
 
+	taskCtx := newManualDeadlineCtx()
+	defer taskCtx.expire()
+
 	backend := &mockGH4964Backend{
 		perCall: func(call int, _ ExecuteOptions) *BackendResult {
 			if call == 1 {
@@ -387,7 +390,7 @@ func TestNoCommitRetry_PostRetryExpiredCtx_NoDeadlineExceededLogNoise(t *testing
 			writeUncommittedFile(t, dir, "real-work.go")
 			runGit(t, dir, "add", "real-work.go")
 			runGit(t, dir, "commit", "-m", "real work from retry")
-			time.Sleep(1200 * time.Millisecond)
+			taskCtx.expire()
 			return &BackendResult{Success: true, Output: "done"}
 		},
 	}
@@ -399,10 +402,7 @@ func TestNoCommitRetry_PostRetryExpiredCtx_NoDeadlineExceededLogNoise(t *testing
 	task := newGH4964Task("GH-5342", branch, dir)
 	task.SkipQualityGates = true
 
-	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
-	defer cancel()
-
-	if _, err := runner.Execute(ctx, task); err != nil {
+	if _, err := runner.Execute(taskCtx, task); err != nil {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
 
@@ -439,6 +439,44 @@ func (b *ctxRespectingBackend) callCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.count
+}
+
+// manualDeadlineCtx is a task ctx whose deadline "elapses" when expire() is
+// called rather than on a wall-clock timer. The timeout-salvage path keys on
+// ctx.Err() == context.DeadlineExceeded, so the GH-5408 WithCancel trick does
+// not reach it; a fixed 200ms context.WithTimeout instead races the budget
+// against setupFreshnessRepo, branch creation and worktree creation, which on
+// a loaded host overrun it before the backend is ever invoked ("failed to
+// create branch ... context deadline exceeded", "signal: killed"). Expiring
+// from inside the backend makes "deadline hit after the backend started"
+// a deterministic ordering. Before expiry it reports no deadline, so
+// finalizeCtx and executeWithOptions treat it like an unbounded parent.
+type manualDeadlineCtx struct {
+	context.Context
+	done    chan struct{}
+	once    sync.Once
+	expired atomic.Bool
+}
+
+func newManualDeadlineCtx() *manualDeadlineCtx {
+	return &manualDeadlineCtx{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (c *manualDeadlineCtx) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *manualDeadlineCtx) Done() <-chan struct{}       { return c.done }
+
+func (c *manualDeadlineCtx) Err() error {
+	if c.expired.Load() {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+func (c *manualDeadlineCtx) expire() {
+	c.once.Do(func() {
+		c.expired.Store(true)
+		close(c.done)
+	})
 }
 
 // stubQualityChecker is a scriptable QualityChecker so the timeout-salvage
@@ -513,6 +551,9 @@ func TestBackendTimeoutSalvage_CommitsPresent_GatesPass_CreatesPR(t *testing.T) 
 	dir, _ := setupFreshnessRepo(t)
 	runGit(t, dir, "checkout", "-b", branch)
 
+	taskCtx := newManualDeadlineCtx()
+	defer taskCtx.expire()
+
 	backend := &ctxRespectingBackend{
 		run: func(ctx context.Context, _ int, _ ExecuteOptions) (*BackendResult, error) {
 			// Simulate Claude Code landing a real commit before the
@@ -522,6 +563,7 @@ func TestBackendTimeoutSalvage_CommitsPresent_GatesPass_CreatesPR(t *testing.T) 
 			writeUncommittedFile(t, dir, "salvaged.go")
 			runGit(t, dir, "add", "salvaged.go")
 			runGit(t, dir, "commit", "-m", "real work before the deadline hit")
+			taskCtx.expire()
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
@@ -533,10 +575,7 @@ func TestBackendTimeoutSalvage_CommitsPresent_GatesPass_CreatesPR(t *testing.T) 
 
 	task := newGH4964Task("GH-5346", branch, dir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	result, err := runner.Execute(ctx, task)
+	result, err := runner.Execute(taskCtx, task)
 	if err != nil {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
@@ -581,11 +620,15 @@ func TestBackendTimeoutSalvage_CommitsPresent_GatesFail_HoldsBranchNoReinvocatio
 	dir, _ := setupFreshnessRepo(t)
 	runGit(t, dir, "checkout", "-b", branch)
 
+	taskCtx := newManualDeadlineCtx()
+	defer taskCtx.expire()
+
 	backend := &ctxRespectingBackend{
 		run: func(ctx context.Context, _ int, _ ExecuteOptions) (*BackendResult, error) {
 			writeUncommittedFile(t, dir, "salvaged.go")
 			runGit(t, dir, "add", "salvaged.go")
 			runGit(t, dir, "commit", "-m", "real work before the deadline hit")
+			taskCtx.expire()
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
@@ -597,10 +640,7 @@ func TestBackendTimeoutSalvage_CommitsPresent_GatesFail_HoldsBranchNoReinvocatio
 
 	task := newGH4964Task("GH-5346", branch, dir)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	result, err := runner.Execute(ctx, task)
+	result, err := runner.Execute(taskCtx, task)
 	if err != nil {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
