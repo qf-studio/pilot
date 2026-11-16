@@ -19,10 +19,14 @@
 #                     with a file open below the data dir, then one chmod for each
 #                     path, records the modes it found in DAEMON_MODES_RECORD and
 #                     fails; the apply passes once the operator ran the chmods.
+#                     Each chmod line runs chmod as the daemon user (runuser), so
+#                     that a link the daemon user puts in place of an entry after
+#                     the check leads root to change nothing of another user.
 #                     Every path it prints is shell-quoted. An entry whose name or
 #                     resolved path is not a plain path in the data dir ([A-Za-z0-9
-#                     ._/-], a link out of the data dir included) gets no chmod and
-#                     no record: the step fails with one line that names it.
+#                     ._/-], a link out of the data dir included), or that resolves
+#                     to the data dir or to the agent root or a path in it, gets no
+#                     chmod and no record: the step fails with one line that names it.
 #   group             system group (default: pilot)
 #   agent-user        system user, no login shell, home AGENT_ROOT/home
 #   daemon-membership daemon user joins the group
@@ -72,9 +76,10 @@
 #                        sudoers rule; the user, the group and the directories stay
 #                        (the commands to delete them are printed, not run), and so
 #                        do the modes of the daemon's entries (the chmods that put
-#                        back the recorded modes are printed, not run; a record
-#                        line with a special bit or a path that is not a plain
-#                        path in --data-dir is skipped, by its number). Undo
+#                        back the recorded modes are printed, as the daemon user,
+#                        not run; a record line with a special bit or a path
+#                        that is not a plain path in --data-dir is skipped, by
+#                        its number). Undo
 #                        reads no path that the agent user or the daemon user can
 #                        write: each undo step checks the root files it changes.
 #   --keep-daemon-sudo   leave the cloud-init sudoers file alone
@@ -95,6 +100,10 @@
 # summary as skipped), 2 on bad arguments (nothing is changed).
 
 set -euo pipefail
+
+# The character classes of the path checks (plain_data_path) and of shq mean
+# ASCII only in the C locale; set before any path is checked.
+export LC_ALL=C
 
 DAEMON_USER="ec2-user"
 AGENT_USER="pilot-agent"
@@ -342,6 +351,15 @@ plain_data_path() {
     return 1
 }
 
+# chmod_as_daemon_line MODE PATH — the one form of every printed chmod line,
+# for apply and for undo: chmod runs as the daemon user. The operator runs the
+# line as root, as it is; the daemon user owns the entries and can put a link in
+# place of one after the line was printed, and through runuser the chmod can
+# change only what the daemon user owns, not the target of such a link.
+chmod_as_daemon_line() {
+    printf 'runuser -u %s -- chmod %s %s' "$DAEMON_USER" "$1" "$(shq "$2")"
+}
+
 # contained PATH — true when the resolved form of PATH is strictly inside the
 # agent root. Sets RESOLVED (empty when PATH cannot be resolved).
 RESOLVED=""
@@ -483,14 +501,16 @@ record_modes() {
 # follows it too). The top level is enough: nothing of the agent user is
 # between the entries of the daemon, and a closed directory closes all below it.
 # The step changes no mode itself. An entry whose name or resolved path is not
-# a plain path in the data dir (plain_data_path; a link out of it is one) is
-# neither recorded nor given a chmod: one line names it, for a look by hand.
+# a plain path in the data dir (plain_data_path; a link out of it is one), or
+# that resolves to the data dir or to the agent root or a path in it (a chmod
+# there takes the traverse of the agent user away), is neither recorded nor
+# given a chmod: one line names it, for a look by hand.
 step_daemon_private() {
     local e real meta grp mode fix lines=() records=()
     meta="$(stat -L -c '%G:%a' "$DATA_DIR")" || return 1
     if [ $((8#${meta#*:} & 8#066)) -ne 0 ]; then
-        lines+=("$(printf 'the data dir %s gives more than traverse (group %s, mode %s): chmod go-rw %s' \
-            "$(shq "$DATA_DIR")" "${meta%%:*}" "${meta#*:}" "$(shq "$DATA_DIR")")")
+        lines+=("$(printf 'the data dir %s gives more than traverse (group %s, mode %s): %s' \
+            "$(shq "$DATA_DIR")" "${meta%%:*}" "${meta#*:}" "$(chmod_as_daemon_line go-rw "$DATA_DIR")")")
         records+=("${meta#*:}"$'\t'"${DATA_DIR}")
     fi
     for e in "$DATA_DIR"/* "$DATA_DIR"/.[!.]* "$DATA_DIR"/..?*; do
@@ -503,6 +523,13 @@ step_daemon_private() {
                 "$(shq "$e")")")
             continue
         fi
+        case "$real" in
+            "$DATA_DIR" | "$AGENT_ROOT" | "$AGENT_ROOT"/*)
+                lines+=("$(printf 'the entry %s resolves to the data dir or to the agent root or a path in it: no chmod is printed, look at it by hand' \
+                    "$(shq "$e")")")
+                continue
+                ;;
+        esac
         meta="$(stat -L -c '%G:%a' "$e")" || return 1
         grp="${meta%%:*}"
         mode=$((8#${meta#*:}))
@@ -513,12 +540,15 @@ step_daemon_private() {
             fix="o-rwx"
         fi
         [ -n "$fix" ] || continue
-        lines+=("$(printf 'the agent user can reach %s (group %s, mode %s): chmod %s %s' \
-            "$(shq "$e")" "$grp" "${meta#*:}" "$fix" "$(shq "$real")")")
+        lines+=("$(printf 'the agent user can reach %s (group %s, mode %s): %s' \
+            "$(shq "$e")" "$grp" "${meta#*:}" "$(chmod_as_daemon_line "$fix" "$real")")")
         records+=("${meta#*:}"$'\t'"${real}")
     done
     if [ "${#lines[@]}" -gt 0 ]; then
         open_below_data_dir
+        if [ "${#records[@]}" -gt 0 ]; then
+            echo "run each chmod line below as root, as it is: runuser runs chmod as ${DAEMON_USER}, so it changes only what ${DAEMON_USER} owns" >&2
+        fi
         printf '%s\n' "${lines[@]}" >&2
         if [ "${#records[@]}" -gt 0 ]; then record_modes "${records[@]}" || true; fi
         echo "no mode was changed; run each chmod above and run again" >&2
@@ -1076,10 +1106,10 @@ step_agent_proof() {
     done
     [ -z "$repo" ] || targets+=("$repo")
     for e in "${targets[@]}"; do
-        printf '+ runuser -u %q -- ls %q  (must fail)\n' "$AGENT_USER" "$e"
+        printf '+ runuser -u %q -- ls %s  (must fail)\n' "$AGENT_USER" "$(shq "$e")"
         [ "$DRY_RUN" = 0 ] || continue
         if runuser -u "$AGENT_USER" -- ls "$e" >/dev/null 2>&1; then
-            echo "the agent user can list ${e}" >&2
+            echo "the agent user can list $(shq "$e")" >&2
             bad=1
         fi
     done
@@ -1263,8 +1293,8 @@ print_config() {
 }
 
 # print_mode_restore — the chmods that put back the modes daemon-private found,
-# from root's record; printed, not run. A record that is a link or not root's
-# is passed over. A line is printed only when its path passes plain_data_path
+# from root's record; printed (chmod_as_daemon_line), not run. A record that is
+# a link or not root's is passed over. A line is printed only when its path passes plain_data_path
 # for the data dir of this run (as given) and its mode is three or four octal
 # digits with no setuid, setgid or sticky bit; a line that fails is named by its
 # number, its content is not printed.
@@ -1277,7 +1307,9 @@ print_mode_restore() {
         echo "${MODES_RECORD} is not a regular file of root; passed over"
         return 0
     fi
-    echo "The apply asked for chmods on these paths; to put the earlier modes back:"
+    echo "The apply asked for chmods on these paths; to put the earlier modes back, run each"
+    echo "line below as root, as it is (runuser runs chmod as ${DAEMON_USER}, so it changes only"
+    echo "what ${DAEMON_USER} owns):"
     while IFS=$'\t' read -r mode path; do
         n=$((n + 1))
         if ! [[ "$mode" =~ ^0?[0-7]{3}$ ]] || ! plain_data_path "$path"; then
@@ -1285,7 +1317,7 @@ print_mode_restore() {
                 "$n" "$(shq "$DATA_DIR")"
             continue
         fi
-        printf '  chmod %s %s\n' "$mode" "$(shq "$path")"
+        printf '  %s\n' "$(chmod_as_daemon_line "$mode" "$path")"
     done <"$MODES_RECORD"
 }
 

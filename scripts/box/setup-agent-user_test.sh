@@ -229,6 +229,18 @@ has_line() {
     grep -qxF -- "$2" "$1"
 }
 
+# chmods_as_daemon FILE — FILE prints a chmod, and every chmod of a mode in it
+# is in the runuser form of the daemon user: on an apply line after ": ", on an
+# undo line at the start (after the indent). Called through check only (SC2317
+# in ShellCheck 0.10, SC2329 from 0.11).
+# shellcheck disable=SC2317,SC2329
+chmods_as_daemon() {
+    local all ok
+    all="$(grep -cE "chmod ([go]+-rwx?|0?[0-7]{3,4}) '" "$1" || true)"
+    ok="$(grep -cE "(: |^  )runuser -u ec2-user -- chmod ([go]+-rwx?|0?[0-7]{3,4}) '[^']*'\$" "$1" || true)"
+    [ "${all:-0}" -gt 0 ] && [ "$all" = "$ok" ]
+}
+
 # expect_refused LABEL [VAR=value ...] -- ARGS... — exit 2, nothing mutated, no
 # chmod or chown called.
 expect_refused() {
@@ -277,8 +289,8 @@ for want in "+ groupadd --system pilot" "+ useradd --system" "+ usermod -aG pilo
     "+ runuser -u pilot-agent -- mkdir -p -m 750 ${AHOME}/go ${AHOME}/go/cache ${AHOME}/go/mod" \
     "+ runuser -u pilot-agent -- touch ${AHOME}/.setup-agent-user-proof" \
     "+ runuser -u pilot-agent -- touch ${AWS}/.setup-agent-user-proof" \
-    "+ runuser -u pilot-agent -- ls ${DATA_DIR}  (must fail)" \
-    "+ runuser -u pilot-agent -- ls ${R}/alpha  (must fail)"; do
+    "+ runuser -u pilot-agent -- ls '${DATA_DIR}'  (must fail)" \
+    "+ runuser -u pilot-agent -- ls '${R}/alpha'  (must fail)"; do
     if grep -qF -- "$want" "$OUT"; then
         pass "prints: ${want}"
     else
@@ -967,15 +979,17 @@ expect_step group skipped
 check "nothing was mutated" test ! -s "$MUT_LOG"
 check "nothing changed in the temp root" test "$before" = "$(tree_listing)"
 # mutation pin: a chmod path is printed without shell quoting -> this test fails
-for want in "the agent user can reach '${R}' (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): chmod o-rwx '${R}'" \
-    "the agent user can reach '${DATA_DIR}/bin' (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): chmod o-rwx '${DATA_DIR}/bin'"; do
+for want in "the agent user can reach '${R}' (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): runuser -u ec2-user -- chmod o-rwx '${R}'" \
+    "the agent user can reach '${DATA_DIR}/bin' (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): runuser -u ec2-user -- chmod o-rwx '${DATA_DIR}/bin'"; do
     check "prints: ${want#the agent user can reach }" has_line "$OUT" "$want"
 done
 check "the pilot home at 0711 is reported (traverse is enough)" grep -qF "can reach '${DATA_DIR}/pilot-home' " "$OUT"
 check "a hidden file is reported" grep -qF "can reach '${DATA_DIR}/.hidden' " "$OUT"
-check "a link is followed and its target named" grep -qF "can reach '${DATA_DIR}/linked' (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): chmod o-rwx '${DATA_DIR}/target'" "$OUT"
+check "a link is followed and its target named" grep -qF "can reach '${DATA_DIR}/linked' (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): runuser -u ec2-user -- chmod o-rwx '${DATA_DIR}/target'" "$OUT"
 check_not "a dangling link is not reported" grep -qF "${DATA_DIR}/dangling" "$OUT"
 check "six lines, one per open entry" test "$(grep -c 'can reach ' "$OUT" | tr -d ' ')" = 6
+check "every chmod line of the apply runs chmod as the daemon user" chmods_as_daemon "$OUT"
+check "the text before the lines says to run them as root, as they are" grep -qF "run each chmod line below as root, as it is: runuser runs chmod as ec2-user" "$OUT"
 chmod o-rwx "$R" "${DATA_DIR}/bin" "${DATA_DIR}/pilot-home" "${DATA_DIR}/.hidden" "${DATA_DIR}/target"
 if run_setup -- ; then
     pass "apply passes once each entry is closed"
@@ -996,7 +1010,7 @@ if run_setup -- ; then
 else
     pass "apply exits non-zero"
 fi
-check "prints the chmod for group and others" has_line "$OUT" "the agent user can reach '${DATA_DIR}/shared' (group pilot, mode 750): chmod go-rwx '${DATA_DIR}/shared'"
+check "prints the chmod for group and others" has_line "$OUT" "the agent user can reach '${DATA_DIR}/shared' (group pilot, mode 750): runuser -u ec2-user -- chmod go-rwx '${DATA_DIR}/shared'"
 teardown_sandbox
 
 # ------------------------------------------- the record and the chmod lines take plain paths only
@@ -1023,7 +1037,7 @@ check "the link is named, quoted, for a look by hand" has_line "$OUT" "the entry
 check_not "no line of the apply output starts with the forged mode" grep -qE '^4755' "$OUT"
 check_not "no chmod for the target of the link" grep -qE 'chmod [go]+-rwx? .*usr/bin/su' "$OUT"
 run_setup -- --undo >/dev/null || true
-check "undo prints the plain line" has_line "$OUT" "  chmod 755 '${R}'"
+check "undo prints the plain line" has_line "$OUT" "  runuser -u ec2-user -- chmod 755 '${R}'"
 check_not "undo prints no chmod 4755" grep -qF "chmod 4755" "$OUT"
 check_not "undo prints nothing of the forged path" grep -qF "/usr/bin/su" "$OUT"
 teardown_sandbox
@@ -1090,6 +1104,59 @@ check_not "it is printed nowhere without quotes" grep -qE "(^|[^'])${DATA_DIR}/w
 check "no record is written for it" test ! -e "$RECORD"
 teardown_sandbox
 
+# mutation pin: daemon-private accepts a link to the data dir -> this test fails
+echo "=== test: a link to the data dir, to the agent root or into it gets no chmod; the apply fails and names it ==="
+for target in data-dir agent-root agent-home; do
+    setup_sandbox
+    build_repos
+    mkdir -p "$AHOME"
+    chmod 755 "$AROOT"
+    chmod 750 "$AHOME"
+    set_meta "$AROOT" root:root
+    set_meta "$AHOME" pilot-agent:pilot
+    case "$target" in
+        data-dir) ln -s "$DATA_DIR" "${DATA_DIR}/self" ;;
+        agent-root) ln -s "$AROOT" "${DATA_DIR}/self" ;;
+        agent-home) ln -s "$AHOME" "${DATA_DIR}/self" ;;
+    esac
+    : >"$MUT_LOG"
+    if run_setup -- ; then
+        fail_test "${target}: apply must fail on a link to the ${target}"
+    else
+        pass "${target}: apply exits non-zero"
+    fi
+    expect_step daemon-private failed
+    check "${target}: nothing was mutated" test ! -s "$MUT_LOG"
+    check "${target}: one line names the entry, quoted" has_line "$OUT" "the entry '${DATA_DIR}/self' resolves to the data dir or to the agent root or a path in it: no chmod is printed, look at it by hand"
+    check_not "${target}: no chmod line is printed" grep -qE "chmod ([go]+-rwx?|[0-7]{3,4}) " "$OUT"
+    check "${target}: no record is written" test ! -e "$RECORD"
+    rm "${DATA_DIR}/self"
+    if run_setup -- ; then
+        pass "${target}: apply passes once the link is gone"
+    else
+        cat "$OUT"
+        fail_test "${target}: apply failed after the link was removed"
+    fi
+    teardown_sandbox
+done
+
+echo "=== test: a link to a sibling directory whose name starts with the name of the data dir is a link out of it ==="
+setup_sandbox
+build_repos
+mkdir "${DATA_DIR}-sibling"
+chmod 755 "${DATA_DIR}-sibling"
+ln -s "${DATA_DIR}-sibling" "${DATA_DIR}/sib"
+if run_setup -- ; then
+    fail_test "apply must fail on a link to ${DATA_DIR}-sibling"
+else
+    pass "apply exits non-zero"
+fi
+expect_step daemon-private failed
+check "the entry is named" has_line "$OUT" "the entry '${DATA_DIR}/sib' is not a plain path in the data dir (a name or a link target outside [A-Za-z0-9._/-], or a link out of the data dir): no chmod is printed, look at it by hand"
+check_not "no chmod on the sibling" grep -qF "${DATA_DIR}-sibling" "$OUT"
+check "no record is written for it" test ! -e "$RECORD"
+teardown_sandbox
+
 # mutation pin: the line filter of undo is removed -> this test fails
 echo "=== test: undo skips a record line with a special bit or a path outside the data dir, by its number ==="
 setup_sandbox
@@ -1097,13 +1164,40 @@ build_repos
 printf '755\t%s\n4755\t%s\n755\t/usr/bin\n0750\t%s\n' "$R" "${DATA_DIR}/bin" "${DATA_DIR}/bin" >"$RECORD"
 chmod 600 "$RECORD"
 run_setup -- --undo >/dev/null || true
-check "line 1 is printed" has_line "$OUT" "  chmod 755 '${R}'"
-check "line 4 is printed (a leading zero is no special bit)" has_line "$OUT" "  chmod 0750 '${DATA_DIR}/bin'"
+check "line 1 is printed" has_line "$OUT" "  runuser -u ec2-user -- chmod 755 '${R}'"
+check "line 4 is printed (a leading zero is no special bit)" has_line "$OUT" "  runuser -u ec2-user -- chmod 0750 '${DATA_DIR}/bin'"
 check_not "the mode 4755 is not printed" grep -qF "4755" "$OUT"
 check_not "the path outside the data dir is not printed" grep -qE "chmod [0-7]+ '?/usr/bin" "$OUT"
 check "line 2 is named as skipped" has_line "$OUT" "  # line 2 of the record is skipped: not a mode without a special bit and a plain path in the data dir '${DATA_DIR}'"
 check "line 3 is named as skipped" has_line "$OUT" "  # line 3 of the record is skipped: not a mode without a special bit and a plain path in the data dir '${DATA_DIR}'"
 check "two lines are skipped" test "$(grep -c '^  # line [0-9]* of the record is skipped' "$OUT" | tr -d ' ')" = 2
+check "every chmod line of the undo runs chmod as the daemon user" chmods_as_daemon "$OUT"
+teardown_sandbox
+
+echo "=== test: undo skips a record line whose path has a .. part ==="
+setup_sandbox
+build_repos
+printf '755\t%s\n755\t%s\n755\t%s\n' "$R" "${DATA_DIR}/../etc" "${R}/../bin" >"$RECORD"
+chmod 600 "$RECORD"
+run_setup -- --undo >/dev/null || true
+check "line 1 is printed" has_line "$OUT" "  runuser -u ec2-user -- chmod 755 '${R}'"
+check "line 2 is named as skipped" has_line "$OUT" "  # line 2 of the record is skipped: not a mode without a special bit and a plain path in the data dir '${DATA_DIR}'"
+check "line 3 is named as skipped" has_line "$OUT" "  # line 3 of the record is skipped: not a mode without a special bit and a plain path in the data dir '${DATA_DIR}'"
+check_not "no path with a .. part is printed" grep -qF "/../" "$OUT"
+check "one chmod line is printed" test "$(grep -c 'chmod 755 ' "$OUT" | tr -d ' ')" = 1
+teardown_sandbox
+
+echo "=== test: undo with another data dir than the apply skips every line of the record ==="
+setup_sandbox
+build_repos
+chmod 755 "$R"
+run_setup -- >/dev/null || true
+check "the apply recorded the repos directory" grep -qxF "755	${R}" "$RECORD"
+mkdir "${SANDBOX}/other"
+set_meta "${SANDBOX}/other" ec2-user:ec2-user
+run_setup -- --undo --data-dir "${SANDBOX}/other" >/dev/null || true
+check "the line is named as skipped, with the data dir of the undo" has_line "$OUT" "  # line 1 of the record is skipped: not a mode without a special bit and a plain path in the data dir '${SANDBOX}/other'"
+check_not "no chmod line is printed" grep -qE "chmod [0-7]{3,4} " "$OUT"
 teardown_sandbox
 
 # ------------------------------------------- item 3: the sudo proof by behaviour
@@ -1542,11 +1636,13 @@ else
     pass "apply exits non-zero"
 fi
 expect_step daemon-private failed
-check "prints the chmod for the data dir" has_line "$OUT" "the data dir '${DATA_DIR}' gives more than traverse (group ec2-user, mode 755): chmod go-rw '${DATA_DIR}'"
+check "prints the chmod for the data dir" has_line "$OUT" "the data dir '${DATA_DIR}' gives more than traverse (group ec2-user, mode 755): runuser -u ec2-user -- chmod go-rw '${DATA_DIR}'"
 check "the data dir keeps its mode (the step changes no mode)" test "$(mode_of "$DATA_DIR")" = 755
 check "nothing was mutated" test ! -s "$MUT_LOG"
 check "the record holds the mode of the data dir" grep -qxF "755	${DATA_DIR}" "$RECORD"
 check "the record holds the mode of the repos directory" grep -qxF "755	${R}" "$RECORD"
+# mutation pin: one chmod line is printed without the runuser form -> this test fails
+check "every chmod line of the apply runs chmod as the daemon user" chmods_as_daemon "$OUT"
 chmod 711 "$DATA_DIR"
 chmod 700 "$R"
 if run_setup -- ; then
@@ -1556,16 +1652,18 @@ else
     fail_test "apply failed after the chmods"
 fi
 run_setup -- --undo >/dev/null || true
-check "undo prints the chmod that puts back the mode of the data dir" has_line "$OUT" "  chmod 755 '${DATA_DIR}'"
-check "undo prints the chmod that puts back the mode of the repos directory" has_line "$OUT" "  chmod 755 '${R}'"
+check "undo prints the chmod that puts back the mode of the data dir" has_line "$OUT" "  runuser -u ec2-user -- chmod 755 '${DATA_DIR}'"
+check "undo prints the chmod that puts back the mode of the repos directory" has_line "$OUT" "  runuser -u ec2-user -- chmod 755 '${R}'"
 check "the data dir keeps its mode after undo (printed, not run)" test "$(mode_of "$DATA_DIR")" = 711
 restore_n="$(grep -n -m1 '^== earlier modes' "$OUT" | cut -d: -f1 || true)"
 left_n="$(grep -n -m1 '^== left in place' "$OUT" | cut -d: -f1 || true)"
 check "the chmods come before the cleanup section" test -n "$restore_n" -a -n "$left_n" -a "${restore_n:-0}" -lt "${left_n:-0}"
+check "every chmod line of the undo runs chmod as the daemon user" chmods_as_daemon "$OUT"
+check "the text before the lines says to run them as root, as they are" grep -qF "line below as root, as it is (runuser runs chmod as ec2-user" "$OUT"
 set_meta "$RECORD" ec2-user:ec2-user
 run_setup -- --undo >/dev/null || true
 check "a record that is not root's is passed over" grep -qF "${RECORD} is not a regular file of root; passed over" "$OUT"
-check_not "and no chmod is printed from it" has_line "$OUT" "  chmod 755 '${DATA_DIR}'"
+check_not "and no chmod is printed from it" has_line "$OUT" "  runuser -u ec2-user -- chmod 755 '${DATA_DIR}'"
 teardown_sandbox
 
 # mutation pin: the proof as the agent user is removed -> this test fails
@@ -1615,7 +1713,7 @@ else
 fi
 expect_step daemon-private skipped
 expect_step agent-proof failed
-check "the message names the directory" has_line "$OUT" "the agent user can list ${R}"
+check "the message names the directory" has_line "$OUT" "the agent user can list '${R}'"
 teardown_sandbox
 
 echo "=== test: not root, bad arguments ==="
