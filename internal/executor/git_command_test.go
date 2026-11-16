@@ -176,15 +176,26 @@ func TestGitCommandAgentRouteRunsGitThroughSudo(t *testing.T) {
 	}
 }
 
+// resolvedTempDir is t.TempDir() without symbolic links (/var is a link to
+// /private/var on macOS).
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestGitCommandRouteInsideRoot(t *testing.T) {
-	realRoot := t.TempDir()
+	realRoot := resolvedTempDir(t)
 	ws := workspaceDir(t, realRoot)
-	linkDir := t.TempDir()
+	linkDir := resolvedTempDir(t)
 	linkRoot := filepath.Join(linkDir, "root-link")
 	if err := os.Symlink(realRoot, linkRoot); err != nil {
 		t.Skipf("symlink: %v", err)
 	}
-	outside := t.TempDir()
+	outside := resolvedTempDir(t)
 	tests := []struct {
 		name      string
 		root      string
@@ -562,5 +573,70 @@ func a(ctx context.Context, s *runAsSettings) {
 	}
 	if got, want := fmt.Sprint(inlineGitCommandLines(f, fset)), "[6 7 8 9 10]"; got != want {
 		t.Errorf("reported lines %s, want %s", got, want)
+	}
+}
+
+// TestGitCommandRouteValueOptionsBeforeDashC is item 2b: the check of -C and
+// --git-dir reads every argument before the subcommand, also after a global
+// option that takes a value; a command from outside the root with such an
+// argument into a workspace fails closed and starts no process.
+func TestGitCommandRouteValueOptionsBeforeDashC(t *testing.T) {
+	stubRunAsGOOS(t)
+	logPath := mockSudoExec(t)
+	root := resolvedTempDir(t)
+	ws := workspaceDir(t, root)
+	outside := resolvedTempDir(t)
+	setRunAsStateForTest(t, gitRouteSettings(t, root), "")
+	gitDir := filepath.Join(ws, ".git")
+	values := [][]string{
+		{"--namespace", "ns"},
+		{"--attr-source", "HEAD"},
+		{"--config-env", "core.editor=EDITOR"},
+		{"-c", "a.b=c"},
+	}
+	targets := [][]string{
+		{"-C", ws},
+		{"--git-dir", gitDir},
+		{"--git-dir=" + gitDir},
+		{"--work-tree", ws},
+	}
+	type tcase struct {
+		name    string
+		args    []string
+		wantErr bool
+	}
+	var tests []tcase
+	for _, v := range values {
+		for _, tg := range targets {
+			args := append(append(append([]string{}, v...), tg...), "status")
+			tests = append(tests, tcase{strings.Join(args, " "), args, true})
+		}
+		args := append(append([]string{}, v...), "-C", outside, "status")
+		tests = append(tests, tcase{strings.Join(args, " "), args, false})
+	}
+	tests = append(tests,
+		tcase{"two value options before -C", []string{"--namespace", "ns", "-c", "a.b=c", "-C", ws, "status"}, true},
+		tcase{"--namespace= form before -C", []string{"--namespace=ns", "-C", ws, "status"}, true},
+		tcase{"subcommand after a value option, then a subcommand -C", []string{"--namespace", "ns", "commit", "-C", ws, "--dry-run"}, false},
+	)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := gitCommand(context.Background(), outside, tc.args...)
+			if (cmd.Err != nil) != tc.wantErr {
+				t.Fatalf("Err = %v, want error %v", cmd.Err, tc.wantErr)
+			}
+			if !tc.wantErr {
+				if _, agent := agentCmdUser(cmd); agent || joinNUL(cmd.Args) != joinNUL(append([]string{"git"}, tc.args...)) {
+					t.Errorf("not the plain command: %q", cmd.Args)
+				}
+				return
+			}
+			if err := cmd.Run(); err == nil {
+				t.Error("Run succeeded")
+			}
+		})
+	}
+	if got := sudoArgv(t, logPath); got != nil {
+		t.Errorf("a process started through sudo: %q", got)
 	}
 }

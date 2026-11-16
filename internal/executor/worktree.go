@@ -1288,12 +1288,26 @@ func writeFileAtomic(path string, content []byte, perm os.FileMode, modTime time
 // This function is safe to call at startup. Pool worktrees (pilot-worktree-pool-*)
 // are excluded because they are managed by the WorktreeManager lifecycle.
 // TASK-651: with run_as_user set the agent workspaces of the project of
-// repoPath (pilot-ws-PROJECT-*) under the workspace root are removed too.
+// repoPath (pilot-ws-PROJECT-*) under the workspace root are removed too; only
+// the daemon calls it, at start. The one-shot commands call
+// CleanupOrphanedWorktreesKeepAgentWorkspaces.
 // TASK-357 (G1): returns (removedCount, freedBytes, err). err is reserved for
 // real failures (e.g. reading the temp dir); a successful cleanup of N orphans
 // returns a nil error so idiomatic `if err != nil { return err }` callers don't
 // abort startup whenever orphans were reclaimed.
 func CleanupOrphanedWorktrees(ctx context.Context, repoPath string) (int, int64, error) {
+	return cleanupOrphanedWorktrees(ctx, repoPath, true)
+}
+
+// CleanupOrphanedWorktreesKeepAgentWorkspaces is CleanupOrphanedWorktrees
+// without the sweep of the agent workspaces: the sweep of a one-shot command
+// (pilot task, pilot github run). A one-shot command does not own the
+// workspaces of the root; the running daemon's tasks may use them (TASK-651).
+func CleanupOrphanedWorktreesKeepAgentWorkspaces(ctx context.Context, repoPath string) (int, int64, error) {
+	return cleanupOrphanedWorktrees(ctx, repoPath, false)
+}
+
+func cleanupOrphanedWorktrees(ctx context.Context, repoPath string, sweepWorkspaces bool) (int, int64, error) {
 	tmpDir := os.TempDir()
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
@@ -1391,7 +1405,7 @@ func CleanupOrphanedWorktrees(ctx context.Context, repoPath string) (int, int64,
 	// TASK-651 (4.2): with run_as_user set, the agent workspaces of this
 	// project under the workspace root are orphans at startup too. Removed as
 	// the agent user; a workspace of another project is never touched.
-	if repoPath != "" {
+	if repoPath != "" && sweepWorkspaces {
 		wsRemoved, wsBytes := sweepAgentWorkspaces(repoPath, "")
 		orphanCount += wsRemoved
 		totalBytes += wsBytes

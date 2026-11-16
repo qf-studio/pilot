@@ -138,6 +138,10 @@ func (m *WorktreeManager) createAgentWorkspace(ctx context.Context, taskID, bran
 	if err != nil {
 		return "", nil, err
 	}
+	if taskID == "" {
+		// A name without TASK is never parsed, so no sweep would remove it.
+		return "", nil, errors.New("agent workspace: no task ID")
+	}
 	if branch == "" {
 		return "", nil, errors.New("agent workspace: no task branch")
 	}
@@ -146,9 +150,10 @@ func (m *WorktreeManager) createAgentWorkspace(ctx context.Context, taskID, bran
 		return "", nil, err
 	}
 
+	base := m.resolveBaseBranch(ctx)
 	ref := baseRef
 	if ref == "" {
-		if ref, err = fetchOriginBranchForWorktree(ctx, m.repoPath, m.resolveBaseBranch(ctx)); err != nil {
+		if ref, err = fetchOriginBranchForWorktree(ctx, m.repoPath, base); err != nil {
 			return "", nil, err
 		}
 	}
@@ -161,14 +166,14 @@ func (m *WorktreeManager) createAgentWorkspace(ctx context.Context, taskID, bran
 	wsPath := filepath.Join(root, name)
 	remove := func() { _ = removeAgentWorkspace(s, wsPath) }
 
-	if err := transportWorkspaceBase(ctx, m.repoPath, wsPath, sha, branch); err != nil {
+	if err := transportWorkspaceBase(ctx, m.repoPath, wsPath, sha, branch, base); err != nil {
 		remove()
 		return "", nil, err
 	}
 	if agentWorkspaceAfterTransport != nil {
 		agentWorkspaceAfterTransport(wsPath)
 	}
-	if err := verifyAgentWorkspace(ctx, m.repoPath, wsPath, sha, branch); err != nil {
+	if err := verifyAgentWorkspace(ctx, m.repoPath, wsPath, sha, branch, base); err != nil {
 		remove()
 		return "", nil, err
 	}
@@ -199,12 +204,19 @@ func resolveCommitSHA(ctx context.Context, repoPath, ref string) (string, error)
 // temporary ref, runs git bundle create with the output on standard output
 // and pipes it into a process of the agent user that stores it as the bundle
 // file next to wsPath. Then, as the agent user: git init wsPath, one fetch
-// from the bundle file, the task branch at sha, the origin URL of the daemon's
+// from the bundle file, the task branch at sha, refs/remotes/origin/BASE at
+// sha (base is the base branch of the run), the origin URL of the daemon's
 // repository without a user or password part, and the removal of the bundle
 // file. The temporary ref and the bundle file are removed in every outcome.
 // The agent user never reads the daemon's repository and the daemon writes no
 // file into the workspace root.
-func transportWorkspaceBase(ctx context.Context, repoPath, wsPath, sha, branch string) error {
+//
+// Decision: origin/BASE is at the base commit, also for an explicit base (a
+// fix continuation): the commit count and the merge-base of a run compare
+// against origin/BASE (CountNewCommitsAgainstOrigin, resolveMergeBaseSHA), and
+// the agent user gets no credential to fetch it; at the base commit they
+// count the commits of this run.
+func transportWorkspaceBase(ctx context.Context, repoPath, wsPath, sha, branch, base string) error {
 	root := filepath.Dir(wsPath)
 	bundlePath := wsPath + agentWorkspaceBundleSuffix
 	tmpRef := agentWorkspaceBaseRefPrefix + filepath.Base(wsPath)
@@ -293,6 +305,7 @@ func transportWorkspaceBase(ctx context.Context, repoPath, wsPath, sha, branch s
 		{what: "git init", dir: root, args: []string{"init", "-q", wsPath}},
 		{what: "fetch from the bundle", dir: wsPath, args: []string{"fetch", "-q", "--no-tags", bundlePath, tmpRef}},
 		{what: "task branch", dir: wsPath, args: []string{"checkout", "-q", "-B", branch, sha}},
+		{what: "origin/" + base, dir: wsPath, args: []string{"update-ref", "refs/remotes/origin/" + base, sha}},
 	}
 	for _, st := range steps {
 		if out, err := gitCommandIn(ctx, st.dir, st.args...).CombinedOutput(); err != nil {
@@ -338,11 +351,13 @@ func stripURLCredentials(raw string) (string, error) {
 
 // verifyAgentWorkspace is the check of the daemon before createAgentWorkspace
 // returns: the daemon user can list the workspace; the task branch is at sha;
-// the repository has no alternates file and no object file that is a hard
-// link into the daemon's repository; it holds no ref other than the task
-// branch (the fetched base is FETCH_HEAD); no bundle file is left in the
-// workspace root. The git commands run in the workspace, so as the agent user.
-func verifyAgentWorkspace(ctx context.Context, repoPath, wsPath, sha, branch string) error {
+// the objects directory is a directory, not a symbolic link; the repository
+// has no alternates file and no object file that is a hard link into the
+// daemon's repository; it holds no ref other than the task branch and
+// refs/remotes/origin/BASE, both at sha (the fetched base is FETCH_HEAD); no
+// bundle file is left in the workspace root. The git commands run in the
+// workspace, so as the agent user.
+func verifyAgentWorkspace(ctx context.Context, repoPath, wsPath, sha, branch, base string) error {
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("agent workspace check failed: "+format, args...)
 	}
@@ -357,20 +372,30 @@ func verifyAgentWorkspace(ctx context.Context, repoPath, wsPath, sha, branch str
 	if fi, err := os.Lstat(gitDir); err != nil || !fi.IsDir() {
 		return fail(".git of %s is not a directory", wsPath)
 	}
+	objects := filepath.Join(gitDir, "objects")
+	if fi, err := os.Lstat(objects); err != nil || !fi.IsDir() {
+		return fail("the objects directory of %s is not a directory (a symbolic link?)", wsPath)
+	}
 	for _, name := range []string{"alternates", "http-alternates"} {
 		if _, err := os.Lstat(filepath.Join(gitDir, "objects", "info", name)); !errors.Is(err, fs.ErrNotExist) {
 			return fail("%s has an objects/info/%s file", wsPath, name)
 		}
 	}
-	if linked, err := hardLinkedObject(ctx, repoPath, filepath.Join(gitDir, "objects")); err != nil || linked != "" {
+	if linked, err := hardLinkedObject(ctx, repoPath, objects); err != nil || linked != "" {
 		return fail("object file %q is a hard link into the daemon's repository (%v)", linked, err)
 	}
-	refs, err := gitCommandIn(ctx, wsPath, "for-each-ref", "--format=%(refname)").Output()
+	refs, err := gitCommandIn(ctx, wsPath, "for-each-ref", "--format=%(refname) %(objectname)").Output()
 	if err != nil {
 		return fail("list the refs: %v", err)
 	}
-	if got := strings.Fields(string(refs)); len(got) != 1 || got[0] != "refs/heads/"+branch {
-		return fail("refs are %q, want only refs/heads/%s", got, branch)
+	want := map[string]bool{"refs/heads/" + branch + " " + sha: true, "refs/remotes/origin/" + base + " " + sha: true}
+	got := strings.Split(strings.TrimSpace(string(refs)), "\n")
+	ok := len(got) == len(want)
+	for _, line := range got {
+		ok = ok && want[line]
+	}
+	if !ok {
+		return fail("refs are %q, want only refs/heads/%s and refs/remotes/origin/%s at %s", got, branch, base, sha)
 	}
 	if _, err := os.Lstat(wsPath + agentWorkspaceBundleSuffix); !errors.Is(err, fs.ErrNotExist) {
 		return fail("the bundle file %s is still in the workspace root", wsPath+agentWorkspaceBundleSuffix)

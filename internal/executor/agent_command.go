@@ -296,7 +296,8 @@ func resolveRunAs(userName, group string) (*runAsSettings, string) {
 // with uid and gid not 0, the user is not the daemon user, the daemon user is
 // a member of the group, `sudo -n -u <user> -g <group> true` exits 0 within 5
 // seconds, the agent gets no terminal from sudo, and the home of the user
-// exists. Then the workspace (TASK-651 4.2): use_worktree is true,
+// exists. Before all of them the refusal of runAsIncompleteRefusal fails
+// every host. Then the workspace (TASK-651 4.2): use_worktree is true,
 // worktree_pool_size is 0, the workspace root is not /, the home of the daemon
 // user, the data directory of the daemon or a parent of one of them, and the
 // host checks of checkRunAsWorkspaceRoot pass. On any failure it logs one Error line naming the check and sets the
@@ -346,6 +347,8 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 	switch {
 	case blank != "":
 		failed = blank
+	case runAsIncompleteRefusal:
+		failed = runAsIncompleteCheck
 	case !validRunAsName(userName) || userName == "root":
 		failed = "run_as_user name is not valid"
 	case group == "":
@@ -391,6 +394,18 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 		useWorktree: useWorktree, poolSize: worktreePoolSize}
 	runAsMu.Unlock()
 }
+
+// runAsIncompleteRefusal makes PreflightRunAsUser fail for every host while
+// the option is set. Until the hand-over leg and the gates leg of TASK-651
+// merge, processes of the daemon user still run inside the agent-owned
+// workspace: the workflow hooks and quality gates of the runner, the gate
+// commands of internal/quality and its inline git command (scope.go). The
+// gates leg removes the refusal. Tests of the package switch it off
+// (TestMain).
+var runAsIncompleteRefusal = true
+
+// runAsIncompleteCheck is the failed check of the refusal.
+const runAsIncompleteCheck = "run_as_user cannot be set yet: the hand-over leg and the gates leg of TASK-651 are not merged"
 
 // daemonHomeDir is os.UserHomeDir; tests replace it.
 var daemonHomeDir = os.UserHomeDir
