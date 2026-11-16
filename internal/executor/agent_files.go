@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,17 +35,27 @@ const agentFileTimeout = 30 * time.Second
 // fs.ErrNotExist, as the os call returns.
 const agentFileMissingExit = 3
 
+// agentFileReadLimit bounds the standard output of a helper command (the
+// content of a read): the agent can put a link to an endless file at a path
+// the daemon reads. agentFileStderrLimit bounds the standard error of every
+// helper command. One byte over a limit stops the command through the Cancel
+// of agentCommand and the helper returns an error, never partial content.
+const (
+	agentFileReadLimit   = 4 << 20
+	agentFileStderrLimit = 64 << 10
+)
+
 // The scripts run as `sh -c SCRIPT sh ARGS...` as the agent user.
 const (
 	// $1 path. Standard output is the content.
 	agentReadScript = `[ -e "$1" ] || exit 3; exec cat -- "$1"`
-	// $1 path, $2 umask. Standard input is the content: create or truncate,
-	// as os.WriteFile (the mode of an existing file stays).
-	agentWriteScript = `umask "$2" && exec cat > "$1"`
+	// $1 path, $2 umask, $3 mode. Standard input is the content: create or
+	// truncate, as os.WriteFile (the mode of an existing file stays). A new
+	// file is created under the umask (no bit beyond the mode) and gets the
+	// mode before the content: the umask alone never sets an execute bit.
+	agentWriteScript = `umask "$2" || exit 1; if [ -e "$1" ]; then exec cat > "$1"; fi; { chmod -- "$3" "$1" && exec cat; } > "$1"`
 	// $1 path, $2 umask.
 	agentMkdirScript = `umask "$2" && exec mkdir -p -- "$1"`
-	// $1 old path, $2 new path: os.Rename, a file at $2 is replaced.
-	agentRenameScript = `[ -e "$1" ] || [ -L "$1" ] || exit 3; exec mv -f -T -- "$1" "$2"`
 	// $1 path: os.Remove, a file or an empty directory.
 	agentRemoveScript = `[ -e "$1" ] || [ -L "$1" ] || exit 3
 if [ -d "$1" ] && [ ! -L "$1" ]; then exec rmdir -- "$1"; fi
@@ -98,6 +109,8 @@ func agentFileRoute(path string) (bool, error) {
 
 // runAgentFileScript runs script as the agent user with args, stdin as its
 // standard input (the null device when nil), and returns its standard output.
+// Its standard output is bounded by agentFileReadLimit and its standard error
+// by agentFileStderrLimit (agentLimitedBuffer).
 func runAgentFileScript(ctx context.Context, op, path, script string, stdin []byte, args ...string) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -112,22 +125,72 @@ func runAgentFileScript(ctx context.Context, op, path, script string, stdin []by
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			if cmd.Cancel == nil || cmd.Cancel() != nil {
+				cancel()
+			}
+		})
+	}
+	stdout := &agentLimitedBuffer{name: "standard output", limit: agentFileReadLimit, stop: stop}
+	stderr := &agentLimitedBuffer{name: "standard error", limit: agentFileStderrLimit, stop: stop}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	err = cmd.Run()
+	for _, b := range []*agentLimitedBuffer{stdout, stderr} {
+		if b.over {
+			return nil, fmt.Errorf("run_as_user: %s %s as the agent user: the %s of the command is over the limit of %d bytes, the command was stopped", op, path, b.name, b.limit)
+		}
+	}
+	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == agentFileMissingExit {
 			return nil, &fs.PathError{Op: op, Path: path, Err: fs.ErrNotExist}
 		}
-		return nil, fmt.Errorf("run_as_user: %s %s as the agent user: %w: %s", op, path, err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("run_as_user: %s %s as the agent user: %w: %s", op, path, err, strings.TrimSpace(stderr.buf.String()))
 	}
-	return stdout.Bytes(), nil
+	return stdout.buf.Bytes(), nil
+}
+
+// errAgentOutputLimit is the error of a write to an agentLimitedBuffer that
+// is over its limit: os/exec stops the copy of the stream.
+var errAgentOutputLimit = errors.New("output over the limit")
+
+// agentLimitedBuffer keeps up to limit bytes of one output stream of a helper
+// command. The write that goes over the limit calls stop (the Cancel of
+// agentCommand, which kills the process group) before it returns: the kill
+// never races the command's own exit. Each stream is written by its own copy
+// goroutine of os/exec and read after Wait.
+type agentLimitedBuffer struct {
+	name  string
+	limit int
+	stop  func()
+	buf   bytes.Buffer
+	over  bool
+}
+
+func (b *agentLimitedBuffer) Write(p []byte) (int, error) {
+	if b.over {
+		return 0, errAgentOutputLimit
+	}
+	if b.buf.Len()+len(p) > b.limit {
+		b.over = true
+		b.buf.Reset()
+		b.stop()
+		return 0, errAgentOutputLimit
+	}
+	return b.buf.Write(p)
 }
 
 // agentUmask is the umask under which a new file or directory gets the
 // permission bits of mode, as the os call gives it under umask 0.
 func agentUmask(mode os.FileMode) string {
 	return "0" + strconv.FormatUint(uint64(0o777&^mode.Perm()), 8)
+}
+
+// agentModeArg is the permission bits of mode as an octal chmod argument.
+func agentModeArg(mode os.FileMode) string {
+	return "0" + strconv.FormatUint(uint64(mode.Perm()), 8)
 }
 
 // agentWriteFile is os.WriteFile(path, data, mode), as the agent user for a
@@ -143,7 +206,7 @@ func agentWriteFile(ctx context.Context, path string, data []byte, mode os.FileM
 	if data == nil {
 		data = []byte{}
 	}
-	_, err = runAgentFileScript(ctx, "write", path, agentWriteScript, data, path, agentUmask(mode))
+	_, err = runAgentFileScript(ctx, "write", path, agentWriteScript, data, path, agentUmask(mode), agentModeArg(mode))
 	return err
 }
 
@@ -172,28 +235,6 @@ func agentMkdirAll(ctx context.Context, path string, mode os.FileMode) error {
 		return os.MkdirAll(path, mode)
 	}
 	_, err = runAgentFileScript(ctx, "mkdir", path, agentMkdirScript, nil, path, agentUmask(mode))
-	return err
-}
-
-// agentRename is os.Rename(oldPath, newPath), as the agent user when both
-// paths are inside the workspace root. One path inside and one outside is an
-// error.
-func agentRename(ctx context.Context, oldPath, newPath string) error {
-	oldAgent, err := agentFileRoute(oldPath)
-	if err != nil {
-		return err
-	}
-	newAgent, err := agentFileRoute(newPath)
-	if err != nil {
-		return err
-	}
-	if oldAgent != newAgent {
-		return fmt.Errorf("run_as_user: rename %s to %s: only one of the two is inside the workspace root", oldPath, newPath)
-	}
-	if !oldAgent {
-		return os.Rename(oldPath, newPath)
-	}
-	_, err = runAgentFileScript(ctx, "rename", oldPath, agentRenameScript, nil, oldPath, newPath)
 	return err
 }
 

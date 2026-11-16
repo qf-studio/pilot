@@ -300,28 +300,6 @@ func TestAgentFilesOperations(t *testing.T) {
 			},
 		},
 		{
-			name: "rename",
-			run: func(t *testing.T, base string) error {
-				return agentRename(ctx, filepath.Join(base, "seeded.txt"), filepath.Join(base, "sub", "moved.txt"))
-			},
-			check: func(t *testing.T, base string) {
-				assertNoPath(t, filepath.Join(base, "seeded.txt"))
-				if got := readTestFile(t, filepath.Join(base, "sub", "moved.txt")); got != "seed\n" {
-					t.Errorf("moved.txt = %q", got)
-				}
-			},
-		},
-		{
-			name: "rename of a missing file is not-exist",
-			run: func(t *testing.T, base string) error {
-				err := agentRename(ctx, filepath.Join(base, "missing.txt"), filepath.Join(base, "m2.txt"))
-				if !os.IsNotExist(err) {
-					return fmt.Errorf("err = %v, want not-exist", err)
-				}
-				return nil
-			},
-		},
-		{
 			name:  "remove a file",
 			run:   func(t *testing.T, base string) error { return agentRemove(ctx, filepath.Join(base, "seeded.txt")) },
 			check: func(t *testing.T, base string) { assertNoPath(t, filepath.Join(base, "seeded.txt")) },
@@ -787,5 +765,240 @@ func TestRunAsUserEvidenceWritesRefused(t *testing.T) {
 	}
 	if got := readTestFile(t, filepath.Join(dir, "main.go")); got != original {
 		t.Errorf("main.go = %q, want it unchanged", got)
+	}
+}
+
+// mockSudoKill is the extra code of mockSudoWritable that runs the kill of
+// killAgentProcessGroup (`sudo ... kill -s KILL -- -PGID`, "$1" is -PGID after
+// the "--"), so the Cancel of agentCommand stops the command in the fixture.
+const mockSudoKill = `case "$1" in
+-[0-9]*) exec kill -9 "$1" ;;
+esac`
+
+// agentKillCalls returns the calls of the mock sudo that are a kill of a
+// process group.
+func agentKillCalls(calls []string) []string {
+	var kills []string
+	for _, c := range calls {
+		if strings.Contains(c, " kill -s KILL -- -") {
+			kills = append(kills, c)
+		}
+	}
+	return kills
+}
+
+// TestAgentFilesReadLimit is item 1 of GH-6411: the standard output of a read
+// as the agent user is bounded by agentFileReadLimit and the standard error of
+// every helper command by agentFileStderrLimit. Over a limit the command is
+// stopped through the Cancel of agentCommand (the mock records the kill) and
+// the helper returns an error that names the path and the limit, no content.
+func TestAgentFilesReadLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		// seed runs before the lock and returns the path to read.
+		seed func(t *testing.T, ws string) string
+		// run is the helper call; nil is agentReadFile of the seeded path.
+		run       func(ctx context.Context, path string) ([]byte, error)
+		wantErr   string // "" is success
+		wantLen   int
+		wantKills bool
+	}{
+		{
+			name: "a file of exactly the limit is read",
+			seed: func(t *testing.T, ws string) string {
+				p := filepath.Join(ws, "at-limit.bin")
+				writeTestFile(t, p, strings.Repeat("a", agentFileReadLimit))
+				return p
+			},
+			wantLen: agentFileReadLimit,
+		},
+		{
+			name: "a file over the limit is an error",
+			seed: func(t *testing.T, ws string) string {
+				p := filepath.Join(ws, "over-limit.bin")
+				writeTestFile(t, p, strings.Repeat("a", agentFileReadLimit+1))
+				return p
+			},
+			wantErr:   fmt.Sprintf("standard output of the command is over the limit of %d bytes", agentFileReadLimit),
+			wantKills: true,
+		},
+		{
+			name: "a link to an endless source is an error",
+			seed: func(t *testing.T, ws string) string {
+				p := filepath.Join(ws, ".claude", "settings.json")
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("/dev/zero", p); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			},
+			wantErr:   fmt.Sprintf("standard output of the command is over the limit of %d bytes", agentFileReadLimit),
+			wantKills: true,
+		},
+		{
+			name: "an endless standard error is an error",
+			seed: func(t *testing.T, ws string) string { return filepath.Join(ws, "any.txt") },
+			run: func(ctx context.Context, path string) ([]byte, error) {
+				return runAgentFileScript(ctx, "test", path, `exec yes 1>&2`, nil)
+			},
+			wantErr:   fmt.Sprintf("standard error of the command is over the limit of %d bytes", agentFileStderrLimit),
+			wantKills: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAgentFilesFixture(t, mockSudoKill)
+			path := tc.seed(t, f.ws)
+			f.lock(t)
+			run := tc.run
+			if run == nil {
+				run = agentReadFile
+			}
+
+			start := time.Now()
+			got, err := run(context.Background(), path)
+			if d := time.Since(start); d > 5*time.Second {
+				t.Errorf("the helper returned after %v, want inside 5 seconds", d)
+			}
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("err = %v", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr) || !strings.Contains(err.Error(), path)):
+				t.Fatalf("err = %v, want one with %q and the path %s", err, tc.wantErr, path)
+			}
+			if tc.wantErr != "" && got != nil {
+				t.Errorf("the helper returned %d bytes with the error, want none", len(got))
+			}
+			if tc.wantErr == "" && len(got) != tc.wantLen {
+				t.Errorf("read %d bytes, want %d", len(got), tc.wantLen)
+			}
+			if kills := agentKillCalls(f.calls(t)); tc.wantKills != (len(kills) > 0) {
+				t.Errorf("kill calls = %q, want a kill: %v", kills, tc.wantKills)
+			}
+		})
+	}
+}
+
+// TestAgentWriteFileMode is item 3 of GH-6411: a new file written as the agent
+// user has the requested permission bits and no more; an existing file keeps
+// its mode, as os.WriteFile.
+func TestAgentWriteFileMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing os.FileMode // 0: the file does not exist
+		mode     os.FileMode
+		want     os.FileMode
+	}{
+		{name: "new file 0755", mode: 0o755, want: 0o755},
+		{name: "new file 0600", mode: 0o600, want: 0o600},
+		{name: "new file 0644", mode: 0o644, want: 0o644},
+		{name: "existing 0644 written with 0755 keeps 0644", existing: 0o644, mode: 0o755, want: 0o644},
+		{name: "existing 0700 written with 0600 keeps 0700", existing: 0o700, mode: 0o600, want: 0o700},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAgentFilesFixture(t, "")
+			// The mock of the earlier leg without the chmod -R of the
+			// fixture's mock, which would clear the write bits of the result.
+			sudoLog := mockSudoAgent(t, "", "")
+			p := filepath.Join(f.ws, "bin", "tool")
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.existing != 0 {
+				if err := os.WriteFile(p, []byte("old\n"), tc.existing); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(p, tc.existing); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := agentWriteFile(context.Background(), p, []byte("#!/bin/sh\n"), tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			fi, err := os.Stat(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := fi.Mode().Perm(); got != tc.want {
+				t.Errorf("mode = %#o, want %#o", got, tc.want)
+			}
+			if got := readTestFile(t, p); got != "#!/bin/sh\n" {
+				t.Errorf("content = %q", got)
+			}
+			if calls := sudoCalls(t, sudoLog); len(calls) != 1 {
+				t.Errorf("sudo ran %d times (%q), want the write as the agent user once", len(calls), calls)
+			}
+		})
+	}
+}
+
+// TestRunAsUserSettingsCleanFailureStopsTheRun is item 2 of GH-6411: with the
+// option set, a failed write of CleanStalePilotHooks on the settings file of
+// the workspace stops the run before the session with one Error line, as a
+// failed merge does. Only that first write fails: a Warn line would let the
+// merges after it succeed and the session run.
+func TestRunAsUserSettingsCleanFailureStopsTheRun(t *testing.T) {
+	stubRunAsGOOS(t)
+	repo, remote := setupTestRepoWithRemote(t)
+	t.Cleanup(func() { _ = os.RemoveAll(repo); _ = os.RemoveAll(remote) })
+	// The workspace is a clone: the stale hook entries come with origin/main.
+	writeTestFile(t, filepath.Join(repo, ".claude", "settings.json"), staleHookSettings)
+	for _, args := range [][]string{
+		{"add", ".claude/settings.json"},
+		{"-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "-m", "stale hooks"},
+		{"push", "-q", "origin", "HEAD:main"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %q: %v: %s", args, err, out)
+		}
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedOnce := filepath.Join(t.TempDir(), "failed-once")
+	failFirstSettingsWrite := fmt.Sprintf(`case "$*" in
+*"cat > "*settings.json*)
+  if [ ! -e '%[1]s' ]; then
+    : > '%[1]s'
+    echo "mock sudo: settings.json: permission denied" >&2
+    exit 1
+  fi ;;
+esac`, failedOnce)
+	_ = mockSudoAgent(t, repo, failFirstSettingsWrite)
+	setRunAsStateForTest(t, gitRouteSettings(t, root), "")
+
+	backend := &settingsCheckBackend{}
+	runner := NewRunnerWithBackend(backend)
+	runner.config = &BackendConfig{}
+	runner.SetSkipPreflightChecks(true)
+	runner.SetRecordingEnabled(false)
+	var buf bytes.Buffer
+	runner.log = slog.New(slog.NewTextHandler(&buf, nil))
+	task := &Task{ID: "GH-13", Title: "t", Description: "d", ProjectPath: repo, Branch: "pilot/GH-13", CreatePR: true, BaseBranch: "main"}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	res, err := runner.executeWithOptions(ctx, task, true)
+	if _, statErr := os.Stat(failedOnce); statErr != nil {
+		t.Fatalf("the clean-up write never ran as the agent user (err %v):\n%s", err, buf.String())
+	}
+	if err == nil || !strings.Contains(err.Error(), "claude settings write failed") {
+		t.Fatalf("err = %v, want the settings failure", err)
+	}
+	if res == nil || res.Success || !strings.Contains(res.Error, "settings.json") {
+		t.Errorf("result = %+v", res)
+	}
+	if paths := backend.paths(); len(paths) != 0 {
+		t.Errorf("the session ran in %q after the clean-up write failed", paths)
+	}
+	if n := strings.Count(buf.String(), "level=ERROR"); n != 1 || !strings.Contains(buf.String(), "Claude settings write failed") {
+		t.Errorf("want one Error line for the settings write, got %d:\n%s", n, buf.String())
+	}
+	if strings.Contains(buf.String(), "Failed to clean stale pilot hooks in worktree") {
+		t.Errorf("the clean-up failure is a Warn line:\n%s", buf.String())
 	}
 }
