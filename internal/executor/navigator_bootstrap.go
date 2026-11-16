@@ -330,7 +330,7 @@ var navigatorPlaceholderPhrases = []string{
 // or is empty. A missing README or a missing section header is not a
 // placeholder: only a scaffolded README is bootstrapped automatically.
 func navigatorReadmeHasPlaceholder(projectPath string) bool {
-	content, err := os.ReadFile(filepath.Join(projectPath, navigatorDirName, "DEVELOPMENT-README.md"))
+	content, err := agentReadFile(context.Background(), filepath.Join(projectPath, navigatorDirName, "DEVELOPMENT-README.md"))
 	if err != nil {
 		return false
 	}

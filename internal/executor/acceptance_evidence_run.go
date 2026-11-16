@@ -431,7 +431,9 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 		return result
 	}
 
-	if err := os.WriteFile(fullPath, []byte(mutated), 0o600); err != nil {
+	// TASK-651: with run_as_user set the write returns an error that names
+	// the gates leg (evidenceWriteFile); the tree stays untouched.
+	if err := evidenceWriteFile(fullPath, []byte(mutated), 0o600); err != nil {
 		result.NotVerifiedReason = fmt.Sprintf("could not write mutated %s: %v", file, err)
 		return result
 	}
@@ -446,7 +448,7 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 
 	// Always attempt to revert, whatever the run above returned — never
 	// leave the mutated content on disk.
-	if err := os.WriteFile(fullPath, original, 0o600); err != nil {
+	if err := evidenceWriteFile(fullPath, original, 0o600); err != nil {
 		result.NotVerifiedReason = fmt.Sprintf(
 			"reverting mutation to %s failed: %v (worktree may be left dirty; original content was not restored)", file, err,
 		)

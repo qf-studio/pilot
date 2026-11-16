@@ -39,18 +39,20 @@ func snapshotStrayBaseline(ctx context.Context, projectPath string) *strayBaseli
 		return nil
 	}
 	for _, e := range entries {
-		b.dirty[e.path] = readStrayFile(projectPath, e.path)
+		b.dirty[e.path] = readStrayFile(ctx, projectPath, e.path)
 	}
 	return b
 }
 
-func readStrayFile(dir, rel string) strayFile {
+// readStrayFile reads a regular file of the project. TASK-651: inside the
+// workspace root the content is read as the agent user (agent_files.go).
+func readStrayFile(ctx context.Context, dir, rel string) strayFile {
 	full := filepath.Join(dir, filepath.FromSlash(rel))
 	info, err := os.Lstat(full)
 	if err != nil || !info.Mode().IsRegular() {
 		return strayFile{}
 	}
-	data, err := os.ReadFile(full)
+	data, err := agentReadFile(ctx, full)
 	if err != nil {
 		return strayFile{}
 	}
@@ -76,12 +78,12 @@ func (b *strayBaseline) sweepStrayWrites(ctx context.Context, log *slog.Logger) 
 	var stray []string
 	for _, e := range entries {
 		before, wasDirty := b.dirty[e.path]
-		if wasDirty && sameStrayFile(before, readStrayFile(b.dir, e.path)) {
+		if wasDirty && sameStrayFile(before, readStrayFile(ctx, b.dir, e.path)) {
 			continue
 		}
 		stray = append(stray, e.path)
 		if wasDirty {
-			b.restoreBaseline(e.path, before, log)
+			b.restoreBaseline(ctx, e.path, before, log)
 		} else {
 			b.revertToHead(ctx, e, log)
 		}
@@ -97,7 +99,7 @@ func (b *strayBaseline) sweepStrayWrites(ctx context.Context, log *slog.Logger) 
 			continue
 		}
 		stray = append(stray, p)
-		b.restoreBaseline(p, before, log)
+		b.restoreBaseline(ctx, p, before, log)
 	}
 	sort.Strings(stray)
 	return stray
@@ -108,15 +110,16 @@ func sameStrayFile(a, b strayFile) bool {
 }
 
 // restoreBaseline puts a file that was already dirty before the session back
-// to its pre-session content.
-func (b *strayBaseline) restoreBaseline(rel string, before strayFile, log *slog.Logger) {
+// to its pre-session content. TASK-651: inside the workspace root as the
+// agent user (agent_files.go), as are the removals of revertToHead.
+func (b *strayBaseline) restoreBaseline(ctx context.Context, rel string, before strayFile, log *slog.Logger) {
 	full := filepath.Join(b.dir, filepath.FromSlash(rel))
 	log.Warn("Navigator bootstrap: restoring stray write outside the Navigator directory", slog.String("path", rel))
 	if !before.exists {
-		_ = os.Remove(full)
+		_ = agentRemove(ctx, full)
 		return
 	}
-	if err := os.WriteFile(full, before.data, before.mode); err != nil {
+	if err := agentWriteFile(ctx, full, before.data, before.mode); err != nil {
 		log.Warn("Navigator bootstrap: restore failed", slog.String("path", rel), slog.Any("error", err))
 	}
 }
@@ -129,11 +132,11 @@ func (b *strayBaseline) revertToHead(ctx context.Context, e dirtyEntry, log *slo
 	spec := b.prefix + e.path
 	switch {
 	case e.status == "??":
-		if err := os.Remove(full); err != nil {
+		if err := agentRemove(ctx, full); err != nil {
 			log.Warn("Navigator bootstrap: delete failed", slog.String("path", e.path), slog.Any("error", err))
 			return
 		}
-		removeEmptyParents(b.dir, filepath.Dir(full))
+		removeEmptyParents(ctx, b.dir, filepath.Dir(full))
 	case sweepGitRun(ctx, b.dir, "cat-file", "-e", "HEAD:"+spec) == nil:
 		if err := sweepGitRun(ctx, b.dir, "checkout", "HEAD", "--", e.path); err != nil {
 			log.Warn("Navigator bootstrap: revert failed", slog.String("path", e.path), slog.Any("error", err))
@@ -144,15 +147,15 @@ func (b *strayBaseline) revertToHead(ctx context.Context, e dirtyEntry, log *slo
 			log.Warn("Navigator bootstrap: revert failed", slog.String("path", e.path), slog.Any("error", err))
 			return
 		}
-		removeEmptyParents(b.dir, filepath.Dir(full))
+		removeEmptyParents(ctx, b.dir, filepath.Dir(full))
 	}
 }
 
 // removeEmptyParents removes now-empty directories from dir up to, not
 // including, root.
-func removeEmptyParents(root, dir string) {
+func removeEmptyParents(ctx context.Context, root, dir string) {
 	for dir != root && strings.HasPrefix(dir, root+string(filepath.Separator)) {
-		if os.Remove(dir) != nil {
+		if agentRemove(ctx, dir) != nil {
 			return
 		}
 		dir = filepath.Dir(dir)

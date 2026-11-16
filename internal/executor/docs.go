@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -18,10 +19,13 @@ type TaskDoc struct {
 	CreatedAt          time.Time
 }
 
-// CreateTaskDoc generates a task documentation file in .agent/tasks/
+// CreateTaskDoc generates a task documentation file in .agent/tasks/.
+// TASK-651: inside the workspace root it writes as the agent user
+// (agent_files.go).
 func CreateTaskDoc(agentPath string, task *Task) error {
+	ctx := context.Background()
 	tasksDir := filepath.Join(agentPath, "tasks")
-	if err := os.MkdirAll(tasksDir, 0755); err != nil {
+	if err := agentMkdirAll(ctx, tasksDir, 0755); err != nil {
 		return err
 	}
 
@@ -29,7 +33,7 @@ func CreateTaskDoc(agentPath string, task *Task) error {
 	path := filepath.Join(tasksDir, filename)
 
 	content := formatTaskDoc(task)
-	return os.WriteFile(path, []byte(content), 0644)
+	return agentWriteFile(ctx, path, []byte(content), 0644)
 }
 
 // ArchiveTaskDoc moves completed task to archive/

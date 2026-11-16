@@ -189,6 +189,76 @@ func (r *Runner) syncNavigatorIndex(task *Task, status string, executionPath str
 	return nil
 }
 
+// updateNavigatorDocsAfterTask updates the Navigator files of the workspace
+// after a successful task: the index (GH-57), the archive of the task
+// document (GH-1063), the feature matrix (GH-1388) and the completion marker
+// (GH-1064).
+//
+// TASK-651: with run_as_user set it writes nothing and logs one Info line.
+// The steps run after the PR is created: the session is over, the commit is
+// pushed, and the agent workspace is removed after the run, so only the
+// daemon would read them.
+func (r *Runner) updateNavigatorDocsAfterTask(log *slog.Logger, task *Task, result *ExecutionResult, modifiedFiles []string, executionPath string) {
+	if runAsSettingsNow() != nil {
+		log.Info("Navigator files after the task skipped: run_as_user is set and the agent workspace is removed after the run",
+			slog.String("task_id", task.ID),
+			slog.String("skipped", "index sync, task doc archive, feature matrix, context marker"),
+		)
+		return
+	}
+
+	// Sync Navigator index (GH-57) - update DEVELOPMENT-README.md
+	if syncErr := r.syncNavigatorIndex(task, "completed", executionPath); syncErr != nil {
+		log.Warn("Failed to sync Navigator index", slog.Any("error", syncErr))
+	}
+
+	// GH-1063: Archive completed task documentation
+	agentPath := filepath.Join(executionPath, ".agent")
+	if archiveErr := ArchiveTaskDoc(agentPath, task.ID); archiveErr != nil {
+		log.Warn("Failed to archive task documentation", slog.Any("error", archiveErr))
+	}
+
+	// GH-1388: Update feature matrix for feature tasks
+	if strings.HasPrefix(strings.ToLower(task.Title), "feat(") {
+		ver := "unknown"
+		if r.config != nil && r.config.Version != "" {
+			ver = r.config.Version
+		}
+		if fmErr := UpdateFeatureMatrix(agentPath, task, ver); fmErr != nil {
+			log.Warn("Failed to update feature matrix", slog.Any("error", fmErr))
+		}
+	}
+
+	// GH-1064: Create context marker for completed task
+	marker := &ContextMarker{
+		Name:        fmt.Sprintf("task-completed-%s", task.ID),
+		Description: fmt.Sprintf("Task completed: %s", task.Title),
+		TaskID:      task.ID,
+		CurrentFocus: fmt.Sprintf("Completed %s. %d files changed, %d lines added, %d removed. Cost: $%.2f.",
+			task.Title, result.FilesChanged, result.LinesAdded, result.LinesRemoved,
+			result.EstimatedCostUSD),
+	}
+
+	// Add modified files list (GH-1388)
+	if len(modifiedFiles) > 0 {
+		marker.CurrentFocus += fmt.Sprintf(" Modified: %s.", strings.Join(modifiedFiles, ", "))
+	}
+
+	// Add commit SHA and PR info if available
+	if result.CommitSHA != "" {
+		marker.Commits = append(marker.Commits, result.CommitSHA)
+	}
+	if result.PRUrl != "" {
+		marker.CurrentFocus += fmt.Sprintf(" PR: %s", result.PRUrl)
+	}
+
+	if createMarkerErr := CreateMarker(agentPath, marker); createMarkerErr != nil {
+		log.Warn("Failed to create completion marker", slog.Any("error", createMarkerErr))
+	} else {
+		log.Debug("Created completion context marker", slog.String("marker_path", marker.FilePath))
+	}
+}
+
 // maybeInitNavigator initializes Navigator structure if not present.
 // This enables auto-init for projects that don't have .agent/ yet.
 // With navigator.bootstrap=auto it then runs the one-time bootstrap session
