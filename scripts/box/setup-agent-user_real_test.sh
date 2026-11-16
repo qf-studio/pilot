@@ -20,8 +20,10 @@
 # a data dir below a 0700 directory fails at the proof of the agent user; the
 # sudo proof fails on a Defaults !authenticate line in a second file; a second
 # apply skips every step; undo with go/cache a link outside the data dir (it
-# prints the recorded modes), a second undo, then the printed cleanup; invalid
-# arguments.
+# prints the recorded modes; an entry of the daemon user at 0777 before the
+# apply, replaced by a link to a file of root before the undo: the printed undo
+# line, run as root, leaves the file of root as it is), a second undo, then the
+# printed cleanup; invalid arguments.
 #
 # Usage (CI): sudo --preserve-env=CI ./scripts/box/setup-agent-user_real_test.sh
 
@@ -266,6 +268,8 @@ as "$DAEMON" bash -c '
     git -C "$1/repos/alpha" remote add origin "https://x:fake-test-token@example.invalid/r.git"
     echo "TOKEN=fake-api-key" >"$1/repos/alpha/.env"
     cp /usr/bin/true "$1/bin/pilot"
+    echo open >"$1/open"
+    chmod 0777 "$1/open"
 ' _ "$DATA_DIR"
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$DAEMON" >"$CLOUD_INIT"
 chmod 0440 "$CLOUD_INIT"
@@ -308,12 +312,14 @@ check_not "every line of the record is a mode and a plain path in the data dir" 
 rm -rf "$FORGED_TOP" "${DATA_DIR}/evil"
 check_not "no group was created" getent group "$GROUP"
 check_not "no agent user was created" id -u "$AGENT"
-check "the line for the data dir with its chmod" grep -qxF "the data dir '${DATA_DIR}' gives more than traverse (group ${DAEMON}, mode 755): chmod go-rw '${DATA_DIR}'" "$LOG"
+check "the line for the data dir with its chmod" grep -qxF "the data dir '${DATA_DIR}' gives more than traverse (group ${DAEMON}, mode 755): runuser -u ${DAEMON} -- chmod go-rw '${DATA_DIR}'" "$LOG"
 for entry in repos bin; do
-    check "the line for ${entry} with its chmod" grep -qxF "the agent user can reach '${DATA_DIR}/${entry}' (group ${DAEMON}, mode 755): chmod o-rwx '${DATA_DIR}/${entry}'" "$LOG"
+    check "the line for ${entry} with its chmod" grep -qxF "the agent user can reach '${DATA_DIR}/${entry}' (group ${DAEMON}, mode 755): runuser -u ${DAEMON} -- chmod o-rwx '${DATA_DIR}/${entry}'" "$LOG"
 done
+check "the line for the entry at 0777 with its chmod" grep -qxF "the agent user can reach '${DATA_DIR}/open' (group ${DAEMON}, mode 777): runuser -u ${DAEMON} -- chmod o-rwx '${DATA_DIR}/open'" "$LOG"
+check_not "no chmod line without the runuser form" grep -qE ": chmod " "$LOG"
 proc_n="$(grep -n -m1 -F "a process of nobody (pid ${NOBODY_PID}, 'sleep') has '${DATA_DIR}/repos/alpha/.env' open" "$LOG" | cut -d: -f1 || true)"
-chmod_n="$(grep -n -m1 ': chmod ' "$LOG" | cut -d: -f1 || true)"
+chmod_n="$(grep -n -m1 -F ": runuser -u ${DAEMON} -- chmod " "$LOG" | cut -d: -f1 || true)"
 if [ -n "$proc_n" ] && [ -n "$chmod_n" ] && [ "$proc_n" -lt "$chmod_n" ]; then
     pass "the process of nobody with a file open below the data dir is named before the chmods"
 else
@@ -324,12 +330,14 @@ kill "$NOBODY_PID" 2>/dev/null || true
 check "the data dir keeps its mode (the check changes no mode)" test "$(stat -c %a "$DATA_DIR")" = 755
 check "the record of root holds the mode of the data dir" grep -qxF "755	${DATA_DIR}" "$RECORD"
 check "the record of root holds the mode of the repos directory" grep -qxF "755	${DATA_DIR}/repos" "$RECORD"
+check "the record of root holds the mode 777 of the open entry" grep -qxF "777	${DATA_DIR}/open" "$RECORD"
 check "the record is root's, mode 0600" test "$(stat -c %U:%a "$RECORD")" = root:600
-# The operator's fix, as printed: a shell reads the quoted path.
+# The operator's fix, as printed, run as root: a shell reads the quoted path.
 while IFS= read -r fix; do
     bash -c "$fix"
-done < <(sed -nE "s/^(the agent user can reach|the data dir) .*: (chmod [go]+-rwx? '\/.*)\$/\2/p" "$LOG")
+done < <(sed -nE "s/^(the agent user can reach|the data dir) .*: (runuser -u ${DAEMON} -- chmod [go]+-rwx? '\/.*)\$/\2/p" "$LOG")
 check "the data dir is 0711 after the printed chmod" test "$(stat -c %a "$DATA_DIR")" = 711
+check "the open entry is 0770 after the printed chmod" test "$(stat -c %a "${DATA_DIR}/open")" = 770
 
 echo "=== real test: apply ==="
 if run_setup --confirm-root-path; then
@@ -512,6 +520,11 @@ fi
 echo "=== real test: undo with go/cache a link to a directory outside the data dir ==="
 as "$AGENT" bash -c 'rmdir "$1/go/cache" && ln -s "$2" "$1/go/cache"' _ "$AHOME" "$OUTSIDE"
 check "go/cache is a link outside the data dir" test -L "${AHOME}/go/cache"
+# The daemon user puts a link to a file of root in place of the entry that the
+# record holds at 777; the printed undo line must not make that file writable.
+check "the file of root is root's, mode 644" test "$(stat -c %U:%a "${ROOTDIR}/file")" = root:644
+as "$DAEMON" bash -c 'rm -f "$1/open" && ln -s "$2" "$1/open"' _ "$DATA_DIR" "${ROOTDIR}/file"
+check "the open entry is a link to the file of root" test "$(readlink "${DATA_DIR}/open")" = "${ROOTDIR}/file"
 OUTSIDE_BEFORE="$(find "$OUTSIDE" -printf '%p %m %U:%G %s\n' | sort)"
 if run_setup --undo; then
     pass "undo exits 0"
@@ -520,8 +533,21 @@ else
     fail_test "undo exited non-zero"
 fi
 check "the sudoers file of the daemon user is restored (active root line)" grep -qxF "${DAEMON} ALL=(ALL) NOPASSWD:ALL" "$CLOUD_INIT"
-check "undo prints the chmod that puts back the mode of the data dir" grep -qxF "  chmod 755 '${DATA_DIR}'" "$LOG"
-check "undo prints the chmod that puts back the mode of the repos directory" grep -qxF "  chmod 755 '${DATA_DIR}/repos'" "$LOG"
+check "undo prints the chmod that puts back the mode of the data dir" grep -qxF "  runuser -u ${DAEMON} -- chmod 755 '${DATA_DIR}'" "$LOG"
+check "undo prints the chmod that puts back the mode of the repos directory" grep -qxF "  runuser -u ${DAEMON} -- chmod 755 '${DATA_DIR}/repos'" "$LOG"
+check_not "undo prints no chmod line without the runuser form" grep -qE "^  chmod " "$LOG"
+UNDO_OPEN="$(grep -xF "  runuser -u ${DAEMON} -- chmod 777 '${DATA_DIR}/open'" "$LOG" || true)"
+if [ -n "$UNDO_OPEN" ]; then
+    pass "undo prints the chmod 777 for the open entry, as the daemon user"
+else
+    show_log
+    fail_test "undo printed no chmod 777 line for the open entry"
+fi
+# The operator runs the printed line as root, as it is.
+rc=0
+bash -c "$UNDO_OPEN" 2>/dev/null || rc=$?
+if [ "$rc" != 0 ]; then pass "the printed undo line fails on the file of root"; else fail_test "the printed undo line succeeded on the file of root"; fi
+check "the file of root keeps its owner and mode 644" test "$(stat -c %U:%a "${ROOTDIR}/file")" = root:644
 check_not "undo prints no chmod 4755" grep -qF "chmod 4755" "$LOG"
 check_not "undo prints nothing of the forged path" grep -qF "/usr/bin/sudo" "$LOG"
 check "the data dir keeps 0711 (undo prints the chmod, it does not run it)" test "$(stat -c %a "$DATA_DIR")" = 711
