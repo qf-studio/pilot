@@ -3190,16 +3190,16 @@
         "status": "dispatched",
         "concepts": [
           "theory of mind",
-          "simplification",
           "api",
-          "skills",
-          "markers",
-          "deployment",
-          "testing",
-          "authentication",
           "database",
+          "markers",
           "frontend",
           "workflow",
+          "simplification",
+          "skills",
+          "authentication",
+          "testing",
+          "deployment",
           "context"
         ]
       },
@@ -16232,7 +16232,7 @@
       "TASK-651"
     ]
   },
-  "last_updated": "2026-11-16T17:36:46.942170+00:00",
+  "last_updated": "2026-11-16T17:37:21.794116+00:00",
   "stats": {
     "total_nodes": 798,
     "total_edges": 859,
