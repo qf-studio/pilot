@@ -319,7 +319,7 @@ done
 check "the line for the entry at 0777 with its chmod" grep -qxF "the agent user can reach '${DATA_DIR}/open' (group ${DAEMON}, mode 777): runuser -u ${DAEMON} -- chmod o-rwx '${DATA_DIR}/open'" "$LOG"
 check_not "no chmod line without the runuser form" grep -qE ": chmod " "$LOG"
 proc_n="$(grep -n -m1 -F "a process of nobody (pid ${NOBODY_PID}, 'sleep') has '${DATA_DIR}/repos/alpha/.env' open" "$LOG" | cut -d: -f1 || true)"
-chmod_n="$(grep -n -m1 ': chmod ' "$LOG" | cut -d: -f1 || true)"
+chmod_n="$(grep -n -m1 -F ": runuser -u ${DAEMON} -- chmod " "$LOG" | cut -d: -f1 || true)"
 if [ -n "$proc_n" ] && [ -n "$chmod_n" ] && [ "$proc_n" -lt "$chmod_n" ]; then
     pass "the process of nobody with a file open below the data dir is named before the chmods"
 else
