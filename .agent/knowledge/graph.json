@@ -3234,6 +3234,20 @@
           "theory of mind",
           "knowledge"
         ]
+      },
+      "TASK-654": {
+        "path": ".agent/tasks/TASK-654-lane-starvation-alert-noise.md",
+        "title": "Lane starvation alert \u2014 count only what the poller would pick, name the issues, one cooldown per lane",
+        "status": "dispatched",
+        "concepts": [
+          "deployment",
+          "testing",
+          "context",
+          "api"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6391"
+        ]
       }
     },
     "memories": {
@@ -13494,6 +13508,26 @@
       "from": "mem-318",
       "to": "TASK-651",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-654",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-654",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-654",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-654",
+      "to": "api",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -13685,7 +13719,8 @@
       "mem-310",
       "mem-311",
       "mem-312",
-      "mem-313"
+      "mem-313",
+      "TASK-654"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -14104,7 +14139,8 @@
       "mem-313",
       "mem-315",
       "mem-316",
-      "mem-317"
+      "mem-317",
+      "TASK-654"
     ],
     "conversational-bot": [
       "mem-036",
@@ -14414,7 +14450,8 @@
       "mem-313",
       "mem-315",
       "mem-316",
-      "mem-317"
+      "mem-317",
+      "TASK-654"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -15517,7 +15554,8 @@
       "mem-313",
       "mem-315",
       "mem-316",
-      "mem-317"
+      "mem-317",
+      "TASK-654"
     ],
     "testing-quality": [
       "TASK-384",
@@ -16185,10 +16223,10 @@
       "TASK-651"
     ]
   },
-  "last_updated": "2026-11-15T14:51:45.371911+00:00",
+  "last_updated": "2026-11-16T10:37:55.253172+00:00",
   "stats": {
-    "total_nodes": 796,
-    "total_edges": 854,
+    "total_nodes": 797,
+    "total_edges": 858,
     "memory_count": 443
   },
   "metadata": {
