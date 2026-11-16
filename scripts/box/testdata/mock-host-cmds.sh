@@ -22,6 +22,14 @@
 # off, and else fails with "a password is required". `sudo -l -U` prints the
 # listing built from the same files.
 #
+# runuser -u USER -- ls|touch|rm|mkdir PATH... decides access as the kernel
+# does for USER, from the owner:group records (meta/), the real modes and the
+# groups of USER: every directory above PATH needs x, ls needs r, touch, rm and
+# mkdir need w on the parent (touch on an existing file: w on the file). A
+# denied call fails with "Permission denied"; an allowed one runs, and a path
+# it makes gets USER and its primary group as owner. Other commands run as
+# they are, with USER as the invoker that the sudo mock sees.
+#
 # Knobs (env): MOCK_UID (answer of `id -u`, default 0), MOCK_VISUDO_FAIL=1
 # (`visudo -cf` fails), MOCK_VISUDO_C_FAIL=1 (`visudo -c` fails),
 # MOCK_SUDO_BROKEN=1 (sudo fails whatever the rules), MOCK_SUDO_ROOT_OK=1 (sudo
@@ -73,6 +81,23 @@ real_stat() {
         G) real stat -f %Sg "$p" ;;
         a) bsd_mode "$p" ;;
     esac
+}
+
+# meta_of PATH — "owner group mode" of PATH as the stat mock reports it.
+# Every ancestor of the sandbox, and the sandbox itself, reads as root:root 0755.
+meta_of() {
+    local p="$1" rs u g a mf
+    if [ "$p" = / ] || case "${sandbox}/" in "$p"/*) true ;; *) false ;; esac; then
+        echo "root root 755"
+        return 0
+    fi
+    if ! rs="$(real stat -c '%U:%G:%a' "$p" 2>/dev/null)"; then
+        rs="$(real stat -f '%Su:%Sg' "$p"):$(bsd_mode "$p")"
+    fi
+    IFS=: read -r u g a <<<"$rs"
+    mf="$(meta_file "$p")"
+    if [ -e "$mf" ]; then IFS=: read -r u g <"$mf"; fi
+    echo "${u} ${g} ${a}"
 }
 
 # user_field NAME INDEX DEFAULT — uid (1), shell (2) or primary group (3).
@@ -263,6 +288,83 @@ sudo_verdict() {
         END { if (found) print ((nopass || noauth) ? "nopasswd" : "passwd") }' "${files[@]}"
 }
 
+# ------------------------------------------------------------ file access
+
+# may USER PATH BIT — USER has BIT (4 r, 2 w, 1 x) on PATH (a link is followed).
+may() {
+    local user="$1" p o g a m cls
+    p="$(real realpath "$2")"
+    read -r o g a <<<"$(meta_of "$p")"
+    m=$((8#$a))
+    if [ "$o" = "$user" ]; then
+        cls=$(((m >> 6) & 7))
+    elif case " $("${0%/*}/id" -nG "$user") " in *" ${g} "*) true ;; *) false ;; esac; then
+        cls=$(((m >> 3) & 7))
+    else
+        cls=$((m & 7))
+    fi
+    [ $((cls & $3)) -ne 0 ]
+}
+
+# reach USER PATH — USER may pass every directory above PATH (x).
+reach() {
+    local user="$1" d
+    d="$(real realpath "$(dirname "$2")")" || return 1
+    while case "$d" in "$sandbox"/*) true ;; *) false ;; esac; do
+        may "$user" "$d" 1 || return 1
+        d="$(dirname "$d")"
+    done
+}
+
+# as_user USER COMMAND PATH... — COMMAND (ls, touch, rm, mkdir) with the
+# access of USER; options are passed through (mkdir -m takes a value).
+as_user() {
+    local user="$1" c="$2" a parent made opts=() paths=()
+    shift 2
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -m) opts+=("$1" "$2"); shift ;;
+            -*) opts+=("$1") ;;
+            *) paths+=("$1") ;;
+        esac
+        shift
+    done
+    # One path at a time, as the real tool goes: a directory that mkdir -p
+    # made is the parent of the next one.
+    for a in "${paths[@]}"; do
+        inside_sandbox "$a"
+        parent="$(dirname "$a")"
+        made=0
+        case "$c" in
+            ls) reach "$user" "$a" && may "$user" "$a" 4 && may "$user" "$a" 1 ;;
+            touch)
+                if [ -e "$a" ]; then
+                    reach "$user" "$a" && may "$user" "$a" 2
+                else
+                    made=1
+                    reach "$user" "$a" && may "$user" "$parent" 2 && may "$user" "$parent" 1
+                fi
+                ;;
+            rm) reach "$user" "$a" && may "$user" "$parent" 2 && may "$user" "$parent" 1 ;;
+            mkdir)
+                if [ ! -d "$a" ]; then
+                    made=1
+                    reach "$user" "$a" && may "$user" "$parent" 2 && may "$user" "$parent" 1
+                fi
+                ;;
+        esac || { echo "${c}: cannot access '${a}': Permission denied" >&2; return 1; }
+        # A made directory is a change of the host; the file of a proof that is
+        # made and removed again is not.
+        if [ "$c" = mkdir ] && [ "$made" = 1 ]; then
+            mutating "as ${user}:" "$c" "${opts[@]+"${opts[@]}"}" "$a"
+        fi
+        real "$c" "${opts[@]+"${opts[@]}"}" "$a"
+        if [ "$made" = 1 ]; then
+            echo "${user}:$(user_field "$user" 3 "$user")" >"$(meta_file "$a")"
+        fi
+    done
+}
+
 # --------------------------------------------------------------------- hosts
 
 case "$cmd" in
@@ -341,7 +443,10 @@ case "$cmd" in
         shift 2
         [ "${1:-}" != -- ] || shift
         [ -e "${state}/users/${invoker}" ] || { echo "runuser: user ${invoker} does not exist" >&2; exit 1; }
-        MOCK_INVOKER="$invoker" exec "$@"
+        case "${1:-}" in
+            ls | touch | rm | mkdir) as_user "$invoker" "$@" ;;
+            *) MOCK_INVOKER="$invoker" exec "$@" ;;
+        esac
         ;;
     sudo)
         [ "${MOCK_SUDO_BROKEN:-0}" != 1 ] || { echo "sudo: unable to initialize policy plugin" >&2; exit 1; }
@@ -497,15 +602,7 @@ case "$cmd" in
             [ -e "$p" ] || exit 1
             p="$(real realpath "$p")"
         fi
-        mf="$(meta_file "$p")"
-        if ! rs="$(real stat -c '%U:%G:%a' "$p" 2>/dev/null)"; then
-            rs="$(real stat -f '%Su:%Sg' "$p"):$(bsd_mode "$p")"
-        fi
-        IFS=: read -r u g a <<<"$rs"
-        if [ -e "$mf" ]; then IFS=: read -r u g <"$mf"; fi
-        if [ "$p" = / ] || case "${sandbox}/" in "$p"/*) true ;; *) false ;; esac; then
-            u=root g=root a=755
-        fi
+        read -r u g a <<<"$(meta_of "$p")"
         fmt="${fmt//%U/$u}"
         fmt="${fmt//%G/$g}"
         fmt="${fmt//%g/1000}"

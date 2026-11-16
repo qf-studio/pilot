@@ -8,17 +8,24 @@
 # root; no daemon code calls it.
 #
 # Apply mode (default), each step skipped when it is already done:
-#   daemon-private    a check, changes nothing: no entry of the data dir but
-#                     agent-home and agent-workspaces (a link is followed) is open
-#                     to the agent user, through the "other" class or through the
-#                     shared group. The agent user gets no access to a repository,
-#                     the config or the binary of the daemon (its workspace gets
-#                     the base commit as a bundle from the daemon). The step prints
-#                     a chmod for each entry that is open and fails.
+#   daemon-private    a check, changes no mode: the data dir gives group and others
+#                     traverse at most (0711 or stricter), and no entry of it but
+#                     the agent root (a link is followed) is open to the agent
+#                     user, through the "other" class or through the shared group.
+#                     The agent user gets no access to a repository, the config or
+#                     the binary of the daemon (its workspace gets the base commit
+#                     as a bundle from the daemon). On a failure the step prints
+#                     each process of another user (not root, not the daemon user)
+#                     with a file open below the data dir, then one chmod for each
+#                     path, records the modes it found in DAEMON_MODES_RECORD and
+#                     fails; the apply passes once the operator ran the chmods.
 #   group             system group (default: pilot)
-#   agent-user        system user, no login shell, home DATA_DIR/agent-home
+#   agent-user        system user, no login shell, home AGENT_ROOT/home
 #   daemon-membership daemon user joins the group
-#   directories       agent-home, agent-workspaces, go/cache, go/mod
+#   directories       the agent root (root:root 0755) and, below it, home (agent
+#                     user, 0750) and workspaces (agent user, 2770), made by root;
+#                     go, go/cache and go/mod below the home, made by the agent user
+#                     (no root step inside a directory of the agent user)
 #   sudoers-rule      daemon user may run any command as the agent user
 #                     (NOPASSWD, SETENV); validated BEFORE it is moved into place
 #   firewall-<family> dedicated chain, owner match on the agent user: reject the
@@ -34,11 +41,22 @@
 #                     the daemon user has no root left: `sudo -n true` as the
 #                     daemon user must fail (and `sudo -n -u AGENT true` succeed).
 #                     Needs --confirm-root-path.
+#   agent-proof       LAST, a check: as the agent user, create and remove a file in
+#                     its home and in the workspace root, and fail to list the data
+#                     dir, each directory in it but the agent root and one directory
+#                     below those (a repository). A closed directory above the data
+#                     dir (a home at 0700) passes every root step and fails here.
+#
+# On success the summary ends with the values for the executor section of the
+# daemon config: run_as_user, run_as_group and run_as_workspace_dir.
 #
 # Usage: setup-agent-user.sh [--daemon-user U] [--agent-user U] [--group G]
-#                            [--data-dir D] [--dry-run] [--undo]
+#                            [--data-dir D] [--agent-root A] [--dry-run] [--undo]
 #                            [--keep-daemon-sudo] [--confirm-root-path]
 #
+#   --agent-root         default DATA_DIR/agent; a directory of root (made when
+#                        missing) whose parent is the data dir or a directory of
+#                        root; it must not hold the data dir
 #   --confirm-root-path  the operator holds another root session; required when
 #                        the cloud-init file still has a line to comment out (not
 #                        for --dry-run, --undo, --keep-daemon-sudo or a host that is
@@ -48,7 +66,9 @@
 #                        which the root line of the daemon user is active, stop and
 #                        disable the boot unit, remove the firewall chain and the
 #                        sudoers rule; the user, the group and the directories stay
-#                        (the commands to delete them are printed, not run). Undo
+#                        (the commands to delete them are printed, not run), and so
+#                        do the modes of the daemon's entries (the chmods that put
+#                        back the recorded modes are printed, not run). Undo
 #                        reads no path that the agent user or the daemon user can
 #                        write: each undo step checks the root files it changes.
 #   --keep-daemon-sudo   leave the cloud-init sudoers file alone
@@ -61,6 +81,8 @@
 #   NOLOGIN_SHELL        default /usr/sbin/nologin
 #   IPTABLES_CMD         default iptables
 #   IP6TABLES_CMD        default ip6tables
+#   DAEMON_MODES_RECORD  default /root/.setup-agent-user.modes (root's file outside
+#                        the data dir: the modes the daemon-private step found)
 #
 # Exit status: 0 when every step is done or skipped, 1 when a step failed (the
 # run stops at the first failed step; the steps after it are listed in the
@@ -72,6 +94,7 @@ DAEMON_USER="ec2-user"
 AGENT_USER="pilot-agent"
 GROUP="pilot"
 DATA_DIR="/var/lib/pilot"
+AGENT_ROOT=""
 DRY_RUN=0
 UNDO=0
 KEEP_DAEMON_SUDO=0
@@ -84,6 +107,7 @@ CLOUD_INIT_SUDOERS="${CLOUD_INIT_SUDOERS:-${SUDOERS_DIR}/90-cloud-init-users}"
 NOLOGIN_SHELL="${NOLOGIN_SHELL:-/usr/sbin/nologin}"
 IPT4="${IPTABLES_CMD:-iptables}"
 IPT6="${IP6TABLES_CMD:-ip6tables}"
+MODES_RECORD="${DAEMON_MODES_RECORD:-/root/.setup-agent-user.modes}"
 
 SUDOERS_NAME="90-pilot-agent-runas"
 UNIT_NAME="pilot-agent-firewall.service"
@@ -116,13 +140,14 @@ usage() {
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --daemon-user | --agent-user | --group | --data-dir)
+        --daemon-user | --agent-user | --group | --data-dir | --agent-root)
             [ $# -ge 2 ] || die "$1 needs a value"
             case "$1" in
                 --daemon-user) DAEMON_USER="$2" ;;
                 --agent-user) AGENT_USER="$2" ;;
                 --group) GROUP="$2" ;;
                 --data-dir) DATA_DIR="$2" ;;
+                --agent-root) AGENT_ROOT="$2" ;;
             esac
             shift 2
             ;;
@@ -130,6 +155,7 @@ while [ $# -gt 0 ]; do
         --agent-user=*) AGENT_USER="${1#*=}"; shift ;;
         --group=*) GROUP="${1#*=}"; shift ;;
         --data-dir=*) DATA_DIR="${1#*=}"; shift ;;
+        --agent-root=*) AGENT_ROOT="${1#*=}"; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --undo) UNDO=1; shift ;;
         --keep-daemon-sudo) KEEP_DAEMON_SUDO=1; shift ;;
@@ -184,22 +210,36 @@ fi
 DAEMON_PRIMARY_GROUP="$(id -gn "$DAEMON_USER")"
 [ "$GROUP" != "$DAEMON_PRIMARY_GROUP" ] || die "--group must not be the primary group of the daemon user (${DAEMON_PRIMARY_GROUP})"
 
-# refuse_system_dir PATH — PATH must not be a system directory nor an ancestor
-# of one. Checked on the value as given and, for apply, on its canonical form.
+# refuse_system_dir PATH [FLAG] — PATH must not be a system directory nor an
+# ancestor of one. Checked on the value as given and, for apply, on its
+# canonical form.
 refuse_system_dir() {
-    local p="$1" s
+    local p="$1" flag="${2:---data-dir}" s
     while [ "$p" != / ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
     for s in $SYSTEM_DIRS; do
-        [ "$p" != "$s" ] || die "--data-dir '${p}' is a system directory"
-        case "${s}/" in "${p}"/*) die "--data-dir '${p}' contains the system directory ${s}" ;; esac
+        [ "$p" != "$s" ] || die "${flag} '${p}' is a system directory"
+        case "${s}/" in "${p}"/*) die "${flag} '${p}' contains the system directory ${s}" ;; esac
     done
 }
 
 check_path_arg --data-dir "$DATA_DIR"
 refuse_system_dir "$DATA_DIR"
+check_path_arg DAEMON_MODES_RECORD "$MODES_RECORD"
 
-AGENT_HOME="${DATA_DIR}/agent-home"
-WORKSPACES="${DATA_DIR}/agent-workspaces"
+# set_agent_paths — the agent root (default DATA_DIR/agent) and the two
+# directories below it.
+AGENT_ROOT_ARG="$AGENT_ROOT"
+set_agent_paths() {
+    AGENT_ROOT="${AGENT_ROOT_ARG:-${DATA_DIR}/agent}"
+    while [ "$AGENT_ROOT" != / ] && [ "${AGENT_ROOT%/}" != "$AGENT_ROOT" ]; do AGENT_ROOT="${AGENT_ROOT%/}"; done
+    AGENT_HOME="${AGENT_ROOT}/home"
+    WORKSPACES="${AGENT_ROOT}/workspaces"
+}
+if [ -n "$AGENT_ROOT_ARG" ]; then
+    check_path_arg --agent-root "$AGENT_ROOT_ARG"
+    refuse_system_dir "$AGENT_ROOT_ARG" --agent-root
+fi
+set_agent_paths
 SUDOERS_FILE="${SUDOERS_DIR}/${SUDOERS_NAME}"
 SUDOERS_TMP="${SUDOERS_DIR}/.${SUDOERS_NAME}.new"
 CLOUD_INIT_BACKUP="${CLOUD_INIT_SUDOERS}.pilot-agent.bak"
@@ -229,24 +269,63 @@ check_data_dir() {
     refuse_system_dir "$DATA_DIR"
     [ -d "$DATA_DIR" ] || die "--data-dir is not a directory: '${DATA_DIR}'"
     [ "$(stat -c %U "$DATA_DIR")" = "$DAEMON_USER" ] || die "--data-dir '${DATA_DIR}' is not owned by the daemon user (${DAEMON_USER})"
-    AGENT_HOME="${DATA_DIR}/agent-home"
-    WORKSPACES="${DATA_DIR}/agent-workspaces"
+    case "$MODES_RECORD" in
+        "$DATA_DIR"/*) die "DAEMON_MODES_RECORD '${MODES_RECORD}' is inside the data dir; it must be a file of root outside it" ;;
+    esac
+    set_agent_paths
+}
+
+# parents_safe PATH — no part of the path above PATH is a link, and every
+# directory above PATH, up to the data dir or /, belongs to root. The data dir
+# and the directories above it belong to the daemon user, who has root during
+# the apply anyway; the agent user owns none of them. A dry run made no
+# directory, so it checks from the nearest one that exists.
+parents_safe() {
+    local d="${1%/*}"
+    [ -n "$d" ] || d=/
+    while [ "$DRY_RUN" = 1 ] && [ ! -e "$d" ] && [ ! -L "$d" ]; do
+        d="${d%/*}"
+        [ -n "$d" ] || d=/
+    done
+    [ "$(realpath "$d" 2>/dev/null)" = "$d" ] || return 1
+    while [ "$d" != "$DATA_DIR" ] && [ "$d" != / ]; do
+        [ "$(stat -c %U "$d" 2>/dev/null)" = root ] || return 1
+        d="${d%/*}"
+        [ -n "$d" ] || d=/
+    done
+}
+
+# check_agent_root — the agent root: its parent is the data dir or a directory
+# of root (parents_safe), it holds neither the data dir nor the record of the
+# modes, and when it exists it is a directory of root, not a link. Root makes
+# it and the two directories below it; nothing of the agent user is above them.
+check_agent_root() {
+    [ "$AGENT_ROOT" != "$DATA_DIR" ] || die "--agent-root must not be the data dir"
+    case "${DATA_DIR}/" in "${AGENT_ROOT}"/*) die "--agent-root '${AGENT_ROOT}' holds the data dir '${DATA_DIR}'" ;; esac
+    case "$MODES_RECORD" in "$AGENT_ROOT"/*) die "DAEMON_MODES_RECORD '${MODES_RECORD}' is inside the agent root" ;; esac
+    [ -d "${AGENT_ROOT%/*}" ] || die "the parent of --agent-root '${AGENT_ROOT}' does not exist"
+    parents_safe "$AGENT_ROOT" || die "--agent-root '${AGENT_ROOT}': a directory above it is a link, or neither the data dir nor a directory of root"
+    [ ! -L "$AGENT_ROOT" ] || die "'${AGENT_ROOT}' is a symbolic link; refused"
+    if [ -e "$AGENT_ROOT" ]; then
+        [ -d "$AGENT_ROOT" ] || die "--agent-root '${AGENT_ROOT}' is not a directory"
+        [ "$(stat -c %U "$AGENT_ROOT")" = root ] || die "--agent-root '${AGENT_ROOT}' exists and is not owned by root; choose another path"
+    fi
 }
 
 # contained PATH — true when the resolved form of PATH is strictly inside the
-# data dir. Sets RESOLVED (empty when PATH cannot be resolved).
+# agent root. Sets RESOLVED (empty when PATH cannot be resolved).
 RESOLVED=""
 contained() {
     RESOLVED="$(realpath "$1" 2>/dev/null)" || RESOLVED=""
     case "$RESOLVED" in
-        "$DATA_DIR"/*) return 0 ;;
+        "$AGENT_ROOT"/*) return 0 ;;
     esac
     return 1
 }
 
 # resolve_inside LABEL PATH TYPE — sets RESOLVED to the resolved path of PATH,
 # or "" when it does not exist. A path whose resolved form is not strictly
-# inside the data dir, or has the wrong type, is refused.
+# inside the agent root, or has the wrong type, is refused.
 resolve_inside() {
     local label="$1" path="$2" type="$3"
     RESOLVED=""
@@ -254,16 +333,15 @@ resolve_inside() {
         [ ! -L "$path" ] || die "${label} '${path}' is a dangling symbolic link"
         return 0
     fi
-    contained "$path" || die "${label} '${path}' resolves to '${RESOLVED:-?}', outside the data dir '${DATA_DIR}'"
+    contained "$path" || die "${label} '${path}' resolves to '${RESOLVED:-?}', outside the agent root '${AGENT_ROOT}'"
     case "$type" in
         d) [ -d "$RESOLVED" ] || die "${label} '${RESOLVED}' is not a directory" ;;
         f) [ -f "$RESOLVED" ] || die "${label} '${RESOLVED}' is not a regular file" ;;
     esac
 }
 
-# check_managed_dirs — the directories the script creates must be real
-# directories inside the data dir. The agent user owns some of them, so this
-# runs for apply only.
+# check_managed_dirs — the directories below the agent root must be real
+# directories inside it. The agent user owns them, so this runs for apply only.
 check_managed_dirs() {
     local managed
     for managed in "$AGENT_HOME" "$WORKSPACES" "${AGENT_HOME}/go" "${AGENT_HOME}/go/cache" "${AGENT_HOME}/go/mod"; do
@@ -300,11 +378,18 @@ file_has_content() {
     [ -f "$1" ] && [ "$(cat "$1")" = "$2" ]
 }
 
-# ensure_dir PATH OWNER GROUP MODE — sets CHANGED=1 when it had to act. A path
-# that became a symbolic link after the checks is refused, not followed.
+# ensure_dir PATH OWNER GROUP MODE — a root step: only where every directory
+# above PATH is root's (or the data dir, see parents_safe), so that no other
+# user can swap a part of the path between the check and the call. Sets
+# CHANGED=1 when it had to act. A path that became a symbolic link after the
+# checks is refused, not followed.
 CHANGED=0
 ensure_dir() {
     local path="$1" owner="$2" group="$3" mode="$4" cur
+    if ! parents_safe "$path"; then
+        echo "'${path}': a directory above it is a link or not root's; refused" >&2
+        return 1
+    fi
     if [ -L "$path" ]; then
         echo "'${path}' is a symbolic link; refused" >&2
         return 1
@@ -319,14 +404,65 @@ ensure_dir() {
 
 # ---------------------------------------------------------------- apply steps
 
-# step_daemon_private — every entry of the data dir but the two of the agent
-# user is closed to it: no bit for "other" and, when its group is the shared
-# group, no bit for the group. A link is followed (the agent user follows it
-# too). The top level is enough: a closed directory closes all below it.
+# open_below_data_dir — each process of a user other than root and the daemon
+# user with a file (or its working directory) open below the data dir, outside
+# the agent root, from /proc: the chmods of daemon-private take its access away.
+open_below_data_dir() {
+    local p uid f t name
+    for p in /proc/[0-9]*; do
+        uid="$(awk '/^Uid:/ { print $2; exit }' "$p/status" 2>/dev/null)" || continue
+        case "$uid" in "" | 0 | "$DAEMON_UID") continue ;; esac
+        for f in "$p/cwd" "$p"/fd/*; do
+            t="$(readlink "$f" 2>/dev/null)" || continue
+            case "$t" in
+                "$AGENT_ROOT" | "$AGENT_ROOT"/*) continue ;;
+                "$DATA_DIR" | "$DATA_DIR"/*) ;;
+                *) continue ;;
+            esac
+            name="$(getent passwd "$uid" 2>/dev/null | cut -d: -f1 || true)"
+            printf 'a process of %s (pid %s, %s) has %s open; it loses its access with the chmods below\n' \
+                "${name:-uid ${uid}}" "${p##*/}" "$(cat "$p/comm" 2>/dev/null || true)" "$t" >&2
+            break
+        done
+    done
+}
+
+# record_modes LINE... — each LINE is "MODE<TAB>PATH"; added to the record of
+# root unless the path is in it already (the first mode found is the one undo
+# puts back). Not in a dry run.
+record_modes() {
+    local tmp="${MODES_RECORD%/*}/.${MODES_RECORD##*/}.new"
+    [ "$DRY_RUN" = 0 ] || return 0
+    if [ -L "$MODES_RECORD" ] || { [ -e "$MODES_RECORD" ] && [ ! -f "$MODES_RECORD" ]; }; then
+        echo "${MODES_RECORD} is not a regular file; the modes are not recorded" >&2
+        return 1
+    fi
+    (
+        umask 077
+        { if [ -f "$MODES_RECORD" ]; then cat "$MODES_RECORD"; fi; printf '%s\n' "$@"; } \
+            | awk -F '\t' '!seen[$2]++' >"$tmp"
+    ) || { rm -f "$tmp"; return 1; }
+    mv -f "$tmp" "$MODES_RECORD" || return 1
+    echo "the modes found are recorded in ${MODES_RECORD}; --undo prints the chmods that put them back" >&2
+}
+
+# step_daemon_private — the data dir gives group and others traverse at most
+# (0711 or stricter, never read or write), and every entry of it but the agent
+# root is closed to the agent user: no bit for "other" and, when its group is
+# the shared group, no bit for the group. A link is followed (the agent user
+# follows it too). The top level is enough: nothing of the agent user is
+# between the entries of the daemon, and a closed directory closes all below it.
+# The step changes no mode itself.
 step_daemon_private() {
-    local e meta grp mode fix bad=0
+    local e meta grp mode fix lines=() records=()
+    meta="$(stat -L -c '%G:%a' "$DATA_DIR")" || return 1
+    if [ $((8#${meta#*:} & 8#066)) -ne 0 ]; then
+        lines+=("$(printf 'the data dir %s gives more than traverse (group %s, mode %s): chmod go-rw %q' \
+            "$DATA_DIR" "${meta%%:*}" "${meta#*:}" "$DATA_DIR")")
+        records+=("${meta#*:}"$'\t'"${DATA_DIR}")
+    fi
     for e in "$DATA_DIR"/* "$DATA_DIR"/.[!.]* "$DATA_DIR"/..?*; do
-        case "$e" in "$AGENT_HOME" | "$WORKSPACES") continue ;; esac
+        [ "$e" != "$AGENT_ROOT" ] || continue
         # an unmatched glob, or a dangling link: nothing to reach
         [ -e "$e" ] || continue
         meta="$(stat -L -c '%G:%a' "$e")" || return 1
@@ -339,12 +475,15 @@ step_daemon_private() {
             fix="o-rwx"
         fi
         [ -n "$fix" ] || continue
-        printf 'the agent user can reach %s (group %s, mode %s): chmod %s %q\n' \
-            "$e" "$grp" "${meta#*:}" "$fix" "$(realpath "$e")" >&2
-        bad=1
+        lines+=("$(printf 'the agent user can reach %s (group %s, mode %s): chmod %s %q' \
+            "$e" "$grp" "${meta#*:}" "$fix" "$(realpath "$e")")")
+        records+=("${meta#*:}"$'\t'"$(realpath "$e")")
     done
-    if [ "$bad" = 1 ]; then
-        echo "nothing was changed; close each path above and run again" >&2
+    if [ "${#lines[@]}" -gt 0 ]; then
+        open_below_data_dir
+        printf '%s\n' "${lines[@]}" >&2
+        record_modes "${records[@]}" || true
+        echo "no mode was changed; run each chmod above and run again" >&2
         return 1
     fi
     RESULT=skipped
@@ -377,13 +516,29 @@ step_daemon_membership() {
     NOTE="running daemon processes pick up the group at the next restart"
 }
 
+# step_directories — root makes the agent root and the two directories below
+# it (their parents are root's). The Go caches are below the agent home, a
+# directory of the agent user, where the agent user could swap a part of the
+# path for a link between a check and a root call: the agent user makes them.
+# When it cannot (a closed directory above its home), the step goes on and the
+# proof at the end fails with the path.
 step_directories() {
+    local d missing=0
     CHANGED=0
+    ensure_dir "$AGENT_ROOT" root root 755 || return 1
     ensure_dir "$AGENT_HOME" "$AGENT_USER" "$GROUP" 750 || return 1
     ensure_dir "$WORKSPACES" "$AGENT_USER" "$GROUP" 2770 || return 1
-    ensure_dir "${AGENT_HOME}/go" "$AGENT_USER" "$GROUP" 750 || return 1
-    ensure_dir "${AGENT_HOME}/go/cache" "$AGENT_USER" "$GROUP" 750 || return 1
-    ensure_dir "${AGENT_HOME}/go/mod" "$AGENT_USER" "$GROUP" 750 || return 1
+    for d in "${AGENT_HOME}/go" "${AGENT_HOME}/go/cache" "${AGENT_HOME}/go/mod"; do
+        if [ -L "$d" ] || [ ! -d "$d" ] || [ "$(stat -c %U "$d")" != "$AGENT_USER" ]; then
+            missing=1
+        fi
+    done
+    if [ "$missing" = 1 ]; then
+        if ! run runuser -u "$AGENT_USER" -- mkdir -p -m 750 "${AGENT_HOME}/go" "${AGENT_HOME}/go/cache" "${AGENT_HOME}/go/mod"; then
+            NOTE="the agent user could not make its Go caches; agent-proof names the cause"
+        fi
+        CHANGED=1
+    fi
     [ "$CHANGED" = 1 ] || RESULT=skipped
     return 0
 }
@@ -842,6 +997,59 @@ step_firewall_unit() {
     fi
 }
 
+# step_agent_proof — the last step, a check as the agent user: it creates and
+# removes a file in its home and in the workspace root, its Go caches exist,
+# and it fails to list
+# the data dir, each directory in it but the agent root and one directory below
+# those (a repository of the daemon). Every root step passes when a directory
+# above the data dir (a home at 0700) keeps the agent user out; this does not.
+step_agent_proof() {
+    local d probe e repo="" bad=0 targets=()
+    for d in "$AGENT_HOME" "$WORKSPACES"; do
+        probe="${d}/.setup-agent-user-proof"
+        if ! run runuser -u "$AGENT_USER" -- touch "$probe"; then
+            echo "the agent user cannot create a file in ${d}; a directory above it may be closed to the agent user (a home at 0700)" >&2
+            bad=1
+            continue
+        fi
+        if ! run runuser -u "$AGENT_USER" -- rm -f "$probe"; then
+            echo "the agent user cannot remove ${probe}" >&2
+            bad=1
+        fi
+    done
+    for d in "${AGENT_HOME}/go/cache" "${AGENT_HOME}/go/mod"; do
+        [ "$DRY_RUN" = 0 ] || continue
+        if [ -L "$d" ] || [ ! -d "$d" ] || [ "$(stat -c %U "$d")" != "$AGENT_USER" ]; then
+            echo "the Go cache directory ${d} is missing or not a directory of the agent user" >&2
+            bad=1
+        fi
+    done
+    targets=("$DATA_DIR")
+    for e in "$DATA_DIR"/* "$DATA_DIR"/.[!.]* "$DATA_DIR"/..?*; do
+        if [ "$e" = "$AGENT_ROOT" ] || [ ! -d "$e" ]; then continue; fi
+        targets+=("$e")
+        if [ -z "$repo" ]; then
+            for d in "$e"/*/; do
+                [ -d "$d" ] || continue
+                repo="${d%/}"
+                break
+            done
+        fi
+    done
+    [ -z "$repo" ] || targets+=("$repo")
+    for e in "${targets[@]}"; do
+        printf '+ runuser -u %q -- ls %q  (must fail)\n' "$AGENT_USER" "$e"
+        [ "$DRY_RUN" = 0 ] || continue
+        if runuser -u "$AGENT_USER" -- ls "$e" >/dev/null 2>&1; then
+            echo "the agent user can list ${e}" >&2
+            bad=1
+        fi
+    done
+    [ "$bad" = 0 ] || return 1
+    RESULT=skipped
+    NOTE="a check: the agent user writes in its home and its workspace root and lists no directory of the daemon"
+}
+
 # ---------------------------------------------------------------- undo steps
 # Each undo step checks the paths it changes, and only those; all of them are
 # root's files outside the data dir.
@@ -1007,6 +1215,34 @@ run_plan() {
     fi
 }
 
+# print_config — the values for the executor section of the daemon config.
+print_config() {
+    echo
+    echo "== daemon config (executor section)"
+    printf '  run_as_user: %s\n' "$AGENT_USER"
+    printf '  run_as_group: %s\n' "$GROUP"
+    printf '  run_as_workspace_dir: %s\n' "$WORKSPACES"
+}
+
+# print_mode_restore — the chmods that put back the modes daemon-private found,
+# from root's record; printed, not run. A record that is a link or not root's
+# is passed over.
+print_mode_restore() {
+    local mode path
+    [ -e "$MODES_RECORD" ] || [ -L "$MODES_RECORD" ] || return 0
+    echo
+    echo "== earlier modes of the daemon's entries (not run)"
+    if ! backup_ok "$MODES_RECORD"; then
+        echo "${MODES_RECORD} is not a regular file of root; passed over"
+        return 0
+    fi
+    echo "The apply asked for chmods on these paths; to put the earlier modes back:"
+    while IFS=$'\t' read -r mode path; do
+        if ! [[ "$mode" =~ ^[0-7]{3,4}$ && "$path" =~ ^/[A-Za-z0-9._/-]*$ ]]; then continue; fi
+        printf '  chmod %s %q\n' "$mode" "$path"
+    done <"$MODES_RECORD"
+}
+
 print_manual_cleanup() {
     echo
     echo "== left in place (not run)"
@@ -1017,7 +1253,7 @@ print_manual_cleanup() {
     printf '  gpasswd -d %q %q\n' "$DAEMON_USER" "$GROUP"
     printf '  userdel %q\n' "$AGENT_USER"
     printf '  groupdel %q\n' "$GROUP"
-    printf '  rm -rf %q %q\n' "$AGENT_HOME" "$WORKSPACES"
+    printf '  rm -rf %q\n' "$AGENT_ROOT"
 }
 
 if [ "$DRY_RUN" = 1 ]; then
@@ -1033,12 +1269,14 @@ if [ "$UNDO" = 1 ]; then
         firewall-ipv6:undo_firewall_ipv6 \
         sudoers-rule:undo_sudoers_rule
     print_summary
+    print_mode_restore
     print_manual_cleanup
     exit 0
 fi
 
 check_agent_user
 check_data_dir
+check_agent_root
 check_managed_dirs
 
 # The removal of the daemon user's general sudo needs --confirm-root-path. It is
@@ -1050,7 +1288,8 @@ if [ "$DRY_RUN" = 0 ] && [ "$KEEP_DAEMON_SUDO" = 0 ] && [ "$CONFIRM_ROOT_PATH" =
 fi
 
 # The check of the data dir comes first, before any change; the removal of the
-# daemon user's general sudo is the last step, after the firewall and the boot unit.
+# daemon user's general sudo comes after the firewall and the boot unit; the
+# proof as the agent user is last.
 run_plan daemon-private:step_daemon_private \
     group:step_group \
     agent-user:step_agent_user \
@@ -1060,5 +1299,7 @@ run_plan daemon-private:step_daemon_private \
     firewall-ipv4:step_firewall_ipv4 \
     firewall-ipv6:step_firewall_ipv6 \
     firewall-unit:step_firewall_unit \
-    cloud-init-sudoers:step_cloud_init_sudoers
+    cloud-init-sudoers:step_cloud_init_sudoers \
+    agent-proof:step_agent_proof
 print_summary
+print_config

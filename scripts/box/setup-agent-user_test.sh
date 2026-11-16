@@ -114,9 +114,13 @@ setup_sandbox() {
     OUT="${SANDBOX}/stdout.log"
     R="${DATA_DIR}/repos"
     BAK="${SUDOERS_DIR}/90-cloud-init-users.pilot-agent.bak"
+    AROOT="${DATA_DIR}/agent"
+    AHOME="${AROOT}/home"
+    AWS="${AROOT}/workspaces"
+    RECORD="${SANDBOX}/root/modes"
 
-    mkdir -p "${DATA_DIR}/repos" "${DATA_DIR}/bin" "$SUDOERS_DIR" "$SYSTEMD_DIR" "$STUB_BIN" "${STATE_DIR}/users" "${STATE_DIR}/meta"
-    chmod 755 "$DATA_DIR"
+    mkdir -p "${DATA_DIR}/repos" "${DATA_DIR}/bin" "$SUDOERS_DIR" "$SYSTEMD_DIR" "$STUB_BIN" "${STATE_DIR}/users" "${STATE_DIR}/meta" "${SANDBOX}/root"
+    chmod 711 "$DATA_DIR"
     chmod 700 "${DATA_DIR}/repos"
     chmod 750 "${DATA_DIR}/bin"
     printf '#!/bin/sh\n' >"${DATA_DIR}/bin/pilot"
@@ -125,6 +129,8 @@ setup_sandbox() {
     : >"$MUT_LOG"
     touch "${STATE_DIR}/users/ec2-user"
     set_meta "$DATA_DIR" ec2-user:ec2-user
+    # the record of the modes is a file of root (the script writes it as root)
+    set_meta "$RECORD" root:root
     printf '%s\n' "$CLOUD_INIT_ORIGINAL" >"${SUDOERS_DIR}/90-cloud-init-users"
 
     local c
@@ -158,6 +164,7 @@ run_setup() {
         MOCK_MUT_LOG="$MUT_LOG" \
         SUDOERS_DIR="$SUDOERS_DIR" \
         SYSTEMD_DIR="$SYSTEMD_DIR" \
+        DAEMON_MODES_RECORD="$RECORD" \
         ${envs[@]+"${envs[@]}"} \
         "$SETUP_SCRIPT" --data-dir "$DATA_DIR" ${confirm:+"$confirm"} "$@" >"$OUT" 2>&1
 }
@@ -238,8 +245,8 @@ expect_refused() {
     fi
 }
 
-ALL_STEPS="daemon-private group agent-user daemon-membership directories sudoers-rule firewall-ipv4 firewall-ipv6 firewall-unit cloud-init-sudoers"
-# daemon-private is a check: it changes nothing, so it reports skipped.
+ALL_STEPS="daemon-private group agent-user daemon-membership directories sudoers-rule firewall-ipv4 firewall-ipv6 firewall-unit cloud-init-sudoers agent-proof"
+# daemon-private and agent-proof are checks: they change nothing, so they report skipped.
 CHANGE_STEPS="group agent-user daemon-membership directories sudoers-rule firewall-ipv4 firewall-ipv6 firewall-unit cloud-init-sudoers"
 
 echo "=== test: dry run — prints every command, changes nothing ==="
@@ -266,7 +273,12 @@ fi
 for want in "+ groupadd --system pilot" "+ useradd --system" "+ usermod -aG pilot ec2-user" \
     "+ visudo -cf" "+ iptables -w -N PILOT_AGENT_EGRESS" "+ ip6tables -w -N PILOT_AGENT_EGRESS" \
     "+ systemctl enable pilot-agent-firewall.service" "$EXPECTED_RULE" \
-    "+ runuser -u ec2-user -- sudo -n true"; do
+    "+ runuser -u ec2-user -- sudo -n true" \
+    "+ runuser -u pilot-agent -- mkdir -p -m 750 ${AHOME}/go ${AHOME}/go/cache ${AHOME}/go/mod" \
+    "+ runuser -u pilot-agent -- touch ${AHOME}/.setup-agent-user-proof" \
+    "+ runuser -u pilot-agent -- touch ${AWS}/.setup-agent-user-proof" \
+    "+ runuser -u pilot-agent -- ls ${DATA_DIR}  (must fail)" \
+    "+ runuser -u pilot-agent -- ls ${R}/alpha  (must fail)"; do
     if grep -qF -- "$want" "$OUT"; then
         pass "prints: ${want}"
     else
@@ -311,7 +323,7 @@ else
     fail_test "apply exited non-zero"
 fi
 prev=0
-for pattern in '^groupadd ' '^useradd ' '^usermod ' '^install -d ' '^visudo -cf ' '^iptables -w -N ' '^ip6tables -w -N ' '^systemctl enable ' '^install -m 0600 -o root -g root .*\.pilot-agent\.bak$' '^visudo -c$' '^runuser -u ec2-user -- sudo -n true$'; do
+for pattern in '^groupadd ' '^useradd ' '^usermod ' '^install -d ' '^runuser -u pilot-agent -- mkdir ' '^visudo -cf ' '^iptables -w -N ' '^ip6tables -w -N ' '^systemctl enable ' '^install -m 0600 -o root -g root .*\.pilot-agent\.bak$' '^visudo -c$' '^runuser -u ec2-user -- sudo -n true$' '^runuser -u pilot-agent -- touch ' '^runuser -u pilot-agent -- ls '; do
     n="$(first_line "$pattern" || true)"
     if [ -n "$n" ] && [ "$n" -gt "$prev" ]; then
         pass "in order: ${pattern}"
@@ -350,19 +362,19 @@ if [ "$(mode_of "$BAK")" = "600" ]; then
 else
     fail_test "backup mode is not 0600"
 fi
-for want in "install -d -o pilot-agent -g pilot -m 750 ${DATA_DIR}/agent-home" \
-    "install -d -o pilot-agent -g pilot -m 2770 ${DATA_DIR}/agent-workspaces" \
-    "install -d -o pilot-agent -g pilot -m 750 ${DATA_DIR}/agent-home/go/cache" \
-    "install -d -o pilot-agent -g pilot -m 750 ${DATA_DIR}/agent-home/go/mod" \
-    "useradd --system --gid pilot --home-dir ${DATA_DIR}/agent-home --no-create-home --shell /usr/sbin/nologin pilot-agent"; do
+for want in "install -d -o root -g root -m 755 ${AROOT}" \
+    "install -d -o pilot-agent -g pilot -m 750 ${AHOME}" \
+    "install -d -o pilot-agent -g pilot -m 2770 ${AWS}" \
+    "runuser -u pilot-agent -- mkdir -p -m 750 ${AHOME}/go ${AHOME}/go/cache ${AHOME}/go/mod" \
+    "useradd --system --gid pilot --home-dir ${AHOME} --no-create-home --shell /usr/sbin/nologin pilot-agent"; do
     if grep -qF -- "$want" "$CALL_LOG"; then
         pass "ran: ${want}"
     else
         fail_test "missing call: ${want}"
     fi
 done
-if [ "$(mode_of "${DATA_DIR}/agent-workspaces")" = "2770" ] && [ "$(mode_of "${DATA_DIR}/agent-home")" = "750" ]; then
-    pass "workspace mode 2770, home mode 750"
+if [ "$(mode_of "$AWS")" = "2770" ] && [ "$(mode_of "$AHOME")" = "750" ] && [ "$(mode_of "$AROOT")" = "755" ]; then
+    pass "workspace mode 2770, home mode 750, agent root 755"
 else
     fail_test "directory modes wrong"
 fi
@@ -389,6 +401,10 @@ check_not "no chgrp was run (no shared read)" grep -q '^chgrp ' "$CALL_LOG"
 check_not "no state file is written" test -e "${DATA_DIR}/.agent-setup-state"
 check "the repository of the daemon keeps its modes" test "$(mode_of "$R")" = 700 -a "$(mode_of "$R/alpha/.env")" = 644 -a "$(mode_of "$R/alpha/.git/config")" = 644
 check_not "the firewall never left a moment without reject rules" test -e "${STATE_DIR}/gap.log"
+check_not "the probe files of the proof are gone" test -e "${AHOME}/.setup-agent-user-proof" -o -e "${AWS}/.setup-agent-user-proof"
+for want in "  run_as_user: pilot-agent" "  run_as_group: pilot" "  run_as_workspace_dir: ${AWS}"; do
+    check "the summary prints the config line: ${want# }" has_line "$OUT" "$want"
+done
 
 echo "=== test: second apply skips every step ==="
 : >"$MUT_LOG"
@@ -441,12 +457,12 @@ if grep -qF "restoring ${SUDOERS_DIR}/90-cloud-init-users from ${BAK}, the newes
 else
     fail_test "undo does not name the backup"
 fi
-if ! grep -qE '^(userdel|groupdel|gpasswd|rm -rf)' "$CALL_LOG" && [ -d "${DATA_DIR}/agent-home/go/mod" ] && [ -e "${STATE_DIR}/users/pilot-agent" ]; then
+if ! grep -qE '^(userdel|groupdel|gpasswd|rm -rf)' "$CALL_LOG" && [ -d "${AHOME}/go/mod" ] && [ -e "${STATE_DIR}/users/pilot-agent" ]; then
     pass "user, group and directories are left in place"
 else
     fail_test "undo removed the user, the group or a directory"
 fi
-for want in "pkill -u pilot-agent" "userdel pilot-agent" "groupdel pilot" "rm -rf ${DATA_DIR}/agent-home ${DATA_DIR}/agent-workspaces"; do
+for want in "pkill -u pilot-agent" "userdel pilot-agent" "groupdel pilot" "rm -rf ${AROOT}"; do
     if grep -qF -- "  ${want}" "$OUT"; then
         pass "prints the manual command: ${want}"
     else
@@ -472,9 +488,9 @@ mkdir "${SANDBOX}/outside"
 printf 'keep\n' >"${SANDBOX}/outside/file"
 chmod 640 "${SANDBOX}/outside/file"
 chmod 700 "${SANDBOX}/outside"
-rmdir "${DATA_DIR}/agent-home/go/cache"
-ln -s "${SANDBOX}/outside" "${DATA_DIR}/agent-home/go/cache"
-ln -s "${SANDBOX}/nowhere" "${DATA_DIR}/agent-home/go/mod.link"
+rmdir "${AHOME}/go/cache"
+ln -s "${SANDBOX}/outside" "${AHOME}/go/cache"
+ln -s "${SANDBOX}/nowhere" "${AHOME}/go/mod.link"
 outside_before="$(dir_listing "${SANDBOX}/outside")"
 : >"$MUT_LOG"
 if run_setup -- --undo; then
@@ -492,7 +508,7 @@ for s in cloud-init-sudoers firewall-unit firewall-ipv4 firewall-ipv6 sudoers-ru
     expect_step "$s" "done"
 done
 expect_refused "apply with go/cache a link outside the data dir" --
-check "the refusal names the link" grep -qF "${DATA_DIR}/agent-home/go/cache' is a symbolic link; refused" "$OUT"
+check "the refusal names the link" grep -qF "${AHOME}/go/cache' is a symbolic link; refused" "$OUT"
 teardown_sandbox
 
 echo "=== test: undo needs no data dir of the daemon user (gone, or another owner) ==="
@@ -858,7 +874,7 @@ else
     cat "$OUT"
     fail_test "a symlink to a good data dir was refused"
 fi
-check "the canonical path is used" grep -qF "install -d -o pilot-agent -g pilot -m 750 ${DATA_DIR}/agent-home" "$OUT"
+check "the canonical path is used" grep -qF "install -d -o pilot-agent -g pilot -m 750 ${AHOME}" "$OUT"
 teardown_sandbox
 
 echo "=== test: user and group arguments ==="
@@ -912,11 +928,16 @@ echo "=== test: the agent directories that are links, or leave the data dir, are
 setup_sandbox
 mkdir "${SANDBOX}/outside"
 outside_before="$(mode_of "${SANDBOX}/outside")"
-ln -s "${SANDBOX}/outside" "${DATA_DIR}/agent-home"
-expect_refused "agent-home is a symbolic link" --
-rm "${DATA_DIR}/agent-home"
-ln -s "${SANDBOX}/outside" "${DATA_DIR}/agent-workspaces"
-expect_refused "agent-workspaces is a symbolic link" --
+ln -s "${SANDBOX}/outside" "$AROOT"
+expect_refused "the agent root is a symbolic link" --
+rm "$AROOT"
+mkdir "$AROOT"
+set_meta "$AROOT" root:root
+ln -s "${SANDBOX}/outside" "$AHOME"
+expect_refused "the agent home is a symbolic link" --
+rm "$AHOME"
+ln -s "${SANDBOX}/outside" "$AWS"
+expect_refused "the workspace root is a symbolic link" --
 check "the directory outside is untouched" test "$(mode_of "${SANDBOX}/outside")" = "$outside_before"
 teardown_sandbox
 
@@ -1352,6 +1373,141 @@ check "dry-run undo: no mutating command" test ! -s "$MUT_LOG"
 check "dry-run undo: files and modes unchanged" test "$before" = "$(tree_listing)"
 check "dry-run undo prints the restore it would do" grep -qE "^\+ install -m [0-7]+ -o [^ ]+ -g [^ ]+ ${BAK} ${SUDOERS_DIR}/90-cloud-init-users\$" "$OUT"
 check "dry-run undo prints the removal of the rule" grep -qF "+ rm -f ${SUDOERS_DIR}/90-pilot-agent-runas" "$OUT"
+teardown_sandbox
+
+# ------------------------------------------- agent root, proof as the agent user
+
+# mutation pin: a Go cache directory is made by root (install -d) again -> this test fails
+echo "=== test: no root step inside the agent home — the agent user makes the Go caches ==="
+setup_sandbox
+if run_setup -- ; then
+    pass "apply exits 0"
+else
+    cat "$OUT"
+    fail_test "apply exited non-zero"
+fi
+check_not "no install -d names a path below the agent home" grep -qE "^install -d .* ${AHOME}/" "$CALL_LOG"
+check "the agent user made go, go/cache and go/mod" has_line "$CALL_LOG" "runuser -u pilot-agent -- mkdir -p -m 750 ${AHOME}/go ${AHOME}/go/cache ${AHOME}/go/mod"
+for d in go go/cache go/mod; do
+    check "${d} belongs to the agent user" test "$(mock_run stat -c %U:%G "${AHOME}/${d}")" = pilot-agent:pilot
+done
+check "root made the agent root root:root 0755" has_line "$CALL_LOG" "install -d -o root -g root -m 755 ${AROOT}"
+check "the agent root belongs to root" test "$(mock_run stat -c %U:%G:%a "$AROOT")" = root:root:755
+teardown_sandbox
+
+echo "=== test: --agent-root below a directory of root; refused when it holds the data dir, is not root's or sits in a directory of another user ==="
+setup_sandbox
+mkdir "${SANDBOX}/srv"
+set_meta "${SANDBOX}/srv" root:root
+if run_setup -- --agent-root "${SANDBOX}/srv/agent"; then
+    pass "apply exits 0 with the agent root outside the data dir"
+else
+    cat "$OUT"
+    fail_test "apply failed with --agent-root ${SANDBOX}/srv/agent"
+fi
+check "the home of the agent user is below it" grep -qF -- "--home-dir ${SANDBOX}/srv/agent/home " "$CALL_LOG"
+check "the summary names its workspace root" has_line "$OUT" "  run_as_workspace_dir: ${SANDBOX}/srv/agent/workspaces"
+check_not "no agent root in the data dir" test -e "$AROOT"
+expect_refused "--agent-root is the data dir" -- --agent-root "$DATA_DIR"
+expect_refused "--agent-root holds the data dir" -- --agent-root "$SANDBOX"
+expect_refused "--agent-root is an entry of the daemon user" -- --agent-root "$R"
+check "the reason is printed" grep -qF "exists and is not owned by root" "$OUT"
+expect_refused "--agent-root inside a directory of the daemon user" -- --agent-root "${DATA_DIR}/bin/agent"
+expect_refused "--agent-root is a relative path" -- --agent-root agent
+teardown_sandbox
+
+# mutation pin: daemon-private skips the mode of the data dir itself -> this test fails
+echo "=== test: a data dir that gives more than traverse fails the check; the modes are recorded and undo prints them ==="
+setup_sandbox
+build_repos
+chmod 755 "$DATA_DIR" "$R"
+: >"$MUT_LOG"
+if run_setup -- --dry-run; then
+    fail_test "a dry run must fail the check too"
+else
+    pass "a dry run fails the check"
+fi
+check_not "a dry run writes no record" test -e "$RECORD"
+if run_setup -- ; then
+    fail_test "apply must fail while the data dir is 0755"
+else
+    pass "apply exits non-zero"
+fi
+expect_step daemon-private failed
+check "prints the chmod for the data dir" has_line "$OUT" "the data dir ${DATA_DIR} gives more than traverse (group ec2-user, mode 755): chmod go-rw ${DATA_DIR}"
+check "the data dir keeps its mode (the step changes no mode)" test "$(mode_of "$DATA_DIR")" = 755
+check "nothing was mutated" test ! -s "$MUT_LOG"
+check "the record holds the mode of the data dir" grep -qxF "755	${DATA_DIR}" "$RECORD"
+check "the record holds the mode of the repos directory" grep -qxF "755	${R}" "$RECORD"
+chmod 711 "$DATA_DIR"
+chmod 700 "$R"
+if run_setup -- ; then
+    pass "apply passes once the chmods ran"
+else
+    cat "$OUT"
+    fail_test "apply failed after the chmods"
+fi
+run_setup -- --undo >/dev/null || true
+check "undo prints the chmod that puts back the mode of the data dir" has_line "$OUT" "  chmod 755 ${DATA_DIR}"
+check "undo prints the chmod that puts back the mode of the repos directory" has_line "$OUT" "  chmod 755 ${R}"
+check "the data dir keeps its mode after undo (printed, not run)" test "$(mode_of "$DATA_DIR")" = 711
+restore_n="$(grep -n -m1 '^== earlier modes' "$OUT" | cut -d: -f1 || true)"
+left_n="$(grep -n -m1 '^== left in place' "$OUT" | cut -d: -f1 || true)"
+check "the chmods come before the cleanup section" test -n "$restore_n" -a -n "$left_n" -a "${restore_n:-0}" -lt "${left_n:-0}"
+set_meta "$RECORD" ec2-user:ec2-user
+run_setup -- --undo >/dev/null || true
+check "a record that is not root's is passed over" grep -qF "${RECORD} is not a regular file of root; passed over" "$OUT"
+check_not "and no chmod is printed from it" has_line "$OUT" "  chmod 755 ${DATA_DIR}"
+teardown_sandbox
+
+# mutation pin: the proof as the agent user is removed -> this test fails
+echo "=== test: a data dir below a 0700 directory fails the apply at the proof of the agent user, with the path ==="
+setup_sandbox
+CLOSED="${SANDBOX}/closed"
+mkdir -p "${CLOSED}/data"
+chmod 700 "$CLOSED"
+chmod 711 "${CLOSED}/data"
+set_meta "$CLOSED" ec2-user:ec2-user
+set_meta "${CLOSED}/data" ec2-user:ec2-user
+if run_setup -- --data-dir "${CLOSED}/data"; then
+    fail_test "apply must fail: the agent user cannot enter its home"
+else
+    pass "apply exits non-zero"
+fi
+for s in group agent-user daemon-membership directories sudoers-rule firewall-ipv4 firewall-ipv6 firewall-unit cloud-init-sudoers; do
+    expect_step "$s" "done"
+done
+expect_step agent-proof failed
+check "the message names the home" grep -qF "the agent user cannot create a file in ${CLOSED}/data/agent/home;" "$OUT"
+check "the message names the workspace root" grep -qF "the agent user cannot create a file in ${CLOSED}/data/agent/workspaces;" "$OUT"
+check_not "no config lines after a failed apply" grep -qF "run_as_user:" "$OUT"
+chmod 711 "$CLOSED"
+if run_setup -- --data-dir "${CLOSED}/data"; then
+    pass "apply passes once the directory above gives traverse"
+else
+    cat "$OUT"
+    fail_test "apply failed with a 0711 directory above the data dir"
+fi
+expect_step agent-proof skipped
+teardown_sandbox
+
+echo "=== test: the proof fails when the agent user can list a directory of the daemon through another of its groups ==="
+setup_sandbox
+build_repos
+# daemon-private looks at "other" and the shared group; an agent user that
+# exists already can be in one more group, and the proof finds that
+mkdir -p "${STATE_DIR}/members"
+echo pilot-agent >"${STATE_DIR}/members/staff"
+chmod 750 "$R"
+set_meta "$R" ec2-user:staff
+if run_setup -- ; then
+    fail_test "apply must fail: the agent user can list the repos directory"
+else
+    pass "apply exits non-zero"
+fi
+expect_step daemon-private skipped
+expect_step agent-proof failed
+check "the message names the directory" has_line "$OUT" "the agent user can list ${R}"
 teardown_sandbox
 
 echo "=== test: not root, bad arguments ==="
