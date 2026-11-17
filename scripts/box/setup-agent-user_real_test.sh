@@ -20,8 +20,10 @@
 # a data dir below a 0700 directory fails at the proof of the agent user; the
 # sudo proof fails on a Defaults !authenticate line in a second file; the rule
 # list of the sudo proof, in a second sudoers file: a NOPASSWD rule for one
-# command as root fails, a rule through a group of the daemon user fails, only
-# the agent user passes; a second apply skips every step; undo with go/cache a link outside the data dir (it
+# command as root fails, a rule through a group of the daemon user fails (and,
+# with the cloud-init line active again, stops the apply at the check before the
+# first change: the cloud-init file stays the same byte for byte), only the
+# agent user passes; a second apply skips every step; undo with go/cache a link outside the data dir (it
 # prints the recorded modes; an entry of the daemon user at 0777 before the
 # apply, replaced by a link to a file of root before the undo: the printed undo
 # line, run as root, leaves the file of root as it is; a process of the agent
@@ -92,6 +94,8 @@ WEB="$(mktemp -d)"
 LOG="$(mktemp)"
 STOP="$(mktemp)"
 PIDFILE="$(mktemp)"
+APPLIED_CLOUD_INIT="$(mktemp)"
+ACTIVE_CLOUD_INIT="$(mktemp)"
 RECORD="$(mktemp -u /root/.pilotrt-modes.XXXXXX)"
 AROOT="${DATA_DIR}/agent"
 AHOME="${AROOT}/home"
@@ -175,7 +179,7 @@ cleanup() {
     userdel -r "$DAEMON" 2>/dev/null || true
     groupdel "$GROUP" 2>/dev/null || true
     groupdel "$OPS_GROUP" 2>/dev/null || true
-    rm -f "$CLOUD_INIT" "${CLOUD_INIT}".pilot-agent.bak* "$RECORD" "$STOP" "$PIDFILE"
+    rm -f "$CLOUD_INIT" "${CLOUD_INIT}".pilot-agent.bak* "$RECORD" "$STOP" "$PIDFILE" "$APPLIED_CLOUD_INIT" "$ACTIVE_CLOUD_INIT"
     rm -rf "$DATA_DIR" "$OUTSIDE" "$ROOTDIR" "$CLOSED" "$WEB" "$LOG"
 }
 trap cleanup EXIT
@@ -544,6 +548,24 @@ if [ "$rc" = 1 ]; then pass "apply exits 1"; else show_log; fail_test "apply: ex
 expect_step cloud-init-sudoers failed
 check "the entry and its reason are printed" grep -qE "^  entry [0-9]+ \(run-as user root, not ${AGENT} alone\):\$" "$LOG"
 check "the file of the entry is printed" grep -qxF "      | Sudoers entry: ${RULES_FILE}" "$LOG"
+
+echo "=== real test: the check before the first change — the group rule stops the apply, the cloud-init file stays as it is ==="
+# The cloud-init line active again, as on a host that is not set up yet; the
+# group rule of the case above is still in the second file.
+cp -p "$CLOUD_INIT" "$APPLIED_CLOUD_INIT"
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$DAEMON" >"$CLOUD_INIT"
+cp -p "$CLOUD_INIT" "$ACTIVE_CLOUD_INIT"
+check "visudo accepts the active cloud-init line" visudo -c
+rc=0
+run_setup --confirm-root-path || rc=$?
+if [ "$rc" = 1 ]; then pass "apply exits 1"; else show_log; fail_test "apply: exit ${rc}, want 1"; fi
+check "the cloud-init file is the same byte for byte" cmp -s "$CLOUD_INIT" "$ACTIVE_CLOUD_INIT"
+check_not "no step ran" grep -qx '== daemon-private' "$LOG"
+check "the entry and its reason are printed" grep -qE "^  entry [0-9]+ \(run-as user root, not ${AGENT} alone\):\$" "$LOG"
+check "the file of the entry is printed" grep -qxF "      | Sudoers entry: ${RULES_FILE}" "$LOG"
+check_not "the cloud-init entry is not named" grep -qxF "      | Sudoers entry: ${CLOUD_INIT}" "$LOG"
+check "the operator is told to remove the rule or the membership first" grep -qF "remove each rule, or the membership of ${DAEMON} in the group it names, first" "$LOG"
+cp -p "$APPLIED_CLOUD_INIT" "$CLOUD_INIT"
 
 echo "=== real test: the sudo proof by the rules — a second rule to the agent user alone passes ==="
 printf '%s ALL=(%s) NOPASSWD: /usr/bin/true\n' "$DAEMON" "$AGENT" >"$RULES_FILE"

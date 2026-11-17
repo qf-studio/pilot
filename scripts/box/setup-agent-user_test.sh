@@ -362,7 +362,7 @@ else
     fail_test "apply exited non-zero"
 fi
 prev=0
-for pattern in '^groupadd ' '^useradd ' '^usermod ' '^iptables -w -N ' '^ip6tables -w -N ' '^systemctl enable ' '^install -d ' '^runuser -u pilot-agent -- mkdir ' '^visudo -cf ' '^install -m 0600 -o root -g root .*\.pilot-agent\.bak$' '^visudo -c$' '^runuser -u ec2-user -- sudo -n true$' '^sudo -n -ll -U ec2-user$' '^runuser -u pilot-agent -- touch ' '^runuser -u pilot-agent -- ls '; do
+for pattern in '^sudo -n -ll -U ec2-user$' '^groupadd ' '^useradd ' '^usermod ' '^iptables -w -N ' '^ip6tables -w -N ' '^systemctl enable ' '^install -d ' '^runuser -u pilot-agent -- mkdir ' '^visudo -cf ' '^install -m 0600 -o root -g root .*\.pilot-agent\.bak$' '^visudo -c$' '^runuser -u ec2-user -- sudo -n true$' '^runuser -u pilot-agent -- touch ' '^runuser -u pilot-agent -- ls '; do
     n="$(first_line "$pattern" || true)"
     if [ -n "$n" ] && [ "$n" -gt "$prev" ]; then
         pass "in order: ${pattern}"
@@ -371,6 +371,10 @@ for pattern in '^groupadd ' '^useradd ' '^usermod ' '^iptables -w -N ' '^ip6tabl
         fail_test "out of order or missing: ${pattern} (line '${n}', after ${prev})"
     fi
 done
+# The rule list is read twice: by the check before the first change (first in
+# the list above) and by the proof, between sudo -n true and the agent proof.
+n="$(awk -v a="$(first_line '^runuser -u ec2-user -- sudo -n true$')" 'NR > a && /^sudo -n -ll -U ec2-user$/ { print NR; exit }' "$CALL_LOG")"
+check "the proof reads the rule list after sudo -n true, before the agent proof" test "${n:-0}" -gt 0 -a "${n:-0}" -lt "$(first_line '^runuser -u pilot-agent -- touch ')"
 if [ "$(cat "${SUDOERS_DIR}/90-pilot-agent-runas")" = "$EXPECTED_RULE" ]; then
     pass "sudoers file holds exactly the run-as rule"
 else
@@ -1392,29 +1396,30 @@ check "the alias line is reported" grep -qF "left untouched (several users, an a
 expect_step cloud-init-sudoers "done"
 teardown_sandbox
 
-echo "=== test: a rule with the run-as part (deploy) is left untouched and reported; the rule list fails the proof ==="
+echo "=== test: a cloud-init rule with the run-as part (deploy) stops the apply at the check before the first change ==="
 setup_sandbox
 cat >"${SUDOERS_DIR}/90-cloud-init-users" <<'EOF'
 # Created by cloud-init
 ec2-user ALL=(ALL) NOPASSWD:ALL
 ec2-user ALL=(deploy) NOPASSWD: ALL
 EOF
+before="$(cat "${SUDOERS_DIR}/90-cloud-init-users")"
 if run_setup -- ; then
     fail_test "apply must fail: the (deploy) rule has a run-as user other than the agent user"
 else
     pass "apply exits non-zero on a (deploy) rule"
 fi
-expect_step cloud-init-sudoers failed
 check "the (deploy) entry is named" grep -qE '^  entry [0-9]+ \(run-as user deploy, not pilot-agent alone\):$' "$OUT"
-check "the (deploy) line is untouched" grep -qxF "ec2-user ALL=(deploy) NOPASSWD: ALL" "${SUDOERS_DIR}/90-cloud-init-users"
-check "the root line is commented out" grep -qxF "# disabled by setup-agent-user: ec2-user ALL=(ALL) NOPASSWD:ALL" "${SUDOERS_DIR}/90-cloud-init-users"
-check "the (deploy) line is reported as left untouched" grep -qF "left untouched (run-as part (deploy) is not ALL or root): ${SUDOERS_DIR}/90-cloud-init-users:3: ec2-user ALL=(deploy) NOPASSWD: ALL" "$OUT"
+check "the cloud-init file has no change, the root line is still active" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$before"
+check_not "no step ran" grep -qx '== daemon-private' "$OUT"
 teardown_sandbox
 
 echo "=== test: a NOPASSWD rule left in another file fails the step with that file and line ==="
 setup_sandbox
 printf '# rules\nec2-user,admin ALL=(ALL) NOPASSWD:ALL\n' >"${SUDOERS_DIR}/10-other"
-if run_setup -- ; then
+# late: sudo reads the file only once the agent rule is in place (a rule that
+# came after the check before the first change), so the proof meets it
+if run_setup MOCK_SUDO_LATE=10-other -- ; then
     fail_test "apply must fail while another file gives the daemon user NOPASSWD"
 else
     pass "apply exits non-zero"
@@ -1431,7 +1436,8 @@ setup_sandbox
 printf 'Defaults:ec2-user !authenticate\n' >"${SUDOERS_DIR}/05-defaults"
 printf 'ec2-user ALL=(ALL) ALL\n' >"${SUDOERS_DIR}/10-other"
 check "the mocked sudo gives root without a password here" mock_run env MOCK_INVOKER=ec2-user sudo -n true
-if run_setup -- ; then
+LATE="MOCK_SUDO_LATE=05-defaults 10-other"
+if run_setup "$LATE" -- ; then
     fail_test "apply must fail: the daemon user gets root without a password"
 else
     pass "apply exits non-zero"
@@ -1441,7 +1447,7 @@ check "the proof says sudo -n true succeeded" grep -qF "sudo -n true succeeded" 
 check "the Defaults line is named" has_line "$OUT" "  ${SUDOERS_DIR}/05-defaults:1: Defaults:ec2-user !authenticate"
 check "the rule is named" has_line "$OUT" "  ${SUDOERS_DIR}/10-other:1: ec2-user ALL=(ALL) ALL"
 rm "${SUDOERS_DIR}/05-defaults"
-if run_setup -- ; then
+if run_setup "$LATE" -- ; then
     fail_test "apply must fail: the rule needs a password, but the rule list holds it"
 else
     pass "without the Defaults line sudo -n true fails, the rule list fails the step"
@@ -1449,7 +1455,7 @@ fi
 check_not "sudo -n true did not succeed" grep -qF "sudo -n true succeeded" "$OUT"
 check "the rule list names the entry" grep -qE '^  entry [0-9]+ \(run-as user ALL, not pilot-agent alone\):$' "$OUT"
 printf 'Defaults !authenticate\n' >"${SUDOERS_DIR}/05-defaults"
-if run_setup -- ; then
+if run_setup "$LATE" -- ; then
     fail_test "apply must fail with a global Defaults !authenticate"
 else
     pass "a global Defaults !authenticate fails the step too"
@@ -1549,6 +1555,84 @@ fi
 check "the group is named" has_line "$OUT" "  entry 2 (run-as group wheel, not pilot alone):"
 teardown_sandbox
 
+# mutation pin: the parser accepts a run-as list that contains the agent user -> this test fails
+echo "=== test: the rule list — a run-as list with the agent user and root, in both orders, fails the proof ==="
+for runas in "pilot-agent, root" "root, pilot-agent"; do
+    setup_sandbox
+    rule_list "${SANDBOX}/list" "Sudoers entry: /etc/sudoers.d/10-x\n    RunAsUsers: ${runas}\n    Commands:\n\tALL"
+    if run_setup MOCK_SUDO_LIST="${SANDBOX}/list" -- ; then
+        fail_test "apply must fail on the run-as list ${runas}"
+    else
+        pass "apply exits non-zero on the run-as list ${runas}"
+    fi
+    expect_step cloud-init-sudoers failed
+    check "the list is named: ${runas}" has_line "$OUT" "  entry 2 (run-as user ${runas}, not pilot-agent alone):"
+    teardown_sandbox
+done
+
+# mutation pin: check_rule_list ignores the exit status of sudo -ll -> this test fails
+echo "=== test: the rule list command exits non-zero with a list that looks valid — the proof fails ==="
+setup_sandbox
+rule_list "${SANDBOX}/list"
+if run_setup MOCK_SUDO_LIST="${SANDBOX}/list" MOCK_SUDO_LIST_RC=1 -- ; then
+    fail_test "apply must fail when sudo -ll exits non-zero"
+else
+    pass "apply exits non-zero"
+fi
+expect_step cloud-init-sudoers failed
+check "the exit status is named" grep -qF "sudo -ll -U ec2-user failed (exit 1); the sudo removal is not proven" "$OUT"
+teardown_sandbox
+
+# ------------------------------- the check of the sudo rules before the first change
+
+# mutation pin: the call of precheck_sudo_rules is removed -> "the cloud-init file has no change" fails
+echo "=== test: a sudo rule through a group of the daemon user stops the apply before the first change ==="
+setup_sandbox
+mock_run usermod -aG wheel ec2-user
+printf '%%wheel ALL=(ALL) ALL\n' >"${SUDOERS_DIR}/10-wheel"
+before="$(cat "${SUDOERS_DIR}/90-cloud-init-users")"
+: >"$MUT_LOG"
+rc=0
+run_setup -- || rc=$?
+if [ "$rc" = 1 ]; then pass "apply exits 1"; else cat "$OUT"; fail_test "apply: exit ${rc}, want 1"; fi
+check "the cloud-init file has no change" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$before"
+check "no backup of the cloud-init file" test ! -e "$BAK"
+check "no mutating command" test ! -s "$MUT_LOG"
+check_not "no step ran" grep -qx '== daemon-private' "$OUT"
+check "the entry is named" has_line "$OUT" "  entry 1 (run-as user ALL, not pilot-agent alone):"
+check "the file of the entry is printed" has_line "$OUT" "      | Sudoers entry: ${SUDOERS_DIR}/10-wheel"
+check_not "the cloud-init entry is not named" grep -qF "| Sudoers entry: ${SUDOERS_DIR}/90-cloud-init-users" "$OUT"
+check "the operator is told to remove the rule or the membership first" grep -qF "nothing is changed: the proof after the edit of ${SUDOERS_DIR}/90-cloud-init-users would refuse the entries above; remove each rule, or the membership of ec2-user in the group it names, first, then run again" "$OUT"
+teardown_sandbox
+
+echo "=== test: the check before the first change — only the cloud-init rule and the agent rule: the apply goes on ==="
+setup_sandbox
+printf '%s\n' "$EXPECTED_RULE" >"${SUDOERS_DIR}/90-pilot-agent-runas"
+if run_setup -- ; then
+    pass "apply exits 0"
+else
+    cat "$OUT"
+    fail_test "apply failed with only the cloud-init rule and the agent rule"
+fi
+check "the check ran before the first step" test "$(first_line_of "$OUT" '^== sudo-rules ')" -lt "$(first_line_of "$OUT" '^== daemon-private$')"
+check "the check read the rule list before the first change" test "$(first_line '^sudo -n -ll -U ec2-user$')" -lt "$(first_line '^groupadd ')"
+check "the cloud-init lines are commented out" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_APPLIED"
+expect_step cloud-init-sudoers "done"
+teardown_sandbox
+
+echo "=== test: the check before the first change passes over one entry per line it comments out ==="
+setup_sandbox
+printf '%s\n' 'ec2-user ALL=(ALL) NOPASSWD:ALL' 'ec2-user,bob ALL=(ALL) ALL' >"${SUDOERS_DIR}/90-cloud-init-users"
+before="$(cat "${SUDOERS_DIR}/90-cloud-init-users")"
+if run_setup -- ; then
+    fail_test "apply must fail: the second line names two users and stays"
+else
+    pass "apply exits non-zero"
+fi
+check "the cloud-init file has no change with a line the apply leaves" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$before"
+check "the second entry of the cloud-init file is named" has_line "$OUT" "  entry 2 (run-as user ALL, not pilot-agent alone):"
+teardown_sandbox
+
 # mutation pin: the error of the positive control is swallowed, so a broken sudo counts as proof -> this test fails
 echo "=== test: a sudo that does not run fails the step with its output ==="
 setup_sandbox
@@ -1597,7 +1681,7 @@ else
     cat "$OUT"
     fail_test "apply failed for a daemon user in wheel"
 fi
-WANT_WARNING="WARNING: the daemon user ec2-user is a member of docker, wheel: each of these memberships is a path to root (this script removes none of them)"
+WANT_WARNING="WARNING: the daemon user ec2-user is a member of docker, wheel: each of these memberships is a path to root (this script removes none of them); a sudo rule for one of these groups stops the apply at the check of the sudo rules, before the first change"
 check "the warning names each group" has_line "$OUT" "$WANT_WARNING"
 check "one warning block" test "$(grep -c '^== warning$' "$OUT")" = 1
 check "the line is printed twice: the block and the summary" test "$(grep -cxF "$WANT_WARNING" "$OUT")" = 2
@@ -1863,6 +1947,7 @@ check "firewall rules unchanged" test "$before_rules" = "$(cat "${STATE_DIR}/ipt
 check "the rotation of the old backup is printed, not done" grep -qF "+ mv ${BAK} ${BAK}.1" "$OUT"
 check "the lines to comment out are printed" grep -qF "to comment out: ${SUDOERS_DIR}/90-cloud-init-users:3:" "$OUT"
 check "the proof is printed, not run" grep -qF "+ runuser -u ec2-user -- sudo -n true" "$OUT"
+check "the check of the sudo rules is printed, not run" grep -qF "+ sudo -n -ll -U ec2-user  (each entry but " "$OUT"
 check_not "the proof did not run" grep -qE '^(runuser|sudo) ' "$CALL_LOG"
 run_setup -- >/dev/null || true
 : >"$MUT_LOG"

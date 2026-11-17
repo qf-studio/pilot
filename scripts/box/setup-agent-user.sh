@@ -64,8 +64,16 @@
 #                     below those (a repository). A closed directory above the data
 #                     dir (a home at 0700) passes every root step and fails here.
 #
+# Before the first step, when a sudoers file would change (not with
+# --keep-daemon-sudo): the check of the sudo rules (precheck_sudo_rules) reads
+# `sudo -ll -U DAEMON` as the proof does and passes over only the cloud-init
+# entries the apply comments out; any other entry the proof would refuse fails
+# the apply there, with nothing changed. The output names the entry; the
+# operator removes the rule or the group membership first.
+#
 # A daemon user in a system group with privileges (wheel, adm, docker, ...) gets
-# a WARNING before the steps and in the summary: a path to root; not a failure.
+# a WARNING before the steps and in the summary: a path to root; not a failure
+# by itself, but a sudo rule for such a group fails the check of the sudo rules.
 #
 # On success the summary ends with the values for the executor section of the
 # daemon config: run_as_user, run_as_group, run_as_workspace_dir and
@@ -113,10 +121,10 @@
 #   DAEMON_MODES_RECORD  default /root/.setup-agent-user.modes (root's file outside
 #                        the data dir: the modes the daemon-private step found)
 #
-# Exit status: 0 when every step is done or skipped, 1 when a step failed (an
-# apply stops at the first failed step, the steps after it are listed in the
-# summary as skipped; an undo runs every step), 2 on bad arguments (nothing is
-# changed).
+# Exit status: 0 when every step is done or skipped, 1 when the check of the sudo
+# rules or a step failed (an apply stops at the first failed step, the steps
+# after it are listed in the summary as skipped; an undo runs every step), 2 on
+# bad arguments (nothing is changed).
 
 set -euo pipefail
 
@@ -783,31 +791,42 @@ remaining_rules() {
 # names the shared group alone; Options, Commands and the command lines (a tab
 # in front) are passed over, so are the Defaults sections. Any other line, an
 # entry without its RunAsUsers line, or a count of entries that differs from the
-# count of RunAsUsers lines fails. Output: one line per failure, an entry with
-# its lines below it; exit 1 on a failure.
+# count of RunAsUsers lines fails. With skipfile and skipmax set, at most
+# skipmax entries of skipfile ("Sudoers entry: FILE") whose run-as user is ALL
+# or root are passed over: the lines the apply comments out. Output: one line
+# per failure, an entry with its lines below it; exit 1 on a failure.
 # shellcheck disable=SC2016 # the awk program is single-quoted on purpose
 RULES_AWK='
 function fail(msg) { print msg; failed = 1 }
 function flush(   i) {
     if (n == 0) return
+    if (cand && runas == 1 && (ru == "ALL" || ru == "root") && skipped < skipmax) {
+        skipped++; n = 0; bad = ""; runas = 0; cmds = 0; cand = 0
+        return
+    }
     if (bad == "" && runas != 1) bad = (runas == 0 ? "no RunAsUsers line" : "more than one RunAsUsers line")
     if (bad != "") {
         fail("entry " entries " (" bad "):")
         for (i = 1; i <= n; i++) print "    | " text[i]
     }
-    n = 0; bad = ""; runas = 0; cmds = 0
+    n = 0; bad = ""; runas = 0; cmds = 0; cand = 0
 }
 /^Matching Defaults entries for / || /^Runas and Command-specific defaults for / { flush(); sec = "defaults"; next }
 /^User .* may run the following commands on / { flush(); sec = "rules"; listed = 1; next }
 /^User .* is not allowed to run sudo on / { flush(); sec = "none"; listed = 1; next }
 /^$/ { flush(); next }
 sec == "defaults" && /^    / { next }
-sec == "rules" && (/^Sudoers entry:/ || /^LDAP Role:/) { flush(); entries++; text[++n] = $0; next }
+sec == "rules" && (/^Sudoers entry:/ || /^LDAP Role:/) {
+    flush(); entries++; text[++n] = $0
+    cand = (skipfile != "" && $0 == "Sudoers entry: " skipfile)
+    next
+}
 n > 0 {
     text[++n] = $0
     if (/^    RunAsUsers: /) {
         runas++; total++
         v = substr($0, 17)
+        ru = v
         if (v != agent && bad == "") bad = "run-as user " v ", not " agent " alone"
     } else if (/^    RunAsGroups: /) {
         v = substr($0, 18)
@@ -829,10 +848,11 @@ END {
     exit failed
 }'
 
-# check_rule_list — read the rules of the daemon user (sudo -ll -U, as root) and
-# check them with RULES_AWK: the only path left from the daemon user is the
-# agent user. A rule that `sudo -n true` does not show (one command as root, a
-# rule that needs a password, a rule through a group) fails here.
+# check_rule_list [SKIPFILE SKIPMAX] — read the rules of the daemon user (sudo
+# -ll -U, as root) and check them with RULES_AWK: the only path left from the
+# daemon user is the agent user. A rule that `sudo -n true` does not show (one
+# command as root, a rule that needs a password, a rule through a group) fails
+# here. SKIPFILE and SKIPMAX: the entries RULES_AWK passes over (the precheck).
 check_rule_list() {
     local list rc=0 report
     list="$(sudo -n -ll -U "$DAEMON_USER")" || rc=$?
@@ -840,7 +860,8 @@ check_rule_list() {
         echo "sudo -ll -U ${DAEMON_USER} failed (exit ${rc}); the sudo removal is not proven" >&2
         return 1
     fi
-    if report="$(printf '%s\n' "$list" | awk -v agent="$AGENT_USER" -v group="$GROUP" "$RULES_AWK")"; then
+    if report="$(printf '%s\n' "$list" | awk -v agent="$AGENT_USER" -v group="$GROUP" \
+        -v skipfile="${1:-}" -v skipmax="${2:-0}" "$RULES_AWK")"; then
         return 0
     fi
     echo "the sudo rules of ${DAEMON_USER} (sudo -ll -U ${DAEMON_USER}) hold more than the agent rule: each entry must have ${AGENT_USER} as the only run-as user and no run-as group but ${GROUP}" >&2
@@ -881,6 +902,37 @@ prove_sudo_removed() {
         echo "no such line in ${SUDOERS_MAIN} or ${SUDOERS_DIR}/ (an include or another source)" >&2
     fi
     return 1
+}
+
+# precheck_sudo_rules — before the first step, so before the first change of a
+# sudoers file: the rule list as check_rule_list reads it, but for the entries
+# the apply removes by itself (the cloud-init file, run-as user ALL or root, at
+# most one per line it comments out). Any other entry the proof would refuse (a
+# rule through a group of the daemon user, a rule for a command as root, a
+# cloud-init line the apply leaves) fails the apply here, with the host as it
+# was; after the edit the proof would fail with the cloud-init file changed. Not
+# run with --keep-daemon-sudo (no proof follows) or when no sudoers file would
+# change (the agent rule is in place, no line to comment out): then the proof
+# alone decides.
+precheck_sudo_rules() {
+    local ndis=0
+    [ "$KEEP_DAEMON_SUDO" = 0 ] || return 0
+    if [ -f "$CLOUD_INIT_SUDOERS" ]; then
+        ndis="$(cloud_init_plan | grep -c '^DISABLE' || true)"
+    fi
+    if [ "$ndis" -eq 0 ] && file_has_content "$SUDOERS_FILE" "$(sudoers_rule)"; then
+        return 0
+    fi
+    echo "== sudo-rules (check before the first change)"
+    if [ "$DRY_RUN" = 1 ]; then
+        printf '+ sudo -n -ll -U %q  (each entry but %s of %q: run-as user %q only, run-as group %q at most)\n' \
+            "$DAEMON_USER" "$ndis" "$CLOUD_INIT_SUDOERS" "$AGENT_USER" "$GROUP"
+        return 0
+    fi
+    if ! check_rule_list "$CLOUD_INIT_SUDOERS" "$ndis"; then
+        echo "nothing is changed: the proof after the edit of ${CLOUD_INIT_SUDOERS} would refuse the entries above; remove each rule, or the membership of ${DAEMON_USER} in the group it names, first, then run again" >&2
+        return 1
+    fi
 }
 
 step_cloud_init_sudoers() {
@@ -1531,14 +1583,15 @@ check_agent_root
 
 # warn_daemon_groups — the daemon user in a group of PRIVILEGED_GROUPS: a warning
 # before the steps, repeated in the summary; no failure (the script removes no
-# membership, and the daemon user has root during the apply anyway).
+# membership, and the daemon user has root during the apply anyway). A sudo rule
+# for such a group does fail the apply, at precheck_sudo_rules.
 warn_daemon_groups() {
     local g found=""
     for g in $(id -nG "$DAEMON_USER"); do
         if is_privileged_group "$g"; then found="${found:+${found}, }${g}"; fi
     done
     [ -n "$found" ] || return 0
-    DAEMON_GROUP_WARNING="WARNING: the daemon user ${DAEMON_USER} is a member of ${found}: each of these memberships is a path to root (this script removes none of them)"
+    DAEMON_GROUP_WARNING="WARNING: the daemon user ${DAEMON_USER} is a member of ${found}: each of these memberships is a path to root (this script removes none of them); a sudo rule for one of these groups stops the apply at the check of the sudo rules, before the first change"
     echo "== warning"
     echo "$DAEMON_GROUP_WARNING"
 }
@@ -1552,11 +1605,14 @@ if [ "$DRY_RUN" = 0 ] && [ "$KEEP_DAEMON_SUDO" = 0 ] && [ "$CONFIRM_ROOT_PATH" =
     die "refusing to remove the general sudo of ${DAEMON_USER}: keep another root session open (a second root shell or the console) and run again with --confirm-root-path, or pass --keep-daemon-sudo"
 fi
 
-# The check of the data dir comes first, before any change. The firewall and the
-# boot unit come before the directories (a path of the agent user there cannot
-# stop them) and before the sudoers rule (a failed firewall step leaves the
-# daemon user no way to the agent user); the removal of the daemon user's general
-# sudo comes after them; the proof as the agent user is last.
+precheck_sudo_rules || exit 1
+
+# The check of the sudo rules above and the check of the data dir come first,
+# before any change. The firewall and the boot unit come before the directories
+# (a path of the agent user there cannot stop them) and before the sudoers rule
+# (a failed firewall step leaves the daemon user no way to the agent user); the
+# removal of the daemon user's general sudo comes after them; the proof as the
+# agent user is last.
 run_plan daemon-private:step_daemon_private \
     group:step_group \
     agent-user:step_agent_user \
