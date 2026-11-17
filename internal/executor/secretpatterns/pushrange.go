@@ -178,6 +178,21 @@ func QualifyBranchRef(head string) string {
 	return "refs/heads/" + head
 }
 
+// isFullCommitID reports whether s is a full commit SHA (40 or 64 lowercase
+// hex digits): CheckPush scans it as it is, never as refs/heads/<s>. The
+// hand-over push of an agent workspace scans the commit it pushes by its SHA.
+func isFullCommitID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // pushBase is PushBase that also returns the context error. git failures stay
 // swallowed (a candidate that does not resolve is the normal case), so the
 // context is checked after every call: a context that ended must not look like
@@ -232,7 +247,9 @@ func CheckPush(ctx context.Context, dir, head string, opts PushOptions) error {
 	if err := ctxError(ctx); err != nil {
 		return err
 	}
-	head = QualifyBranchRef(head)
+	if !isFullCommitID(head) {
+		head = QualifyBranchRef(head)
+	}
 	base, err := pushBase(ctx, dir, head, opts.DefaultBranch)
 	if err != nil {
 		return err

@@ -53,7 +53,7 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 
 	// GH-1235: Use executionPath for git operations - this is the worktree path when
 	// worktree isolation is active, or parentTask.ProjectPath in non-worktree mode.
-	git := NewGitOperations(executionPath)
+	git := newGitOperationsForWorkspace(executionPath, parentTask.ProjectPath)
 
 	// GH-1235: Only create branch in non-worktree mode. When worktree mode is active,
 	// the worktree was already created with the correct branch checked out, and trying

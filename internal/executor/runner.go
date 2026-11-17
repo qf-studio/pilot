@@ -4060,7 +4060,7 @@ func (r *Runner) resumeDecomposedParent(ctx context.Context, task *Task, executi
 	}
 
 	if task.CreatePR && task.Branch != "" {
-		r.finalizeEpicBranchPR(recoverCtx, task, NewGitOperations(executionPath), epicResult, childStates)
+		r.finalizeEpicBranchPR(recoverCtx, task, newGitOperationsForWorkspace(executionPath, task.ProjectPath), epicResult, childStates)
 	} else {
 		r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
 	}
@@ -4814,7 +4814,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 					// instead of warn-and-continue, so a stranded epic is never recorded
 					// as a "completed" row with an empty PR (Shape A). A pre-create
 					// merged-work check avoids opening a duplicate PR (Shape C).
-					r.finalizeEpicBranchPR(epicCtx, task, NewGitOperations(executionPath), epicResult, childStates)
+					r.finalizeEpicBranchPR(epicCtx, task, newGitOperationsForWorkspace(executionPath, task.ProjectPath), epicResult, childStates)
 				} else {
 					r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
 				}
@@ -4933,7 +4933,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	})
 
 	// Initialize git operations in execution path (worktree or original)
-	git := NewGitOperations(executionPath)
+	git := newGitOperationsForWorkspace(executionPath, task.ProjectPath)
 
 	// Create branch if specified (skip for direct commit mode and worktree mode)
 	// When using worktree, CreateWorktreeWithBranch already created the branch

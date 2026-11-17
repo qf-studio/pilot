@@ -17,8 +17,9 @@ import (
 // hooks and the refs there. Instead a git command of the agent user writes a
 // bundle of the branch to its standard output, the daemon copies that stream
 // into a temporary file of its own and fetches from it, in its own repository
-// and as the daemon user, into one ref of its own. No caller yet: the push
-// from that ref comes in a later leg. With the option empty nothing calls it.
+// and as the daemon user, into one ref of its own. The push of an agent
+// workspace (GitOperations.pushHandOver) gates and pushes from that ref. With
+// the option empty nothing calls it.
 
 // handOverRefPrefix holds the ref of the daemon's repository that a hand-over
 // writes: refs/pilot/handover/TASK.
