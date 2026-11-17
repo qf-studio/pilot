@@ -44,6 +44,7 @@ func TestRunAsDataDirModes(t *testing.T) {
 		want     []string // substrings of the failed check; nil: passes
 	}{
 		{"data dir 0755", 0o755, nil, []string{"gives the group or other users read or write", "0755"}},
+		{"data dir 0750", 0o750, nil, []string{"gives the group or other users read or write", "0750"}},
 		{"data dir 0711", 0o711, nil, nil},
 		{"data dir 0700", 0o700, nil, nil},
 		{"entry 0755", 0o711, entry("logs", 0o755), []string{"logs", "open to other users", "0755"}},
@@ -53,6 +54,10 @@ func TestRunAsDataDirModes(t *testing.T) {
 			p := mkdirMode(t, filepath.Join(data, "state"), 0o750)
 			s.gid = fileGID(t, p)
 		}, []string{"state", "open to run_as_group pilot-agents", "0750"}},
+		{"entry 0710, the shared group", 0o711, func(t *testing.T, data string, s *runAsSettings) {
+			p := mkdirMode(t, filepath.Join(data, "state"), 0o710)
+			s.gid = fileGID(t, p)
+		}, []string{"state", "open to run_as_group pilot-agents", "0710"}},
 		{"entry with group bits, another group", 0o711, entry("state", 0o750), nil},
 		{"a file entry 0644", 0o711, func(t *testing.T, data string, _ *runAsSettings) {
 			if err := os.WriteFile(filepath.Join(data, "pilot.db"), nil, 0o600); err != nil {
@@ -66,6 +71,10 @@ func TestRunAsDataDirModes(t *testing.T) {
 			mkdirMode(t, filepath.Join(data, "agent"), 0o755)
 			mkdirMode(t, filepath.Join(data, "agent", "workspaces"), 0o770)
 		}, nil},
+		{"an entry agentx next to the workspace entry agent is checked", 0o711, func(t *testing.T, data string, _ *runAsSettings) {
+			mkdirMode(t, filepath.Join(data, "agent", "workspaces"), 0o770)
+			mkdirMode(t, filepath.Join(data, "agentx"), 0o755)
+		}, []string{filepath.Join("data", "agentx"), "open to other users", "0755"}},
 		{"a link to an open directory", 0o711, func(t *testing.T, data string, _ *runAsSettings) {
 			open := mkdirMode(t, filepath.Join(data, "zz-open"), 0o755)
 			if err := os.Symlink(open, filepath.Join(data, "logs")); err != nil {
@@ -285,6 +294,94 @@ func TestRunAsDataDirPreflight(t *testing.T) {
 				t.Errorf("spawn after a refused data directory: cmd=%v err=%v", cmd, err)
 			}
 		})
+	}
+}
+
+// TestRunAsDataDirReloadRunsPreflight: a change of run_as_data_dir alone,
+// every other option the same, runs the preflight again with the new data
+// directory; the same options again keep the result.
+func TestRunAsDataDirReloadRunsPreflight(t *testing.T) {
+	setRunAsStateForTest(t, nil, "")
+	_ = mockSudo(t, 0)
+	stubRunAsHost(t, "linux", "1000", map[string]string{"pilot-agent": t.TempDir()})
+	var checked []string
+	runAsDataDirCheck = func(s *runAsSettings) string { checked = append(checked, s.dataDir); return "" }
+	ws := filepath.Join(t.TempDir(), "agent", "workspaces")
+	first, second := closedTempDir(t), closedTempDir(t)
+	cfg := &ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents", RunAsWorkspaceDir: ws, RunAsDataDir: first}
+	PreflightRunAsUser(cfg, "", true, 0)
+	PreflightRunAsUser(cfg, "", true, 0)
+	cfg.RunAsDataDir = second
+	PreflightRunAsUser(cfg, "", true, 0)
+	if want := []string{first, second}; strings.Join(checked, ",") != strings.Join(want, ",") {
+		t.Errorf("data directory checks ran for %v, want %v", checked, want)
+	}
+	if s := runAsSettingsNow(); s == nil || s.dataDir != second {
+		t.Errorf("settings after the reload = %+v, want run_as_data_dir %s", s, second)
+	}
+}
+
+// TestRunAsWorkspaceRootNotDataDir: the workspace root is not run_as_data_dir
+// or a parent of it, as given or resolved; the refusal names both paths. The
+// layout of the setup script (the root below the agent entry of the data
+// directory) passes.
+func TestRunAsWorkspaceRootNotDataDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("links")
+	}
+	prev := daemonHomeDir
+	daemonHomeDir = func() (string, error) { return filepath.Join(t.TempDir(), "home", "daemon"), nil }
+	t.Cleanup(func() { daemonHomeDir = prev })
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := mkdirMode(t, filepath.Join(base, "var", "lib", "pilot"), 0o711)
+	linkToData := filepath.Join(base, "data-link")
+	if err := os.Symlink(data, linkToData); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name          string
+		root, dataDir string
+		refused       bool
+	}{
+		{"root is the data directory", data, data, true},
+		{"root is the data directory, trailing slash", data + "/", data, true},
+		{"root is the parent of the data directory", filepath.Dir(data), data, true},
+		{"root is a grand-parent of the data directory", filepath.Join(base, "var"), data, true},
+		{"root is a link to the data directory", linkToData, data, true},
+		{"data directory given through a link, root its target", data, linkToData, true},
+		{"default layout: the root below the agent entry", filepath.Join(data, "agent", "workspaces"), data, false},
+		{"a root next to the data directory", filepath.Join(base, "var", "lib", "pilot-agent"), data, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := refusedRunAsWorkspaceRoot(tc.root, tc.dataDir, &ClaudeCodeConfig{})
+			if !tc.refused {
+				if got != "" {
+					t.Errorf("refused: %q, want a pass", got)
+				}
+				return
+			}
+			if !strings.Contains(got, "is run_as_data_dir") || !strings.Contains(got, tc.root) || !strings.Contains(got, tc.dataDir) {
+				t.Errorf("check = %q, want the refusal naming %s and %s", got, tc.root, tc.dataDir)
+			}
+		})
+	}
+
+	// Through the preflight: one Error line and no spawn.
+	setRunAsStateForTest(t, nil, "")
+	_ = mockSudo(t, 0)
+	stubRunAsHost(t, "linux", "1000", map[string]string{"pilot-agent": t.TempDir()})
+	buf := captureLog(t)
+	PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents",
+		RunAsWorkspaceDir: filepath.Dir(data), RunAsDataDir: data}, "", true, 0)
+	if err := RunAsUserPreflightError(); err == nil || !strings.Contains(err.Error(), "is run_as_data_dir "+data) {
+		t.Errorf("preflight error = %v, want the parent of the data directory refused", err)
+	}
+	if n := strings.Count(buf.String(), "level=ERROR"); n != 1 {
+		t.Errorf("want one Error line, got:\n%s", buf.String())
 	}
 }
 

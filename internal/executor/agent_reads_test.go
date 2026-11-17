@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -137,6 +138,121 @@ func TestRunAsUserGhGuardBinaryCopy(t *testing.T) {
 			cleanup()
 			assertNoPath(t, copyPath)
 		})
+	}
+}
+
+// testGuardGroup is a real group of the test process for a fixture of the
+// binary copy: a supplementary group when the process has one, so the group
+// of the copy differs from the one the file gets at creation; the effective
+// group otherwise. The second value is false for the effective group.
+func testGuardGroup(t *testing.T) (gid int, differs bool) {
+	t.Helper()
+	egid := os.Getegid()
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range groups {
+		if g != egid {
+			return g, true
+		}
+	}
+	return egid, false
+}
+
+// mutation pin: the copy of the binary gets a plain chmod, not applyGuardPerm, so it keeps the group of the daemon and each gh call of the agent fails -> this test fails
+func TestRunAsUserGhGuardBinaryCopyGroup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes")
+	}
+	gid, differs := testGuardGroup(t)
+	s := testRunAsSettings(t)
+	s.group, s.gid = "pilot-agents", gid
+	setRunAsStateForTest(t, s, "")
+	// The chown is the real one; the record shows the group change of the
+	// copy also when the process has no group but its effective one.
+	var chowned []string
+	prev := guardChown
+	guardChown = func(path string, uid, g int) error {
+		chowned = append(chowned, fmt.Sprintf("%s:%d", filepath.Base(path), g))
+		return os.Chown(path, uid, g)
+	}
+	t.Cleanup(func() { guardChown = prev })
+	// A small source: the group and mode of the copy are under test, not its
+	// content, and the test binary is large.
+	prevOpen := ghGuardOpenBinary
+	ghGuardOpenBinary = func(string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("#!/bin/sh\n")), nil
+	}
+	t.Cleanup(func() { ghGuardOpenBinary = prevOpen })
+
+	shimDir, _, cleanup, err := setupGhGuardShim("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	copyPath := filepath.Join(shimDir, ghGuardBinaryName)
+	fi, err := os.Stat(copyPath)
+	if err != nil {
+		t.Fatalf("no copy in the shim directory: %v", err)
+	}
+	if fi.Mode().Perm() != 0o750 {
+		t.Errorf("copy mode = %04o, want 0750", fi.Mode().Perm())
+	}
+	if got := fileGID(t, copyPath); got != gid {
+		t.Errorf("copy group = %d, want the agent group %d (a supplementary group of the process: %v)", got, gid, differs)
+	}
+	want := fmt.Sprintf("%s:%d", ghGuardBinaryName, gid)
+	if !strings.Contains(" "+strings.Join(chowned, " ")+" ", " "+want+" ") {
+		t.Errorf("group changes %v, want %s", chowned, want)
+	}
+}
+
+// earlyEndReader gives n bytes and then an error, as a source binary that
+// ends in the middle of the copy.
+type earlyEndReader struct{ n int }
+
+func (r *earlyEndReader) Read(p []byte) (int, error) {
+	if r.n <= 0 {
+		return 0, fmt.Errorf("source ended early")
+	}
+	k := min(len(p), r.n)
+	for i := range p[:k] {
+		p[i] = 'x'
+	}
+	r.n -= k
+	return k, nil
+}
+
+func (r *earlyEndReader) Close() error { return nil }
+
+// TestRunAsUserGhGuardBinaryCopyFails: a source that ends in the middle of the
+// copy fails the set-up and leaves no file with the name of the copy, in the
+// shim directory of the copy and with no shim directory left behind.
+func TestRunAsUserGhGuardBinaryCopyFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell shim")
+	}
+	setRunAsStateForTest(t, testRunAsSettings(t), "")
+	prev := ghGuardOpenBinary
+	ghGuardOpenBinary = func(string) (io.ReadCloser, error) { return &earlyEndReader{n: 64 << 10}, nil }
+	t.Cleanup(func() { ghGuardOpenBinary = prev })
+
+	dir := t.TempDir()
+	got, err := installGhGuardBinary(dir)
+	if err == nil || !strings.Contains(err.Error(), "ghguard: copy pilot binary") || got != "" {
+		t.Fatalf("installGhGuardBinary = %q, %v; want no path and the failed copy", got, err)
+	}
+	assertNoPath(t, filepath.Join(dir, ghGuardBinaryName))
+
+	before, _ := filepath.Glob(filepath.Join(os.TempDir(), "pilot-ghguard-*"))
+	shimDir, _, _, err := setupGhGuardShim("")
+	if err == nil || !strings.Contains(err.Error(), "source ended early") {
+		t.Fatalf("setupGhGuardShim = %q, %v; want the failed copy", shimDir, err)
+	}
+	after, _ := filepath.Glob(filepath.Join(os.TempDir(), "pilot-ghguard-*"))
+	if len(after) > len(before) {
+		t.Errorf("a failed copy left a shim directory: %v", after)
 	}
 }
 

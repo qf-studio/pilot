@@ -110,6 +110,12 @@ const ghGuardBinaryName = "pilot-gh-guard"
 // replace it.
 var ghGuardSelfExe = "/proc/self/exe"
 
+// ghGuardOpenBinary opens the source of the binary copy; tests replace it to
+// give a source that fails in the middle of the copy.
+var ghGuardOpenBinary = func(path string) (io.ReadCloser, error) {
+	return os.Open(path) // #nosec G304 -- the running binary
+}
+
 // installGhGuardBinary copies the running binary into shimDir and returns the
 // path of the copy, with the mode and group applyGuardPerm gives the gh
 // script. The source is ghGuardSelfExe, the os.Executable path when that does
@@ -128,7 +134,7 @@ func installGhGuardBinary(shimDir string) (string, error) {
 		}
 		src = exe
 	}
-	in, err := os.Open(src) // #nosec G304 -- the running binary
+	in, err := ghGuardOpenBinary(src)
 	if err != nil {
 		return "", fmt.Errorf("ghguard: open pilot binary %s: %w", src, err)
 	}
@@ -139,14 +145,18 @@ func installGhGuardBinary(shimDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("ghguard: create pilot binary copy: %w", err)
 	}
+	// A failed copy leaves no file at dst: a part of the binary is never run.
 	if _, err := io.Copy(out, in); err != nil {
 		_ = out.Close()
+		_ = os.Remove(dst)
 		return "", fmt.Errorf("ghguard: copy pilot binary %s: %w", src, err)
 	}
 	if err := out.Close(); err != nil {
+		_ = os.Remove(dst)
 		return "", fmt.Errorf("ghguard: copy pilot binary %s: %w", src, err)
 	}
 	if err := applyGuardPerm(dst, 0o750); err != nil {
+		_ = os.Remove(dst)
 		return "", fmt.Errorf("ghguard: pilot binary copy permissions: %w", err)
 	}
 	return dst, nil

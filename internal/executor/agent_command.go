@@ -395,7 +395,7 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 			failed = "run_as_user requires worktree_pool_size 0"
 		default:
 			s.workspaceRoot, s.dataDir, s.gatewayPort = root, dataDir, gatewayPort
-			if failed = refusedRunAsWorkspaceRoot(root, cfg); failed == "" {
+			if failed = refusedRunAsWorkspaceRoot(root, dataDir, cfg); failed == "" {
 				failed = runAsWorkspaceCheck(s)
 			}
 			if failed == "" {
@@ -438,8 +438,10 @@ var daemonHomeDir = os.UserHomeDir
 // of the daemon user, the data directory of the daemon (the Pilot home and
 // the directory of the loaded config file) or a parent of one of them: a
 // removal as the agent user below the root must never reach daemon files.
-// Paths are compared as given and resolved.
-func refusedRunAsWorkspaceRoot(root string, cfg *ClaudeCodeConfig) string {
+// Root may not be dataDir (run_as_data_dir) or a parent of it either: the
+// mode check of checkRunAsDataDirModes would then skip nothing or everything;
+// that refusal names both paths. Paths are compared as given and resolved.
+func refusedRunAsWorkspaceRoot(root, dataDir string, cfg *ClaudeCodeConfig) string {
 	const check = "run_as_workspace_dir is /, the daemon home, the daemon data directory or a parent of one of them"
 	var protected []string
 	home, err := daemonHomeDir()
@@ -466,6 +468,13 @@ func refusedRunAsWorkspaceRoot(root string, cfg *ClaudeCodeConfig) string {
 				if pathInside(r, pf) {
 					return check
 				}
+			}
+		}
+	}
+	for _, r := range roots {
+		for _, d := range pathForms(dataDir) {
+			if pathInside(r, d) {
+				return fmt.Sprintf("run_as_workspace_dir %s is run_as_data_dir %s or a parent of it", root, dataDir)
 			}
 		}
 	}
