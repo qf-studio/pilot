@@ -1,6 +1,6 @@
 # TASK-651: Agent isolation — agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM
 
-**Status**: 🚀 **State 2026-11-17 10:00Z. With Pilot: N7 → [pilot#6428](https://github.com/qf-studio/pilot/issues/6428) (fix of the Navigator copy), B9 → [pilot#6430](https://github.com/qf-studio/pilot/issues/6430) (host script: the sudo rule list is read before the first change), P2 → [pilot#6431](https://github.com/qf-studio/pilot/issues/6431) (firewall probe in the preflight); all `pilot` + `no-decompose`.** Merged: U0, U1, F1, F2, F3, B1, G1 (PR#6375), U2 (PR#6383), B2 (PR#6378), N2 (PR#6397), N5 (PR#6405), B3 (PR#6401), B5 (PR#6409), N3 (PR#6410), N6 (PR#6414), B6 (PR#6415), B4 (PR#6421), N4 (PR#6424), P1 (PR#6425), B7 (PR#6426), P3 (PR#6427). Next in the plan: B10 after B9, B8 after B10 (same file); P4 after P2 (same file); then U3 (spec check against main first), U4 (removes the preflight refusal), U5. **O4 is NO-GO** until B9, B10, N7 and P2 merge. `run_as_user` is refused by the preflight on every host until U3 and U4 merge. **Merge rule (founder, 11-17, replaces the rule of 11-16, mem-319):** no draft hold. The review of Pilot and green CI are sufficient for the merge; the daemon merges. The run-it review runs after the merge and its findings become follow-up legs. The founder is asked only for work that leaves the plan and for a step on the box. Proposed by the planning session and not yet confirmed by the founder: a hold for the one PR that removes the preflight refusal (U4). Reason for the change: the hold of PR#6425, PR#6426 and PR#6427 lasted about nine hours over the night of 11-16 with no gain; every finding of every run-it review became a follow-up leg, none stopped a merge. Legs stay small: the task limit of Pilot is one hour. Box fact 11-16: the daemon user is in the group docker (a path to root); the founder asked the infrastructure owner. Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
+**Status**: 🚀 **State 2026-11-17 12:00Z. N7 merged (PR#6433). With Pilot: H1 → [pilot#6434](https://github.com/qf-studio/pilot/issues/6434) (hand-over, part 1: the branch as a bundle stream into the daemon repository), B9 → [pilot#6430](https://github.com/qf-studio/pilot/issues/6430) (host script: the sudo rule list is read before the first change), P2 → [pilot#6431](https://github.com/qf-studio/pilot/issues/6431) (firewall probe in the preflight); all `pilot` + `no-decompose`.** Merged: U0, U1, F1, F2, F3, B1, G1 (PR#6375), U2 (PR#6383), B2 (PR#6378), N2 (PR#6397), N5 (PR#6405), B3 (PR#6401), B5 (PR#6409), N3 (PR#6410), N6 (PR#6414), B6 (PR#6415), B4 (PR#6421), N4 (PR#6424), P1 (PR#6425), B7 (PR#6426), P3 (PR#6427). Next in the plan: B10 after B9, B8 after B10 (same file); P4 after P2 (same file); H2, H3, H4 after H1 (hand-over, parts 2 to 4); then U4 in three parts (the last one removes the preflight refusal) and U5; both need a new specification, see the spec check line of 11-17. **O4 is NO-GO** until B9, B10 and P2 merge. `run_as_user` is refused by the preflight on every host until H1 to H3 and U4 merge. **Merge rule (founder, 11-17, replaces the rule of 11-16, mem-319):** no draft hold. The review of Pilot and green CI are sufficient for the merge; the daemon merges. The run-it review runs after the merge and its findings become follow-up legs. The founder is asked only for work that leaves the plan and for a step on the box. Proposed by the planning session and not yet confirmed by the founder: a hold for the one PR that removes the preflight refusal (U4). Reason for the change: the hold of PR#6425, PR#6426 and PR#6427 lasted about nine hours over the night of 11-16 with no gain; every finding of every run-it review became a follow-up leg, none stopped a merge. Legs stay small: the task limit of Pilot is one hour. Box fact 11-16: the daemon user is in the group docker (a path to root); the founder asked the infrastructure owner. Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
 **Created**: 2026-11-12
 **Assignee**: Pilot (one leg at a time) + operator steps by a Navigator session with founder consent
 **Parent**: TASK-650 leg H1
@@ -85,10 +85,15 @@
 - **N5 result:** PR#6405 merged 11-16 17:35Z after a run-it review (GO-WITH-NOTES) and the founder's "merge".
 - [ ] **N3** ([#6406](https://github.com/qf-studio/pilot/issues/6406), dispatched 11-16; PR held as a draft; needs N2) the daemon writes the task document, the Navigator files and the settings file through a helper that runs as the agent user.
 - [x] **N4** (PR#6424 merged 11-17 09:39Z; the run-it review found one narrow blocker: the workspace directory itself is opened with link following and by its path for each file; founder answer 11-17: merge, then fix; N7 fixes it) ([#6417](https://github.com/qf-studio/pilot/issues/6417), dispatched 11-16 ~22:00Z)
-- [ ] **N7** ([#6428](https://github.com/qf-studio/pilot/issues/6428), dispatched 11-17 ~09:45Z; blocks the removal of the preflight refusal) from the review of PR#6424: one descriptor of the workspace for the whole copy out, no followed link in the copy in, a size limit, a hard link refusal. Navigator copy in as a tar stream, copy out without a followed link at any path element.
-- [ ] **U3** (dispatch-ready, below; needs U2) hand-over as a bundle that the agent writes and the daemon fetches into `refs/pilot/handover/<task>`; the secret gate and the push run only in the daemon's repository, with replace refs ignored and hooks off; PR creation, recovery ref and the preserve commit follow. Closes the gate-trust class of mem-308 when the option is set (seven shapes; the tamper table is the test list of the leg).
-- [ ] **U4** (dispatch-ready, below; needs U2) quality gates, workflow hooks, evidence commands and the lint fix as the agent user with the allowlist environment; `run_as_env` for values such as the Go caches.
-- [ ] **U5** (dispatch-ready, below; needs U3 and, on the box, O2) read-only installation token per run in a file for the `gh` shim and a git credential helper (also serves the fetch of a private module); per-project override of the option.
+- [x] **N7** (PR#6433 merged 11-17 11:38Z; the run-it review reports after the merge) ([#6428](https://github.com/qf-studio/pilot/issues/6428), dispatched 11-17 ~09:45Z) from the review of PR#6424: one descriptor of the workspace for the whole copy out, no followed link in the copy in, a size limit, a hard link refusal. Navigator copy in as a tar stream, copy out without a followed link at any path element.
+- [ ] **H1** ([#6434](https://github.com/qf-studio/pilot/issues/6434), dispatched 11-17 ~12:00Z) hand-over, part 1: handOverBranch takes the branch of the workspace as a bundle stream into `refs/pilot/handover/TASK` of the daemon's repository; no caller yet. The old leg U3 was eight items and about fifteen call sites; a spec check against `origin/main` 1310e68d1 on 11-17 split it into H1 to H4.
+- [ ] **H2** (dispatch-ready, below; after H1) hand-over, part 2: the secret gate, the push and the remote probes run in the daemon's repository on the hand-over ref.
+- [ ] **H3** (dispatch-ready, below; after H2) hand-over, part 3: the four `gh` commands and the recovery ref use the daemon's repository; the workspace stays until its commits are safe; the graph reads go through the helper.
+- [ ] **H4** (dispatch-ready, below; after H2) a git identity for the commits of the agent user; the secret gate also scans the header lines of a commit.
+- **Spec check 11-17 for U4 and U5 (their blocks below are from 11-12 and are stale; write them again before a dispatch):** U4 becomes three parts: (a) a command builder with configure and kill hooks in `internal/quality` (the quality runner replaces the process attributes of an agent command, so a constructor alone is not sufficient), wired at the gate command and both scope commands; (b) workflow hooks, evidence commands, both lint commands, the env context file read and the settings restore failure; (c) the removal of the preflight refusal, alone, as the last PR. U4 changes `agent_command.go`, so it follows P2 and P4. `run_as_env` is stale: the Go paths are set since P1. U5 becomes two parts: (a) a scoped token (repositories and permissions in the mint request; the mint of today sends no body), a token file with refresh, `GH_TOKEN` set in the gh-guard subcommand, the credential helper entries also for the gates; (b) the override for each project, which is a refactor (the run-as state is one value for the process: 21 reads, 16 spawn callers, none with a project).
+- **Open founder decisions from the spec check 11-17:** (1) is the override for each project needed, or does the first host use one daemon with the option for all projects; (2) drop `run_as_env`; (3) GOPROXY, GOFLAGS, GONOSUMDB, GOPRIVATE of the daemon reach the agent: keep, drop, or refuse a value with credentials; (4) a hold for the one PR that removes the refusal. Defaults taken without a question: the gate scans commit headers and the agent gets a git identity from the environment (H4); after a failed hand-over the workspace stays (H3).
+- [ ] **U4** (NOT dispatch-ready: stale block, see the spec check line above; needs H1 to H3, P2, P4) quality gates, workflow hooks, evidence commands and the lint fix as the agent user with the allowlist environment; `run_as_env` for values such as the Go caches.
+- [ ] **U5** (NOT dispatch-ready: stale block, see the spec check line above; needs H1 and, on the box, O2) read-only installation token per run in a file for the `gh` shim and a git credential helper (also serves the fetch of a private module); per-project override of the option.
 - **Merge rule (founder call 11-16, mem-319):** on the stage environment the daemon merges a ready PR with green CI by itself; a security PR of this task stays in draft after the verdict until the founder writes "merge".
 - **Order (founder call 11-12; U2 split into G1 → U2 → N1 on 11-15):** U1 → F1 → F2 → G1 → U2 → N2 → N5 → N3 → N4 → U3 → U4 → U5, one at a time. `run_as_user` stays empty on every host until U3 **and** U4 merge: until then the gate, the quality gates and the hooks run as the daemon inside the agent-owned clone. The poller holds legs that touch the same directory, so a parallel dispatch gains nothing. Check for an open post-merge-review issue on the same files before each dispatch (mem-301).
 
@@ -1047,52 +1052,159 @@ A dangling link in the data directory. Group bits for a group other than the sha
 
 - Navigator TASK-651 in this repo · review comments of PR#6425 and PR#6427
 
-### LEG U3 — repo: qf-studio/pilot — title: feat(executor): run_as_user hand-over — the daemon takes the branch from the agent workspace as a bundle, runs the secret gate on its own refs and pushes from its own repository with hooks off
+### LEG H1 — repo: qf-studio/pilot — title: feat(executor): run_as_user hand-over, part 1 — the daemon takes the branch of the agent workspace as a bundle stream into a ref of its own repository (no caller yet, off by default)
 
 probe: present qf-studio/pilot \)[[:space:]]createAgentWorkspace\(
-probe: present qf-studio/pilot func[[:space:]]CheckSecretGate\(
-probe: present qf-studio/pilot func[[:space:]]withGitCredentials\(
-probe: absent  qf-studio/pilot func[[:space:]]handOverBranc[h]\(
+probe: present qf-studio/pilot func[[:space:]]gitCommandIn\(
+probe: present qf-studio/pilot func[[:space:]]transportWorkspaceBase\(
+probe: absent  qf-studio/pilot func[[:space:]]handOverBranch\(
 
 ## Context
 
-Navigator TASK-651 (design in `.agent/system/agent-isolation-design.md`, section 4.2 items 4 and 5). With run_as_user set, the workspace is a clone that the agent user owns (earlier leg). Today the Push, PushForceWithLease and PushToMain methods of GitOperations in `internal/executor/git.go` run three steps inside the workspace: stripCoAuthorBeforePush, CheckSecretGate (`internal/executor/secret_gate.go`, scan in `internal/executor/secretpatterns/pushrange.go`) and git push with the credential environment from withGitCredentials (`internal/executor/git_credentials.go`). The session can write every ref, config value and hook of that repository. A review found seven ways to get a secret past the gate through refs that the session writes (a forged remote-tracking ref, a remote that the session adds, a replace ref). A config value such as a push URL can also send the credential to another host.
+Navigator TASK-651 (design in `.agent/system/agent-isolation-design.md`). With run_as_user set, the agent works in a clone that the agent user owns, and the daemon must not run git with the workspace as its repository: the agent controls the git config, the hooks and the refs there. Today, with the option set, the push of a run fails by design (withGitCredentials refuses the agent route), so no run can deliver. The hand-over replaces the push from the workspace: the daemon takes the commits of the branch out of the workspace as data and pushes from its own repository. This leg adds only the function that takes the commits; later legs call it. The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below. With the option empty nothing changes, and this leg adds no caller.
 
-The rule of this leg: with the option set, the daemon runs no git command with the workspace as its repository, and no credential enters a command that runs in the workspace.
+Existing pieces to use: gitCommandIn and gitCmd in `internal/executor/git_command.go` route a git command to the agent user for a directory inside the workspace root; transportWorkspaceBase in `internal/executor/agent_workspace.go` moves the base commit the other way as a bundle; `secretpatterns.GitScanConfig` and `HooksOffArgs` hold the hardened git settings of the daemon.
 
 ## Scope
 
-1. Hand-over, new file, plain text: internal/executor/handover.go. A function handOverBranch(ctx, workspace, repoPath, taskID, branch, baseRef) returns the commit SHA.
-   a. The agent user (through the git constructor) writes a bundle of the branch, without the commits of the base ref, to a file next to the workspace directory inside the workspace root, and prints the head SHA.
-   b. The daemon copies the bundle to a file in its own temp directory. It opens the source with O_NOFOLLOW, accepts a regular file only, and stops with an error over 2 GB.
-   c. Inside the daemon's repository the daemon fetches the branch from its copy into the ref refs/pilot/handover/TASK. The fetch sets fetch.fsckObjects to true, runs no hook (the constant NoHooksPath of `internal/executor/secretpatterns/pushrange.go`), and has GIT_NO_REPLACE_OBJECTS=1 in the environment.
-   d. The SHA of the fetched ref must equal the SHA of step a. A difference is an error; nothing is pushed.
-   e. Remove both bundle files in every outcome.
-2. Gate: with the option set, CheckSecretGate runs in the daemon's repository on the hand-over ref. Before the scan the daemon runs git fetch origin for the base branch and the task branch in its own repository. "Already published" comes only from refs/remotes/origin of the daemon's repository. Every git command of the gate has GIT_NO_REPLACE_OBJECTS=1 and no hook that runs (the constant NoHooksPath of `internal/executor/secretpatterns/pushrange.go`).
-3. Push: with the option set, Push, PushForceWithLease and PushToMain push the hand-over ref from the daemon's repository to the branch name on origin. The command has no hook that runs (the constant NoHooksPath of `internal/executor/secretpatterns/pushrange.go`), takes the origin URL from the daemon's repository, and gets the credential from withGitCredentials as today. The lease variant passes the expected remote SHA explicitly. Keep the three public method signatures, so that the call sites in `internal/executor/runner.go`, `internal/executor/runner_decompose.go` and `internal/executor/git_freshness.go` do not change; GitOperations gets the path of the daemon's repository as a second field when it is built for an agent workspace.
-4. Co-author strip: with the option set it runs in the workspace as the agent user before the hand-over (it rewrites the agent's own commits; it is not a security control). After the hand-over the daemon checks the commit messages of the pushed range in its own repository; a trailer that is still present stops the push with the present error.
-5. PR creation by gh in CreatePR: with the option set, run gh with the directory of the daemon's repository and pass the repository, the head branch and the base branch as explicit flags. No gh command of the daemon has the workspace as its directory.
-6. Recovery and preserve: CreateRecoveryRef with the option set creates the ref refs/pilot-recovery/TASK in the daemon's repository from the handed-over SHA. preserveDirtyWorktreeAsWIP commits in the workspace as the agent user, then uses the hand-over and the daemon push. A workspace is removed only after a successful hand-over or after an Error line that names the task and the reason.
-7. Delete the hand-over ref after a successful push and in the cleanup of the run.
-8. Tests with real temporary repositories (a bare origin, a daemon clone, an agent workspace; the fixtures newRemoteAndLocalRepo and newPushRefusedFixture show the pattern) and the mock sudo script. Use the fake secret shape that the present gate tests use. Each of these cases must end with a blocked push and no new commit on the bare origin when the option is set: a secret in a new commit; the same with a forged ref under refs/remotes/origin in the workspace; with a remote that the workspace adds; with a replace ref in the workspace; with a shallow file in the workspace; with a pushurl and an insteadOf value in the workspace config; with a commit in the encoding IBM037; with a pre-push hook in the workspace; with a submodule and push.recurseSubmodules; with a gpg.program and log.showSignature; with a textconv driver in the workspace config; with log.showRoot false and an orphan root commit; with a file in the .git directory of the workspace that shadows the branch name; with push.followTags true and an annotated tag (the tag must be absent on the origin). One more case: a pre-push hook and a core.sshCommand value in the workspace do not run (they would create a marker file; the file must not exist). A clean branch is pushed, and the origin head equals the workspace head. A bundle path that is a symbolic link is refused.
+1. A new file handover.go in the directory `internal/executor`, with a function handOverBranch(ctx, workspace, daemonRepo, taskID, branch, baseSHA) that returns the head SHA of the branch in the daemon's repository. Step one: a git command as the agent user in the workspace (through the constructor) writes `git bundle create - BRANCH ^BASE` to its standard output, and the daemon copies that stream into a temporary file of its own, outside the workspace. The daemon reads no file of the workspace and writes none.
+2. Limits of the stream: a size limit of 2 GB and the context of the run. Over the limit the agent command is stopped through the kill of today, the temporary file is removed and the function returns an error that names the limit.
+3. Step two, in the daemon's repository as the daemon user: `git fetch` from the bundle file into the ref `refs/pilot/handover/TASK` only (an explicit refspec with the branch of the bundle; no tags, no other ref), with fetch.fsckObjects on, hooks off and GIT_NO_REPLACE_OBJECTS=1 (the settings of GitScanConfig and HooksOffArgs). The function then reads the SHA of that ref and returns it. The temporary file is removed on every path.
+4. A function removeHandOverRef(daemonRepo, taskID) that deletes the ref; a missing ref is no error.
+5. Tests, table-driven, no root needed, with the mock sudo fixture of the workspace tests: the head SHA in the daemon's repository equals the head of the workspace branch, and the daemon's repository has the commits; the stream over a small test limit fails and leaves no file and no ref; a pre-push hook and a post-checkout hook in the workspace write a marker file -> no marker after the hand-over; a replace ref in the workspace does not change the objects that arrive; a bundle that holds a second ref (a tag, a forged `refs/remotes/origin/main`) creates only the hand-over ref; a branch name that does not exist in the workspace gives an error; the mock sudo log shows that the bundle command ran as the agent user and the fetch did not.
 
 ## Acceptance
 
-- [ ] `go test -race -count=1 ./internal/executor/... -run 'HandOver|SecretGate|PushRefused|RecoveryRef|RunAsUser'` passes; paste the output into the PR body.
-- [ ] Compute "already published" in the workspace again -> the forged-ref test fails.
-- [ ] Remove GIT_NO_REPLACE_OBJECTS=1 from the gate -> the replace-ref test fails.
-- [ ] Push from the workspace directory -> the pushurl test and the hook test fail.
-- [ ] Remove the SHA comparison of item 1d -> its test fails.
-- [ ] With the option empty, the push and gate tests that exist today pass without a change to their assertions.
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'HandOver|RunAsUser'` passes; paste the output into the PR body.
+- [ ] Fetch with the refspec `refs/*:refs/*` -> the test with the second ref fails.
+- [ ] Remove the size limit -> its test fails.
 - [ ] Do not re-run make build, make test or make lint as evidence.
 
 ## Out of scope
 
-The behaviour with the option empty (the gate still runs in the worktree there; known limit, recorded in Navigator). Read commands after the session (diff, counts, changed files): they stay in the workspace through the git constructor and return data only. Quality gates, workflow hooks and evidence commands. The GitHub token for the agent. The post-merge reviewer checkout.
+Any caller of the function. The push, the secret gate, the PR creation, the recovery ref (next legs). Any change of behaviour with the option empty.
 
 ## Refs
 
-- Navigator TASK-651 in this repo · TASK-650 (parent) · design section 4.2
+- Navigator TASK-651 in this repo · design section 4.2
+
+### LEG H2 — repo: qf-studio/pilot — title: feat(executor): run_as_user hand-over, part 2 — the secret gate and the push run in the daemon's repository on the hand-over ref, remote probes too (off by default)
+
+probe: present qf-studio/pilot func[[:space:]]handOverBranch\(
+probe: present qf-studio/pilot func[[:space:]]pushArgs\(
+probe: present qf-studio/pilot func[[:space:]]CheckSecretGate\(
+probe: absent  qf-studio/pilot func[[:space:]]newGitOperationsForWorkspace\(
+
+## Context
+
+Navigator TASK-651. With run_as_user set, the agent works in a clone that the agent user owns. The function handOverBranch (`internal/executor/handover.go`) takes the branch out of the workspace into the ref `refs/pilot/handover/TASK` of the daemon's repository. Today the delivery path still points at the workspace:
+
+- GitOperations (`internal/executor/git.go`) has one path, projectPath, which is the workspace. Push and PushForceWithLease build the push there; withGitCredentials refuses the agent route, so each push fails.
+- CheckSecretGate (`internal/executor/secret_gate.go`) scans through `secretpatterns` (`pushrange.go`), whose git commands are plain commands of the daemon user with the daemon environment, inside the repository of the agent. The project settings of the gate (default branch, allow_paths) are keyed by the git directory, so they do not apply to a workspace.
+- The remote probes (RemoteBranchExists, ProbeRemoteBranch, RemoteBranchHead) and the fetch calls fail on the agent route, so the retry loop of the push, the lease and the "already published" decision are blind.
+
+The rule of this leg: with the option set, the daemon runs the gate, the push and each remote command in its own repository, on the hand-over ref. The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below. With the option empty nothing changes.
+
+## Scope
+
+1. A constructor newGitOperationsForWorkspace(workspace, daemonRepo) and a second field of GitOperations for the daemon's repository. The run sites that build GitOperations for an agent workspace use it and pass the project path of the task. With the option empty the field is empty and every method works as today.
+2. Push and PushForceWithLease, option set: call handOverBranch, then run CheckSecretGate with the daemon's repository as its directory and the hand-over SHA as the tip, then push from the daemon's repository with the refspec HANDOVER_SHA:refs/heads/BRANCH, the push arguments of today (hooks off, the explicit lease) and the credentials of today, without `-u`. A failed hand-over or a refused gate stops before the push with the errors of today.
+3. Remote commands, option set: RemoteBranchExists, ProbeRemoteBranch, RemoteBranchHead and the fetch of the count against origin run in the daemon's repository. The count of new commits against origin uses the hand-over SHA when one exists.
+4. After a push, option set: the daemon reads the pushed commits in its own repository and checks that no commit message holds a co-author trailer of the model; a hit is logged as one Warn line with the SHA (the strip itself runs before, as the agent user, as today).
+5. Tests with the option set (mock sudo fixture, a local bare remote): a run pushes the branch and the remote head equals the workspace head; the mock sudo log shows no git command of the daemon user with the workspace as its directory; a secret in a commit is refused by the gate and nothing is pushed; allow_paths of the project applies; in the workspace a hostile git config (core.hooksPath to a marker hook, a textconv driver, gpg.program, an alias for push, a url rewrite of origin to another remote) has no effect on the gate and the push; the lease refuses when the remote moved; with the option empty the push tests of today pass without a change to their assertions.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/... -run 'HandOver|Push|SecretGate|RunAsUser'` passes; paste the output into the PR body.
+- [ ] Run the gate with the workspace as its directory -> the test with the mock sudo log fails.
+- [ ] Push with the workspace as the directory -> a test fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The `gh` commands and the PR creation, the recovery ref, the removal of the workspace, the read of the memory graph (next leg). A scan of commit headers and the git identity of the agent user (later leg). PushToMain (a direct-commit run is refused with the option set). The autopilot conflict helpers. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · design section 4.2
+
+### LEG H3 — repo: qf-studio/pilot — title: feat(executor): run_as_user hand-over, part 3 — gh commands and the recovery ref use the daemon's repository, the workspace stays until its commits are safe (off by default)
+
+probe: present qf-studio/pilot func[[:space:]]newGitOperationsForWorkspace\(
+probe: present qf-studio/pilot \)[[:space:]]CreateRecoveryRef\(
+probe: present qf-studio/pilot func[[:space:]]withGhCredentials\(
+probe: absent  qf-studio/pilot func[[:space:]]ghDirForDaemonRepo\(
+
+## Context
+
+Navigator TASK-651. With run_as_user set, GitOperations has the workspace and the daemon's repository (newGitOperationsForWorkspace), and the push runs from the daemon's repository on the hand-over ref. Four things of the delivery still use the workspace:
+
+- Four `gh` commands in `internal/executor/git.go` (CreatePR, FindMergedPRByBranch, FindOpenPRByBranch, GetPRStateByURL) run as the daemon user with the daemon token and the workspace as their directory. `gh` reads the repository from the git config of that directory, which the agent controls, so the agent chooses the repository that the daemon token acts on. CreatePR takes the head branch from the HEAD of the workspace.
+- CreateRecoveryRef writes the ref in the workspace as the agent user. The run then removes the workspace, so the ref is lost. The refusal comment of the secret gate says that the commits are kept on the host under refs/pilot-recovery; with a workspace that is false.
+- The run removes the workspace in its deferred clean-up also when the commits never left it.
+- loadMemoryGraph and one existence check in `git.go` read `graph.json` of the workspace as the daemon user and follow a link.
+
+The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below. With the option empty nothing changes.
+
+## Scope
+
+1. A function ghDirForDaemonRepo. With the option set, the four `gh` commands run with the daemon's repository as their directory and with an explicit `--repo OWNER/NAME` from the remote of the daemon's repository. CreatePR passes `--head` with the branch of the task and `--base` as today; it does not read the HEAD of the workspace.
+2. CreateRecoveryRef, option set: the ref is created in the daemon's repository from the hand-over SHA. When no hand-over ref exists, it calls handOverBranch first. A failure is logged as one Error line that names the task and the workspace path.
+3. Clean-up rule, option set: the run removes the workspace only when the branch is pushed, or a recovery ref exists in the daemon's repository, or the workspace has no commit above the base. In any other case the workspace stays, and one Error line names its path. The sweep at the daemon start of today removes it later. The hand-over ref is deleted (removeHandOverRef) when the workspace is removed.
+4. The two reads of `graph.json`, option set and a path inside the workspace root: through agentReadFile; a read error gives the result of today for a missing file and one Warn line.
+5. Tests with the option set: a planted remote in the git config of the workspace does not change the `--repo` argument, and the directory of each `gh` command is the daemon's repository (a mock `gh` records its arguments and directory); a branch name in the HEAD of the workspace that differs from the task branch is not used; a refused gate leaves a recovery ref in the daemon's repository with the commits; a failed hand-over leaves the workspace and logs the Error line; a pushed run removes the workspace and the hand-over ref; with the option empty the calls of today.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'HandOver|RecoveryRef|CreatePR|RunAsUser'` passes; paste the output into the PR body.
+- [ ] Run `gh` with the workspace as its directory -> a test fails.
+- [ ] Remove the workspace after a failed hand-over -> a test fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The text of the refusal comment for a run with the option empty. A scan of commit headers and the git identity (next leg). Gates, hooks, evidence commands (gates legs). Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · design section 4.2
+
+### LEG H4 — repo: qf-studio/pilot — title: fix(executor): run_as_user — a git identity for the commits of the agent user, the secret gate also scans the header lines of a commit
+
+probe: present qf-studio/pilot func[[:space:]]newGitOperationsForWorkspace\(
+probe: present qf-studio/pilot func[[:space:]]gitAgentBaseEnv\(
+probe: present qf-studio/pilot func[[:space:]]CheckSecretGate\(
+probe: absent  qf-studio/pilot func[[:space:]]agentGitIdentityEnv\(
+
+## Context
+
+Navigator TASK-651. Two notes from earlier reviews are open on the delivery path:
+
+- The agent user has no git identity. The creation of a workspace sets no user.name and no user.email, the host script sets none, and the agent environment for git carries author values only for one internal command. A commit by the agent user (the commit of the model, the commit that keeps unfinished work, the amend that strips a co-author trailer) can fail with "Please tell me who you are".
+- The secret gate reads the message of each commit (`%B`) and the diff. It does not read the author, the committer or an extra header line. A secret in such a line passes the gate and is pushed.
+- The amend of the trailer strip runs clean filters of the repository; a review of an earlier change asked for a test that a clean filter does not run there.
+
+Keep the change small: only the items below.
+
+## Scope
+
+1. A function agentGitIdentityEnv. With the option set, each git command of the agent user and each model process gets GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME and GIT_COMMITTER_EMAIL. The values come from user.name and user.email of the daemon's repository, read as the daemon user; when they are empty the values are `Pilot` and `pilot@localhost`. The four names are on the list that sudo keeps.
+2. The secret gate scans, for each commit of the push range, the raw header of the commit object (author, committer, encoding and each other header line) with the same patterns and registered values as the message. A hit is refused with the SHA and the name of the header line, never with the value. This applies with the option set and with the option empty.
+3. Tests: with the option set and no identity in the config of the workspace, a commit and an amend as the agent user succeed and carry the identity (mock sudo fixture); a registered secret value in the author name is refused; a registered value in an extra header line (a commit made with `git hash-object -t commit -w`) is refused; a commit with clean headers passes; a clean filter that writes a marker file does not run in the amend of the trailer strip.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/... -run 'GitIdentity|SecretGate|PushRange|RunAsUser'` passes; paste the output into the PR body.
+- [ ] Scan `%B` only -> the test with the author name fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+A git identity setting in the host script. The gates and the GitHub token. A change of the patterns of the gate.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comment of PR#6360
 
 ### LEG U4 — repo: qf-studio/pilot — title: feat(executor): run_as_user gates — quality gates, workflow hooks, evidence commands and the lint fix run as the agent user with an allowlist environment
 
@@ -1451,3 +1563,4 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - N7 → https://github.com/qf-studio/pilot/issues/6428
 - B9 → https://github.com/qf-studio/pilot/issues/6430
 - P2 → https://github.com/qf-studio/pilot/issues/6431
+- H1 → https://github.com/qf-studio/pilot/issues/6434
