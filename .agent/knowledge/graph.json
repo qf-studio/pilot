@@ -3224,7 +3224,10 @@
           "https://github.com/qf-studio/pilot/issues/6417",
           "https://github.com/qf-studio/pilot/issues/6419",
           "https://github.com/qf-studio/pilot/issues/6420",
-          "https://github.com/qf-studio/pilot/issues/6422"
+          "https://github.com/qf-studio/pilot/issues/6422",
+          "https://github.com/qf-studio/pilot/issues/6428",
+          "https://github.com/qf-studio/pilot/issues/6430",
+          "https://github.com/qf-studio/pilot/issues/6431"
         ]
       },
       "TASK-652": {
@@ -9254,7 +9257,7 @@
       },
       "mem-319": {
         "type": "learning",
-        "summary": "On the stage environment the Pilot daemon merges a PR by itself as soon as it is ready for review and CI is green (verified in the box log for PR 6397 on 2026-11-16; GitHub shows the founder account for daemon actions too). For a security PR the draft state is the only hold: post the run-it verdict, keep the PR in draft, mark it ready only after the founder writes merge for that PR.",
+        "summary": "On the stage environment the Pilot daemon merges a PR by itself as soon as it is ready for review and CI is green (verified in the box log for PR 6397 on 2026-11-16; GitHub shows the founder account for daemon actions too). Founder call 2026-11-17: no draft hold for the PRs of the TASK-651 plan; the review of Pilot and green CI are sufficient, the run-it review runs after the merge and its findings become follow-up legs.",
         "path": "memories/learnings/mem-319.md",
         "confidence": 0.95,
         "concepts": [
