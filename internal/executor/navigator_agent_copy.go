@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,10 +24,13 @@ import (
 //   - in: the daemon reads the .agent directory of its repository (the files
 //     CopyNavigatorToWorktree selects) and sends them as one tar stream
 //     (navigatorTarStream) to a tar process that runs as the agent user in the
-//     workspace. The agent user needs no read access to the daemon's tree.
-//   - out: the daemon opens every path element below the workspace without
-//     following a link (openWorkspaceNoFollow), reads regular files only and
-//     writes each one inside the .agent directory of its repository
+//     workspace. The agent user needs no read access to the daemon's tree. The
+//     stream holds directories and regular files only and follows no link.
+//   - out: the daemon opens the workspace once (openWorkspaceRootFD) and every
+//     path element below that one descriptor without following a link
+//     (openWorkspaceNoFollow), reads regular files with one link and at most
+//     navigatorCopyOutFileLimit bytes, at most navigatorCopyOutMaxFiles of
+//     them, and writes each one inside the .agent directory of its repository
 //     (navigatorCopyBackDest). The tracked-path lists of the workspace come
 //     through the git constructor; a failure of one stops the copy.
 
@@ -35,6 +40,17 @@ const navigatorCopyTimeout = 5 * time.Minute
 // errNavigatorTarExited is the error of a write to the stream after the tar
 // process has exited.
 var errNavigatorTarExited = errors.New("tar exited")
+
+// errNotRegular is the refusal of an entry that is not a regular file.
+var errNotRegular = errors.New("not a regular file")
+
+// navigatorCopyOutFileLimit is the largest file the copy out reads, the limit
+// of agentReadFile; a larger one is skipped.
+const navigatorCopyOutFileLimit = agentFileReadLimit
+
+// navigatorCopyOutMaxFiles is the number of files the copy out reads at most;
+// one more stops it. A variable for tests.
+var navigatorCopyOutMaxFiles = 2000
 
 // copyNavigatorToAgentWorkspace is CopyNavigatorToWorktree for a workspace
 // inside the workspace root: the same files, extracted by tar as the agent
@@ -85,8 +101,20 @@ func copyNavigatorToAgentWorkspace(sourceRepo, worktreePath string) error {
 	waitErr := cmd.Wait()
 	// A tar that exited reads no more: unblock the stream.
 	_ = pr.CloseWithError(errNavigatorTarExited)
-	if err := <-streamErr; err != nil && !errors.Is(err, errNavigatorTarExited) {
-		return fmt.Errorf("run_as_user: navigator copy into %s: %w", worktreePath, err)
+	// The wait for the stream builder ends with the context of tar: a builder
+	// stuck in a read never holds the run.
+	var buildErr error
+	select {
+	case buildErr = <-streamErr:
+	case <-ctx.Done():
+		select {
+		case buildErr = <-streamErr:
+		default:
+			return fmt.Errorf("run_as_user: navigator copy into %s: the tar stream of %s did not end: %w", worktreePath, sourceAgent, ctx.Err())
+		}
+	}
+	if buildErr != nil && !errors.Is(buildErr, errNavigatorTarExited) {
+		return fmt.Errorf("run_as_user: navigator copy into %s: %w", worktreePath, buildErr)
 	}
 	for _, b := range []*agentLimitedBuffer{stdout, stderr} {
 		if b.over {
@@ -101,23 +129,29 @@ func copyNavigatorToAgentWorkspace(sourceRepo, worktreePath string) error {
 
 // navigatorTarStream writes the directory sourceAgent (the .agent directory of
 // the daemon's repository) to w as one tar archive with names below ".agent/":
-// the files copyDir copies today, with their permission bits and modification
-// times (the newer-wins rule of the copy back depends on them). As copyDir, it
-// descends directories and reads every other entry through its link; an entry
-// that cannot be read as a file is an error.
+// the directories and regular files copyDir copies today, with their
+// permission bits and modification times (the newer-wins rule of the copy back
+// depends on them). Unlike copyDir it follows no link: every entry is taken
+// by Lstat, a link, a FIFO or an entry of another type is left out with one
+// Warn line that names its path, and a regular file is opened with
+// O_NOFOLLOW (openSourceFileNoFollow).
 func navigatorTarStream(w io.Writer, sourceAgent string) error {
 	tw := tar.NewWriter(w)
-	if err := navigatorTarDir(tw, sourceAgent, ".agent"); err != nil {
+	info, err := os.Lstat(sourceAgent)
+	if err != nil {
 		return err
+	}
+	if info.IsDir() {
+		if err := navigatorTarDir(tw, sourceAgent, ".agent", info); err != nil {
+			return err
+		}
+	} else {
+		warnNavigatorTarSkip(sourceAgent, info.Mode())
 	}
 	return tw.Close()
 }
 
-func navigatorTarDir(tw *tar.Writer, src, name string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
+func navigatorTarDir(tw *tar.Writer, src, name string, info os.FileInfo) error {
 	if err := tw.WriteHeader(&tar.Header{
 		Typeflag: tar.TypeDir,
 		Name:     name + "/",
@@ -134,13 +168,19 @@ func navigatorTarDir(tw *tar.Writer, src, name string) error {
 	for _, entry := range entries {
 		srcPath := filepath.Join(src, entry.Name())
 		entryName := name + "/" + entry.Name()
-		if entry.IsDir() {
-			if err := navigatorTarDir(tw, srcPath, entryName); err != nil {
-				return err
-			}
-			continue
+		info, err := os.Lstat(srcPath)
+		if err != nil {
+			return err
 		}
-		if err := navigatorTarFile(tw, srcPath, entryName); err != nil {
+		switch {
+		case info.IsDir():
+			err = navigatorTarDir(tw, srcPath, entryName, info)
+		case info.Mode().IsRegular():
+			err = navigatorTarFile(tw, srcPath, entryName)
+		default:
+			warnNavigatorTarSkip(srcPath, info.Mode())
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -148,11 +188,21 @@ func navigatorTarDir(tw *tar.Writer, src, name string) error {
 }
 
 func navigatorTarFile(tw *tar.Writer, src, name string) error {
-	info, err := os.Stat(src)
+	f, err := openSourceFileNoFollow(src)
+	if err != nil {
+		if errors.Is(err, errNotRegular) || noFollowRefused(err) {
+			// Replaced by another type after the Lstat.
+			warnNavigatorTarSkip(src, fs.ModeIrregular)
+			return nil
+		}
+		return fmt.Errorf("failed to open %s: %w", src, err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
 	if err != nil {
 		return err
 	}
-	content, err := os.ReadFile(src) // #nosec G304 -- the daemon's own .agent directory, as copyFile reads it.
+	content, err := io.ReadAll(f)
 	if err != nil {
 		return fmt.Errorf("failed to read %s: %w", src, err)
 	}
@@ -172,15 +222,41 @@ func navigatorTarFile(tw *tar.Writer, src, name string) error {
 	return nil
 }
 
+// warnNavigatorTarSkip is the Warn line of an entry of the daemon's .agent
+// that the stream leaves out.
+func warnNavigatorTarSkip(path string, mode fs.FileMode) {
+	slog.Default().Warn("run_as_user: navigator copy into the workspace skipped an entry that is not a directory or a regular file",
+		slog.String("path", path),
+		slog.String("type", mode.Type().String()),
+	)
+}
+
 // copyNavigatorBackNoFollow is CopyNavigatorBackFromWorktree with the option
-// set: the same rules, files and graph merge, but every read from worktreePath
-// goes through openWorkspaceNoFollow, an entry that is not a regular file or
-// a directory is skipped, and a failure to list the tracked paths of the
-// worktree stops the copy before any file is written.
+// set: the same rules, files and graph merge, but the workspace is opened
+// once (openWorkspaceRootFD) and every read from it goes through
+// openWorkspaceNoFollow below that one descriptor, never through the path
+// string. An entry that is not a regular file or a directory is skipped, and
+// so is a file with more than one link or over navigatorCopyOutFileLimit
+// bytes (with a Warn line); one file more than navigatorCopyOutMaxFiles stops
+// the copy. A workspace that is not an entry directly below the workspace
+// root, a link at the workspace name and a failure to list the tracked paths
+// of the worktree stop the copy before any file is written.
 func copyNavigatorBackNoFollow(worktreePath, sourceRepo string) (int, error) {
-	// Lstat: the entry itself, never the target of a link at .agent.
-	if _, err := os.Lstat(filepath.Join(worktreePath, ".agent")); os.IsNotExist(err) {
+	ws, err := openWorkspaceRootFD(worktreePath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("navigator copy-back: %w", err)
+	}
+	defer func() { _ = ws.Close() }()
+	// The entry itself, never the target of a link at .agent.
+	agentDir, err := openWorkspaceNoFollow(ws, ".agent", false)
+	if errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
+	}
+	if err == nil {
+		_ = agentDir.Close()
 	}
 
 	navigatorCopyBackMu.Lock()
@@ -210,21 +286,37 @@ func copyNavigatorBackNoFollow(worktreePath, sourceRepo string) (int, error) {
 		return wtTracked[rel] && !wtModified[rel]
 	}
 
-	merged := 0
-	var firstErr error
+	merged, reads := 0, 0
+	var firstErr, limitErr error
 	note := func(err error) {
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
+	}
+	// read reads rel below ws; one read more than navigatorCopyOutMaxFiles
+	// stops the copy.
+	read := func(rel string) ([]byte, os.FileInfo, bool) {
+		if limitErr != nil {
+			return nil, nil, false
+		}
+		if reads++; reads > navigatorCopyOutMaxFiles {
+			limitErr = fmt.Errorf("navigator copy-back: more than %d files in %s, the copy stopped", navigatorCopyOutMaxFiles, worktreePath)
+			return nil, nil, false
+		}
+		content, info, err := readWorkspaceFileNoFollow(ws, rel)
+		if err != nil || info == nil {
+			note(err)
+			return nil, nil, false
+		}
+		return content, info, true
 	}
 
 	mergeFile := func(rel string) {
 		if skip(rel) {
 			return
 		}
-		content, info, err := readWorkspaceFileNoFollow(worktreePath, rel)
-		if err != nil || info == nil {
-			note(err)
+		content, info, ok := read(rel)
+		if !ok {
 			return
 		}
 		dst, err := navigatorCopyBackDest(sourceRepo, rel)
@@ -241,7 +333,10 @@ func copyNavigatorBackNoFollow(worktreePath, sourceRepo string) (int, error) {
 
 	var walk func(rel string)
 	walk = func(rel string) {
-		dir, err := openWorkspaceNoFollow(worktreePath, rel, true)
+		if limitErr != nil {
+			return
+		}
+		dir, err := openWorkspaceNoFollow(ws, rel, true)
 		if err != nil {
 			if !noFollowSkipped(err) {
 				note(err)
@@ -251,6 +346,9 @@ func copyNavigatorBackNoFollow(worktreePath, sourceRepo string) (int, error) {
 		entries, err := dir.ReadDir(-1)
 		_ = dir.Close()
 		note(err)
+		// Name order, as os.ReadDir: the files under the file limit are the
+		// same on every file system.
+		slices.SortFunc(entries, func(a, b fs.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 		for _, e := range entries {
 			child := rel + "/" + e.Name()
 			switch {
@@ -267,9 +365,7 @@ func copyNavigatorBackNoFollow(worktreePath, sourceRepo string) (int, error) {
 	}
 
 	if !skip(navigatorCopyBackGraph) {
-		data, info, err := readWorkspaceFileNoFollow(worktreePath, navigatorCopyBackGraph)
-		note(err)
-		if err == nil && info != nil {
+		if data, info, ok := read(navigatorCopyBackGraph); ok {
 			dst, destErr := navigatorCopyBackDest(sourceRepo, navigatorCopyBackGraph)
 			note(destErr)
 			if destErr == nil {
@@ -283,15 +379,21 @@ func copyNavigatorBackNoFollow(worktreePath, sourceRepo string) (int, error) {
 		}
 	}
 
+	if limitErr != nil {
+		return merged, limitErr
+	}
 	return merged, firstErr
 }
 
-// readWorkspaceFileNoFollow reads the file rel (slash-separated) below root
-// through openWorkspaceNoFollow. A missing path, a link at any element and an
-// entry that is not a regular file give nil content, nil info and no error:
-// they are skipped, as the plain copy skips a link.
-func readWorkspaceFileNoFollow(root, rel string) ([]byte, os.FileInfo, error) {
-	f, err := openWorkspaceNoFollow(root, rel, false)
+// readWorkspaceFileNoFollow reads the file rel (slash-separated) below the
+// workspace descriptor ws through openWorkspaceNoFollow. A missing path, a
+// link at any element and an entry that is not a regular file give nil
+// content, nil info and no error: they are skipped, as the plain copy skips a
+// link. A regular file with more than one link (a hard link of the agent to a
+// file it can read) or over navigatorCopyOutFileLimit bytes is skipped the
+// same way, with a Warn line; the read never loads more than the limit.
+func readWorkspaceFileNoFollow(ws *os.File, rel string) ([]byte, os.FileInfo, error) {
+	f, err := openWorkspaceNoFollow(ws, rel, false)
 	if err != nil {
 		if noFollowSkipped(err) {
 			return nil, nil, nil
@@ -306,9 +408,27 @@ func readWorkspaceFileNoFollow(root, rel string) ([]byte, os.FileInfo, error) {
 	if !info.Mode().IsRegular() {
 		return nil, nil, nil
 	}
-	content, err := io.ReadAll(f)
+	links, err := linkCount(f)
+	if err != nil {
+		return nil, nil, err
+	}
+	if links > 1 {
+		slog.Default().Warn("run_as_user: navigator copy-back skipped a file with more than one link",
+			slog.String("path", f.Name()),
+			slog.Uint64("links", links),
+		)
+		return nil, nil, nil
+	}
+	content, err := io.ReadAll(io.LimitReader(f, navigatorCopyOutFileLimit+1))
 	if err != nil {
 		return nil, nil, fmt.Errorf("read %s: %w", f.Name(), err)
+	}
+	if len(content) > navigatorCopyOutFileLimit {
+		slog.Default().Warn("run_as_user: navigator copy-back skipped a file over the size limit",
+			slog.String("path", f.Name()),
+			slog.Int("limit_bytes", navigatorCopyOutFileLimit),
+		)
+		return nil, nil, nil
 	}
 	return content, info, nil
 }
