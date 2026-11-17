@@ -3237,7 +3237,8 @@
           "https://github.com/qf-studio/pilot/issues/6438",
           "https://github.com/qf-studio/pilot/issues/6445",
           "https://github.com/qf-studio/pilot/issues/6447",
-          "https://github.com/qf-studio/pilot/issues/6450"
+          "https://github.com/qf-studio/pilot/issues/6450",
+          "https://github.com/qf-studio/pilot/issues/6455"
         ]
       },
       "TASK-652": {
@@ -3276,6 +3277,19 @@
         ],
         "issues": [
           "https://github.com/qf-studio/pilot/issues/6391"
+        ]
+      },
+      "TASK-655": {
+        "path": ".agent/tasks/TASK-655-preflight-judge-repository-identity.md",
+        "title": "Pre-flight judge \u2014 the judge knows the repository it works for, and a link to that repository is never \"external\"",
+        "status": "dispatched",
+        "concepts": [
+          "testing",
+          "context",
+          "deployment"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6456"
         ]
       }
     },
@@ -13605,6 +13619,21 @@
       "from": "TASK-651",
       "to": "knowledge",
       "type": "implements"
+    },
+    {
+      "from": "TASK-655",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-655",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-655",
+      "to": "deployment",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -14218,7 +14247,8 @@
       "mem-315",
       "mem-316",
       "mem-317",
-      "TASK-654"
+      "TASK-654",
+      "TASK-655"
     ],
     "conversational-bot": [
       "mem-036",
@@ -14529,7 +14559,8 @@
       "mem-315",
       "mem-316",
       "mem-317",
-      "TASK-654"
+      "TASK-654",
+      "TASK-655"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -15635,7 +15666,8 @@
       "mem-315",
       "mem-316",
       "mem-317",
-      "TASK-654"
+      "TASK-654",
+      "TASK-655"
     ],
     "testing-quality": [
       "TASK-384",
@@ -16307,10 +16339,10 @@
       "TASK-651"
     ]
   },
-  "last_updated": "2026-11-17T20:08:22.999882+00:00",
+  "last_updated": "2026-11-17T20:12:25.157142+00:00",
   "stats": {
-    "total_nodes": 801,
-    "total_edges": 860,
+    "total_nodes": 802,
+    "total_edges": 863,
     "memory_count": 446
   },
   "metadata": {
