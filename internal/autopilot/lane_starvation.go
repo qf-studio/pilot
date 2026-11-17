@@ -88,13 +88,13 @@ func (c *Controller) reconcileLaneStarvation(ctx context.Context) {
 	// stale and the engine suppresses this one, so the line cannot claim the
 	// alert fires.
 	if gate, ok := c.alertsEngine.(laneStarvationAlertGate); ok {
-		if reached, clear := gate.LaneStarvationAlertStatus(c.repoKey(), streak); reached || clear {
+		if reached, cooldownClear := gate.LaneStarvationAlertStatus(c.repoKey(), streak); reached || cooldownClear {
 			c.log.Info("reconcileLaneStarvation: lane starved with open admissible issues",
 				slog.String("repo", c.repoKey()),
 				slog.Int("streak", streak),
 				slog.String("open_issue_numbers", numbers),
 				slog.Any("issue_labels", laneStarvationIssueLabels(counted)),
-				slog.Bool("cooldown_clear", clear))
+				slog.Bool("cooldown_clear", cooldownClear))
 		}
 	}
 
@@ -114,10 +114,12 @@ func (c *Controller) reconcileLaneStarvation(ctx context.Context) {
 
 // laneStarvationAlertGate is the optional surface of the alert sink the
 // sweep uses to log the evidence of a starved lane. Satisfied by
-// *alerts.Engine; a sink without it (test fakes) gets no evidence line. due
-// is read off the caller's goroutine and can be stale (see the evidence line).
+// *alerts.Engine; a sink without it (test fakes) gets no evidence line.
+// cooldownClear says the lane's cooldown is clear, not that the alert fires:
+// it is read off the caller's goroutine and can be stale (see the evidence
+// line).
 type laneStarvationAlertGate interface {
-	LaneStarvationAlertStatus(project string, streak int) (reached, due bool)
+	LaneStarvationAlertStatus(project string, streak int) (reached, cooldownClear bool)
 }
 
 // laneStarvationMaxNumbers caps the issue numbers named in the event
