@@ -5099,7 +5099,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	}
 
 	// Build the prompt
-	prompt := r.BuildPrompt(task, executionPath)
+	prompt := r.BuildPromptContext(ctx, task, executionPath)
 
 	// Append per-repo workflow prompt appendix if present (TASK-304).
 	if repoWorkflow != nil && repoWorkflow.PromptAppendix != "" {
