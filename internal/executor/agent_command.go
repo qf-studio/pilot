@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"os/user"
@@ -62,6 +63,9 @@ type runAsSettings struct {
 	// dataDir is run_as_data_dir, defaultRunAsDataDir when empty: the data
 	// directory of the daemon that checkRunAsDataDirModes reads.
 	dataDir string
+	// gatewayPort is the gateway port of the config that checkRunAsFirewall
+	// probes; 0 skips that part of the probe.
+	gatewayPort int
 }
 
 // runAsState is the process-wide state of the option: the settings and the
@@ -304,7 +308,8 @@ func resolveRunAs(userName, group string) (*runAsSettings, string) {
 // worktree_pool_size is 0, the workspace root is not /, the home of the daemon
 // user, the data directory of the daemon or a parent of one of them, and the
 // host checks of checkRunAsWorkspaceRoot pass. Last, the modes of the data
-// directory of the daemon (checkRunAsDataDirModes). On any failure it logs one Error line naming the check and sets the
+// directory of the daemon (checkRunAsDataDirModes) and, as the last probe,
+// the firewall of the agent user (checkRunAsFirewall). On any failure it logs one Error line naming the check and sets the
 // process-wide flag: every model spawn then returns an error and no process
 // starts, and the API backends run no request and no tool. It never falls
 // back to a run as the daemon user. With the option empty it clears any
@@ -312,8 +317,10 @@ func resolveRunAs(userName, group string) (*runAsSettings, string) {
 // guard config, for every entrypoint that spawns.
 func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree bool, worktreePoolSize int) {
 	var rawUser, rawGroup, rawRoot, rawDataDir string
+	var gatewayPort int
 	if cfg != nil {
 		rawUser, rawGroup, rawRoot, rawDataDir = cfg.RunAsUser, cfg.RunAsGroup, cfg.RunAsWorkspaceDir, cfg.RunAsDataDir
+		gatewayPort = cfg.RunAsGatewayPort
 	}
 	userName, group := strings.TrimSpace(rawUser), strings.TrimSpace(rawGroup)
 	root := strings.TrimSpace(rawRoot)
@@ -344,6 +351,7 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 	same := blank == "" && runAsCur.checked && runAsCur.settings != nil && runAsCur.backend == backendType &&
 		runAsCur.settings.user == userName && runAsCur.settings.group == group &&
 		runAsCur.settings.workspaceRoot == root && runAsCur.settings.dataDir == dataDir &&
+		runAsCur.settings.gatewayPort == gatewayPort &&
 		runAsCur.useWorktree == useWorktree && runAsCur.poolSize == worktreePoolSize
 	runAsMu.RUnlock()
 	if same {
@@ -386,16 +394,19 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 		case worktreePoolSize > 0:
 			failed = "run_as_user requires worktree_pool_size 0"
 		default:
-			s.workspaceRoot, s.dataDir = root, dataDir
+			s.workspaceRoot, s.dataDir, s.gatewayPort = root, dataDir, gatewayPort
 			if failed = refusedRunAsWorkspaceRoot(root, cfg); failed == "" {
 				failed = runAsWorkspaceCheck(s)
 			}
 			if failed == "" {
 				failed = runAsDataDirCheck(s)
 			}
+			if failed == "" {
+				failed = runAsFirewallCheck(s)
+			}
 		}
 	}
-	s.workspaceRoot, s.dataDir = root, dataDir
+	s.workspaceRoot, s.dataDir, s.gatewayPort = root, dataDir, gatewayPort
 	if failed != "" {
 		slog.Default().Error("run_as_user preflight failed: no model process and no tool of the model will run",
 			slog.String("check", failed),
@@ -652,6 +663,98 @@ func resolveLinkPath(p string) (string, bool) {
 		i = -1
 	}
 	return out, true
+}
+
+// runAsFirewallCheck is checkRunAsFirewall for the preflight; tests that stub
+// the host replace it.
+var runAsFirewallCheck = checkRunAsFirewall
+
+// runAsAgentDial opens one TCP connection to addr as the agent user and
+// reports whether it connected; tests replace it to stand for a reject rule.
+var runAsAgentDial = agentDialAs
+
+// runAsMetadataAddr is the instance metadata address that the firewall of
+// scripts/box/setup-agent-user.sh closes to the agent user. Tests point it at
+// a loopback port: the real one may answer on a cloud host.
+var runAsMetadataAddr = "169.254.169.254:80"
+
+// runAsDialTimeout bounds each connection of the firewall probe.
+const runAsDialTimeout = 3 * time.Second
+
+// checkRunAsFirewall proves that the firewall rules of the agent user are
+// active. All connections run as the agent user (runAsAgentDial). A control
+// connection to a listener of the daemon on 127.0.0.1 must connect; then the
+// connections to the metadata address and to the gateway port on 127.0.0.1
+// must not, the two in parallel. The result is empty on success, else the
+// failed check, which names the address or the port.
+//
+// Decision: the preflight runs before the gateway starts, and a closed port
+// fails as a reject rule does, so the daemon listens on the gateway port for
+// the time of the probe. A probe tool that does not work fails every
+// connection too and would read as a blocked one; the control connection
+// tells them apart.
+func checkRunAsFirewall(s *runAsSettings) string {
+	control, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "firewall probe: the daemon cannot open a control listener on 127.0.0.1"
+	}
+	ok := runAsAgentDial(s, control.Addr().String())
+	_ = control.Close()
+	if !ok {
+		return "firewall probe: the agent user cannot connect to a control listener on 127.0.0.1, the probe tool (bash /dev/tcp) does not work"
+	}
+
+	var gateway net.Listener
+	if port := s.gatewayPort; port == 0 {
+		slog.Default().Warn("run_as_user firewall probe: gateway port is 0, the gateway port is not probed",
+			slog.String("run_as_user", s.user))
+	} else if gateway, err = net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port))); err != nil {
+		return fmt.Sprintf("firewall probe: the daemon cannot listen on the gateway port %d on 127.0.0.1", port)
+	}
+
+	var wg sync.WaitGroup
+	var metadataReached, gatewayReached bool
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		metadataReached = runAsAgentDial(s, runAsMetadataAddr)
+	}()
+	if gateway != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			gatewayReached = runAsAgentDial(s, gateway.Addr().String())
+		}()
+	}
+	wg.Wait()
+	if gateway != nil {
+		_ = gateway.Close()
+	}
+	switch {
+	case metadataReached:
+		return "firewall: the agent user reached the metadata address " + runAsMetadataAddr
+	case gatewayReached:
+		return fmt.Sprintf("firewall: the agent user reached the gateway port %d on 127.0.0.1", s.gatewayPort)
+	}
+	return ""
+}
+
+// agentDialAs runs `bash -c ': </dev/tcp/HOST/PORT'` as the agent user with
+// the agent environment, bounded by runAsDialTimeout, and reports whether it
+// exited 0. Any other result, a timeout included, is no connection.
+func agentDialAs(s *runAsSettings, addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), runAsDialTimeout)
+	defer cancel()
+	cmd, err := agentCommandAs(ctx, s, "bash", "-c", ": </dev/tcp/"+host+"/"+port)
+	if err != nil {
+		return false
+	}
+	setAgentEnv(cmd, gitAgentBaseEnv())
+	return cmd.Run() == nil
 }
 
 // sudoProbeOK runs `sudo -n -u <user> [-g <group>] true` with the 5 second
