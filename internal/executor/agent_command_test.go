@@ -385,11 +385,14 @@ func TestRunAsUserKillOptionEmptyIsDirect(t *testing.T) {
 func stubRunAsHost(t *testing.T, goos string, daemonUID string, users map[string]string) {
 	t.Helper()
 	pg, pu, pc, po, pd, pw, pdd := lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups, runAsWorkspaceCheck, runAsDataDirCheck
+	pf := runAsFirewallCheck
 	runAsGOOS = goos
-	// The workspace root and the data directory are host checks of their own
-	// (workspacePreflight, TestRunAsDataDirModes).
+	// The workspace root, the data directory and the firewall are host
+	// checks of their own (workspacePreflight, TestRunAsDataDirModes,
+	// firewallPreflight).
 	runAsWorkspaceCheck = func(*runAsSettings) string { return "" }
 	runAsDataDirCheck = func(*runAsSettings) string { return "" }
+	runAsFirewallCheck = func(*runAsSettings) string { return "" }
 	currentUID = func() (string, error) { return daemonUID, nil }
 	lookupUser = func(name string) (*user.User, error) {
 		home, ok := users[name]
@@ -407,6 +410,7 @@ func stubRunAsHost(t *testing.T, goos string, daemonUID string, users map[string
 	daemonGroups = func() ([]int, error) { return []int{1000, 6000}, nil }
 	t.Cleanup(func() {
 		lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups, runAsWorkspaceCheck, runAsDataDirCheck = pg, pu, pc, po, pd, pw, pdd
+		runAsFirewallCheck = pf
 	})
 }
 
