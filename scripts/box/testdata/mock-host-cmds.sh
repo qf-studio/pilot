@@ -38,9 +38,17 @@
 # MOCK_SUDO_BROKEN=1 (sudo fails whatever the rules), MOCK_SUDO_ROOT_OK=1 (sudo
 # to root succeeds whatever the files hold: a rule from another source),
 # MOCK_SUDO_LIST (a file that `sudo -ll -U` prints as the rule list),
+# MOCK_SUDO_LIST_RC (the exit status of `sudo -ll -U` after MOCK_SUDO_LIST),
+# MOCK_SUDO_LATE (names of files in $SUDOERS_DIR that sudo reads only late, see
+# below),
 # MOCK_REAL_PATH (PATH for the real tools the mocks delegate to),
 # MOCK_PROC_TERM_IGNORED=1 (pkill -TERM ends no process), MOCK_PROC_UNKILLABLE=1
 # (pkill -KILL ends none either).
+#
+# MOCK_SUDO_BROKEN, MOCK_SUDO_ROOT_OK, MOCK_SUDO_LIST(_RC) and MOCK_SUDO_LATE act
+# late: only once the agent rule ($SUDOERS_DIR/90-pilot-agent-runas) is in
+# place. The check of the sudo rules that the script runs before its first
+# change sees the sudoers files alone; the proof after the edit sees the knob.
 
 set -euo pipefail
 
@@ -235,13 +243,17 @@ fw() {
 
 # --------------------------------------------------------------------- sudo
 
+# late — the agent rule is in place: the late knobs act (see the top).
+late() { [ -f "${SUDOERS_DIR:?}/90-pilot-agent-runas" ]; }
+
 # sudoers_files — the files sudo reads: every file of $SUDOERS_DIR without a
-# dot or a tilde in its name.
+# dot or a tilde in its name; a file named in MOCK_SUDO_LATE only late.
 sudoers_files() {
     local f
     for f in "${SUDOERS_DIR:?}"/*; do
         [ -f "$f" ] || continue
         case "$(basename "$f")" in *.* | *~) continue ;; esac
+        case " ${MOCK_SUDO_LATE:-} " in *" $(basename "$f") "*) late || continue ;; esac
         echo "$f"
     done
 }
@@ -455,7 +467,7 @@ case "$cmd" in
         esac
         ;;
     sudo)
-        [ "${MOCK_SUDO_BROKEN:-0}" != 1 ] || { echo "sudo: unable to initialize policy plugin" >&2; exit 1; }
+        [ "${MOCK_SUDO_BROKEN:-0}" != 1 ] || ! late || { echo "sudo: unable to initialize policy plugin" >&2; exit 1; }
         listing=0 target=root user=""
         while [ $# -gt 0 ]; do
             case "$1" in
@@ -471,7 +483,7 @@ case "$cmd" in
         done
         if [ "$listing" = 0 ]; then
             invoker="${MOCK_INVOKER:-root}"
-            if [ "$invoker" = root ] || { [ "$target" = root ] && [ "${MOCK_SUDO_ROOT_OK:-0}" = 1 ]; }; then
+            if [ "$invoker" = root ] || { [ "$target" = root ] && [ "${MOCK_SUDO_ROOT_OK:-0}" = 1 ] && late; }; then
                 exec "$@"
             fi
             case "$(sudo_verdict "$invoker" "$target")" in
@@ -484,16 +496,14 @@ case "$cmd" in
         # sudo -n -ll -U USER: the long listing of sudo 1.9, built from the
         # sudoers files (the user, ALL or one of its groups), so it follows
         # every edit the script makes; MOCK_SUDO_LIST names a file printed
-        # instead.
-        if [ -n "${MOCK_SUDO_LIST:-}" ]; then
+        # instead (late), with the exit status MOCK_SUDO_LIST_RC.
+        if [ -n "${MOCK_SUDO_LIST:-}" ] && late; then
             cat "$MOCK_SUDO_LIST"
-            exit 0
+            exit "${MOCK_SUDO_LIST_RC:-0}"
         fi
         groups=" $("${0%/*}/id" -nG "$user" 2>/dev/null || true) "
         rules=""
-        for f in "${SUDOERS_DIR:?}"/*; do
-            [ -f "$f" ] || continue
-            case "$(basename "$f")" in *.* | *~) continue ;; esac
+        while IFS= read -r f; do
             rules="${rules}$(awk -v u="$user" -v groups="$groups" '
                 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
                 /^[ \t]*#/ || /^[ \t]*Defaults/ || !/=/ { next }
@@ -529,8 +539,8 @@ case "$cmd" in
                     n = split(right, c, ",")
                     for (i = 1; i <= n; i++) printf "\t%s\n", trim(c[i])
                 }' "$f")"$'\n'
-        done
-        [ "${MOCK_SUDO_ROOT_OK:-0}" != 1 ] || rules="${rules}"$'\n''Sudoers entry: another source'$'\n''    RunAsUsers: ALL'$'\n''    Options: !authenticate'$'\n''    Commands:'$'\n\t''ALL'
+        done < <(sudoers_files)
+        [ "${MOCK_SUDO_ROOT_OK:-0}" != 1 ] || ! late || rules="${rules}"$'\n''Sudoers entry: another source'$'\n''    RunAsUsers: ALL'$'\n''    Options: !authenticate'$'\n''    Commands:'$'\n\t''ALL'
         if [ -z "$(printf '%s' "$rules" | tr -d '[:space:]')" ]; then
             echo "User ${user} is not allowed to run sudo on host."
             exit 0
