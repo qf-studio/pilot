@@ -590,71 +590,91 @@ func checkRunAsDataDirModes(s *runAsSettings) string {
 	return ""
 }
 
-// runAsFirewallCheck is checkRunAsFirewall; tests that stub the host replace
-// it.
+// runAsFirewallCheck is checkRunAsFirewall for the preflight; tests that stub
+// the host replace it.
 var runAsFirewallCheck = checkRunAsFirewall
 
-// runAsFirewallTimeout bounds each connection of the firewall probe.
-const runAsFirewallTimeout = 3 * time.Second
+// runAsAgentDial opens one TCP connection to addr as the agent user and
+// reports whether it connected; tests replace it to stand for a reject rule.
+var runAsAgentDial = agentDialAs
 
-// runAsMetadataHost and runAsMetadataPort are the instance metadata address
-// that the firewall of scripts/box/setup-agent-user.sh closes to the agent
-// user. Tests point them at a loopback port.
-var (
-	runAsMetadataHost = "169.254.169.254"
-	runAsMetadataPort = 80
-)
+// runAsMetadataAddr is the instance metadata address that the firewall of
+// scripts/box/setup-agent-user.sh closes to the agent user. Tests point it at
+// a loopback port: the real one may answer on a cloud host.
+var runAsMetadataAddr = "169.254.169.254:80"
+
+// runAsDialTimeout bounds each connection of the firewall probe.
+const runAsDialTimeout = 3 * time.Second
 
 // checkRunAsFirewall proves that the firewall rules of the agent user are
-// active: each connection runs as the agent user (bash, a redirect to
-// /dev/tcp). First a control connection to a listener of the daemon on
-// 127.0.0.1 must succeed, then the connections to the metadata address and to
-// the gateway port on 127.0.0.1 (a listener of the daemon for the time of the
-// probe) must fail. The returned check is empty on success and names the
-// address or the port the agent user reached.
+// active. All connections run as the agent user (runAsAgentDial). A control
+// connection to a listener of the daemon on 127.0.0.1 must connect; then the
+// connections to the metadata address and to the gateway port on 127.0.0.1
+// must not, the two in parallel. The result is empty on success, else the
+// failed check, which names the address or the port.
 //
-// Decision: the preflight runs before the gateway starts, so a closed port
-// and a reject rule give the same error; the daemon opens the gateway port
-// itself. A probe tool that does not work fails every connection too, which
-// would look like a blocked one; the control connection tells them apart.
+// Decision: the preflight runs before the gateway starts, and a closed port
+// fails as a reject rule does, so the daemon listens on the gateway port for
+// the time of the probe. A probe tool that does not work fails every
+// connection too and would read as a blocked one; the control connection
+// tells them apart.
 func checkRunAsFirewall(s *runAsSettings) string {
 	control, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "firewall probe: the daemon cannot open a control listener on 127.0.0.1"
 	}
-	reached := agentConnects(s, "127.0.0.1", control.Addr().(*net.TCPAddr).Port)
+	ok := runAsAgentDial(s, control.Addr().String())
 	_ = control.Close()
-	if !reached {
-		return "firewall probe: the agent user cannot reach a control listener on 127.0.0.1, the probe tool (bash /dev/tcp) does not work"
+	if !ok {
+		return "firewall probe: the agent user cannot connect to a control listener on 127.0.0.1, the probe tool (bash /dev/tcp) does not work"
 	}
-	if agentConnects(s, runAsMetadataHost, runAsMetadataPort) {
-		return fmt.Sprintf("firewall: the agent user reached the metadata address %s port %d", runAsMetadataHost, runAsMetadataPort)
-	}
-	port := s.gatewayPort
-	if port == 0 {
-		slog.Default().Warn("run_as_user firewall probe: the gateway port is 0, the gateway port is not probed",
+
+	var gateway net.Listener
+	if port := s.gatewayPort; port == 0 {
+		slog.Default().Warn("run_as_user firewall probe: gateway port is 0, the gateway port is not probed",
 			slog.String("run_as_user", s.user))
-		return ""
-	}
-	gw, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
-	if err != nil {
+	} else if gateway, err = net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port))); err != nil {
 		return fmt.Sprintf("firewall probe: the daemon cannot listen on the gateway port %d on 127.0.0.1", port)
 	}
-	reached = agentConnects(s, "127.0.0.1", port)
-	_ = gw.Close()
-	if reached {
-		return fmt.Sprintf("firewall: the agent user reached the gateway port %d on 127.0.0.1", port)
+
+	var wg sync.WaitGroup
+	var metadataReached, gatewayReached bool
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		metadataReached = runAsAgentDial(s, runAsMetadataAddr)
+	}()
+	if gateway != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			gatewayReached = runAsAgentDial(s, gateway.Addr().String())
+		}()
+	}
+	wg.Wait()
+	if gateway != nil {
+		_ = gateway.Close()
+	}
+	switch {
+	case metadataReached:
+		return "firewall: the agent user reached the metadata address " + runAsMetadataAddr
+	case gatewayReached:
+		return fmt.Sprintf("firewall: the agent user reached the gateway port %d on 127.0.0.1", s.gatewayPort)
 	}
 	return ""
 }
 
-// agentConnects runs one TCP connection to host:port as the agent user with
-// the agent environment, bounded by runAsFirewallTimeout, and reports whether
-// it connected. Any error, a timeout included, is no connection.
-func agentConnects(s *runAsSettings, host string, port int) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), runAsFirewallTimeout)
+// agentDialAs runs `bash -c ': </dev/tcp/HOST/PORT'` as the agent user with
+// the agent environment, bounded by runAsDialTimeout, and reports whether it
+// exited 0. Any other result, a timeout included, is no connection.
+func agentDialAs(s *runAsSettings, addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), runAsDialTimeout)
 	defer cancel()
-	cmd, err := agentCommandAs(ctx, s, "bash", "-c", fmt.Sprintf(": </dev/tcp/%s/%d", host, port))
+	cmd, err := agentCommandAs(ctx, s, "bash", "-c", ": </dev/tcp/"+host+"/"+port)
 	if err != nil {
 		return false
 	}
