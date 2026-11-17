@@ -449,7 +449,9 @@ func main() {
 // loaded and what claude_code.read_guard says. A nil executor block or a nil
 // claude_code block still registers the config path, so a config loaded
 // through a non-default --config is on the deny list. GH-6252, GH-6261.
-func applyReadGuardConfig(execCfg *executor.BackendConfig, configPath string) {
+// gatewayPort is the gateway port of the config, which the run_as_user
+// preflight probes as closed to the agent user (GH-6431).
+func applyReadGuardConfig(execCfg *executor.BackendConfig, configPath string, gatewayPort int) {
 	var claudeCode *executor.ClaudeCodeConfig
 	var backendType string
 	poolSize := 0
@@ -460,6 +462,7 @@ func applyReadGuardConfig(execCfg *executor.BackendConfig, configPath string) {
 		claudeCode = &executor.ClaudeCodeConfig{}
 	}
 	claudeCode.ConfigPath = configPath
+	claudeCode.RunAsGatewayPort = gatewayPort
 	executor.SetReadGuardConfig(claudeCode)
 	// TASK-651: fail-closed check of claude_code.run_as_user at every
 	// entrypoint that can spawn a model process. Does nothing when empty.
@@ -481,6 +484,9 @@ func applyReadGuardConfigFromFile(cfgPath string) {
 			UseWorktree      *bool                      `yaml:"use_worktree"`
 			WorktreePoolSize int                        `yaml:"worktree_pool_size"`
 		} `yaml:"executor"`
+		Gateway *struct {
+			Port *int `yaml:"port"`
+		} `yaml:"gateway"`
 	}
 	if raw, err := os.ReadFile(cfgPath); err == nil {
 		_ = yaml.Unmarshal(raw, &doc)
@@ -489,7 +495,14 @@ func applyReadGuardConfigFromFile(cfgPath string) {
 	if e := doc.Executor; e != nil {
 		execCfg = &executor.BackendConfig{Type: e.Type, ClaudeCode: e.ClaudeCode, UseWorktree: e.UseWorktree, WorktreePoolSize: e.WorktreePoolSize}
 	}
-	applyReadGuardConfig(execCfg, cfgPath)
+	gatewayPort := 0
+	if g := config.DefaultConfig().Gateway; g != nil {
+		gatewayPort = g.Port
+	}
+	if g := doc.Gateway; g != nil && g.Port != nil {
+		gatewayPort = *g.Port
+	}
+	applyReadGuardConfig(execCfg, cfgPath, gatewayPort)
 }
 
 // gatewayChatNeedsOwnRunner reports whether gateway mode must build a
@@ -570,7 +583,11 @@ Examples:
 			}
 
 			// GH-6252: tell the executor read guard which config file is loaded.
-			applyReadGuardConfig(cfg.Executor, configPath)
+			gatewayPort := 0
+			if cfg.Gateway != nil {
+				gatewayPort = cfg.Gateway.Port
+			}
+			applyReadGuardConfig(cfg.Executor, configPath, gatewayPort)
 
 			secretCount := secretpatterns.SecretValueCount()
 

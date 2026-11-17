@@ -1367,6 +1367,11 @@ type ClaudeCodeConfig struct {
 	// <home>/config.yaml. Not YAML-configurable.
 	PilotHome  string `yaml:"-"`
 	ConfigPath string `yaml:"-"`
+	// RunAsGatewayPort is the gateway port of the loaded config, which the
+	// run_as_user firewall probe checks is closed to the agent user
+	// (checkRunAsFirewall). Set by the daemon; 0 skips that part of the
+	// probe. Not YAML-configurable.
+	RunAsGatewayPort int `yaml:"-"`
 
 	// EnvPassthrough lists environment variable names that survive the
 	// model-subprocess env scrub (GH-5275/GH-5276) even if they would
