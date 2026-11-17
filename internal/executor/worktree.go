@@ -1110,11 +1110,17 @@ var navigatorCopyBackMu sync.Mutex
 // TASK-651: with run_as_user set the copy reads the worktree without
 // following a link (copyNavigatorBackNoFollow).
 func CopyNavigatorBackFromWorktree(worktreePath, sourceRepo string) (int, error) {
+	return copyNavigatorBackFromWorktree(slog.Default(), worktreePath, sourceRepo)
+}
+
+// copyNavigatorBackFromWorktree is CopyNavigatorBackFromWorktree with the
+// logger of the Warn lines of a file the run_as_user copy skips.
+func copyNavigatorBackFromWorktree(log *slog.Logger, worktreePath, sourceRepo string) (int, error) {
 	if worktreePath == "" || sourceRepo == "" {
 		return 0, nil
 	}
 	if runAsSettingsNow() != nil {
-		return copyNavigatorBackNoFollow(worktreePath, sourceRepo)
+		return copyNavigatorBackNoFollow(log, worktreePath, sourceRepo)
 	}
 	if info, err := os.Stat(filepath.Join(worktreePath, ".agent")); err != nil || !info.IsDir() {
 		return 0, nil

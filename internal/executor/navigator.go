@@ -728,7 +728,7 @@ func (r *Runner) copyNavigatorBack(taskID, worktreePath, projectPath string) {
 		)
 		return
 	}
-	merged, err := CopyNavigatorBackFromWorktree(worktreePath, projectPath)
+	merged, err := copyNavigatorBackFromWorktree(r.log.With(slog.String("task_id", taskID)), worktreePath, projectPath)
 	if err != nil {
 		r.log.Warn("Navigator copy-back incomplete",
 			slog.String("task_id", taskID),
