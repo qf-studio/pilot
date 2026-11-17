@@ -47,7 +47,11 @@
 #                     steps ran before it, so the agent user cannot stop them.
 #   sudoers-rule      daemon user may run any command as the agent user
 #                     (NOPASSWD, SETENV); validated BEFORE it is moved into place.
-#                     After the firewall: a failed firewall step leaves no rule.
+#                     After the firewall: a failed firewall step leaves no rule,
+#                     also on a second run: an apply that fails at a step before
+#                     this one removes the rule file of an earlier apply
+#                     (remove_sudo_rule_on_failure), says so and lists it in the
+#                     summary; the exit status stays 1.
 #   cloud-init-sudoers  LAST: comment out the lines that give the daemon user (and
 #                     nobody else) sudo to root in the cloud-init sudoers file
 #                     (numbered backups, validated), then prove by behaviour that
@@ -91,11 +95,13 @@
 #                        for --dry-run, --undo, --keep-daemon-sudo or a host that is
 #                        set up already); asked before the first change
 #   --dry-run            print every command, change nothing
-#   --undo               restore the cloud-init file from the newest backup in
-#                        which the root line of the daemon user is active, stop
-#                        every process of the agent user (TERM, then KILL after 5
-#                        seconds), stop and disable the boot unit, remove the
-#                        firewall chain and the sudoers rule. Every step runs, also
+#   --undo               remove the sudoers rule first (the daemon starts no new
+#                        agent process after it), restore the cloud-init file from
+#                        the newest backup in which the root line of the daemon
+#                        user is active, stop every process of the agent user
+#                        (TERM, then KILL after 5 seconds; a pgrep that is missing
+#                        or fails fails the step), stop and disable the boot unit,
+#                        remove the firewall chain. Every step runs, also
 #                        after a failed one; the failed ones are named at the end
 #                        and the exit status is 1. The user, the group and the
 #                        directories stay (the commands to delete them are
@@ -174,6 +180,7 @@ SUMMARY=()
 RESULT=""
 NOTE=""
 DAEMON_GROUP_WARNING=""
+SUDO_RULE_REMOVAL=""
 
 die() {
     echo "setup-agent-user: $*" >&2
@@ -1352,6 +1359,27 @@ undo_cloud_init_sudoers() {
     fi
 }
 
+# count_agent_procs — prints the count of processes of the agent user. pgrep
+# exits 1 when there is none. A pgrep that is not found (127) or that exits
+# with another code gives no count: one line on stderr says so and the function
+# fails, so that a failed pgrep never reads as "no process".
+count_agent_procs() {
+    local pids rc=0
+    pids="$(pgrep -u "$AGENT_USER")" || rc=$?
+    case "$rc" in
+        0) printf '%s\n' "$pids" | grep -c . ;;
+        1) echo 0 ;;
+        127)
+            echo "pgrep not found (exit 127): the processes of ${AGENT_USER} are not known; none is stopped" >&2
+            return 1
+            ;;
+        *)
+            echo "pgrep -u ${AGENT_USER} failed (exit ${rc}): the processes of ${AGENT_USER} are not known; none is stopped" >&2
+            return 1
+            ;;
+    esac
+}
+
 # undo_agent_processes — before the firewall goes, every process of the agent
 # user stops: TERM, then KILL for those left after KILL_WAIT seconds.
 undo_agent_processes() {
@@ -1361,7 +1389,7 @@ undo_agent_processes() {
         NOTE="no user ${AGENT_USER}"
         return 0
     fi
-    n="$(pgrep -u "$AGENT_USER" | grep -c . || true)"
+    n="$(count_agent_procs)" || return 1
     if [ "$n" -eq 0 ]; then
         RESULT=skipped
         NOTE="no process of ${AGENT_USER}"
@@ -1378,12 +1406,12 @@ undo_agent_processes() {
         pgrep -u "$AGENT_USER" >/dev/null || break
         sleep 1
     done
-    left="$(pgrep -u "$AGENT_USER" | grep -c . || true)"
+    left="$(count_agent_procs)" || return 1
     if [ "$left" -gt 0 ]; then
         echo "${left} process(es) of ${AGENT_USER} still run after TERM and ${KILL_WAIT} seconds: KILL"
         run pkill -KILL -u "$AGENT_USER" || true
         sleep 1
-        left="$(pgrep -u "$AGENT_USER" | grep -c . || true)"
+        left="$(count_agent_procs)" || return 1
         if [ "$left" -gt 0 ]; then
             echo "${left} process(es) of ${AGENT_USER} still run after KILL:" >&2
             pgrep -l -u "$AGENT_USER" >&2 || true
@@ -1448,6 +1476,7 @@ print_summary() {
     for line in "${SUMMARY[@]}"; do
         echo "step ${line}"
     done
+    [ -z "$SUDO_RULE_REMOVAL" ] || echo "$SUDO_RULE_REMOVAL"
     [ -z "$DAEMON_GROUP_WARNING" ] || echo "$DAEMON_GROUP_WARNING"
 }
 
@@ -1481,22 +1510,48 @@ run_every() {
     done
 }
 
+# remove_sudo_rule_on_failure FAILED NOT_RUN... — the apply failed at FAILED;
+# NOT_RUN are the plan entries it did not run. When sudoers-rule is one of them,
+# a rule file of an earlier apply would let the daemon start the agent user
+# while the firewall is not complete (its rules gone and iptables missing, or
+# IPv6 on now with no ip6tables): the file goes, through run (a dry run prints
+# the command and changes nothing). One line says so, and the summary lists it;
+# the exit status of the apply stays 1.
+remove_sudo_rule_on_failure() {
+    local failed="$1" entry ahead=0 dry=""
+    shift
+    for entry in "$@"; do
+        [ "${entry%%:*}" != sudoers-rule ] || ahead=1
+    done
+    [ "$ahead" = 1 ] || return 0
+    [ -e "$SUDOERS_FILE" ] || [ -L "$SUDOERS_FILE" ] || return 0
+    [ "$DRY_RUN" = 0 ] || dry=" (dry-run)"
+    echo "${failed} failed before the sudoers-rule step: removing the sudo rule of an earlier apply, ${SUDOERS_FILE}, so that the daemon cannot start the agent user without the complete firewall"
+    if run rm -f "$SUDOERS_FILE"; then
+        SUDO_RULE_REMOVAL="sudo rule removed${dry}: ${SUDOERS_FILE} (${failed} failed; the next apply that passes puts it back)"
+    else
+        SUDO_RULE_REMOVAL="sudo rule NOT removed: ${SUDOERS_FILE} (${failed} failed); remove it by hand"
+    fi
+}
+
 # run_plan NAME:FUNCTION ... — runs the steps in order. After a failed step the
 # rest are not run; each still gets a summary line, so the summary has one per
-# step.
+# step. A failure before the sudoers-rule step removes the rule file of an
+# earlier apply (remove_sudo_rule_on_failure).
 run_plan() {
     local entry failed=""
-    for entry in "$@"; do
-        if [ -n "$failed" ]; then
+    while [ $# -gt 0 ]; do
+        entry="$1"
+        shift
+        run_step "${entry%%:*}" "${entry#*:}" && continue
+        failed="${entry%%:*}"
+        for entry in "$@"; do
             SUMMARY+=("${entry%%:*}: skipped - not run, ${failed} failed")
-        elif ! run_step "${entry%%:*}" "${entry#*:}"; then
-            failed="${entry%%:*}"
-        fi
-    done
-    if [ -n "$failed" ]; then
+        done
+        remove_sudo_rule_on_failure "$failed" "$@"
         print_summary
         exit 1
-    fi
+    done
 }
 
 # print_config — the values for the executor section of the daemon config.
@@ -1557,15 +1612,16 @@ fi
 
 # Undo first: nothing above reads a path that the agent user or the daemon user
 # can write, so neither of them can stop the restore of root's files. A failed
-# step does not stop the undo: each later step runs, the processes of the agent
-# user stop before the firewall goes.
+# step does not stop the undo: each later step runs. The sudoers rule goes first,
+# so that the daemon cannot start an agent process after the stop of the agent
+# processes; those stop before the firewall goes.
 if [ "$UNDO" = 1 ]; then
-    run_every cloud-init-sudoers:undo_cloud_init_sudoers \
+    run_every sudoers-rule:undo_sudoers_rule \
+        cloud-init-sudoers:undo_cloud_init_sudoers \
         agent-processes:undo_agent_processes \
         firewall-unit:undo_firewall_unit \
         firewall-ipv4:undo_firewall_ipv4 \
-        firewall-ipv6:undo_firewall_ipv6 \
-        sudoers-rule:undo_sudoers_rule
+        firewall-ipv6:undo_firewall_ipv6
     print_summary
     print_mode_restore
     print_manual_cleanup
