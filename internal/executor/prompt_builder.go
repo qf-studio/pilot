@@ -120,7 +120,13 @@ func untrustedCommentDirective(task *Task) string {
 
 // BuildPrompt constructs the prompt for Claude Code execution.
 // executionPath may differ from task.ProjectPath when using worktree isolation.
-func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
+func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
+	return r.BuildPromptContext(context.Background(), task, executionPath)
+}
+
+// BuildPromptContext is BuildPrompt with the context of the run: the read of
+// the project README as the agent user (run_as_user set) stops with it.
+func (r *Runner) BuildPromptContext(ctx context.Context, task *Task, executionPath string) (prompt string) {
 	defer sanitizePromptReturn("BuildPrompt", &prompt)
 	var sb strings.Builder
 
@@ -219,7 +225,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
 		sb.WriteString(untrustedCommentDirective(task))
 
 		// NEW: Inject project context
-		if projectCtx := loadProjectContext(agentDir); projectCtx != "" {
+		if projectCtx := loadProjectContextCtx(ctx, agentDir); projectCtx != "" {
 			sb.WriteString("## Project Context\n\n")
 			sb.WriteString(projectCtx)
 			sb.WriteString("\n\n")
@@ -703,8 +709,14 @@ func (r *Runner) appendResearchContext(prompt string, research *ResearchResult) 
 // loadProjectContext reads .agent/DEVELOPMENT-README.md and extracts key sections
 // for project context injection. Returns ~2000 tokens of the most valuable context.
 func loadProjectContext(agentDir string) string {
+	return loadProjectContextCtx(context.Background(), agentDir)
+}
+
+// loadProjectContextCtx is loadProjectContext with the context of the run for
+// the read of the README.
+func loadProjectContextCtx(ctx context.Context, agentDir string) string {
 	readmePath := filepath.Join(agentDir, "DEVELOPMENT-README.md")
-	content, err := readProjectContextFile(readmePath)
+	content, err := readProjectContextFile(ctx, readmePath)
 	if err != nil {
 		return ""
 	}
@@ -751,11 +763,11 @@ func loadProjectContext(agentDir string) string {
 // agent user for a path inside the workspace root), so a link the agent put
 // there never moves a file of the daemon into the prompt. A read error other
 // than a missing file logs one Warn line; the caller gives the empty context.
-func readProjectContextFile(readmePath string) ([]byte, error) {
+func readProjectContextFile(ctx context.Context, readmePath string) ([]byte, error) {
 	if runAsSettingsNow() == nil {
 		return os.ReadFile(readmePath) // #nosec G304 -- the read of today
 	}
-	content, err := agentReadFile(context.Background(), readmePath)
+	content, err := agentReadFile(ctx, readmePath)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		slog.Warn("run_as_user: project context not read, the prompt goes without it",
 			slog.String("path", readmePath),
