@@ -285,7 +285,7 @@ expect_refused() {
 ALL_STEPS="daemon-private group agent-user daemon-membership firewall-ipv4 firewall-ipv6 firewall-unit directories sudoers-rule cloud-init-sudoers agent-proof"
 # daemon-private and agent-proof are checks: they change nothing, so they report skipped.
 CHANGE_STEPS="group agent-user daemon-membership firewall-ipv4 firewall-ipv6 firewall-unit directories sudoers-rule cloud-init-sudoers"
-UNDO_STEPS="cloud-init-sudoers agent-processes firewall-unit firewall-ipv4 firewall-ipv6 sudoers-rule"
+UNDO_STEPS="sudoers-rule cloud-init-sudoers agent-processes firewall-unit firewall-ipv4 firewall-ipv6"
 
 echo "=== test: dry run — prints every command, changes nothing ==="
 setup_sandbox
@@ -750,6 +750,66 @@ expect_step agent-processes failed
 expect_step firewall-ipv4 "done"
 expect_step sudoers-rule "done"
 check "the failed step is named at the end" has_line "$OUT" "undo: failed steps: agent-processes (every other step ran; see the summary)"
+teardown_sandbox
+
+# mutation pin: the sudoers-rule step runs last in undo -> this test fails
+echo "=== test: undo removes the sudo rule first, before the stop of the agent processes ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+mkdir -p "${STATE_DIR}/procs"
+printf '4101\n' >"${STATE_DIR}/procs/pilot-agent"
+if run_setup -- --undo; then
+    pass "undo exits 0"
+else
+    cat "$OUT"
+    fail_test "undo exited non-zero"
+fi
+rm_n="$(first_line_of "$OUT" "^\+ rm -f ${SUDOERS_DIR}/90-pilot-agent-runas ")"
+pkill_n="$(first_line_of "$OUT" '^\+ pkill ')"
+if [ -n "$rm_n" ] && [ -n "$pkill_n" ] && [ "$rm_n" -lt "$pkill_n" ]; then
+    pass "the removal of the sudo rule comes before the first pkill"
+else
+    fail_test "sudo rule removal line '${rm_n}', first pkill line '${pkill_n}'"
+fi
+check_not "the sudoers rule file is removed" test -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+teardown_sandbox
+
+# mutation pin: a failed pgrep reads as "no process" again -> this test fails
+for pgrep_rc in 127 2; do
+    echo "=== test: undo with a pgrep that exits ${pgrep_rc} — the step fails, the firewall still goes, exit non-zero ==="
+    setup_sandbox
+    run_setup -- >/dev/null || true
+    mkdir -p "${STATE_DIR}/procs"
+    printf '4101\n' >"${STATE_DIR}/procs/pilot-agent"
+    rc=0
+    run_setup MOCK_PGREP_RC="$pgrep_rc" -- --undo || rc=$?
+    check "undo exits non-zero" test "$rc" != 0
+    expect_step agent-processes failed
+    if [ "$pgrep_rc" = 127 ]; then
+        check "the line says pgrep is not found" grep -qF "pgrep not found (exit 127): the processes of pilot-agent are not known; none is stopped" "$OUT"
+    else
+        check "the line says pgrep failed" grep -qF "pgrep -u pilot-agent failed (exit 2): the processes of pilot-agent are not known; none is stopped" "$OUT"
+    fi
+    check_not "no pkill ran" grep -q '^pkill ' "$CALL_LOG"
+    for s in firewall-unit firewall-ipv4 firewall-ipv6; do
+        expect_step "$s" "done"
+    done
+    check_not "the firewall chains are removed" grep -q PILOT_AGENT_EGRESS "${STATE_DIR}/iptables.rules" "${STATE_DIR}/ip6tables.rules"
+    check "the failed step is named at the end" has_line "$OUT" "undo: failed steps: agent-processes (every other step ran; see the summary)"
+    teardown_sandbox
+done
+
+echo "=== test: undo with a pgrep that exits 1 (no process) — the step is skipped, exit 0 ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+if run_setup MOCK_PGREP_RC=1 -- --undo; then
+    pass "undo exits 0"
+else
+    cat "$OUT"
+    fail_test "undo exited non-zero"
+fi
+expect_step agent-processes skipped
+check "the summary says there is no process" grep -qF "step agent-processes: skipped - no process of pilot-agent" "$OUT"
 teardown_sandbox
 
 echo "=== test: failing visudo — no sudoers file, non-zero exit, nothing after it ==="
@@ -1775,6 +1835,81 @@ rc=0
 run_setup IP6TABLES_CMD=ip6tables-not-installed -- || rc=$?
 check "no IPv6 settings: apply exits 1" test "$rc" = 1
 expect_step firewall-ipv6 failed
+teardown_sandbox
+
+# mutation pin: the call of remove_sudo_rule_on_failure is removed -> this test fails
+echo "=== test: a second apply that fails at the IPv4 firewall step removes the sudo rule of the first apply ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+check "the first apply installed the sudo rule" test -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+# the firewall rules are gone and iptables is missing
+mock_run iptables -w -D OUTPUT -m owner --uid-owner pilot-agent -j PILOT_AGENT_EGRESS
+mock_run iptables -w -F PILOT_AGENT_EGRESS
+mock_run iptables -w -X PILOT_AGENT_EGRESS
+rc=0
+run_setup IPTABLES_CMD=iptables-not-installed -- || rc=$?
+check "the second apply exits 1" test "$rc" = 1
+expect_step firewall-ipv4 failed
+expect_step sudoers-rule skipped
+check_not "no sudoers rule file exists" test -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+check "one line says the rule is removed" grep -qxF "firewall-ipv4 failed before the sudoers-rule step: removing the sudo rule of an earlier apply, ${SUDOERS_DIR}/90-pilot-agent-runas, so that the daemon cannot start the agent user without the complete firewall" "$OUT"
+check "the removal is printed" has_line "$OUT" "+ rm -f ${SUDOERS_DIR}/90-pilot-agent-runas"
+check "the summary lists the removal" has_line "$OUT" "sudo rule removed: ${SUDOERS_DIR}/90-pilot-agent-runas (firewall-ipv4 failed; the next apply that passes puts it back)"
+# with iptables back, the next apply puts the rule back
+if run_setup -- ; then
+    pass "a third apply with iptables exits 0"
+else
+    cat "$OUT"
+    fail_test "a third apply with iptables failed"
+fi
+check "the third apply puts the rule back" test "$(cat "${SUDOERS_DIR}/90-pilot-agent-runas")" = "$EXPECTED_RULE"
+check_not "no removal line" grep -qF "sudo rule removed" "$OUT"
+teardown_sandbox
+
+echo "=== test: a second apply with IPv6 on and no ip6tables (the first ran with IPv6 off) removes the sudo rule ==="
+setup_sandbox
+set_ipv6 1
+if run_setup IP6TABLES_CMD=ip6tables-not-installed -- ; then
+    pass "the first apply with IPv6 off exits 0"
+else
+    cat "$OUT"
+    fail_test "the first apply with IPv6 off failed"
+fi
+check "the first apply installed the sudo rule" test -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+set_ipv6 0
+rc=0
+run_setup IP6TABLES_CMD=ip6tables-not-installed -- || rc=$?
+check "the second apply exits 1" test "$rc" = 1
+expect_step firewall-ipv6 failed
+check_not "no sudoers rule file exists" test -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+check "one line says the rule is removed" grep -qF "firewall-ipv6 failed before the sudoers-rule step: removing the sudo rule of an earlier apply" "$OUT"
+check "the summary lists the removal" has_line "$OUT" "sudo rule removed: ${SUDOERS_DIR}/90-pilot-agent-runas (firewall-ipv6 failed; the next apply that passes puts it back)"
+teardown_sandbox
+
+echo "=== test: a dry run that fails before the sudoers-rule step prints the removal and changes nothing ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+before="$(tree_listing)"
+: >"$MUT_LOG"
+rc=0
+run_setup IPTABLES_CMD=iptables-not-installed -- --dry-run || rc=$?
+check "the dry run exits 1" test "$rc" = 1
+check "the sudoers rule file is still there" test -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+check "files and modes unchanged" test "$before" = "$(tree_listing)"
+check "no mutating command" test ! -s "$MUT_LOG"
+check "the removal is printed" has_line "$OUT" "+ rm -f ${SUDOERS_DIR}/90-pilot-agent-runas"
+check "the summary lists the removal as a dry run" has_line "$OUT" "sudo rule removed (dry-run): ${SUDOERS_DIR}/90-pilot-agent-runas (firewall-ipv4 failed; the next apply that passes puts it back)"
+teardown_sandbox
+
+echo "=== test: a failure at the sudoers-rule step or after it does not remove the rule file ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+rc=0
+run_setup MOCK_SUDO_BROKEN=1 -- || rc=$?
+check "the apply exits 1" test "$rc" = 1
+expect_step cloud-init-sudoers failed
+check "the sudoers rule file is still there" test -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+check_not "no removal line" grep -qF "sudo rule removed" "$OUT"
 teardown_sandbox
 
 echo "=== test: the jump to the chain is moved to the first place in OUTPUT ==="

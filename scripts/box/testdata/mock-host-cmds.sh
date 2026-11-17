@@ -43,7 +43,8 @@
 # below),
 # MOCK_REAL_PATH (PATH for the real tools the mocks delegate to),
 # MOCK_PROC_TERM_IGNORED=1 (pkill -TERM ends no process), MOCK_PROC_UNKILLABLE=1
-# (pkill -KILL ends none either).
+# (pkill -KILL ends none either), MOCK_PGREP_RC (pgrep exits with this code and
+# lists nothing; 127 stands for a pgrep that is not found).
 #
 # MOCK_SUDO_BROKEN, MOCK_SUDO_ROOT_OK, MOCK_SUDO_LIST(_RC) and MOCK_SUDO_LATE act
 # late: only once the agent rule ($SUDOERS_DIR/90-pilot-agent-runas) is in
@@ -553,6 +554,11 @@ case "$cmd" in
         ;;
     pgrep)
         # pgrep [-l] -u USER
+        case "${MOCK_PGREP_RC:-}" in
+            "") ;;
+            127) echo "pgrep: command not found" >&2; exit 127 ;;
+            *) echo "pgrep: mock failure" >&2; exit "$MOCK_PGREP_RC" ;;
+        esac
         user="" list=0
         while [ $# -gt 0 ]; do
             case "$1" in
