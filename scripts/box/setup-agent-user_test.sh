@@ -444,6 +444,8 @@ check_not "the probe files of the proof are gone" test -e "${AHOME}/.setup-agent
 for want in "  run_as_user: pilot-agent" "  run_as_group: pilot" "  run_as_workspace_dir: ${AWS}"; do
     check "the summary prints the config line: ${want# }" has_line "$OUT" "$want"
 done
+# mutation pin: the apply summary prints no run_as_data_dir line, so a custom --data-dir leaves the Go check on /var/lib/pilot -> this test fails
+check "the summary prints the config line for the custom --data-dir" has_line "$OUT" "  run_as_data_dir: ${DATA_DIR}"
 
 echo "=== test: second apply skips every step ==="
 : >"$MUT_LOG"

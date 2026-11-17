@@ -67,17 +67,23 @@ func TestRunAsDataDirModes(t *testing.T) {
 			mkdirMode(t, filepath.Join(data, "agent", "workspaces"), 0o770)
 		}, nil},
 		{"a link to an open directory", 0o711, func(t *testing.T, data string, _ *runAsSettings) {
-			open := mkdirMode(t, filepath.Join(t.TempDir(), "open"), 0o755)
+			open := mkdirMode(t, filepath.Join(data, "zz-open"), 0o755)
 			if err := os.Symlink(open, filepath.Join(data, "logs")); err != nil {
 				t.Fatal(err)
 			}
 		}, []string{"logs", "0755"}},
 		{"a link to a closed directory", 0o711, func(t *testing.T, data string, _ *runAsSettings) {
-			closed := mkdirMode(t, filepath.Join(t.TempDir(), "closed"), 0o700)
-			if err := os.Symlink(closed, filepath.Join(data, "logs")); err != nil {
+			mkdirMode(t, filepath.Join(data, "closed"), 0o700)
+			if err := os.Symlink("closed", filepath.Join(data, "logs")); err != nil {
 				t.Fatal(err)
 			}
 		}, nil},
+		{"a link out to an open directory", 0o711, func(t *testing.T, data string, _ *runAsSettings) {
+			open := mkdirMode(t, filepath.Join(t.TempDir(), "open"), 0o755)
+			if err := os.Symlink(open, filepath.Join(data, "logs")); err != nil {
+				t.Fatal(err)
+			}
+		}, []string{"logs", "a link out of run_as_data_dir"}},
 		{"a dangling link reaches nothing", 0o711, func(t *testing.T, data string, _ *runAsSettings) {
 			if err := os.Symlink(filepath.Join(data, "gone"), filepath.Join(data, "logs")); err != nil {
 				t.Fatal(err)
@@ -115,6 +121,98 @@ func TestRunAsDataDirModes(t *testing.T) {
 	}
 }
 
+// runAsLinkCheck runs the check on a data directory with mode 0700, the
+// workspace root <data>/agent/workspaces (agent root 0700) and one top-level
+// link "logs" to the target the case returns.
+func runAsLinkCheck(t *testing.T, link func(t *testing.T, data string) (target string)) (got, entry string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes")
+	}
+	data := mkdirMode(t, filepath.Join(t.TempDir(), "data"), 0o700)
+	mkdirMode(t, filepath.Join(data, "agent", "workspaces"), 0o700)
+	mkdirMode(t, filepath.Join(data, "agent"), 0o700)
+	entry = filepath.Join(data, "logs")
+	if err := os.Symlink(link(t, data), entry); err != nil {
+		t.Fatal(err)
+	}
+	s := &runAsSettings{user: "pilot-agent", group: "pilot-agents", gid: -1, dataDir: data,
+		workspaceRoot: filepath.Join(data, "agent", "workspaces")}
+	return checkRunAsDataDirModes(s), entry
+}
+
+// mutation pin: a top-level link out of the data directory to a closed target passes in Go while the script refuses it -> this test fails
+func TestRunAsDataDirLinkOutToClosedTargetFails(t *testing.T) {
+	for name, target := range map[string]func(t *testing.T, data string) string{
+		"absolute": func(t *testing.T, _ string) string { return mkdirMode(t, filepath.Join(t.TempDir(), "closed"), 0o700) },
+		"relative": func(t *testing.T, data string) string {
+			mkdirMode(t, filepath.Join(filepath.Dir(data), "closed"), 0o700)
+			return "../closed"
+		},
+		"through a link in the data dir": func(t *testing.T, data string) string {
+			closed := mkdirMode(t, filepath.Join(t.TempDir(), "closed"), 0o700)
+			if err := os.Symlink(closed, filepath.Join(data, "zz-hop")); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(data, "zz-hop", ".")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, entry := runAsLinkCheck(t, target)
+			if !strings.Contains(got, entry) || !strings.Contains(got, "a link out of run_as_data_dir") {
+				t.Errorf("check = %q, want %s named as a link out of the data directory", got, entry)
+			}
+		})
+	}
+}
+
+// mutation pin: a dangling top-level link out of the data directory is skipped, so it opens once the agent user creates the target -> this test fails
+func TestRunAsDataDirDanglingLinkOutFails(t *testing.T) {
+	for name, target := range map[string]func(t *testing.T, data string) string{
+		"absolute": func(t *testing.T, _ string) string { return filepath.Join(t.TempDir(), "later") },
+		"relative": func(*testing.T, string) string { return "../later/deeper" },
+		"to a dangling link": func(t *testing.T, data string) string {
+			if err := os.Symlink(filepath.Join(t.TempDir(), "later"), filepath.Join(data, "zz-hop")); err != nil {
+				t.Fatal(err)
+			}
+			return "zz-hop"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, entry := runAsLinkCheck(t, target)
+			if !strings.Contains(got, entry) || !strings.Contains(got, "a link out of run_as_data_dir") {
+				t.Errorf("check = %q, want the dangling %s named as a link out of the data directory", got, entry)
+			}
+		})
+	}
+	// A dangling link that stays in the data directory reaches nothing the
+	// agent user can create: still skipped.
+	got, _ := runAsLinkCheck(t, func(*testing.T, string) string { return "gone" })
+	if got != "" {
+		t.Errorf("a dangling link inside the data directory failed: %q", got)
+	}
+}
+
+// mutation pin: a second top-level entry that links to the agent root or to the data directory is judged by the mode of its target, not flagged as the script does -> this test fails
+func TestRunAsDataDirLinkToAgentRootOrDataDirFails(t *testing.T) {
+	for name, target := range map[string]func(t *testing.T, data string) string{
+		"the data dir":           func(_ *testing.T, data string) string { return data },
+		"the data dir, relative": func(*testing.T, string) string { return "." },
+		"the agent root":         func(_ *testing.T, data string) string { return filepath.Join(data, "agent") },
+		"the workspace root":     func(*testing.T, string) string { return "agent/workspaces" },
+		"a missing path in the agent root": func(_ *testing.T, data string) string {
+			return filepath.Join(data, "agent", "workspaces", "later")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, entry := runAsLinkCheck(t, target)
+			if !strings.Contains(got, entry) || !strings.Contains(got, "resolves to run_as_data_dir or to the agent root") {
+				t.Errorf("check = %q, want %s named as a link to the data directory or the agent root", got, entry)
+			}
+		})
+	}
+}
+
 func TestRunAsDataDirMissingFails(t *testing.T) {
 	s := &runAsSettings{user: "pilot-agent", gid: -1, dataDir: filepath.Join(t.TempDir(), "gone")}
 	if got := checkRunAsDataDirModes(s); !strings.Contains(got, "run_as_data_dir exists") {
@@ -124,7 +222,9 @@ func TestRunAsDataDirMissingFails(t *testing.T) {
 
 // TestRunAsDataDirPreflight: the preflight runs the check after the workspace
 // root check and refuses the option on a failure; a change of run_as_data_dir
-// runs the preflight again.
+// alone runs the preflight again.
+//
+// mutation pin: the reload subcase changes the workspace root along with run_as_data_dir, so it does not pin the dataDir term of the short cut -> this test fails
 func TestRunAsDataDirPreflight(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("file modes")
@@ -154,8 +254,9 @@ func TestRunAsDataDirPreflight(t *testing.T) {
 			runAsDataDirCheck = func(s *runAsSettings) string { order = append(order, "data"); return checkRunAsDataDirModes(s) }
 			buf := captureLog(t)
 			data := tc.dataDir(t)
+			ws := filepath.Join(t.TempDir(), "agent", "workspaces")
 			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents",
-				RunAsWorkspaceDir: filepath.Join(t.TempDir(), "agent", "workspaces"), RunAsDataDir: data}, "", true, 0)
+				RunAsWorkspaceDir: ws, RunAsDataDir: data}, "", true, 0)
 			err := RunAsUserPreflightError()
 			if tc.wantCheck == "" {
 				if err != nil {
@@ -164,11 +265,11 @@ func TestRunAsDataDirPreflight(t *testing.T) {
 				if strings.Join(order, ",") != "workspace,data" {
 					t.Errorf("checks ran as %v, want the data directory after the workspace root", order)
 				}
-				// A daemon entry opened later and a reload to another data
-				// directory: the preflight runs again and refuses.
+				// A reload to another data directory, every other option
+				// the same: the preflight runs again and refuses.
 				open := mkdirMode(t, filepath.Join(t.TempDir(), "open"), 0o755)
 				PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents",
-					RunAsWorkspaceDir: filepath.Join(t.TempDir(), "agent", "workspaces"), RunAsDataDir: open}, "", true, 0)
+					RunAsWorkspaceDir: ws, RunAsDataDir: open}, "", true, 0)
 				if RunAsUserPreflightError() == nil {
 					t.Error("a reload to an open run_as_data_dir kept the passing result")
 				}

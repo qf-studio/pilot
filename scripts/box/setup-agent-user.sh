@@ -68,7 +68,8 @@
 # a WARNING before the steps and in the summary: a path to root; not a failure.
 #
 # On success the summary ends with the values for the executor section of the
-# daemon config: run_as_user, run_as_group and run_as_workspace_dir.
+# daemon config: run_as_user, run_as_group, run_as_workspace_dir and
+# run_as_data_dir.
 #
 # Usage: setup-agent-user.sh [--daemon-user U] [--agent-user U] [--group G]
 #                            [--data-dir D] [--agent-root A] [--dry-run] [--undo]
@@ -1453,6 +1454,7 @@ print_config() {
     printf '  run_as_user: %s\n' "$AGENT_USER"
     printf '  run_as_group: %s\n' "$GROUP"
     printf '  run_as_workspace_dir: %s\n' "$WORKSPACES"
+    printf '  run_as_data_dir: %s\n' "$DATA_DIR"
 }
 
 # print_mode_restore — the chmods that put back the modes daemon-private found,
