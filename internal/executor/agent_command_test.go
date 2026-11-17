@@ -46,7 +46,18 @@ func stubRunAsGOOS(t *testing.T) {
 
 func testRunAsSettings(t *testing.T) *runAsSettings {
 	t.Helper()
-	return &runAsSettings{user: "pilot-agent", home: t.TempDir(), gid: -1}
+	return &runAsSettings{user: "pilot-agent", home: t.TempDir(), gid: -1, dataDir: closedTempDir(t)}
+}
+
+// closedTempDir is an empty temporary directory with mode 0700: a data
+// directory that passes checkRunAsDataDirModes. t.TempDir follows the umask.
+func closedTempDir(t *testing.T) string {
+	t.Helper()
+	d := t.TempDir()
+	if err := os.Chmod(d, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return d
 }
 
 // mockSudo puts a fake sudo first on PATH. It records its own name and its
@@ -373,10 +384,12 @@ func TestRunAsUserKillOptionEmptyIsDirect(t *testing.T) {
 // a member of it. Tests change lookupGrp and daemonGroups for the group cases.
 func stubRunAsHost(t *testing.T, goos string, daemonUID string, users map[string]string) {
 	t.Helper()
-	pg, pu, pc, po, pd, pw := lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups, runAsWorkspaceCheck
+	pg, pu, pc, po, pd, pw, pdd := lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups, runAsWorkspaceCheck, runAsDataDirCheck
 	runAsGOOS = goos
-	// The workspace root is a host check of its own (stubRunAsWorkspace).
+	// The workspace root and the data directory are host checks of their own
+	// (workspacePreflight, TestRunAsDataDirModes).
 	runAsWorkspaceCheck = func(*runAsSettings) string { return "" }
+	runAsDataDirCheck = func(*runAsSettings) string { return "" }
 	currentUID = func() (string, error) { return daemonUID, nil }
 	lookupUser = func(name string) (*user.User, error) {
 		home, ok := users[name]
@@ -393,7 +406,7 @@ func stubRunAsHost(t *testing.T, goos string, daemonUID string, users map[string
 	}
 	daemonGroups = func() ([]int, error) { return []int{1000, 6000}, nil }
 	t.Cleanup(func() {
-		lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups, runAsWorkspaceCheck = pg, pu, pc, po, pd, pw
+		lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups, runAsWorkspaceCheck, runAsDataDirCheck = pg, pu, pc, po, pd, pw, pdd
 	})
 }
 

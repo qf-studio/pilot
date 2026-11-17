@@ -59,6 +59,9 @@ type runAsSettings struct {
 	// empty: a git command in a directory below it runs as the agent user
 	// (gitCommand).
 	workspaceRoot string
+	// dataDir is run_as_data_dir, defaultRunAsDataDir when empty: the data
+	// directory of the daemon that checkRunAsDataDirModes reads.
+	dataDir string
 }
 
 // runAsState is the process-wide state of the option: the settings and the
@@ -300,21 +303,26 @@ func resolveRunAs(userName, group string) (*runAsSettings, string) {
 // every host. Then the workspace (TASK-651 4.2): use_worktree is true,
 // worktree_pool_size is 0, the workspace root is not /, the home of the daemon
 // user, the data directory of the daemon or a parent of one of them, and the
-// host checks of checkRunAsWorkspaceRoot pass. On any failure it logs one Error line naming the check and sets the
+// host checks of checkRunAsWorkspaceRoot pass. Last, the modes of the data
+// directory of the daemon (checkRunAsDataDirModes). On any failure it logs one Error line naming the check and sets the
 // process-wide flag: every model spawn then returns an error and no process
 // starts, and the API backends run no request and no tool. It never falls
 // back to a run as the daemon user. With the option empty it clears any
 // earlier state and does nothing else. Called at the same place as the read
 // guard config, for every entrypoint that spawns.
 func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree bool, worktreePoolSize int) {
-	var rawUser, rawGroup, rawRoot string
+	var rawUser, rawGroup, rawRoot, rawDataDir string
 	if cfg != nil {
-		rawUser, rawGroup, rawRoot = cfg.RunAsUser, cfg.RunAsGroup, cfg.RunAsWorkspaceDir
+		rawUser, rawGroup, rawRoot, rawDataDir = cfg.RunAsUser, cfg.RunAsGroup, cfg.RunAsWorkspaceDir, cfg.RunAsDataDir
 	}
 	userName, group := strings.TrimSpace(rawUser), strings.TrimSpace(rawGroup)
 	root := strings.TrimSpace(rawRoot)
 	if root == "" {
 		root = defaultRunAsWorkspaceDir
+	}
+	dataDir := strings.TrimSpace(rawDataDir)
+	if dataDir == "" {
+		dataDir = defaultRunAsDataDir
 	}
 	// A value of white space only is a mistake, not an empty option: the
 	// model would run as the daemon user without a word.
@@ -335,7 +343,7 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 	runAsMu.RLock()
 	same := blank == "" && runAsCur.checked && runAsCur.settings != nil && runAsCur.backend == backendType &&
 		runAsCur.settings.user == userName && runAsCur.settings.group == group &&
-		runAsCur.settings.workspaceRoot == root &&
+		runAsCur.settings.workspaceRoot == root && runAsCur.settings.dataDir == dataDir &&
 		runAsCur.useWorktree == useWorktree && runAsCur.poolSize == worktreePoolSize
 	runAsMu.RUnlock()
 	if same {
@@ -357,6 +365,8 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 		failed = "run_as_group name is not valid"
 	case !filepath.IsAbs(root):
 		failed = "run_as_workspace_dir is not an absolute path"
+	case !filepath.IsAbs(dataDir):
+		failed = "run_as_data_dir is not an absolute path"
 	case backendRunsToolsInProcess(backendType):
 		failed = "run_as_user is not supported with the " + backendType + " backend"
 	case runAsGOOS != "linux":
@@ -376,13 +386,16 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 		case worktreePoolSize > 0:
 			failed = "run_as_user requires worktree_pool_size 0"
 		default:
-			s.workspaceRoot = root
+			s.workspaceRoot, s.dataDir = root, dataDir
 			if failed = refusedRunAsWorkspaceRoot(root, cfg); failed == "" {
 				failed = runAsWorkspaceCheck(s)
 			}
+			if failed == "" {
+				failed = runAsDataDirCheck(s)
+			}
 		}
 	}
-	s.workspaceRoot = root
+	s.workspaceRoot, s.dataDir = root, dataDir
 	if failed != "" {
 		slog.Default().Error("run_as_user preflight failed: no model process and no tool of the model will run",
 			slog.String("check", failed),
@@ -498,6 +511,74 @@ func checkRunAsWorkspaceRoot(s *runAsSettings) string {
 	return ""
 }
 
+// runAsDataDirCheck is checkRunAsDataDirModes for the preflight; tests that
+// stub the host replace it. The creation of an agent workspace calls
+// checkRunAsDataDirModes itself.
+var runAsDataDirCheck = checkRunAsDataDirModes
+
+// checkRunAsDataDirModes checks, and only reads, the modes of the data
+// directory of the daemon with the rule of step_daemon_private in
+// scripts/box/setup-agent-user.sh: the data directory gives the group and
+// other users no read and no write bit; each top-level entry gives other
+// users no bit, and gives its group no bit when the group is run_as_group.
+// The entry that holds the workspace root (the agent root) is skipped. A link
+// is checked by its target (os.Stat); a dangling one reaches nothing and is
+// skipped, as in the script. A data directory that does not exist fails. The
+// returned check names the first entry that fails and its mode; empty on
+// success.
+//
+// Decision: the preflight result is kept for the life of the process, and the
+// daemon creates entries at run time (logs, state files) with mode 0755, so
+// createAgentWorkspace runs the check again before each run.
+func checkRunAsDataDirModes(s *runAsSettings) string {
+	dir := s.dataDir
+	fi, err := os.Stat(dir)
+	if err != nil || !fi.IsDir() {
+		return "run_as_data_dir exists: " + dir
+	}
+	if perm := fi.Mode().Perm(); perm&0o066 != 0 {
+		return fmt.Sprintf("run_as_data_dir %s gives the group or other users read or write (mode %04o)", dir, perm)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "daemon user can list run_as_data_dir " + dir
+	}
+	holders := map[string]bool{}
+	for _, d := range pathForms(dir) {
+		for _, r := range pathForms(s.workspaceRoot) {
+			if rel, err := filepath.Rel(d, r); err == nil && rel != "." && pathInside(d, r) {
+				first, _, _ := strings.Cut(rel, string(filepath.Separator))
+				holders[first] = true
+			}
+		}
+	}
+	for _, e := range entries {
+		if holders[e.Name()] {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		efi, err := os.Stat(p)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "run_as_data_dir entry " + p + " cannot be read"
+		}
+		perm := efi.Mode().Perm()
+		if perm&0o007 != 0 {
+			return fmt.Sprintf("run_as_data_dir entry %s is open to other users (mode %04o)", p, perm)
+		}
+		gid, ok := fileOwnerGID(efi)
+		if !ok {
+			return "run_as_data_dir entry " + p + ": the group cannot be read"
+		}
+		if gid == s.gid && perm&0o070 != 0 {
+			return fmt.Sprintf("run_as_data_dir entry %s is open to run_as_group %s (mode %04o)", p, s.group, perm)
+		}
+	}
+	return ""
+}
+
 // sudoProbeOK runs `sudo -n -u <user> [-g <group>] true` with the 5 second
 // bound, detached as every spawn is (detachSudoCommand), and reports whether
 // it exited 0.
@@ -580,9 +661,16 @@ func agentCommandAs(ctx context.Context, s *runAsSettings, name string, args ...
 	return cmd, nil
 }
 
-// envBase is the part of the environment the agent user always gets.
+// envBase is the part of the environment the agent user always gets: its
+// home, its Claude config and the Go paths below its home that
+// scripts/box/setup-agent-user.sh prepares (go, go/cache, go/mod). The
+// daemon's values for these names never reach the agent (agentEnvFor).
 func (s *runAsSettings) envBase() []string {
-	return []string{"HOME=" + s.home, "CLAUDE_CONFIG_DIR=" + filepath.Join(s.home, ".claude")}
+	goDir := filepath.Join(s.home, "go")
+	return []string{
+		"HOME=" + s.home, "CLAUDE_CONFIG_DIR=" + filepath.Join(s.home, ".claude"),
+		"GOPATH=" + goDir, "GOCACHE=" + filepath.Join(goDir, "cache"), "GOMODCACHE=" + filepath.Join(goDir, "mod"),
+	}
 }
 
 // agentEnvNames returns the names of the entries in env, in order.
@@ -608,9 +696,15 @@ func runAsEnvAllowed(name string) bool {
 }
 
 // agentEnvFor applies the allowlist to env (the result of the deny-list scrub
-// plus what the caller appended): allowlisted names only, HOME and
-// CLAUDE_CONFIG_DIR of the agent user, one entry per name, the last one wins.
+// plus what the caller appended): allowlisted names only, the names of
+// envBase with the values of the agent user, one entry per name, the last one
+// wins.
 func (s *runAsSettings) agentEnvFor(env []string) []string {
+	base := s.envBase()
+	own := make(map[string]bool, len(base))
+	for _, name := range agentEnvNames(base) {
+		own[name] = true
+	}
 	last := map[string]string{}
 	var order []string
 	add := func(kv string) {
@@ -624,11 +718,11 @@ func (s *runAsSettings) agentEnvFor(env []string) []string {
 		last[name] = kv
 	}
 	for _, kv := range env {
-		if name, _, _ := strings.Cut(kv, "="); runAsEnvAllowed(name) && name != "CLAUDE_CONFIG_DIR" {
+		if name, _, _ := strings.Cut(kv, "="); runAsEnvAllowed(name) && !own[name] {
 			add(kv)
 		}
 	}
-	for _, kv := range s.envBase() {
+	for _, kv := range base {
 		add(kv)
 	}
 	out := make([]string, 0, len(order))

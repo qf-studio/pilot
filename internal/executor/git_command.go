@@ -30,8 +30,13 @@ import (
 // plain command.
 
 // defaultRunAsWorkspaceDir is the workspace root when run_as_user is set and
-// run_as_workspace_dir is empty.
-const defaultRunAsWorkspaceDir = "/var/lib/pilot/agent-workspaces"
+// run_as_workspace_dir is empty: the workspaces directory below the agent root
+// that scripts/box/setup-agent-user.sh creates in the data directory.
+const defaultRunAsWorkspaceDir = "/var/lib/pilot/agent/workspaces"
+
+// defaultRunAsDataDir is the data directory of the daemon when run_as_user is
+// set and run_as_data_dir is empty: the default of the setup script.
+const defaultRunAsDataDir = "/var/lib/pilot"
 
 // gitAgentEnv is the fixed list of git variables a site may set on a git
 // command (appendGitEnv). On the agent route they are the only names, besides
