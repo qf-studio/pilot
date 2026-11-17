@@ -2,14 +2,17 @@
 # Mock host commands for setup-agent-user_test.sh. One script, linked into the
 # test's stub bin under the name of each command it stands for (useradd,
 # groupadd, usermod, visudo, iptables, ip6tables, systemctl, install, chown,
-# chmod, id, getent, stat, sudo, runuser); the command is the basename of $0.
+# chmod, id, getent, stat, sudo, runuser, pgrep, pkill, sleep); the command is
+# the basename of $0.
 #
 # Every call is appended to $MOCK_CALL_LOG. A call that would change a real
 # host also goes to $MOCK_MUT_LOG, so a dry run can be shown to change nothing.
 # The "host" is a state directory ($MOCK_STATE_DIR): users/ (one file per user:
 # uid:shell:primary-group, empty for the defaults), groups/, members/<group>,
 # meta/ (owner:group per path), enabled/, <family>.rules, gap.log (a firewall
-# change that left the OUTPUT chain without a jump to a chain with a REJECT rule).
+# change that left the OUTPUT chain without a jump to a chain with a REJECT rule),
+# procs/<user> (one fake pid per line: the processes of the user that pgrep
+# lists and pkill ends). sleep returns at once.
 #
 # Commands that act on files only do so inside $MOCK_SANDBOX; anywhere else they
 # are logged and refused, so a script that went wrong cannot touch the real host.
@@ -35,14 +38,16 @@
 # MOCK_SUDO_BROKEN=1 (sudo fails whatever the rules), MOCK_SUDO_ROOT_OK=1 (sudo
 # to root succeeds whatever the files hold: a rule from another source),
 # MOCK_SUDO_LIST (a file that `sudo -ll -U` prints as the rule list),
-# MOCK_REAL_PATH (PATH for the real tools the mocks delegate to).
+# MOCK_REAL_PATH (PATH for the real tools the mocks delegate to),
+# MOCK_PROC_TERM_IGNORED=1 (pkill -TERM ends no process), MOCK_PROC_UNKILLABLE=1
+# (pkill -KILL ends none either).
 
 set -euo pipefail
 
 cmd="${0##*/}"
 state="${MOCK_STATE_DIR:?}"
 sandbox="${MOCK_SANDBOX:?}"
-[ -d "${state}/enabled" ] || mkdir -p "$state"/{users,groups,members,meta,enabled}
+[ -d "${state}/procs" ] || mkdir -p "$state"/{users,groups,members,meta,enabled,procs}
 
 real() { PATH="${MOCK_REAL_PATH:?}" "$@"; }
 
@@ -536,6 +541,31 @@ case "$cmd" in
         echo "User ${user} may run the following commands on host:"
         printf '%s\n' "$rules" | grep -v '^$' | awk '/^Sudoers entry:/ { print "" } { print }'
         ;;
+    pgrep)
+        # pgrep [-l] -u USER
+        user="" list=0
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -l) list=1 ;;
+                -u) user="$2"; shift ;;
+            esac
+            shift
+        done
+        [ -s "${state}/procs/${user}" ] || exit 1
+        if [ "$list" = 1 ]; then sed 's/$/ mock-proc/' "${state}/procs/${user}"; else cat "${state}/procs/${user}"; fi
+        ;;
+    pkill)
+        # pkill -SIGNAL -u USER
+        mutating "$@"
+        [ "${2:-}" = -u ] || exit 2
+        [ -s "${state}/procs/$3" ] || exit 1
+        case "$1" in
+            -TERM) [ "${MOCK_PROC_TERM_IGNORED:-0}" = 1 ] || [ "${MOCK_PROC_UNKILLABLE:-0}" = 1 ] || : >"${state}/procs/$3" ;;
+            -KILL) [ "${MOCK_PROC_UNKILLABLE:-0}" = 1 ] || : >"${state}/procs/$3" ;;
+            *) exit 2 ;;
+        esac
+        ;;
+    sleep) ;;
     iptables | ip6tables) fw "$@" ;;
     systemctl)
         args=()
