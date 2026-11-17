@@ -6,6 +6,7 @@ package executor
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,8 @@ import (
 )
 
 // ghGuardShimScript is the shim installed as `gh` on the subprocess's PATH.
-// It re-execs the Pilot binary itself in gh-guard mode, passing the
+// It re-execs the Pilot binary itself (with run_as_user set, the per-run
+// copy of installGhGuardBinary) in gh-guard mode, passing the
 // original argv through untouched. A shell script (rather than a symlink or
 // argv[0]-dispatch binary) because /bin/sh is present on every platform
 // Pilot supports (darwin + Linux) and it keeps the shim trivially
@@ -47,15 +49,26 @@ func setupGhGuardShim(realGh string) (shimDir, journalPath string, cleanup func(
 		return "", "", func() {}, fmt.Errorf("ghguard: shim dir permissions: %w", err)
 	}
 
-	pilotExe, err := os.Executable()
-	if err != nil {
-		cleanup()
-		return "", "", func() {}, fmt.Errorf("ghguard: resolve pilot executable path: %w", err)
-	}
-	// Resolve symlinks so the shim always execs the real binary even if
-	// os.Executable() returned a symlink path (e.g. a Homebrew/asdf shim).
-	if resolved, symErr := filepath.EvalSymlinks(pilotExe); symErr == nil {
-		pilotExe = resolved
+	var pilotExe string
+	if runAsSettingsNow() != nil {
+		// TASK-651: the agent user cannot read the daemon's binary directory
+		// on a prepared host, so the shim runs a copy in its own directory.
+		pilotExe, err = installGhGuardBinary(shimDir)
+		if err != nil {
+			cleanup()
+			return "", "", func() {}, err
+		}
+	} else {
+		pilotExe, err = os.Executable()
+		if err != nil {
+			cleanup()
+			return "", "", func() {}, fmt.Errorf("ghguard: resolve pilot executable path: %w", err)
+		}
+		// Resolve symlinks so the shim always execs the real binary even if
+		// os.Executable() returned a symlink path (e.g. a Homebrew/asdf shim).
+		if resolved, symErr := filepath.EvalSymlinks(pilotExe); symErr == nil {
+			pilotExe = resolved
+		}
 	}
 
 	shimPath := filepath.Join(shimDir, "gh")
@@ -86,6 +99,57 @@ func setupGhGuardShim(realGh string) (shimDir, journalPath string, cleanup func(
 		}
 	}
 	return shimDir, journalPath, cleanup, nil
+}
+
+// ghGuardBinaryName is the name of the copy of the daemon binary in the shim
+// directory (run_as_user set).
+const ghGuardBinaryName = "pilot-gh-guard"
+
+// ghGuardSelfExe is the running binary on Linux. It stays readable after a
+// self-upgrade, when the os.Executable path ends in " (deleted)". Tests
+// replace it.
+var ghGuardSelfExe = "/proc/self/exe"
+
+// installGhGuardBinary copies the running binary into shimDir and returns the
+// path of the copy, with the mode and group applyGuardPerm gives the gh
+// script. The source is ghGuardSelfExe, the os.Executable path when that does
+// not exist (darwin). The copy goes with shimDir in the clean-up of
+// setupGhGuardShim.
+//
+// Decision: a copy for each run (founder call 11-16) rather than a binary in a
+// directory the agent user can read: the daemon's binary directory stays
+// closed to the agent user, and an upgrade during a run does not touch it.
+func installGhGuardBinary(shimDir string) (string, error) {
+	src := ghGuardSelfExe
+	if _, err := os.Stat(src); err != nil {
+		exe, exeErr := os.Executable()
+		if exeErr != nil {
+			return "", fmt.Errorf("ghguard: resolve pilot executable path: %w", exeErr)
+		}
+		src = exe
+	}
+	in, err := os.Open(src) // #nosec G304 -- the running binary
+	if err != nil {
+		return "", fmt.Errorf("ghguard: open pilot binary %s: %w", src, err)
+	}
+	defer func() { _ = in.Close() }()
+
+	dst := filepath.Join(shimDir, ghGuardBinaryName)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o700) // #nosec G302 -- executable, opened to the group by applyGuardPerm
+	if err != nil {
+		return "", fmt.Errorf("ghguard: create pilot binary copy: %w", err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return "", fmt.Errorf("ghguard: copy pilot binary %s: %w", src, err)
+	}
+	if err := out.Close(); err != nil {
+		return "", fmt.Errorf("ghguard: copy pilot binary %s: %w", src, err)
+	}
+	if err := applyGuardPerm(dst, 0o750); err != nil {
+		return "", fmt.Errorf("ghguard: pilot binary copy permissions: %w", err)
+	}
+	return dst, nil
 }
 
 // prependPathEnv returns env with dir prepended to the PATH entry. It

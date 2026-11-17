@@ -85,7 +85,13 @@ func Load(repoPath string) (*Workflow, error) {
 		}
 		return nil, fmt.Errorf("workflow: read %s: %w", filePath, err)
 	}
+	return Parse(data, filePath)
+}
 
+// Parse parses the content of a workflow file; filePath only names the file
+// in the error text. Load is os.ReadFile plus Parse; a caller that reads the
+// file another way (TASK-651: as the agent user) parses the bytes here.
+func Parse(data []byte, filePath string) (*Workflow, error) {
 	frontMatter, body, err := splitFrontMatter(data)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: parse %s: %w", filePath, err)
