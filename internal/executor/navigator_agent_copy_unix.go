@@ -10,37 +10,37 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 )
 
 // openWorkspaceRootFD opens the workspace worktreePath for the copy out: the
-// configured workspace root, then the workspace name below it with O_NOFOLLOW.
-// worktreePath must be a directory directly below the workspace root (as
-// configured or as resolved); any other path and a link at the workspace name
-// are errors. The agent user owns the workspace and can rename it and put a
-// link in its place: every later open of the copy starts from this one
-// descriptor, never again from the path string.
+// configured workspace root as given, then the workspace name below it with
+// Openat and O_NOFOLLOW. worktreePath must name an entry directly below the
+// workspace root (in the given or the resolved form of the root); any other
+// path is an error, and a link at the workspace name is refused
+// (noFollowRefused). The agent user owns the workspace and can rename it and
+// put a link in its place; the copy out holds the returned descriptor to its
+// end and never opens the path string again.
 func openWorkspaceRootFD(worktreePath string) (*os.File, error) {
 	s := runAsSettingsNow()
 	if s == nil || s.workspaceRoot == "" {
-		return nil, errors.New("run_as_user is not set")
+		return nil, errors.New("open workspace: run_as_user is not set")
 	}
 	ws, err := absCleanPath(worktreePath)
 	if err != nil {
-		return nil, fmt.Errorf("workspace %q: %w", worktreePath, err)
+		return nil, fmt.Errorf("open workspace %q: %w", worktreePath, err)
 	}
 	parent, name := filepath.Dir(ws), filepath.Base(ws)
-	root := ""
-	for _, r := range pathForms(s.workspaceRoot) {
-		if parent == r {
-			root = r
+	var root string
+	for _, form := range pathForms(s.workspaceRoot) {
+		if form == parent {
+			root = form
 			break
 		}
 	}
-	if root == "" || name == "." || name == ".." || name == string(filepath.Separator) {
-		return nil, fmt.Errorf("workspace %q is not a directory directly below the workspace root %q", worktreePath, s.workspaceRoot)
+	if root == "" || ws == parent {
+		return nil, fmt.Errorf("open workspace %s: not directly below the workspace root %s", ws, s.workspaceRoot)
 	}
 	rootFD, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -54,18 +54,17 @@ func openWorkspaceRootFD(worktreePath string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), ws), nil
 }
 
-// openWorkspaceNoFollow opens rel (slash-separated, below the workspace
-// descriptor ws of openWorkspaceRootFD) one path element at a time, each with
-// O_NOFOLLOW: a link at any element below the workspace is refused
-// (noFollowRefused), never followed, and there is no window between a check
-// and the open. Every element but the last must be a directory; the last one
-// too when dir is set. ws stays open.
+// openWorkspaceNoFollow opens rel (slash-separated) below the workspace
+// descriptor ws of openWorkspaceRootFD one path element at a time, each with
+// O_NOFOLLOW: a link at any element is refused (noFollowRefused), never
+// followed, and there is no window between a check and the open. Every
+// element but the last must be a directory; the last one too when dir is set.
+// ws stays open; the name of the result is for messages only.
 func openWorkspaceNoFollow(ws *os.File, rel string, dir bool) (*os.File, error) {
-	root := ws.Name()
 	parts := strings.Split(rel, "/")
 	for _, name := range parts {
 		if name == "" || name == "." || name == ".." {
-			return nil, fmt.Errorf("open %s below %s: invalid path element %q", rel, root, name)
+			return nil, fmt.Errorf("open %s below %s: invalid path element %q", rel, ws.Name(), name)
 		}
 	}
 	base := int(ws.Fd())
@@ -83,11 +82,11 @@ func openWorkspaceNoFollow(ws *os.File, rel string, dir bool) (*os.File, error) 
 			_ = unix.Close(fd)
 		}
 		if err != nil {
-			return nil, &fs.PathError{Op: "open", Path: filepath.Join(root, filepath.Join(parts[:i+1]...)), Err: err}
+			return nil, &fs.PathError{Op: "open", Path: filepath.Join(ws.Name(), filepath.Join(parts[:i+1]...)), Err: err}
 		}
 		fd = next
 	}
-	return os.NewFile(uintptr(fd), filepath.Join(root, filepath.FromSlash(rel))), nil
+	return os.NewFile(uintptr(fd), filepath.Join(ws.Name(), filepath.FromSlash(rel))), nil
 }
 
 // noFollowRefused reports whether err of openWorkspaceNoFollow is the refusal
@@ -97,16 +96,38 @@ func noFollowRefused(err error) bool {
 	return errors.Is(err, unix.ELOOP) || errors.Is(err, unix.EMLINK) || errors.Is(err, unix.ENOTDIR)
 }
 
-// openFileNoFollow opens path for reading without following a link at its
-// last element; O_NONBLOCK keeps a FIFO from blocking the open.
-func openFileNoFollow(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- the daemon's own .agent directory.
+// openSourceFileNoFollow opens path (a file of the daemon's .agent) for the
+// copy in with O_NOFOLLOW, and O_NONBLOCK so that a FIFO put there after the
+// Lstat cannot block the open. Anything but a regular file is refused with
+// errNotRegular.
+func openSourceFileNoFollow(path string) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		_ = unix.Close(fd)
+		return nil, &fs.PathError{Op: "fstat", Path: path, Err: err}
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG {
+		_ = unix.Close(fd)
+		return nil, &fs.PathError{Op: "open", Path: path, Err: errNotRegular}
+	}
+	if err := unix.SetNonblock(fd, false); err != nil {
+		_ = unix.Close(fd)
+		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(fd), path), nil
 }
 
-// fileLinkCount is the number of hard links of info (1 when unknown).
-func fileLinkCount(info os.FileInfo) uint64 {
-	if st, ok := info.Sys().(*syscall.Stat_t); ok {
-		return uint64(st.Nlink) //nolint:unconvert // the type of Nlink differs between platforms
+// linkCount is the number of hard links of the open file f.
+func linkCount(f *os.File) (uint64, error) {
+	var st unix.Stat_t
+	err := unix.Fstat(int(f.Fd()), &st)
+	runtime.KeepAlive(f)
+	if err != nil {
+		return 0, &fs.PathError{Op: "fstat", Path: f.Name(), Err: err}
 	}
-	return 1
+	return uint64(st.Nlink), nil //nolint:unconvert // the type of Nlink differs between platforms
 }
