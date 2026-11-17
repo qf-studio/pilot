@@ -3284,9 +3284,9 @@
         "title": "Pre-flight judge \u2014 the judge knows the repository it works for, and a link to that repository is never \"external\"",
         "status": "dispatched",
         "concepts": [
-          "testing",
           "context",
-          "deployment"
+          "deployment",
+          "testing"
         ],
         "issues": [
           "https://github.com/qf-studio/pilot/issues/6456"
@@ -13622,17 +13622,17 @@
     },
     {
       "from": "TASK-655",
-      "to": "testing",
-      "type": "implements"
-    },
-    {
-      "from": "TASK-655",
       "to": "context",
       "type": "implements"
     },
     {
       "from": "TASK-655",
       "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-655",
+      "to": "testing",
       "type": "implements"
     }
   ],
@@ -16339,7 +16339,7 @@
       "TASK-651"
     ]
   },
-  "last_updated": "2026-11-17T20:12:25.157142+00:00",
+  "last_updated": "2026-11-17T22:09:39.423966+00:00",
   "stats": {
     "total_nodes": 802,
     "total_edges": 863,

@@ -28,8 +28,9 @@
 # apply, replaced by a link to a file of root before the undo: the printed undo
 # line, run as root, leaves the file of root as it is; a process of the agent
 # user is stopped), a second undo; with ip6tables hidden from PATH the apply
-# fails and no sudoers rule file exists; then the printed cleanup; invalid
-# arguments.
+# fails and no sudoers rule file exists; a full apply, then an apply with
+# ip6tables hidden: the sudoers rule file of the full apply is removed; then the
+# printed cleanup; invalid arguments.
 #
 # Usage (CI): sudo --preserve-env=CI ./scripts/box/setup-agent-user_real_test.sh
 
@@ -684,7 +685,6 @@ expect_step cloud-init-sudoers skipped
 check "the failure says ip6tables is not found and IPv6 is on" grep -qF "ip6tables not found and IPv6 is on" "$LOG"
 check_not "no sudoers rule file exists" test -e "$RUNAS_FILE"
 check "the root line of the daemon user is still active" grep -qxF "${DAEMON} ALL=(ALL) NOPASSWD:ALL" "$CLOUD_INIT"
-rm -rf "$HIDDEN"
 if run_setup --undo; then
     pass "undo after the failed apply exits 0"
 else
@@ -693,6 +693,37 @@ else
 fi
 expect_step firewall-ipv4 "done"
 check "iptables: no chain and no jump" no_firewall iptables
+
+echo "=== real test: a full apply, then an apply with ip6tables hidden from PATH — the sudoers rule file of the full apply is removed ==="
+# The link at go/cache that the undo case left: the agent user puts the directory back.
+as "$AGENT" bash -c 'rm -f "$1/go/cache" && mkdir "$1/go/cache"' _ "$AHOME"
+if run_setup --confirm-root-path; then
+    pass "full apply exits 0"
+else
+    show_log
+    fail_test "full apply exited non-zero"
+fi
+check "the full apply installed the sudoers rule file" test -e "$RUNAS_FILE"
+check "the daemon user runs a command as the agent user" as "$DAEMON" sudo -n -u "$AGENT" true
+rc=0
+PATH="$HIDDEN" run_setup || rc=$?
+if [ "$rc" = 1 ]; then pass "apply with ip6tables hidden exits 1"; else show_log; fail_test "apply with ip6tables hidden after a full apply: exit ${rc}, want 1"; fi
+expect_step firewall-ipv6 failed
+check_not "no sudoers rule file exists" test -e "$RUNAS_FILE"
+check "one line says the rule is removed" grep -qF "firewall-ipv6 failed before the sudoers-rule step: removing the sudo rule of an earlier apply, ${RUNAS_FILE}" "$LOG"
+check "the summary lists the removal" grep -qxF "sudo rule removed: ${RUNAS_FILE} (firewall-ipv6 failed; the next apply that passes puts it back)" "$LOG"
+check_not "the daemon user cannot run a command as the agent user" as "$DAEMON" sudo -n -u "$AGENT" true
+rm -rf "$HIDDEN"
+if run_setup --undo; then
+    pass "undo after the second, failed apply exits 0"
+else
+    show_log
+    fail_test "undo after the second, failed apply exited non-zero"
+fi
+check "the sudoers file of the daemon user is restored (active root line)" grep -qxF "${DAEMON} ALL=(ALL) NOPASSWD:ALL" "$CLOUD_INIT"
+for bin in iptables ip6tables; do
+    check "${bin}: no chain and no jump" no_firewall "$bin"
+done
 
 # The user, the group and the directories stay after undo; the cleanup it
 # prints removes them.
