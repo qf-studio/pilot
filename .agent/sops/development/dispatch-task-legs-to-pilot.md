@@ -93,6 +93,12 @@ By hand, in the same session:
 | Leg decomposed into sub-issues | `no-decompose` missing at first pickup | Kill the child, let the row go terminal, add `no-decompose`, cycle the `pilot` label |
 | `absent` probe fails on a re-run | The probe matches the task doc itself on `origin/main` | Rewrite the probe with `[[:space:]]+` or `^func` anchoring |
 | Evidence block empty in the PR | Acceptance bullets not in the dialect, or a second backtick in a paste-output bullet | Rule 5b; one command per bullet |
+| `absent` probe fails on the first run | The probe matches the Scope text of the leg (for example `navigatorTarStrea[m]` matches "the function navigatorTarStream") | Use a declaration shape that prose never has: `func[[:space:]]Name\(` for Go, `^name\(\)` for a shell function |
+| `present` probe "found nothing" for text that is on main | The pattern starts with `-` and is read as an option | Probe a function declaration |
+| "no legs found" for `--only P1a` | A leg id is one letter and digits (`P1`, `B10`) | Rename the leg |
+| "backticked path not on origin/main" | The leg names a file that it creates | Write the new file name without backticks |
+| A leg after another leg of the same file stays queued | The daemon defers an issue whose scope overlaps an older open issue, also when that older issue is parked with `pilot-needs-human` | Finish, retry or close the parked issue first |
+| Graph node lost its `issues` list in a worktree | A Navigator Stop hook rewrites `.agent/knowledge/graph.json` | `git checkout -- .agent/knowledge/graph.json` before the graph edit and before the commit |
 
 ## Refs
 
