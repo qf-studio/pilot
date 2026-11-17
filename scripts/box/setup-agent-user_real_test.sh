@@ -13,7 +13,7 @@
 # the daemon user whose target path holds a newline and a forged line); apply
 # (agent root, chains, jumps, unit, systemd-analyze verify, the config lines);
 # connections as the agent user and as the daemon user (metadata address, port
-# 9091, another local port); the boot unit rebuilds a deleted chain; the agent
+# 9091 on 127.0.0.1 and on ::1, another local port); the boot unit rebuilds a deleted chain; the agent
 # user has no sudo and no access to a repository of the daemon, also to a file
 # the daemon user makes with umask 022 after the apply; 20 applies while the
 # agent user swaps a directory of its home for a link to a directory of root;
@@ -24,8 +24,10 @@
 # the agent user passes; a second apply skips every step; undo with go/cache a link outside the data dir (it
 # prints the recorded modes; an entry of the daemon user at 0777 before the
 # apply, replaced by a link to a file of root before the undo: the printed undo
-# line, run as root, leaves the file of root as it is), a second undo, then the
-# printed cleanup; invalid arguments.
+# line, run as root, leaves the file of root as it is; a process of the agent
+# user is stopped), a second undo; with ip6tables hidden from PATH the apply
+# fails and no sudoers rule file exists; then the printed cleanup; invalid
+# arguments.
 #
 # Usage (CI): sudo --preserve-env=CI ./scripts/box/setup-agent-user_real_test.sh
 
@@ -210,9 +212,9 @@ no_firewall() {
     ! "$1" -w -S | grep -q "$CHAIN"
 }
 
-# curl_ok USER URL — USER gets an answer from URL.
+# curl_ok USER URL — USER gets an answer from URL (-g: [::1] is an address, not a glob).
 curl_ok() {
-    as "$1" curl -sS -o /dev/null --max-time 5 "$2"
+    as "$1" curl -g -sS -o /dev/null --max-time 5 "$2"
 }
 
 # check_connections LABEL — the agent user reaches neither the metadata address
@@ -223,16 +225,19 @@ check_connections() {
     check_not "$1: the agent user cannot reach 127.0.0.1:9091" curl_ok "$AGENT" "http://127.0.0.1:9091/"
     check "$1: the daemon user reaches the metadata address" curl_ok "$DAEMON" "http://${METADATA}/"
     check "$1: the daemon user reaches 127.0.0.1:9091" curl_ok "$DAEMON" "http://127.0.0.1:9091/"
+    check_not "$1: the agent user cannot reach [::1]:9091" curl_ok "$AGENT" "http://[::1]:9091/"
+    check "$1: the daemon user reaches [::1]:9091" curl_ok "$DAEMON" "http://[::1]:9091/"
     check "$1: the agent user reaches another local port (127.0.0.1:${OTHER_PORT})" curl_ok "$AGENT" "http://127.0.0.1:${OTHER_PORT}/"
 }
 
 # listen ADDRESS PORT — an HTTP server as root, up before it returns.
 listen() {
-    local i
+    local i host="$1"
+    case "$host" in *:*) host="[${host}]" ;; esac
     python3 -m http.server --bind "$1" --directory "$WEB" "$2" >/dev/null 2>&1 &
     LISTENERS+=("$!")
     for i in $(seq 1 50); do
-        if curl -sS -o /dev/null --max-time 1 "http://$1:$2/" 2>/dev/null; then
+        if curl -g -sS -o /dev/null --max-time 1 "http://${host}:$2/" 2>/dev/null; then
             return 0
         fi
         sleep 0.2
@@ -402,6 +407,7 @@ ip addr add "${METADATA}/32" dev lo
 METADATA_ADDED=1
 listen "$METADATA" 80
 listen 127.0.0.1 9091
+listen ::1 9091
 listen 127.0.0.1 "$OTHER_PORT"
 check_connections "after the apply"
 
@@ -413,6 +419,7 @@ for bin in iptables ip6tables; do
     check "${bin}: the jump and the chain are gone" no_firewall "$bin"
 done
 check "the agent user reaches port 9091 without the chain (the test is not vacuous)" curl_ok "$AGENT" "http://127.0.0.1:9091/"
+check "the agent user reaches [::1]:9091 without the chain (the test is not vacuous)" curl_ok "$AGENT" "http://[::1]:9091/"
 if systemctl start "$UNIT"; then
     pass "systemctl start ${UNIT}"
 else
@@ -572,12 +579,25 @@ check "the file of root is root's, mode 644" test "$(stat -c %U:%a "${ROOTDIR}/f
 as "$DAEMON" bash -c 'rm -f "$1/open" && ln -s "$2" "$1/open"' _ "$DATA_DIR" "${ROOTDIR}/file"
 check "the open entry is a link to the file of root" test "$(readlink "${DATA_DIR}/open")" = "${ROOTDIR}/file"
 OUTSIDE_BEFORE="$(find "$OUTSIDE" -printf '%p %m %U:%G %s\n' | sort)"
+# A process of the agent user that would outlive the firewall: undo stops it.
+as "$AGENT" sleep 300 &
+AGENT_SLEEP=$!
+LISTENERS+=("$AGENT_SLEEP")
+for try in $(seq 1 50); do
+    if pgrep -u "$AGENT" -x sleep >/dev/null; then break; fi
+    sleep 0.2
+done
+check "a process of the agent user runs before the undo" pgrep -u "$AGENT" -x sleep
 if run_setup --undo; then
     pass "undo exits 0"
 else
     show_log
     fail_test "undo exited non-zero"
 fi
+check "undo says how many processes of the agent user it stops" grep -qE "^stopping [1-9][0-9]* process\(es\) of ${AGENT}: TERM, then KILL after 5 seconds\$" "$LOG"
+expect_step agent-processes "done"
+check_not "no process of the agent user is left after the undo" pgrep -u "$AGENT"
+wait "$AGENT_SLEEP" 2>/dev/null || true
 check "the sudoers file of the daemon user is restored (active root line)" grep -qxF "${DAEMON} ALL=(ALL) NOPASSWD:ALL" "$CLOUD_INIT"
 check "undo prints the chmod that puts back the mode of the data dir" grep -qxF "  runuser -u ${DAEMON} -- chmod 755 '${DATA_DIR}'" "$LOG"
 check "undo prints the chmod that puts back the mode of the repos directory" grep -qxF "  runuser -u ${DAEMON} -- chmod 755 '${DATA_DIR}/repos'" "$LOG"
@@ -606,7 +626,7 @@ else
     show_log
     fail_test "a second undo exited non-zero"
 fi
-for s in cloud-init-sudoers firewall-unit firewall-ipv4 firewall-ipv6 sudoers-rule; do
+for s in cloud-init-sudoers agent-processes firewall-unit firewall-ipv4 firewall-ipv6 sudoers-rule; do
     expect_step "$s" skipped
 done
 for bin in iptables ip6tables; do
@@ -616,6 +636,42 @@ check_not "no unit file" test -e "$UNIT_FILE"
 check_not "the unit is not enabled" systemctl is-enabled --quiet "$UNIT"
 check_not "the unit is not active" systemctl is-active --quiet "$UNIT"
 check_not "no sudoers file of the script" test -e "$RUNAS_FILE"
+
+echo "=== real test: with ip6tables hidden from PATH the apply fails before the sudoers rule ==="
+check "IPv6 is on on this host (disable_ipv6 of all is 0)" test "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = 0
+# A PATH of links to every command of PATH but ip6tables*.
+HIDDEN="$(mktemp -d)"
+IFS=: read -ra path_dirs <<<"$PATH"
+for d in "${path_dirs[@]}"; do
+    for f in "$d"/*; do
+        case "${f##*/}" in ip6tables*) continue ;; esac
+        if [ -x "$f" ] && [ ! -e "${HIDDEN}/${f##*/}" ]; then ln -s "$f" "${HIDDEN}/${f##*/}"; fi
+    done
+done
+check_not "ip6tables is not found with that PATH" env PATH="$HIDDEN" bash -c 'command -v ip6tables'
+check "iptables is found with that PATH" env PATH="$HIDDEN" bash -c 'command -v iptables'
+# The link to the file of root that the undo case left: the operator removes it.
+rm -f "${DATA_DIR}/open"
+rc=0
+(export PATH="$HIDDEN" && run_setup --confirm-root-path) || rc=$?
+if [ "$rc" = 1 ]; then pass "apply exits 1"; else show_log; fail_test "apply with ip6tables hidden: exit ${rc}, want 1"; fi
+expect_step firewall-ipv4 "done"
+expect_step firewall-ipv6 failed
+expect_step sudoers-rule skipped
+expect_step cloud-init-sudoers skipped
+check "the failure says ip6tables is not found and IPv6 is on" grep -qF "ip6tables not found and IPv6 is on" "$LOG"
+check_not "no sudoers rule file exists" test -e "$RUNAS_FILE"
+check "the root line of the daemon user is still active" grep -qxF "${DAEMON} ALL=(ALL) NOPASSWD:ALL" "$CLOUD_INIT"
+rm -rf "$HIDDEN"
+if run_setup --undo; then
+    pass "undo after the failed apply exits 0"
+else
+    show_log
+    fail_test "undo after the failed apply exited non-zero"
+fi
+expect_step firewall-ipv4 "done"
+check "iptables: no chain and no jump" no_firewall iptables
+
 # The user, the group and the directories stay after undo; the cleanup it
 # prints removes them.
 # A process that pkill signalled can take a moment to exit, so each command

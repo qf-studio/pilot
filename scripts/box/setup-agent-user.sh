@@ -30,19 +30,24 @@
 #   group             system group (default: pilot)
 #   agent-user        system user, no login shell, home AGENT_ROOT/home
 #   daemon-membership daemon user joins the group
-#   directories       the agent root (root:root 0755) and, below it, home (agent
-#                     user, 0750) and workspaces (agent user, 2770), made by root;
-#                     go, go/cache and go/mod below the home, made by the agent user
-#                     (no root step inside a directory of the agent user)
-#   sudoers-rule      daemon user may run any command as the agent user
-#                     (NOPASSWD, SETENV); validated BEFORE it is moved into place
 #   firewall-<family> dedicated chain, owner match on the agent user: reject the
 #                     metadata address and TCP to the gateway port on loopback; the
 #                     chain is rebuilt under a temporary name and switched in, so
 #                     the reject rules are never missing; a temporary chain that a
-#                     failed run left is removed. IPv6 is skipped when ip6tables is
-#                     missing.
+#                     failed run left is removed. A missing ip6tables fails the
+#                     IPv6 step, unless IPv6 is off on the host (disable_ipv6 is 1
+#                     for every entry of IPV6_CONF_DIR, "all" and "default" too);
+#                     then the step is skipped.
 #   firewall-unit     oneshot systemd unit that applies the chain at boot
+#   directories       the agent root (root:root 0755) and, below it, home (agent
+#                     user, 0750) and workspaces (agent user, 2770), made by root;
+#                     go, go/cache and go/mod below the home, made by the agent user
+#                     (no root step inside a directory of the agent user). A link,
+#                     a file or a FIFO at one of these fails the step; the firewall
+#                     steps ran before it, so the agent user cannot stop them.
+#   sudoers-rule      daemon user may run any command as the agent user
+#                     (NOPASSWD, SETENV); validated BEFORE it is moved into place.
+#                     After the firewall: a failed firewall step leaves no rule.
 #   cloud-init-sudoers  LAST: comment out the lines that give the daemon user (and
 #                     nobody else) sudo to root in the cloud-init sudoers file
 #                     (numbered backups, validated), then prove by behaviour that
@@ -78,10 +83,14 @@
 #                        set up already); asked before the first change
 #   --dry-run            print every command, change nothing
 #   --undo               restore the cloud-init file from the newest backup in
-#                        which the root line of the daemon user is active, stop and
-#                        disable the boot unit, remove the firewall chain and the
-#                        sudoers rule; the user, the group and the directories stay
-#                        (the commands to delete them are printed, not run), and so
+#                        which the root line of the daemon user is active, stop
+#                        every process of the agent user (TERM, then KILL after 5
+#                        seconds), stop and disable the boot unit, remove the
+#                        firewall chain and the sudoers rule. Every step runs, also
+#                        after a failed one; the failed ones are named at the end
+#                        and the exit status is 1. The user, the group and the
+#                        directories stay (the commands to delete them are
+#                        printed, not run), and so
 #                        do the modes of the daemon's entries (the chmods that put
 #                        back the recorded modes are printed, as the daemon user,
 #                        not run; a record line with a special bit or a path
@@ -99,12 +108,14 @@
 #   NOLOGIN_SHELL        default /usr/sbin/nologin
 #   IPTABLES_CMD         default iptables
 #   IP6TABLES_CMD        default ip6tables
+#   IPV6_CONF_DIR        default /proc/sys/net/ipv6/conf (the disable_ipv6 settings)
 #   DAEMON_MODES_RECORD  default /root/.setup-agent-user.modes (root's file outside
 #                        the data dir: the modes the daemon-private step found)
 #
-# Exit status: 0 when every step is done or skipped, 1 when a step failed (the
-# run stops at the first failed step; the steps after it are listed in the
-# summary as skipped), 2 on bad arguments (nothing is changed).
+# Exit status: 0 when every step is done or skipped, 1 when a step failed (an
+# apply stops at the first failed step, the steps after it are listed in the
+# summary as skipped; an undo runs every step), 2 on bad arguments (nothing is
+# changed).
 
 set -euo pipefail
 
@@ -129,6 +140,7 @@ CLOUD_INIT_SUDOERS="${CLOUD_INIT_SUDOERS:-${SUDOERS_DIR}/90-cloud-init-users}"
 NOLOGIN_SHELL="${NOLOGIN_SHELL:-/usr/sbin/nologin}"
 IPT4="${IPTABLES_CMD:-iptables}"
 IPT6="${IP6TABLES_CMD:-ip6tables}"
+IPV6_CONF_DIR="${IPV6_CONF_DIR:-/proc/sys/net/ipv6/conf}"
 MODES_RECORD="${DAEMON_MODES_RECORD:-/root/.setup-agent-user.modes}"
 
 SUDOERS_NAME="90-pilot-agent-runas"
@@ -139,6 +151,8 @@ CHAIN_ALT="${CHAIN}_ALT"
 METADATA_V4="169.254.169.254"
 METADATA_V6="fd00:ec2::254"
 GATEWAY_PORT="9091"
+# Seconds between the TERM and the KILL of undo for the processes of the agent user.
+KILL_WAIT=5
 
 # Directories the data dir must never be, nor contain (Linux and the macOS
 # aliases of the test host).
@@ -379,30 +393,26 @@ contained() {
     return 1
 }
 
-# resolve_inside LABEL PATH TYPE — sets RESOLVED to the resolved path of PATH,
-# or "" when it does not exist. A path whose resolved form is not strictly
-# inside the agent root, or has the wrong type, is refused.
-resolve_inside() {
-    local label="$1" path="$2" type="$3"
-    RESOLVED=""
-    if [ ! -e "$path" ]; then
-        [ ! -L "$path" ] || die "${label} '${path}' is a dangling symbolic link"
-        return 0
-    fi
-    contained "$path" || die "${label} '${path}' resolves to '${RESOLVED:-?}', outside the agent root '${AGENT_ROOT}'"
-    case "$type" in
-        d) [ -d "$RESOLVED" ] || die "${label} '${RESOLVED}' is not a directory" ;;
-        f) [ -f "$RESOLVED" ] || die "${label} '${RESOLVED}' is not a regular file" ;;
-    esac
-}
-
 # check_managed_dirs — the directories below the agent root must be real
-# directories inside it. The agent user owns them, so this runs for apply only.
+# directories inside it. The agent user owns them, so this is the first check of
+# the directories step (after the firewall steps), not a refusal before the
+# first change: a link, a file or a FIFO there fails that step only.
 check_managed_dirs() {
     local managed
     for managed in "$AGENT_HOME" "$WORKSPACES" "${AGENT_HOME}/go" "${AGENT_HOME}/go/cache" "${AGENT_HOME}/go/mod"; do
-        [ ! -L "$managed" ] || die "'${managed}' is a symbolic link; refused"
-        resolve_inside "the directory" "$managed" d
+        if [ -L "$managed" ]; then
+            echo "'${managed}' is a symbolic link; refused" >&2
+            return 1
+        fi
+        [ -e "$managed" ] || continue
+        if ! contained "$managed"; then
+            echo "the directory '${managed}' resolves to '${RESOLVED:-?}', outside the agent root '${AGENT_ROOT}'" >&2
+            return 1
+        fi
+        if [ ! -d "$RESOLVED" ]; then
+            echo "'${managed}' is not a directory (a file or a FIFO); refused" >&2
+            return 1
+        fi
     done
 }
 
@@ -601,6 +611,7 @@ step_daemon_membership() {
 step_directories() {
     local d missing=0
     CHANGED=0
+    check_managed_dirs || return 1
     ensure_dir "$AGENT_ROOT" root root 755 || return 1
     ensure_dir "$AGENT_HOME" "$AGENT_USER" "$GROUP" 750 || return 1
     ensure_dir "$WORKSPACES" "$AGENT_USER" "$GROUP" 2770 || return 1
@@ -1084,11 +1095,28 @@ firewall_family() {
 
 step_firewall_ipv4() { firewall_family "$IPT4" v4; }
 
+# ipv6_off — IPv6 is off on the host: disable_ipv6 is 1 for every entry of
+# IPV6_CONF_DIR ("all", "default" and each interface). A host without the
+# settings counts as on.
+ipv6_off() {
+    local f
+    [ -f "${IPV6_CONF_DIR}/all/disable_ipv6" ] || return 1
+    for f in "$IPV6_CONF_DIR"/*/disable_ipv6; do
+        [ "$(cat "$f" 2>/dev/null)" = 1 ] || return 1
+    done
+}
+
+# step_firewall_ipv6 — without ip6tables the agent user would reach the metadata
+# address and the gateway port over IPv6: a failure, unless IPv6 is off.
 step_firewall_ipv6() {
     if ! command -v "$IPT6" >/dev/null 2>&1; then
-        RESULT=skipped
-        NOTE="${IPT6} not found: the IPv6 part is skipped, the agent user is not blocked on IPv6"
-        return 0
+        if ipv6_off; then
+            RESULT=skipped
+            NOTE="${IPT6} not found and IPv6 is off (disable_ipv6 is 1 in ${IPV6_CONF_DIR}): the IPv6 part is skipped"
+            return 0
+        fi
+        echo "${IPT6} not found and IPv6 is on (a disable_ipv6 in ${IPV6_CONF_DIR} is not 1): the agent user would not be blocked on IPv6; install ${IPT6} or turn IPv6 off" >&2
+        return 1
     fi
     firewall_family "$IPT6" v6
 }
@@ -1144,7 +1172,7 @@ step_firewall_unit() {
     run systemctl daemon-reload || return 1
     run systemctl enable "$UNIT_NAME" || return 1
     if ! command -v "$IPT6" >/dev/null 2>&1; then
-        NOTE="IPv4 only: ${IPT6} not found"
+        NOTE="IPv4 only: ${IPT6} not found, IPv6 is off"
     fi
 }
 
@@ -1271,6 +1299,47 @@ undo_cloud_init_sudoers() {
     fi
 }
 
+# undo_agent_processes — before the firewall goes, every process of the agent
+# user stops: TERM, then KILL for those left after KILL_WAIT seconds.
+undo_agent_processes() {
+    local n left
+    if ! id -u "$AGENT_USER" >/dev/null 2>&1; then
+        RESULT=skipped
+        NOTE="no user ${AGENT_USER}"
+        return 0
+    fi
+    n="$(pgrep -u "$AGENT_USER" | grep -c . || true)"
+    if [ "$n" -eq 0 ]; then
+        RESULT=skipped
+        NOTE="no process of ${AGENT_USER}"
+        return 0
+    fi
+    echo "stopping ${n} process(es) of ${AGENT_USER}: TERM, then KILL after ${KILL_WAIT} seconds"
+    run pkill -TERM -u "$AGENT_USER" || true
+    if [ "$DRY_RUN" = 1 ]; then
+        run pkill -KILL -u "$AGENT_USER"
+        NOTE="${n} process(es) of ${AGENT_USER}"
+        return 0
+    fi
+    for _ in $(seq 1 "$KILL_WAIT"); do
+        pgrep -u "$AGENT_USER" >/dev/null || break
+        sleep 1
+    done
+    left="$(pgrep -u "$AGENT_USER" | grep -c . || true)"
+    if [ "$left" -gt 0 ]; then
+        echo "${left} process(es) of ${AGENT_USER} still run after TERM and ${KILL_WAIT} seconds: KILL"
+        run pkill -KILL -u "$AGENT_USER" || true
+        sleep 1
+        left="$(pgrep -u "$AGENT_USER" | grep -c . || true)"
+        if [ "$left" -gt 0 ]; then
+            echo "${left} process(es) of ${AGENT_USER} still run after KILL:" >&2
+            pgrep -l -u "$AGENT_USER" >&2 || true
+            return 1
+        fi
+    fi
+    NOTE="${n} process(es) of ${AGENT_USER} stopped"
+}
+
 undo_firewall_family() {
     local bin="$1" changed=0 chain
     if ! command -v "$bin" >/dev/null 2>&1; then
@@ -1349,6 +1418,16 @@ run_step() {
     [ "${state%% *}" != failed ]
 }
 
+# run_every NAME:FUNCTION ... — undo: runs every step in order, also after a
+# failed one; FAILED_STEPS names the failed ones.
+FAILED_STEPS=""
+run_every() {
+    local entry
+    for entry in "$@"; do
+        run_step "${entry%%:*}" "${entry#*:}" || FAILED_STEPS="${FAILED_STEPS:+${FAILED_STEPS} }${entry%%:*}"
+    done
+}
+
 # run_plan NAME:FUNCTION ... — runs the steps in order. After a failed step the
 # rest are not run; each still gets a summary line, so the summary has one per
 # step.
@@ -1423,9 +1502,12 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 # Undo first: nothing above reads a path that the agent user or the daemon user
-# can write, so neither of them can stop the restore of root's files.
+# can write, so neither of them can stop the restore of root's files. A failed
+# step does not stop the undo: each later step runs, the processes of the agent
+# user stop before the firewall goes.
 if [ "$UNDO" = 1 ]; then
-    run_plan cloud-init-sudoers:undo_cloud_init_sudoers \
+    run_every cloud-init-sudoers:undo_cloud_init_sudoers \
+        agent-processes:undo_agent_processes \
         firewall-unit:undo_firewall_unit \
         firewall-ipv4:undo_firewall_ipv4 \
         firewall-ipv6:undo_firewall_ipv6 \
@@ -1433,13 +1515,17 @@ if [ "$UNDO" = 1 ]; then
     print_summary
     print_mode_restore
     print_manual_cleanup
+    if [ -n "$FAILED_STEPS" ]; then
+        echo
+        echo "undo: failed steps: ${FAILED_STEPS} (every other step ran; see the summary)" >&2
+        exit 1
+    fi
     exit 0
 fi
 
 check_agent_user
 check_data_dir
 check_agent_root
-check_managed_dirs
 
 # warn_daemon_groups — the daemon user in a group of PRIVILEGED_GROUPS: a warning
 # before the steps, repeated in the summary; no failure (the script removes no
@@ -1464,18 +1550,20 @@ if [ "$DRY_RUN" = 0 ] && [ "$KEEP_DAEMON_SUDO" = 0 ] && [ "$CONFIRM_ROOT_PATH" =
     die "refusing to remove the general sudo of ${DAEMON_USER}: keep another root session open (a second root shell or the console) and run again with --confirm-root-path, or pass --keep-daemon-sudo"
 fi
 
-# The check of the data dir comes first, before any change; the removal of the
-# daemon user's general sudo comes after the firewall and the boot unit; the
-# proof as the agent user is last.
+# The check of the data dir comes first, before any change. The firewall and the
+# boot unit come before the directories (a path of the agent user there cannot
+# stop them) and before the sudoers rule (a failed firewall step leaves the
+# daemon user no way to the agent user); the removal of the daemon user's general
+# sudo comes after them; the proof as the agent user is last.
 run_plan daemon-private:step_daemon_private \
     group:step_group \
     agent-user:step_agent_user \
     daemon-membership:step_daemon_membership \
-    directories:step_directories \
-    sudoers-rule:step_sudoers_rule \
     firewall-ipv4:step_firewall_ipv4 \
     firewall-ipv6:step_firewall_ipv6 \
     firewall-unit:step_firewall_unit \
+    directories:step_directories \
+    sudoers-rule:step_sudoers_rule \
     cloud-init-sudoers:step_cloud_init_sudoers \
     agent-proof:step_agent_proof
 print_summary

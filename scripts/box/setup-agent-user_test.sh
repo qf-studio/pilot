@@ -5,9 +5,9 @@
 # The script runs against a temp root with a PATH of mock commands
 # (scripts/box/testdata/mock-host-cmds.sh, linked under the names useradd,
 # groupadd, usermod, visudo, iptables, ip6tables, systemctl, install, chown,
-# chmod, id, getent, stat, sudo and runuser) that record their arguments; the
-# sudoers and systemd directories are pointed at the temp root through
-# SUDOERS_DIR / SYSTEMD_DIR. The real-host counterpart, run in CI as root, is
+# chmod, id, getent, stat, sudo, runuser, pgrep, pkill and sleep) that record
+# their arguments; the sudoers and systemd directories and the IPv6 settings are
+# pointed at the temp root through SUDOERS_DIR / SYSTEMD_DIR / IPV6_CONF_DIR. The real-host counterpart, run in CI as root, is
 # setup-agent-user_real_test.sh.
 #
 # Usage: ./scripts/box/setup-agent-user_test.sh
@@ -17,7 +17,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETUP_SCRIPT="${SCRIPT_DIR}/setup-agent-user.sh"
 MOCK_CMDS="${SCRIPT_DIR}/testdata/mock-host-cmds.sh"
-MOCKED="useradd groupadd usermod visudo iptables ip6tables systemctl install chown chmod id getent stat sudo runuser"
+MOCKED="useradd groupadd usermod visudo iptables ip6tables systemctl install chown chmod id getent stat sudo runuser pgrep pkill sleep"
 
 PASS=0
 FAIL=0
@@ -81,6 +81,22 @@ mode_of() {
     echo "${m#0}"
 }
 
+# set_ipv6 VALUE [ENTRY VALUE ...] — the disable_ipv6 settings of the host:
+# VALUE for all, default, lo and eth0, then one value per ENTRY.
+set_ipv6() {
+    local e
+    rm -rf "$IPV6_CONF"
+    for e in all default lo eth0; do
+        mkdir -p "${IPV6_CONF}/${e}"
+        echo "$1" >"${IPV6_CONF}/${e}/disable_ipv6"
+    done
+    shift
+    while [ $# -gt 1 ]; do
+        echo "$2" >"${IPV6_CONF}/$1/disable_ipv6"
+        shift 2
+    done
+}
+
 # set_meta PATH OWNER:GROUP — the owner and group the mocks report for PATH.
 set_meta() {
     echo "$2" >"${STATE_DIR}/meta/$(echo "$1" | tr '/' '_')"
@@ -118,6 +134,7 @@ setup_sandbox() {
     AHOME="${AROOT}/home"
     AWS="${AROOT}/workspaces"
     RECORD="${SANDBOX}/root/modes"
+    IPV6_CONF="${SANDBOX}/ipv6conf"
 
     mkdir -p "${DATA_DIR}/repos" "${DATA_DIR}/bin" "$SUDOERS_DIR" "$SYSTEMD_DIR" "$STUB_BIN" "${STATE_DIR}/users" "${STATE_DIR}/meta" "${SANDBOX}/root"
     chmod 711 "$DATA_DIR"
@@ -132,6 +149,8 @@ setup_sandbox() {
     # the record of the modes is a file of root (the script writes it as root)
     set_meta "$RECORD" root:root
     printf '%s\n' "$CLOUD_INIT_ORIGINAL" >"${SUDOERS_DIR}/90-cloud-init-users"
+    # IPv6 is on, as on most hosts
+    set_ipv6 0
 
     local c
     for c in $MOCKED; do
@@ -165,6 +184,7 @@ run_setup() {
         SUDOERS_DIR="$SUDOERS_DIR" \
         SYSTEMD_DIR="$SYSTEMD_DIR" \
         DAEMON_MODES_RECORD="$RECORD" \
+        IPV6_CONF_DIR="$IPV6_CONF" \
         ${envs[@]+"${envs[@]}"} \
         "$SETUP_SCRIPT" --data-dir "$DATA_DIR" ${confirm:+"$confirm"} "$@" >"$OUT" 2>&1
 }
@@ -207,6 +227,11 @@ dir_listing() {
 # first_line PATTERN — line number of the first call that matches.
 first_line() {
     grep -n -m1 -E -- "$1" "$CALL_LOG" | cut -d: -f1
+}
+
+# first_line_of FILE PATTERN — line number of the first line of FILE that matches.
+first_line_of() {
+    grep -n -m1 -E -- "$2" "$1" | cut -d: -f1
 }
 
 step_state() {
@@ -257,9 +282,10 @@ expect_refused() {
     fi
 }
 
-ALL_STEPS="daemon-private group agent-user daemon-membership directories sudoers-rule firewall-ipv4 firewall-ipv6 firewall-unit cloud-init-sudoers agent-proof"
+ALL_STEPS="daemon-private group agent-user daemon-membership firewall-ipv4 firewall-ipv6 firewall-unit directories sudoers-rule cloud-init-sudoers agent-proof"
 # daemon-private and agent-proof are checks: they change nothing, so they report skipped.
-CHANGE_STEPS="group agent-user daemon-membership directories sudoers-rule firewall-ipv4 firewall-ipv6 firewall-unit cloud-init-sudoers"
+CHANGE_STEPS="group agent-user daemon-membership firewall-ipv4 firewall-ipv6 firewall-unit directories sudoers-rule cloud-init-sudoers"
+UNDO_STEPS="cloud-init-sudoers agent-processes firewall-unit firewall-ipv4 firewall-ipv6 sudoers-rule"
 
 echo "=== test: dry run — prints every command, changes nothing ==="
 setup_sandbox
@@ -336,7 +362,7 @@ else
     fail_test "apply exited non-zero"
 fi
 prev=0
-for pattern in '^groupadd ' '^useradd ' '^usermod ' '^install -d ' '^runuser -u pilot-agent -- mkdir ' '^visudo -cf ' '^iptables -w -N ' '^ip6tables -w -N ' '^systemctl enable ' '^install -m 0600 -o root -g root .*\.pilot-agent\.bak$' '^visudo -c$' '^runuser -u ec2-user -- sudo -n true$' '^sudo -n -ll -U ec2-user$' '^runuser -u pilot-agent -- touch ' '^runuser -u pilot-agent -- ls '; do
+for pattern in '^groupadd ' '^useradd ' '^usermod ' '^iptables -w -N ' '^ip6tables -w -N ' '^systemctl enable ' '^install -d ' '^runuser -u pilot-agent -- mkdir ' '^visudo -cf ' '^install -m 0600 -o root -g root .*\.pilot-agent\.bak$' '^visudo -c$' '^runuser -u ec2-user -- sudo -n true$' '^sudo -n -ll -U ec2-user$' '^runuser -u pilot-agent -- touch ' '^runuser -u pilot-agent -- ls '; do
     n="$(first_line "$pattern" || true)"
     if [ -n "$n" ] && [ "$n" -gt "$prev" ]; then
         pass "in order: ${pattern}"
@@ -520,8 +546,15 @@ check_not "no command named the directory outside" grep -qF "${SANDBOX}/outside"
 for s in cloud-init-sudoers firewall-unit firewall-ipv4 firewall-ipv6 sudoers-rule; do
     expect_step "$s" "done"
 done
-expect_refused "apply with go/cache a link outside the data dir" --
-check "the refusal names the link" grep -qF "${AHOME}/go/cache' is a symbolic link; refused" "$OUT"
+rc=0
+run_setup -- || rc=$?
+check "apply with go/cache a link outside the data dir exits 1" test "$rc" = 1
+expect_step firewall-ipv4 "done"
+expect_step directories failed
+expect_step sudoers-rule skipped
+check "the failure names the link" grep -qF "${AHOME}/go/cache' is a symbolic link; refused" "$OUT"
+check_not "no sudoers rule file" test -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+check "nothing outside the data dir changed by the apply" test "$outside_before" = "$(dir_listing "${SANDBOX}/outside")"
 teardown_sandbox
 
 echo "=== test: undo needs no data dir of the daemon user (gone, or another owner) ==="
@@ -625,6 +658,94 @@ check "the message says so" grep -qF "no backup of ${SUDOERS_DIR}/90-cloud-init-
 check "the cloud-init file is unchanged" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_APPLIED"
 teardown_sandbox
 
+# ------------------------------------- undo goes on, the agent processes stop
+
+# mutation pin: undo stops at the first failed step -> this test fails
+echo "=== test: undo goes on after a failed step — every later step runs, the failed one is named, exit non-zero ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+cp "$BAK" "${SANDBOX}/evil"
+rm "$BAK"
+ln -s "${SANDBOX}/evil" "$BAK"
+rc=0
+run_setup -- --undo || rc=$?
+check "undo exits non-zero" test "$rc" != 0
+expect_step cloud-init-sudoers failed
+for s in firewall-unit firewall-ipv4 firewall-ipv6 sudoers-rule; do
+    expect_step "$s" "done"
+done
+check_not "the firewall chains are removed" grep -q PILOT_AGENT_EGRESS "${STATE_DIR}/iptables.rules" "${STATE_DIR}/ip6tables.rules"
+check_not "the sudoers rule file is removed" test -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+check_not "the unit file is removed" test -e "${SYSTEMD_DIR}/pilot-agent-firewall.service"
+check "the failed step is named at the end" has_line "$OUT" "undo: failed steps: cloud-init-sudoers (every other step ran; see the summary)"
+for s in $UNDO_STEPS; do
+    check "summary line for undo step ${s}" test -n "$(step_state "$s")"
+done
+teardown_sandbox
+
+echo "=== test: undo stops the processes of the agent user before the firewall goes, and says how many ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+mkdir -p "${STATE_DIR}/procs"
+printf '4101\n4102\n' >"${STATE_DIR}/procs/pilot-agent"
+: >"$MUT_LOG"
+if run_setup -- --undo; then
+    pass "undo exits 0"
+else
+    cat "$OUT"
+    fail_test "undo exited non-zero"
+fi
+check "undo says how many processes it stops" has_line "$OUT" "stopping 2 process(es) of pilot-agent: TERM, then KILL after 5 seconds"
+expect_step agent-processes "done"
+check "the summary says how many stopped" grep -qF "step agent-processes: done - 2 process(es) of pilot-agent stopped" "$OUT"
+check_not "no process of the agent user is left" test -s "${STATE_DIR}/procs/pilot-agent"
+check_not "no KILL after a TERM that worked" grep -q '^pkill -KILL ' "$MUT_LOG"
+term_n="$(first_line_of "$MUT_LOG" '^pkill -TERM -u pilot-agent$')"
+fw_n="$(first_line_of "$MUT_LOG" '^ip6?tables ')"
+unit_n="$(first_line_of "$MUT_LOG" '^systemctl ')"
+if [ -n "$term_n" ] && [ -n "$fw_n" ] && [ -n "$unit_n" ] && [ "$term_n" -lt "$fw_n" ] && [ "$term_n" -lt "$unit_n" ]; then
+    pass "TERM before the first firewall and unit change"
+else
+    fail_test "TERM line '${term_n}', first firewall line '${fw_n}', first unit line '${unit_n}'"
+fi
+: >"$MUT_LOG"
+run_setup -- --undo >/dev/null || true
+expect_step agent-processes skipped
+check "a second undo changes nothing" test ! -s "$MUT_LOG"
+teardown_sandbox
+
+echo "=== test: processes that outlive TERM get KILL after 5 seconds ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+mkdir -p "${STATE_DIR}/procs"
+printf '4101\n' >"${STATE_DIR}/procs/pilot-agent"
+: >"$CALL_LOG"
+if run_setup MOCK_PROC_TERM_IGNORED=1 -- --undo; then
+    pass "undo exits 0"
+else
+    cat "$OUT"
+    fail_test "undo exited non-zero"
+fi
+check "TERM, then KILL" test -n "$(first_line_of "$CALL_LOG" '^pkill -TERM ')" -a "$(first_line_of "$CALL_LOG" '^pkill -TERM ')" -lt "$(first_line_of "$CALL_LOG" '^pkill -KILL -u pilot-agent$' || echo 0)"
+check "five seconds of waiting before the KILL" test "$(sed -n "1,$(first_line_of "$CALL_LOG" '^pkill -KILL ')p" "$CALL_LOG" | grep -c '^sleep 1$' | tr -d ' ')" = 5
+check_not "no process of the agent user is left" test -s "${STATE_DIR}/procs/pilot-agent"
+expect_step agent-processes "done"
+teardown_sandbox
+
+echo "=== test: a process that outlives KILL fails the step; the firewall still goes, exit non-zero ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+mkdir -p "${STATE_DIR}/procs"
+printf '4101\n' >"${STATE_DIR}/procs/pilot-agent"
+rc=0
+run_setup MOCK_PROC_UNKILLABLE=1 -- --undo || rc=$?
+check "undo exits non-zero" test "$rc" != 0
+expect_step agent-processes failed
+expect_step firewall-ipv4 "done"
+expect_step sudoers-rule "done"
+check "the failed step is named at the end" has_line "$OUT" "undo: failed steps: agent-processes (every other step ran; see the summary)"
+teardown_sandbox
+
 echo "=== test: failing visudo — no sudoers file, non-zero exit, nothing after it ==="
 setup_sandbox
 if run_setup MOCK_VISUDO_FAIL=1 -- ; then
@@ -643,11 +764,10 @@ if [ "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL" ]; t
 else
     fail_test "cloud-init file changed after a failed validation"
 fi
-if ! grep -qE '^(iptables|ip6tables|systemctl)' "$MUT_LOG"; then
-    pass "the run stopped: no firewall or unit change"
-else
-    fail_test "steps after the failed validation ran"
-fi
+expect_step firewall-ipv4 "done"
+expect_step cloud-init-sudoers skipped
+expect_step agent-proof skipped
+check_not "the run stopped: no proof as the agent user" grep -q '^runuser -u pilot-agent -- touch ' "$CALL_LOG"
 expect_step sudoers-rule failed
 teardown_sandbox
 
@@ -720,7 +840,7 @@ for s in $ALL_STEPS; do
         fail_test "no summary line for step ${s}"
     fi
 done
-for s in firewall-ipv4 firewall-ipv6 firewall-unit cloud-init-sudoers; do
+for s in cloud-init-sudoers agent-proof; do
     expect_step "$s" skipped
 done
 expect_step sudoers-rule failed
@@ -937,7 +1057,28 @@ else
 fi
 teardown_sandbox
 
-echo "=== test: the agent directories that are links, or leave the data dir, are refused by apply ==="
+# fw_in_place STEP — the firewall step ran: done, or skipped as already in place
+# (not "skipped - not run").
+fw_in_place() {
+    case "$(step_state "$1")" in done | skipped) return 0 ;; esac
+    return 1
+}
+
+# expect_dirs_failed LABEL — the apply exits 1 at the directories step, after the
+# firewall steps, and installs no sudoers rule.
+expect_dirs_failed() {
+    local rc=0
+    run_setup -- || rc=$?
+    if [ "$rc" = 1 ] && [ "$(step_state directories)" = failed ] && fw_in_place firewall-ipv4 \
+        && fw_in_place firewall-ipv6 && fw_in_place firewall-unit && [ ! -e "${SUDOERS_DIR}/90-pilot-agent-runas" ]; then
+        pass "the directories step fails after the firewall steps, no sudoers rule: $1"
+    else
+        cat "$OUT"
+        fail_test "$1: exit ${rc}, directories '$(step_state directories)', firewall-ipv4 '$(step_state firewall-ipv4)'"
+    fi
+}
+
+echo "=== test: the agent root as a link is refused; a link, a file or a FIFO at a directory of the agent user fails the directories step, not the firewall ==="
 setup_sandbox
 mkdir "${SANDBOX}/outside"
 outside_before="$(mode_of "${SANDBOX}/outside")"
@@ -947,10 +1088,20 @@ rm "$AROOT"
 mkdir "$AROOT"
 set_meta "$AROOT" root:root
 ln -s "${SANDBOX}/outside" "$AHOME"
-expect_refused "the agent home is a symbolic link" --
+expect_dirs_failed "the agent home is a symbolic link"
+check "the step names the link" grep -qF "'${AHOME}' is a symbolic link; refused" "$OUT"
 rm "$AHOME"
 ln -s "${SANDBOX}/outside" "$AWS"
-expect_refused "the workspace root is a symbolic link" --
+expect_dirs_failed "the workspace root is a symbolic link"
+rm "$AWS"
+printf 'x\n' >"$AWS"
+expect_dirs_failed "the workspace root is a file"
+check "the step names the file" grep -qF "'${AWS}' is not a directory (a file or a FIFO); refused" "$OUT"
+rm "$AWS"
+mkdir -p "${AHOME}/go"
+mkfifo "${AHOME}/go/cache"
+expect_dirs_failed "go/cache is a FIFO"
+check "the step names the FIFO" grep -qF "'${AHOME}/go/cache' is not a directory (a file or a FIFO); refused" "$OUT"
 check "the directory outside is untouched" test "$(mode_of "${SANDBOX}/outside")" = "$outside_before"
 teardown_sandbox
 
@@ -1496,7 +1647,8 @@ expect_refused "a line to comment out again, no --confirm-root-path" NO_CONFIRM=
 check "the message tells the operator to hold another root session" grep -qF "keep another root session open" "$OUT"
 teardown_sandbox
 
-echo "=== test: the removal comes last — a failed firewall step leaves the daemon user's sudo alone ==="
+# mutation pin: the sudoers-rule step runs before the firewall steps -> this test fails
+echo "=== test: the firewall comes before the sudoers rule — a failed firewall step leaves no rule and the daemon user's sudo alone ==="
 setup_sandbox
 if run_setup IPTABLES_CMD=iptables-not-installed -- ; then
     fail_test "apply must fail without iptables"
@@ -1504,9 +1656,39 @@ else
     pass "apply exits non-zero without iptables"
 fi
 expect_step firewall-ipv4 failed
+expect_step sudoers-rule skipped
 expect_step cloud-init-sudoers skipped
+check_not "no sudoers rule file exists" test -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+check_not "visudo never ran" grep -q '^visudo ' "$CALL_LOG"
 check "the cloud-init file is untouched" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL"
 check_not "no backup was made" test -e "$BAK"
+teardown_sandbox
+
+echo "=== test: a missing ip6tables with IPv6 on fails the apply before the sudoers rule ==="
+setup_sandbox
+rc=0
+run_setup IP6TABLES_CMD=ip6tables-not-installed -- || rc=$?
+check "apply exits 1 without ip6tables" test "$rc" = 1
+expect_step firewall-ipv4 "done"
+expect_step firewall-ipv6 failed
+expect_step firewall-unit skipped
+expect_step sudoers-rule skipped
+check "the failure says IPv6 is on" grep -qF "ip6tables-not-installed not found and IPv6 is on" "$OUT"
+check_not "no sudoers rule file exists" test -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+check_not "no unit file exists" test -e "${SYSTEMD_DIR}/pilot-agent-firewall.service"
+# IPv6 off for all and default, on for one interface: still on
+set_ipv6 1 eth0 0
+rc=0
+run_setup IP6TABLES_CMD=ip6tables-not-installed -- || rc=$?
+check "IPv6 on for one interface: apply exits 1" test "$rc" = 1
+expect_step firewall-ipv6 failed
+check_not "no sudoers rule file exists" test -e "${SUDOERS_DIR}/90-pilot-agent-runas"
+# no IPv6 settings at all: counted as on
+rm -rf "$IPV6_CONF"
+rc=0
+run_setup IP6TABLES_CMD=ip6tables-not-installed -- || rc=$?
+check "no IPv6 settings: apply exits 1" test "$rc" = 1
+expect_step firewall-ipv6 failed
 teardown_sandbox
 
 echo "=== test: the jump to the chain is moved to the first place in OUTPUT ==="
@@ -1629,8 +1811,9 @@ mock_run iptables -w -F PILOT_AGENT_EGRESS
 check "the flush is reported as a gap" test -s "${STATE_DIR}/gap.log"
 teardown_sandbox
 
-echo "=== test: without ip6tables the IPv4 rules and the unit are applied and IPv6 is skipped ==="
+echo "=== test: without ip6tables on a host with IPv6 off the IPv4 rules and the unit are applied and IPv6 is skipped ==="
 setup_sandbox
+set_ipv6 1
 if run_setup IP6TABLES_CMD=ip6tables-not-installed -- ; then
     pass "apply exits 0 without ip6tables"
 else
