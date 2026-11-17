@@ -522,10 +522,14 @@ var runAsDataDirCheck = checkRunAsDataDirModes
 // other users no read and no write bit; each top-level entry gives other
 // users no bit, and gives its group no bit when the group is run_as_group.
 // The entry that holds the workspace root (the agent root) is skipped. A link
-// is checked by its target (os.Stat); a dangling one reaches nothing and is
-// skipped, as in the script. A data directory that does not exist fails. The
-// returned check names the first entry that fails and its mode; empty on
-// success.
+// is resolved first, as `realpath -m` would (resolveLinkPath): a link out of
+// the data directory, or one to the data directory, to the agent root or a
+// path in it, fails for a look by hand, as in the script, whatever the mode of
+// its target and whether or not the target exists (the agent user may create a
+// missing one). Any other link is checked by its target (os.Stat); a dangling
+// one reaches nothing and is skipped. A data directory that does not exist
+// fails. The returned check names the first entry that fails and its mode;
+// empty on success.
 //
 // Decision: the preflight result is kept for the life of the process, and the
 // daemon creates entries at run time (logs, state files) with mode 0755, so
@@ -543,8 +547,9 @@ func checkRunAsDataDirModes(s *runAsSettings) string {
 	if err != nil {
 		return "daemon user can list run_as_data_dir " + dir
 	}
+	dirForms := pathForms(dir)
 	holders := map[string]bool{}
-	for _, d := range pathForms(dir) {
+	for _, d := range dirForms {
 		for _, r := range pathForms(s.workspaceRoot) {
 			if rel, err := filepath.Rel(d, r); err == nil && rel != "." && pathInside(d, r) {
 				first, _, _ := strings.Cut(rel, string(filepath.Separator))
@@ -557,6 +562,30 @@ func checkRunAsDataDirModes(s *runAsSettings) string {
 			continue
 		}
 		p := filepath.Join(dir, e.Name())
+		if e.Type()&os.ModeSymlink != 0 {
+			real, ok := resolveLinkPath(p)
+			if !ok {
+				return "run_as_data_dir entry " + p + ": the link cannot be resolved"
+			}
+			inside, reserved := false, false
+			for _, d := range dirForms {
+				if !pathInside(d, real) {
+					continue
+				}
+				inside = true
+				rel, _ := filepath.Rel(d, real)
+				first, _, _ := strings.Cut(rel, string(filepath.Separator))
+				if rel == "." || holders[first] {
+					reserved = true
+				}
+			}
+			if !inside {
+				return fmt.Sprintf("run_as_data_dir entry %s is a link out of run_as_data_dir (to %s): look at it by hand", p, real)
+			}
+			if reserved {
+				return fmt.Sprintf("run_as_data_dir entry %s resolves to run_as_data_dir or to the agent root or a path in it (%s): look at it by hand", p, real)
+			}
+		}
 		efi, err := os.Stat(p)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
@@ -577,6 +606,52 @@ func checkRunAsDataDirModes(s *runAsSettings) string {
 		}
 	}
 	return ""
+}
+
+// runAsMaxLinkHops bounds the links resolveLinkPath follows, as the kernel
+// does (ELOOP after 40).
+const runAsMaxLinkHops = 40
+
+// resolveLinkPath is `realpath -m` of the absolute path p: each part that
+// exists is resolved, links included, and the missing rest is kept as named,
+// so a dangling link gets the path it would reach. False when a link cannot be
+// read, there are more than runAsMaxLinkHops links or p is not absolute.
+func resolveLinkPath(p string) (string, bool) {
+	if !filepath.IsAbs(p) {
+		return "", false
+	}
+	sep := string(filepath.Separator)
+	out := sep
+	parts := strings.Split(p, sep)
+	hops := 0
+	for i := 0; i < len(parts); i++ {
+		switch c := parts[i]; c {
+		case "", ".":
+			continue
+		case "..":
+			out = filepath.Dir(out)
+			continue
+		}
+		next := filepath.Join(out, parts[i])
+		fi, err := os.Lstat(next)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			out = next
+			continue
+		}
+		if hops++; hops > runAsMaxLinkHops {
+			return "", false
+		}
+		t, err := os.Readlink(next)
+		if err != nil {
+			return "", false
+		}
+		if filepath.IsAbs(t) {
+			out = sep
+		}
+		parts = append(strings.Split(t, sep), parts[i+1:]...)
+		i = -1
+	}
+	return out, true
 }
 
 // sudoProbeOK runs `sudo -n -u <user> [-g <group>] true` with the 5 second
