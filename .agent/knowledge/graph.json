@@ -1310,6 +1310,11 @@
         "name": "Pilot-Aws",
         "aliases": [],
         "domain": "general"
+      },
+      "github-api": {
+        "name": "Github-Api",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -9271,6 +9276,32 @@
         ],
         "created": "2026-11-16",
         "last_validated": "2026-11-16"
+      },
+      "mem-320": {
+        "type": "learning",
+        "summary": "A review-minor issue whose items are comment-only stalls under the per-item mutation-pin template; when the next leg edits the same files, close it as folded; let it run only when every item is a testable code change",
+        "path": "memories/learnings/mem-320.md",
+        "confidence": 0.88,
+        "concepts": [
+          "review",
+          "workflow-discipline",
+          "autopilot"
+        ],
+        "created": "2026-11-17",
+        "last_validated": "2026-11-17"
+      },
+      "mem-321": {
+        "type": "learning",
+        "summary": "The dispatch pre-check (GitHub search 'GH-N in:title is:pr is:merged') tokenizes numbers: a merged PR with the same bare number in its title is a false hit; a non-zero pre-check needs the branch names of the matches, not a stop",
+        "path": "memories/learnings/mem-321.md",
+        "confidence": 0.88,
+        "concepts": [
+          "dispatch",
+          "workflow-discipline",
+          "github-api"
+        ],
+        "created": "2026-11-17",
+        "last_validated": "2026-11-17"
       }
     }
   },
@@ -13943,7 +13974,8 @@
       "TASK-634",
       "mem-282",
       "mem-290",
-      "mem-307"
+      "mem-307",
+      "mem-320"
     ],
     "aws": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -14531,7 +14563,8 @@
       "running-execution-cannot-be-cancelled-kill-the-claude-process-group-not-the-gate",
       "declined-run-repicked-and-evidence-fail-files-false-fix-issue",
       "TASK-634",
-      "mem-301"
+      "mem-301",
+      "mem-321"
     ],
     "dispatcher": [
       "alert-engine-counts-operator-cancels",
@@ -15802,7 +15835,9 @@
       "dispatch-leg-hygiene-test-names-shipped-symbols-refs-boundary",
       "navigator-pr-review-executes-reviewer-not-verified-list-not-a-reread",
       "public-repo-agent-tree-holds-public-product-docs-only",
-      "mem-318"
+      "mem-318",
+      "mem-320",
+      "mem-321"
     ],
     "worktree": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -15912,7 +15947,8 @@
       "TASK-634",
       "mem-301",
       "mem-302",
-      "mem-305"
+      "mem-305",
+      "mem-320"
     ],
     "operations": [
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid"
@@ -16239,7 +16275,8 @@
       "mem-282"
     ],
     "github-api": [
-      "mem-283"
+      "mem-283",
+      "mem-321"
     ],
     "idempotency": [
       "mem-283"
@@ -16270,11 +16307,11 @@
       "TASK-651"
     ]
   },
-  "last_updated": "2026-11-16T20:27:15.806355+00:00",
+  "last_updated": "2026-11-17T20:08:22.999882+00:00",
   "stats": {
-    "total_nodes": 798,
+    "total_nodes": 801,
     "total_edges": 860,
-    "memory_count": 444
+    "memory_count": 446
   },
   "metadata": {
     "last_updated": null
