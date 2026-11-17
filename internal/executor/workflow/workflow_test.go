@@ -3,6 +3,7 @@ package workflow_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/executor/workflow"
@@ -168,5 +169,38 @@ version: 1
 	}
 	if w.PromptAppendix == "" {
 		t.Error("expected non-empty PromptAppendix")
+	}
+}
+
+// TASK-651: Parse is Load without the read; the path only names the file in
+// the error text.
+func TestWorkflowParse(t *testing.T) {
+	tests := []struct {
+		name      string
+		data      string
+		wantErr   string
+		wantTurns int
+		wantBody  string
+	}{
+		{name: "valid", data: "---\nversion: 1\nagent:\n  max_turns: 3\n---\nbody\n", wantTurns: 3, wantBody: "body"},
+		{name: "no front matter", data: "body only\n", wantErr: "workflow: parse /given/path"},
+		{name: "unsupported version", data: "---\nversion: 2\n---\n", wantErr: "in /given/path"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w, err := workflow.Parse([]byte(tc.data), "/given/path")
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if w.Agent.MaxTurns != tc.wantTurns || w.PromptAppendix != tc.wantBody {
+				t.Errorf("got max_turns %d body %q", w.Agent.MaxTurns, w.PromptAppendix)
+			}
+		})
 	}
 }

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/executor/workflow"
 )
 
 // TASK-651 (design: .agent/system/agent-isolation-design.md, 4.2): the files
@@ -292,4 +294,24 @@ func evidenceWriteFile(path string, data []byte, mode os.FileMode) error {
 		return errEvidenceWriteRunAsUser
 	}
 	return os.WriteFile(path, data, mode)
+}
+
+// loadRepoWorkflow is workflow.Load(executionPath). With the option set the
+// file is read through agentReadFile and the bytes are parsed: a link the
+// agent put at .pilot/workflow.yaml is followed as the agent user, and its
+// content goes into the prompt and the hook list. A file that does not exist
+// gives (nil, nil), as Load.
+func loadRepoWorkflow(ctx context.Context, executionPath string) (*workflow.Workflow, error) {
+	if runAsSettingsNow() == nil {
+		return workflow.Load(executionPath)
+	}
+	filePath := filepath.Join(executionPath, workflow.FilePath)
+	data, err := agentReadFile(ctx, filePath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("workflow: read %s: %w", filePath, err)
+	}
+	return workflow.Parse(data, filePath)
 }

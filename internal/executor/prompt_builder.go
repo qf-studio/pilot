@@ -2,7 +2,9 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -702,7 +704,7 @@ func (r *Runner) appendResearchContext(prompt string, research *ResearchResult) 
 // for project context injection. Returns ~2000 tokens of the most valuable context.
 func loadProjectContext(agentDir string) string {
 	readmePath := filepath.Join(agentDir, "DEVELOPMENT-README.md")
-	content, err := os.ReadFile(readmePath)
+	content, err := readProjectContextFile(readmePath)
 	if err != nil {
 		return ""
 	}
@@ -742,6 +744,25 @@ func loadProjectContext(agentDir string) string {
 	}
 
 	return strings.TrimSpace(sb.String())
+}
+
+// readProjectContextFile is os.ReadFile(readmePath) with the option empty.
+// TASK-651: with it set the README is read through agentReadFile (as the
+// agent user for a path inside the workspace root), so a link the agent put
+// there never moves a file of the daemon into the prompt. A read error other
+// than a missing file logs one Warn line; the caller gives the empty context.
+func readProjectContextFile(readmePath string) ([]byte, error) {
+	if runAsSettingsNow() == nil {
+		return os.ReadFile(readmePath) // #nosec G304 -- the read of today
+	}
+	content, err := agentReadFile(context.Background(), readmePath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		slog.Warn("run_as_user: project context not read, the prompt goes without it",
+			slog.String("path", readmePath),
+			slog.Any("error", err),
+		)
+	}
+	return content, err
 }
 
 // extractSection extracts content between a start marker and the next occurrence of end marker

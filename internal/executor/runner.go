@@ -5066,7 +5066,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// Load per-repo workflow override (.pilot/workflow.yaml) — TASK-304.
 	// Applied before prompt construction so overrides are visible immediately.
 	var workflowMaxTurns int
-	repoWorkflow, wfErr := workflow.Load(executionPath)
+	repoWorkflow, wfErr := loadRepoWorkflow(ctx, executionPath)
 	if wfErr != nil {
 		log.Warn("Failed to load .pilot/workflow.yaml, using defaults",
 			slog.String("task_id", task.ID),
