@@ -138,43 +138,61 @@ func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, 
 }
 
 // streamHandOverBundle runs `git bundle create - BRANCHREF ^BASE` in the
-// workspace through the constructor and copies its standard output into dst,
-// at most handOverMaxBundleBytes. Over the limit, or with ctx done, the agent
-// command is killed (cancel of its context) and the error says why.
+// workspace through the constructor, with its standard output written into dst
+// through a handOverLimitWriter. The writer counts the stream: the write that
+// passes handOverMaxBundleBytes is refused and cancels the context of the
+// agent command, which kills it (the Cancel of agentCommand, a sudo kill of
+// its process group; WaitDelay bounds the wait). ctx bounds the stream too.
 func streamHandOverBundle(ctx context.Context, workspace, branchRef, baseSHA string, dst io.Writer) error {
 	bctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	bundle := gitCommandIn(bctx, workspace, append(secretpatterns.HooksOffArgs(), "bundle", "create", "-", branchRef, "^"+baseSHA)...)
 	appendGitEnv(bundle, "GIT_NO_REPLACE_OBJECTS=1")
+	out := &handOverLimitWriter{w: dst, max: handOverMaxBundleBytes, over: cancel}
 	stderr := &cappedBuffer{max: handOverStderrMax}
-	bundle.Stderr = stderr
-	stdout, err := bundle.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("hand-over: git bundle create: %w", err)
-	}
-	if err := bundle.Start(); err != nil {
-		return fmt.Errorf("hand-over: git bundle create as the agent user: %w", err)
-	}
-	limit := handOverMaxBundleBytes
-	n, copyErr := io.Copy(dst, io.LimitReader(stdout, limit+1))
-	if n > limit {
-		cancel() // the kill of the agent command (agentCommand's Cancel)
-		_ = bundle.Wait()
-		return fmt.Errorf("%w of %d bytes", errHandOverTooLarge, limit)
-	}
-	if copyErr != nil {
-		cancel()
-		_ = bundle.Wait()
-		return fmt.Errorf("hand-over: copy the bundle stream: %w", copyErr)
-	}
-	waitErr := bundle.Wait()
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("hand-over: git bundle create: %w", err)
-	}
-	if waitErr != nil {
-		return fmt.Errorf("hand-over: git bundle create as the agent user: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
+	bundle.Stdout, bundle.Stderr = out, stderr
+	runErr := bundle.Run()
+	switch {
+	case out.exceeded:
+		return fmt.Errorf("%w of %d bytes", errHandOverTooLarge, out.max)
+	case ctx.Err() != nil:
+		return fmt.Errorf("hand-over: git bundle create: %w", ctx.Err())
+	case out.err != nil:
+		return fmt.Errorf("hand-over: copy the bundle stream: %w", out.err)
+	case runErr != nil:
+		return fmt.Errorf("hand-over: git bundle create as the agent user: %w: %s", runErr, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// handOverLimitWriter writes at most max bytes into w. The write that would
+// pass max writes nothing, calls over once and fails, as does every later
+// write; a write error of w also calls over.
+type handOverLimitWriter struct {
+	w        io.Writer
+	max, n   int64
+	over     func()
+	exceeded bool
+	err      error
+}
+
+func (l *handOverLimitWriter) Write(p []byte) (int, error) {
+	if l.err != nil {
+		return 0, l.err
+	}
+	if int64(len(p)) > l.max-l.n {
+		l.exceeded = true
+		l.err = errHandOverTooLarge
+		l.over()
+		return 0, l.err
+	}
+	n, err := l.w.Write(p)
+	l.n += int64(n)
+	if err != nil {
+		l.err = err
+		l.over()
+	}
+	return n, err
 }
 
 // removeHandOverRef deletes refs/pilot/handover/TASK in daemonRepo, as the
