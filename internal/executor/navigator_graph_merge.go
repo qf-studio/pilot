@@ -27,7 +27,12 @@ func mergeNavigatorGraphBack(wtPath, clonePath string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("read %s: %w", wtPath, err)
 	}
+	return mergeNavigatorGraphDataBack(wtPath, wtData, wtInfo, clonePath)
+}
 
+// mergeNavigatorGraphDataBack is the merge of mergeNavigatorGraphBack for the
+// worktree graph already read: wtData with the file info wtInfo, from wtPath.
+func mergeNavigatorGraphDataBack(wtPath string, wtData []byte, wtInfo os.FileInfo, clonePath string) (bool, error) {
 	cloneInfo, err := os.Lstat(clonePath)
 	if err != nil {
 		if !os.IsNotExist(err) {

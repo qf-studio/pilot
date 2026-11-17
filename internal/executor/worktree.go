@@ -1047,7 +1047,21 @@ func copyFile(src, dst string) error {
 //
 // The sourceRepo is the original repository path where the user may have
 // an existing .agent/ directory with project-specific configuration.
+//
+// TASK-651: with run_as_user set and a worktree inside the workspace root the
+// copy goes as a tar stream to the agent user (copyNavigatorToAgentWorkspace).
 func EnsureNavigatorInWorktree(sourceRepo, worktreePath string) error {
+	agent, err := agentFileRoute(filepath.Join(worktreePath, ".agent"))
+	if err != nil {
+		return fmt.Errorf("failed to copy navigator to worktree: %w", err)
+	}
+	if agent {
+		if err := copyNavigatorToAgentWorkspace(sourceRepo, worktreePath); err != nil {
+			return fmt.Errorf("failed to copy navigator to worktree: %w", err)
+		}
+		return nil
+	}
+
 	// First, copy from source to preserve any existing Navigator config
 	if err := CopyNavigatorToWorktree(sourceRepo, worktreePath); err != nil {
 		return fmt.Errorf("failed to copy navigator to worktree: %w", err)
@@ -1092,9 +1106,15 @@ var navigatorCopyBackMu sync.Mutex
 // nodes. A path tracked and unmodified in the worktree is skipped too: it came
 // from the branch base and travels with the PR, and writing it to a clone that
 // has not pulled yet would leave an untracked file in the way of the pull.
+//
+// TASK-651: with run_as_user set the copy reads the worktree without
+// following a link (copyNavigatorBackNoFollow).
 func CopyNavigatorBackFromWorktree(worktreePath, sourceRepo string) (int, error) {
 	if worktreePath == "" || sourceRepo == "" {
 		return 0, nil
+	}
+	if runAsSettingsNow() != nil {
+		return copyNavigatorBackNoFollow(worktreePath, sourceRepo)
 	}
 	if info, err := os.Stat(filepath.Join(worktreePath, ".agent")); err != nil || !info.IsDir() {
 		return 0, nil
@@ -1206,7 +1226,12 @@ func mergeNavigatorFileBack(src, dst string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("read %s: %w", src, err)
 	}
+	return mergeNavigatorContentBack(content, srcInfo, dst)
+}
 
+// mergeNavigatorContentBack is the merge of mergeNavigatorFileBack for a
+// source already read: content with the file info srcInfo.
+func mergeNavigatorContentBack(content []byte, srcInfo os.FileInfo, dst string) (bool, error) {
 	dstInfo, err := os.Lstat(dst)
 	switch {
 	case err == nil:
