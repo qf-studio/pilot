@@ -248,7 +248,16 @@ var checkPushForGate = secretpatterns.CheckPush
 // once per commit.
 func CheckSecretGate(ctx context.Context, dir, head, taskID string) error {
 	// The full ref, so the commit scanned is the commit git push sends (GH-6334).
-	err := checkPushForGate(ctx, dir, secretpatterns.QualifyBranchRef(head), secretGateOptions(ctx, dir))
+	return checkSecretGateTip(ctx, dir, secretpatterns.QualifyBranchRef(head), head, taskID)
+}
+
+// checkSecretGateTip is CheckSecretGate for the tip given as a full ref or a
+// full commit SHA, scanned as it is; head is the branch the push publishes,
+// named in the logs and the alert. The hand-over push of an agent workspace
+// (TASK-651) passes the daemon's repository as dir and the hand-over SHA as
+// tip, so the project's settings of dir apply.
+func checkSecretGateTip(ctx context.Context, dir, tip, head, taskID string) error {
+	err := checkPushForGate(ctx, dir, tip, secretGateOptions(ctx, dir))
 	if err == nil {
 		return nil
 	}

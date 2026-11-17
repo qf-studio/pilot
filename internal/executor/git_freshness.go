@@ -33,7 +33,7 @@ func applyGhostSHAGuard(ctx context.Context, task *Task, result *ExecutionResult
 	if task.LocalMode || result.CommitSHA == "" || !result.Success {
 		return false
 	}
-	git := NewGitOperations(executionPath)
+	git := newGitOperationsForWorkspace(executionPath, task.ProjectPath)
 	ghostBase := task.BaseBranch
 	if ghostBase == "" {
 		ghostBase, _ = git.GetDefaultBranch(ctx)

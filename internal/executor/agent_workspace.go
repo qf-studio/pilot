@@ -169,7 +169,10 @@ func (m *WorktreeManager) createAgentWorkspace(ctx context.Context, taskID, bran
 
 	name := fmt.Sprintf("%s%s-%s-%d", agentWorkspacePrefix, project, sanitizeBranchName(taskID), time.Now().UnixNano())
 	wsPath := filepath.Join(root, name)
-	remove := func() { _ = removeAgentWorkspace(s, wsPath) }
+	remove := func() {
+		agentWorkspaceBases.Delete(wsPath)
+		_ = removeAgentWorkspace(s, wsPath)
+	}
 
 	if err := transportWorkspaceBase(ctx, m.repoPath, wsPath, sha, branch, base); err != nil {
 		remove()
@@ -183,6 +186,8 @@ func (m *WorktreeManager) createAgentWorkspace(ctx context.Context, taskID, bran
 		return "", nil, err
 	}
 
+	agentWorkspaceBases.Store(wsPath, sha)
+
 	slog.Info("Created agent workspace with branch",
 		slog.String("task_id", taskID),
 		slog.String("branch", branch),
@@ -192,6 +197,22 @@ func (m *WorktreeManager) createAgentWorkspace(ctx context.Context, taskID, bran
 	)
 	var once sync.Once
 	return wsPath, func() { once.Do(remove) }, nil
+}
+
+// agentWorkspaceBases holds the base commit of each live agent workspace by
+// its path, the ^BASE of the hand-over (handOverBranch). The daemon records
+// it: the refs of the workspace are the agent's. Stored when
+// createAgentWorkspace returns, deleted by its cleanup.
+var agentWorkspaceBases sync.Map
+
+// agentWorkspaceBase is the base commit of the workspace at path, "" when
+// none is on record.
+func agentWorkspaceBase(path string) string {
+	if v, ok := agentWorkspaceBases.Load(filepath.Clean(path)); ok {
+		sha, _ := v.(string)
+		return sha
+	}
+	return ""
 }
 
 // resolveCommitSHA resolves ref to a commit SHA in the daemon's repository.

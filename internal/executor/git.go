@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 )
@@ -64,11 +65,57 @@ func isExcluded(path string) bool {
 // GitOperations handles git operations for tasks
 type GitOperations struct {
 	projectPath string
+	// daemonRepo is the daemon's repository of the task when projectPath is an
+	// agent workspace (TASK-651, run_as_user set): the secret gate, the push and
+	// every remote command run there, on the hand-over ref. "" otherwise, and
+	// every method works on projectPath alone.
+	daemonRepo string
+	// handOverBase is the base commit of the workspace, the ^BASE of the
+	// hand-over; "" when the workspace has none on record.
+	handOverBase string
+
+	handOverMu sync.Mutex
+	// handOverSHA is the head of the last hand-over of a push.
+	handOverSHA string
 }
 
 // NewGitOperations creates new git operations for a project
 func NewGitOperations(projectPath string) *GitOperations {
 	return &GitOperations{projectPath: projectPath}
+}
+
+// newGitOperationsForWorkspace is NewGitOperations for the execution path of
+// a run, with daemonRepo the project path of the task. When the option is set
+// and workspace is an agent workspace (inside the workspace root), the
+// secret gate, the push and the remote commands run in daemonRepo
+// (TASK-651); otherwise it is NewGitOperations(workspace).
+func newGitOperationsForWorkspace(workspace, daemonRepo string) *GitOperations {
+	g := NewGitOperations(workspace)
+	s := runAsSettingsNow()
+	if s == nil || daemonRepo == "" {
+		return g
+	}
+	if agent, err := gitRoutesToAgent(s.workspaceRoot, workspace); err != nil || !agent {
+		return g
+	}
+	g.daemonRepo = daemonRepo
+	g.handOverBase = agentWorkspaceBase(workspace)
+	return g
+}
+
+// remoteDir is the directory of the remote commands: the daemon's repository
+// of an agent workspace, projectPath otherwise.
+func (g *GitOperations) remoteDir() string {
+	if g.daemonRepo != "" {
+		return g.daemonRepo
+	}
+	return g.projectPath
+}
+
+func (g *GitOperations) lastHandOverSHA() string {
+	g.handOverMu.Lock()
+	defer g.handOverMu.Unlock()
+	return g.handOverSHA
 }
 
 // ProjectPath returns the working-tree directory these operations act on
@@ -1150,6 +1197,9 @@ func PushArgs(options ...string) []string { return pushArgs(options...) }
 // Covers every push call site. taskID is only used to name the task in logs.
 func (g *GitOperations) Push(ctx context.Context, branchName, taskID string) error {
 	g.stripCoAuthorBeforePush(ctx, branchName, taskID)
+	if g.daemonRepo != "" {
+		return g.pushHandOver(ctx, branchName, "", taskID)
+	}
 	if err := CheckSecretGate(ctx, g.projectPath, branchName, taskID); err != nil {
 		return err
 	}
@@ -1169,6 +1219,9 @@ func (g *GitOperations) Push(ctx context.Context, branchName, taskID string) err
 // was recorded. A plain --force is never used.
 func (g *GitOperations) PushForceWithLease(ctx context.Context, branchName, expectedRemoteSHA, taskID string) error {
 	g.stripCoAuthorBeforePush(ctx, branchName, taskID)
+	if g.daemonRepo != "" {
+		return g.pushHandOver(ctx, branchName, expectedRemoteSHA, taskID)
+	}
 	if err := CheckSecretGate(ctx, g.projectPath, branchName, taskID); err != nil {
 		return err
 	}
@@ -1180,6 +1233,72 @@ func (g *GitOperations) PushForceWithLease(ctx context.Context, branchName, expe
 		return fmt.Errorf("failed to push with lease: %w: %s", err, output)
 	}
 	return nil
+}
+
+// pushHandOver is Push (lease "") and PushForceWithLease for an agent
+// workspace (TASK-651). The branch is taken out of the workspace into
+// refs/pilot/handover/TASK of the daemon's repository (handOverBranch); the
+// secret gate scans the hand-over SHA there, with the project's settings, and
+// the push runs there as the daemon user: the refspec
+// HANDOVER_SHA:refs/heads/BRANCH, the arguments of pushArgs, the explicit lease
+// and the credentials of today, without -u (no local branch to track). No git
+// command of the daemon runs with the workspace as its directory, so its
+// config, hooks and remotes have no effect. A failed hand-over or a gate stop
+// returns before the push.
+func (g *GitOperations) pushHandOver(ctx context.Context, branchName, expectedRemoteSHA, taskID string) error {
+	branch := strings.TrimPrefix(branchName, "refs/heads/")
+	sha, err := handOverBranch(ctx, g.projectPath, g.daemonRepo, taskID, branch, g.handOverBase)
+	if err != nil {
+		return err
+	}
+	g.handOverMu.Lock()
+	g.handOverSHA = sha
+	g.handOverMu.Unlock()
+	if err := checkSecretGateTip(ctx, g.daemonRepo, sha, branchName, taskID); err != nil {
+		return err
+	}
+	var opts []string
+	what := "failed to push"
+	if expectedRemoteSHA != "" {
+		opts = append(opts, fmt.Sprintf("--force-with-lease=refs/heads/%s:%s", branch, expectedRemoteSHA))
+		what = "failed to push with lease"
+	}
+	opts = append(opts, "origin", sha+":refs/heads/"+branch)
+	cmd := gitCommandIn(ctx, g.daemonRepo, pushArgs(opts...)...)
+	withGitCredentials(ctx, cmd)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %w: %s", what, err, output)
+	}
+	g.warnPushedCoAuthor(ctx, branch, sha, taskID)
+	return nil
+}
+
+// warnPushedCoAuthor reads the commits a hand-over push published (base..sha)
+// in the daemon's repository and logs one Warn line per commit whose message
+// still holds the co-author trailer of the model. The strip ran before, as the
+// agent user; this is the check of the daemon on what left the machine.
+func (g *GitOperations) warnPushedCoAuthor(ctx context.Context, branch, sha, taskID string) {
+	rng := sha
+	if g.handOverBase != "" {
+		rng = g.handOverBase + ".." + sha
+	}
+	cmd := gitCommandIn(ctx, g.daemonRepo, handOverGitArgs("log", "--no-show-signature", "--format=%H%x00%B%x00", rng)...)
+	appendGitEnv(cmd, "GIT_NO_REPLACE_OBJECTS=1")
+	out, err := cmd.Output()
+	if err != nil {
+		slog.Warn("Could not read the pushed commits for the co-author check",
+			slog.String("task_id", taskID), slog.String("branch", branch), slog.Any("error", err))
+		return
+	}
+	fields := strings.Split(string(out), "\x00")
+	for i := 0; i+1 < len(fields); i += 2 {
+		if anthropicCoAuthorRe.MatchString(fields[i+1]) {
+			slog.Warn("Pushed commit holds the Anthropic Co-Authored-By trailer",
+				slog.String("task_id", taskID), slog.String("branch", branch),
+				slog.String("sha", strings.TrimSpace(fields[i])))
+		}
+	}
 }
 
 // CreatePR creates a pull request using gh CLI.
@@ -1469,7 +1588,12 @@ func (g *GitOperations) PushToMain(ctx context.Context, taskID string) error {
 // that are not on the base branch. Uses `git rev-list --count base..HEAD`.
 // Returns 0 if the base branch doesn't exist or there are no new commits.
 func (g *GitOperations) CountNewCommits(ctx context.Context, baseBranch string) (int, error) {
-	cmd := g.gitCmd(ctx, "rev-list", "--count", baseBranch+"..HEAD")
+	return g.countNewCommits(ctx, baseBranch, "HEAD")
+}
+
+// countNewCommits is CountNewCommits for the commits of head.
+func (g *GitOperations) countNewCommits(ctx context.Context, baseBranch, head string) (int, error) {
+	cmd := g.gitCmd(ctx, "rev-list", "--count", baseBranch+".."+head)
 	output, err := cmd.Output()
 	if err != nil {
 		return 0, fmt.Errorf("failed to count new commits: %w", err)
@@ -1500,10 +1624,22 @@ func (g *GitOperations) CountNewCommits(ctx context.Context, baseBranch string) 
 // configured — bare local repos, some unit tests), falls back to comparing
 // against the local <baseBranch> ref, preserving CountNewCommits' original
 // behavior in that environment.
+//
+// TASK-651: for an agent workspace the fetch runs in the daemon's repository,
+// and after a hand-over the count is of the hand-over SHA there. Before one,
+// it counts in the workspace, whose origin/<baseBranch> is the base commit.
 func (g *GitOperations) CountNewCommitsAgainstOrigin(ctx context.Context, baseBranch string) (int, error) {
-	fetchCmd := g.gitCmd(ctx, "fetch", "origin", baseBranch)
+	fetchCmd := gitCommandIn(ctx, g.remoteDir(), "fetch", "origin", baseBranch)
 	withGitCredentials(ctx, fetchCmd)
 	_ = fetchCmd.Run() // best-effort; fall back to the existing tracking ref on failure
+
+	if sha := g.lastHandOverSHA(); g.daemonRepo != "" && sha != "" {
+		daemon := NewGitOperations(g.daemonRepo)
+		if count, err := daemon.countNewCommits(ctx, "origin/"+baseBranch, sha); err == nil {
+			return count, nil
+		}
+		return daemon.countNewCommits(ctx, baseBranch, sha)
+	}
 
 	if count, err := g.CountNewCommits(ctx, "origin/"+baseBranch); err == nil {
 		return count, nil
@@ -1844,7 +1980,7 @@ func (g *GitOperations) RemoteBranchExists(ctx context.Context, branchName strin
 // (network, auth), so that failure is never mistaken for an absent branch
 // (GH-6191).
 func (g *GitOperations) ProbeRemoteBranch(ctx context.Context, branchName string) (bool, error) {
-	cmd := g.gitCmd(ctx, "ls-remote", "--heads", "origin", branchName)
+	cmd := gitCommandIn(ctx, g.remoteDir(), "ls-remote", "--heads", "origin", branchName)
 	withGitCredentials(ctx, cmd)
 	output, err := cmd.Output()
 	if err != nil {
@@ -1859,7 +1995,7 @@ func (g *GitOperations) ProbeRemoteBranch(ctx context.Context, branchName string
 // Unlike RemoteBranchExists it distinguishes "pushed my commit" from "a branch
 // by that name exists", which is what a rejected push must be checked against.
 func (g *GitOperations) RemoteBranchHead(ctx context.Context, branchName string) (sha string, ok bool) {
-	cmd := g.gitCmd(ctx, "ls-remote", "--heads", "origin", "refs/heads/"+branchName)
+	cmd := gitCommandIn(ctx, g.remoteDir(), "ls-remote", "--heads", "origin", "refs/heads/"+branchName)
 	withGitCredentials(ctx, cmd)
 	output, err := cmd.Output()
 	if err != nil {
