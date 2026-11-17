@@ -1,6 +1,6 @@
 # TASK-651: Agent isolation — agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM
 
-**Status**: 🚀 **State 2026-11-16 22:55Z. B4 merged (PR#6421). In progress: B7 → [pilot#6422](https://github.com/qf-studio/pilot/issues/6422) and N4 → [pilot#6417](https://github.com/qf-studio/pilot/issues/6417) (`pilot` + `no-decompose`, PRs held as drafts until the run-it review).** Merged: U0, U1, F1, F2, F3, B1, G1 (PR#6375), U2 (PR#6383), B2 (PR#6378), N2 (PR#6397), N5 (PR#6405), B3 (PR#6401), B5 (PR#6409), N3 (PR#6410), N6 (PR#6414), B6 (PR#6415). Also with Pilot since ~22:05Z: P1 → [pilot#6419](https://github.com/qf-studio/pilot/issues/6419) (Go side of the host layout: data directory option, mode check, Go cache paths) and P3 → [pilot#6420](https://github.com/qf-studio/pilot/issues/6420) (gh shim binary copy, workspace reads as the agent user). Next in the plan: B9 after B7 (the sudo rule list is read before the first change; from the review of PR#6421), B8 after B9 (same file); P2 after P1 (firewall probe in the preflight; the gateway part of its design waits for a founder look); then U3 (spec check against main first), U4 (removes the preflight refusal), U5. **O4 is NO-GO** until B7, B9, P1, P2 and P3 merge. `run_as_user` is refused by the preflight on every host until U3 and U4 merge. **Merge rule (founder, 11-16, mem-319):** the PR stays in draft during the review; with no blocker and green CI it is marked ready and the daemon merges it; the founder is asked only for a blocker, for work that leaves the plan, and for a step on the box. Legs stay small: the task limit of Pilot is one hour. Box fact 11-16: the daemon user is in the group docker (a path to root); the founder asked the infrastructure owner. Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
+**Status**: 🚀 **State 2026-11-17 09:45Z. B4 (PR#6421) and N4 (PR#6424) merged. In progress: B7 → [pilot#6422](https://github.com/qf-studio/pilot/issues/6422) and N7 → [pilot#6428](https://github.com/qf-studio/pilot/issues/6428) (fix of the Navigator copy from the review of PR#6424) (`pilot` + `no-decompose`, PRs held as drafts until the run-it review).** Merged: U0, U1, F1, F2, F3, B1, G1 (PR#6375), U2 (PR#6383), B2 (PR#6378), N2 (PR#6397), N5 (PR#6405), B3 (PR#6401), B5 (PR#6409), N3 (PR#6410), N6 (PR#6414), B6 (PR#6415). Also with Pilot since ~22:05Z: P1 → [pilot#6419](https://github.com/qf-studio/pilot/issues/6419) (Go side of the host layout: data directory option, mode check, Go cache paths) and P3 → [pilot#6420](https://github.com/qf-studio/pilot/issues/6420) (gh shim binary copy, workspace reads as the agent user). Next in the plan: B9 after B7 (the sudo rule list is read before the first change; from the review of PR#6421), B8 after B9 (same file); P2 after P1 (firewall probe in the preflight; the gateway part of its design waits for a founder look); then U3 (spec check against main first), U4 (removes the preflight refusal), U5. **O4 is NO-GO** until B7, B9, P1, P2 and P3 merge. `run_as_user` is refused by the preflight on every host until U3 and U4 merge. **Merge rule (founder, 11-16, mem-319):** the PR stays in draft during the review; with no blocker and green CI it is marked ready and the daemon merges it; the founder is asked only for a blocker, for work that leaves the plan, and for a step on the box. Legs stay small: the task limit of Pilot is one hour. Box fact 11-16: the daemon user is in the group docker (a path to root); the founder asked the infrastructure owner. Gate follow-ups for U3's test list from the review of PR#6360: a clean filter in the amend of one trailer commit, no git identity on the host, a secret in a commit header. **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM). Design: `.agent/system/agent-isolation-design.md`.
 **Created**: 2026-11-12
 **Assignee**: Pilot (one leg at a time) + operator steps by a Navigator session with founder consent
 **Parent**: TASK-650 leg H1
@@ -81,7 +81,8 @@
 - [ ] **N5** ([#6403](https://github.com/qf-studio/pilot/issues/6403), dispatched 11-16; PR held as a draft; small) a test for the production default of the refusal, no workspace sweep after a refused preflight, the config example sentence. the preflight refuses the option until the gates leg merges; the corrections of the workspace leg from its review; the macOS test fix.
 - **N5 result:** PR#6405 merged 11-16 17:35Z after a run-it review (GO-WITH-NOTES) and the founder's "merge".
 - [ ] **N3** ([#6406](https://github.com/qf-studio/pilot/issues/6406), dispatched 11-16; PR held as a draft; needs N2) the daemon writes the task document, the Navigator files and the settings file through a helper that runs as the agent user.
-- [ ] **N4** ([#6417](https://github.com/qf-studio/pilot/issues/6417), dispatched 11-16 ~22:00Z; PR held as a draft) Navigator copy in as a tar stream, copy out without a followed link at any path element.
+- [x] **N4** (PR#6424 merged 11-17 09:39Z; the run-it review found one narrow blocker: the workspace directory itself is opened with link following and by its path for each file; founder answer 11-17: merge, then fix; N7 fixes it) ([#6417](https://github.com/qf-studio/pilot/issues/6417), dispatched 11-16 ~22:00Z)
+- [ ] **N7** ([#6428](https://github.com/qf-studio/pilot/issues/6428), dispatched 11-17 ~09:45Z; PR held as a draft; blocks the removal of the preflight refusal) from the review of PR#6424: one descriptor of the workspace for the whole copy out, no followed link in the copy in, a size limit, a hard link refusal. Navigator copy in as a tar stream, copy out without a followed link at any path element.
 - [ ] **U3** (dispatch-ready, below; needs U2) hand-over as a bundle that the agent writes and the daemon fetches into `refs/pilot/handover/<task>`; the secret gate and the push run only in the daemon's repository, with replace refs ignored and hooks off; PR creation, recovery ref and the preserve commit follow. Closes the gate-trust class of mem-308 when the option is set (seven shapes; the tamper table is the test list of the leg).
 - [ ] **U4** (dispatch-ready, below; needs U2) quality gates, workflow hooks, evidence commands and the lint fix as the agent user with the allowlist environment; `run_as_env` for values such as the Go caches.
 - [ ] **U5** (dispatch-ready, below; needs U3 and, on the box, O2) read-only installation token per run in a file for the `gh` shim and a git credential helper (also serves the fetch of a private module); per-project override of the option.
@@ -469,6 +470,46 @@ The push, the secret gate, the PR creation, the recovery ref and the co-author s
 ## Refs
 
 - Navigator TASK-651 in this repo · design section 4.2
+
+### LEG N7 — repo: qf-studio/pilot — title: fix(executor): run_as_user Navigator copy — one descriptor of the workspace for the whole copy out, no followed link in the copy in, a size limit and a hard link refusal
+
+probe: present qf-studio/pilot func[[:space:]]navigatorTarStream\(
+probe: present qf-studio/pilot func[[:space:]]readWorkspaceFileNoFollow\(
+probe: present qf-studio/pilot func[[:space:]]agentReadFile\(
+probe: absent  qf-studio/pilot func[[:space:]]openWorkspaceRootFD\(
+
+## Context
+
+Navigator TASK-651. With run_as_user set, the Navigator copy works in two directions (files `internal/executor/navigator_agent_copy.go` and `navigator_agent_copy_unix.go`): the copy in sends the `.agent` directory of the daemon's repository as a tar stream to the agent user (navigatorTarStream), and the copy out reads files of the workspace without a followed link below the workspace. A run-it review found the points below. The first one lets the daemon read outside the workspace. The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below. With the option empty nothing changes.
+
+- The copy out opens the workspace directory itself with link following, and each directory walk and each file read starts again from the path string of the workspace. The agent user owns the workspace root, so a process of the agent user can rename its workspace and put a symbolic link in its place between two opens. The daemon then reads `.agent` files of any directory that it can read, and the next copy in gives them to the agent.
+- The copy in reads the daemon's `.agent` with os.Stat and os.ReadFile, which follow a link. A symbolic link under `.agent` that came in through a merged PR sends its target (for example the config file of the daemon) to the agent. A FIFO there blocks the stream builder, and the wait for the builder does not end when the tar command times out.
+- The copy out reads each file whole into memory with no limit on size or on the number of files.
+- A hard link is a regular file and passes every check of the copy out.
+
+## Scope
+
+1. Copy out: a new function openWorkspaceRootFD opens the configured workspace root, then opens the workspace name below it with Openat and O_NOFOLLOW. The copy out holds that one descriptor from its start to its end; every directory walk and every file read starts from it, never from the path string (the function openWorkspaceNoFollow of today takes the path string of the workspace; change it to take the descriptor). A workspace path outside the workspace root, or a link at the workspace name, stops the copy out with the Warn line of today.
+2. Copy in: navigatorTarStream uses Lstat and sends directories and regular files only. A symbolic link, a FIFO or another type is skipped with one Warn line that names the path. A regular file is opened with O_NOFOLLOW. The wait for the stream builder ends when the context of the tar command ends.
+3. Copy out limits: a file over 4 MB (the limit of agentReadFile) is skipped with a Warn line; the read stops at the limit and does not load more. More than 2000 files stop the copy out with a Warn line; nothing more is copied.
+4. Copy out: a regular file with a link count above 1 is skipped with a Warn line.
+5. Tests, table-driven, no root needed: the workspace name is a link to an outside directory -> nothing is copied; the workspace is renamed and replaced by a link after the descriptor is open -> the read still comes from the original directory; a link and a FIFO in the daemon's `.agent` -> absent from the stream, and the builder returns; a file of 4 MB + 1 -> skipped; a hard link -> skipped; a directory or a FIFO at a file path of the workspace -> skipped (no test covers the regular-file rule today); with the option empty both functions make the calls of today.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'NavigatorCopy|NavigatorTar|RunAsUser'` passes; paste the output into the PR body.
+- [ ] Open the workspace by its path string for each file -> the rename test fails.
+- [ ] Use os.Stat in navigatorTarStream -> the link test fails.
+- [ ] Remove the regular-file check of the copy out -> a test fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The file mode of a copied file. A check of the kernel setting protected_hardlinks. The hand-over, the gates, the GitHub token. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comment of PR#6424
 
 ### LEG B2 — repo: qf-studio/pilot — title: fix(box): agent user setup script, third run — an undo that the agent user cannot block, no access of the agent user to a repository of the daemon, a sudo proof by behaviour, the mocked test passes on macOS, a CI job with real iptables and systemd
 
@@ -1323,3 +1364,4 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - P1 → https://github.com/qf-studio/pilot/issues/6419
 - P3 → https://github.com/qf-studio/pilot/issues/6420
 - B7 → https://github.com/qf-studio/pilot/issues/6422
+- N7 → https://github.com/qf-studio/pilot/issues/6428
