@@ -1268,11 +1268,13 @@ func (e *Engine) handleLaneStarvation(ctx context.Context, event Event) {
 }
 
 // LaneStarvationAlertStatus reports, for the enabled lane_starvation rules,
-// whether streak equals a rule's threshold (reached) and whether an event
-// with this streak for project would fire now (due) — same threshold
-// default and cooldown key as handleLaneStarvation. The emitter calls it
-// before ProcessEvent to log the evidence of each alert (GH-6391).
-func (e *Engine) LaneStarvationAlertStatus(project string, streak int) (reached, due bool) {
+// whether streak equals a rule's threshold (reached) and whether the cooldown
+// of a rule whose threshold the streak has reached is clear for project
+// (cooldownClear) — same threshold default and cooldown key as
+// handleLaneStarvation. It does not say the alert fires: the engine's event
+// loop may still suppress it. The emitter calls it before ProcessEvent to log
+// the evidence line of a starved lane (GH-6391).
+func (e *Engine) LaneStarvationAlertStatus(project string, streak int) (reached, cooldownClear bool) {
 	// Called from the controller goroutine, not the event loop: read the
 	// rules under mu (UpdateConfig swaps e.config under it).
 	e.mu.RLock()
@@ -1291,10 +1293,10 @@ func (e *Engine) LaneStarvationAlertStatus(project string, streak int) (reached,
 			reached = true
 		}
 		if streak >= threshold && e.shouldFireFor(rule, project) {
-			due = true
+			cooldownClear = true
 		}
 	}
-	return reached, due
+	return reached, cooldownClear
 }
 
 // handleDispatchLoopBreaker fires AlertTypeDispatchLoopBreaker rules when a

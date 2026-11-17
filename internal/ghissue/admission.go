@@ -21,9 +21,11 @@ var AdmissionGateLabels = []string{
 
 // SDKCandidateSkipLabels are the unconditional skips of the SDK poller's
 // candidate filter (studio-sdk poller.go, outside this checkout). Unlike
-// AdmissionGateLabels, nothing reads this list on the admission side: the SDK
-// filter checks its own constants, and cmd/pilot only hands it the trigger
-// label. Holding the SDK constants keeps a rename in step, but a skip the SDK
+// AdmissionGateLabels, the host admission gate does not iterate this list:
+// NotAdmittedLabels is built from it and PollerAdmits reads NotAdmittedLabels.
+// The SDK filter checks its own constants, and cmd/pilot only hands it the
+// trigger label, so nothing in this package fails when the two lists drift
+// apart. Holding the SDK constants keeps a rename in step, but a skip the SDK
 // adds or drops is not picked up here.
 var SDKCandidateSkipLabels = []string{
 	github.LabelInProgress,
