@@ -1,6 +1,12 @@
 package plane
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+)
 
 // Config holds Plane.so adapter configuration.
 type Config struct {
@@ -66,6 +72,47 @@ func PriorityName(p Priority) string {
 	default:
 		return "None"
 	}
+}
+
+// UnmarshalJSON decodes Plane priority from either string ("none", "low", "medium", "high", "urgent")
+// or integer (0..4) values, as well as null/empty string.
+func (p *Priority) UnmarshalJSON(data []byte) error {
+	s := strings.TrimSpace(string(data))
+	if s == "" || s == "null" {
+		*p = PriorityNone
+		return nil
+	}
+	if s[0] == '"' {
+		var str string
+		if err := json.Unmarshal(data, &str); err != nil {
+			return err
+		}
+		switch strings.ToLower(strings.TrimSpace(str)) {
+		case "", "none":
+			*p = PriorityNone
+		case "low":
+			*p = PriorityLow
+		case "medium":
+			*p = PriorityMedium
+		case "high":
+			*p = PriorityHigh
+		case "urgent":
+			*p = PriorityUrgent
+		default:
+			if n, err := strconv.Atoi(str); err == nil {
+				*p = Priority(n)
+				return nil
+			}
+			return fmt.Errorf("plane: unknown priority %q", str)
+		}
+		return nil
+	}
+	var n int
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	*p = Priority(n)
+	return nil
 }
 
 // WorkItem represents a Plane work item (formerly "issue").
