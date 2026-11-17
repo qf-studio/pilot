@@ -178,6 +178,13 @@ func TestRunAsUserGhGuardBinaryCopyGroup(t *testing.T) {
 		return os.Chown(path, uid, g)
 	}
 	t.Cleanup(func() { guardChown = prev })
+	// A small source: the group and mode of the copy are under test, not its
+	// content, and the test binary is large.
+	prevOpen := ghGuardOpenBinary
+	ghGuardOpenBinary = func(string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("#!/bin/sh\n")), nil
+	}
+	t.Cleanup(func() { ghGuardOpenBinary = prevOpen })
 
 	shimDir, _, cleanup, err := setupGhGuardShim("")
 	if err != nil {
