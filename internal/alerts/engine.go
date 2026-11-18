@@ -1269,7 +1269,7 @@ func (e *Engine) handleLaneStarvation(ctx context.Context, event Event) {
 
 // LaneStarvationAlertStatus reports, for the enabled lane_starvation rules,
 // whether streak equals a rule's threshold (reached) and whether the cooldown
-// of a rule whose threshold the streak has reached is clear for project
+// of a rule whose threshold the streak has met or passed is clear for project
 // (cooldownClear) — same threshold default and cooldown key as
 // handleLaneStarvation. It does not say the alert fires: the engine's event
 // loop may still suppress it. The emitter calls it before ProcessEvent to log
