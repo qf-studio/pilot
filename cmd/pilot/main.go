@@ -449,9 +449,12 @@ func main() {
 // loaded and what claude_code.read_guard says. A nil executor block or a nil
 // claude_code block still registers the config path, so a config loaded
 // through a non-default --config is on the deny list. GH-6252, GH-6261.
-// gatewayPort is the gateway port of the config, which the run_as_user
-// preflight probes as closed to the agent user (GH-6431).
-func applyReadGuardConfig(execCfg *executor.BackendConfig, configPath string, gatewayPort int) {
+// gatewayPort and gatewayHost are the gateway of the config, which the
+// run_as_user preflight probes as closed to the agent user (GH-6431). Only the
+// daemon start passes them (applyStartReadGuardConfig): the probe listens on
+// the gateway port, which a running daemon holds. Every other entry point
+// passes 0 and "", and the probe skips the gateway part (GH-6455).
+func applyReadGuardConfig(execCfg *executor.BackendConfig, configPath string, gatewayPort int, gatewayHost string) {
 	var claudeCode *executor.ClaudeCodeConfig
 	var backendType string
 	poolSize := 0
@@ -462,11 +465,26 @@ func applyReadGuardConfig(execCfg *executor.BackendConfig, configPath string, ga
 		claudeCode = &executor.ClaudeCodeConfig{}
 	}
 	claudeCode.ConfigPath = configPath
-	claudeCode.RunAsGatewayPort = gatewayPort
+	claudeCode.RunAsGatewayPort, claudeCode.RunAsGatewayHost = gatewayPort, gatewayHost
 	executor.SetReadGuardConfig(claudeCode)
 	// TASK-651: fail-closed check of claude_code.run_as_user at every
 	// entrypoint that can spawn a model process. Does nothing when empty.
-	executor.PreflightRunAsUser(claudeCode, backendType, execCfg.EffectiveUseWorktree(), poolSize)
+	preflightRunAsUser(claudeCode, backendType, execCfg.EffectiveUseWorktree(), poolSize)
+}
+
+// preflightRunAsUser is executor.PreflightRunAsUser; tests replace it to see
+// what reaches the preflight.
+var preflightRunAsUser = executor.PreflightRunAsUser
+
+// applyStartReadGuardConfig is applyReadGuardConfig for the daemon start: the
+// only entry point that passes the gateway port and host of the config to
+// the run_as_user preflight.
+func applyStartReadGuardConfig(cfg *config.Config, configPath string) {
+	gatewayPort, gatewayHost := 0, ""
+	if cfg.Gateway != nil {
+		gatewayPort, gatewayHost = cfg.Gateway.Port, cfg.Gateway.Host
+	}
+	applyReadGuardConfig(cfg.Executor, configPath, gatewayPort, gatewayHost)
 }
 
 // applyReadGuardConfigFromFile is applyReadGuardConfig for entrypoints that do
@@ -484,9 +502,6 @@ func applyReadGuardConfigFromFile(cfgPath string) {
 			UseWorktree      *bool                      `yaml:"use_worktree"`
 			WorktreePoolSize int                        `yaml:"worktree_pool_size"`
 		} `yaml:"executor"`
-		Gateway *struct {
-			Port *int `yaml:"port"`
-		} `yaml:"gateway"`
 	}
 	if raw, err := os.ReadFile(cfgPath); err == nil {
 		_ = yaml.Unmarshal(raw, &doc)
@@ -495,14 +510,8 @@ func applyReadGuardConfigFromFile(cfgPath string) {
 	if e := doc.Executor; e != nil {
 		execCfg = &executor.BackendConfig{Type: e.Type, ClaudeCode: e.ClaudeCode, UseWorktree: e.UseWorktree, WorktreePoolSize: e.WorktreePoolSize}
 	}
-	gatewayPort := 0
-	if g := config.DefaultConfig().Gateway; g != nil {
-		gatewayPort = g.Port
-	}
-	if g := doc.Gateway; g != nil && g.Port != nil {
-		gatewayPort = *g.Port
-	}
-	applyReadGuardConfig(execCfg, cfgPath, gatewayPort)
+	// GH-6455: no gateway port: a running daemon holds it.
+	applyReadGuardConfig(execCfg, cfgPath, 0, "")
 }
 
 // gatewayChatNeedsOwnRunner reports whether gateway mode must build a
@@ -583,11 +592,11 @@ Examples:
 			}
 
 			// GH-6252: tell the executor read guard which config file is loaded.
-			gatewayPort := 0
-			if cfg.Gateway != nil {
-				gatewayPort = cfg.Gateway.Port
+			// GH-6455: with --replace the old daemon still holds the gateway
+			// port; the preflight runs once it has stopped (runPollingMode).
+			if !replace {
+				applyStartReadGuardConfig(cfg, configPath)
 			}
-			applyReadGuardConfig(cfg.Executor, configPath, gatewayPort)
 
 			secretCount := secretpatterns.SecretValueCount()
 
@@ -777,7 +786,12 @@ Examples:
 
 			hasPollingAdapter := hasTelegram || hasGithubPolling
 			if noGateway || hasPollingAdapter {
-				return runPollingMode(cmd, cfg, projectPath, replace, dashboardMode, noGateway, allowArchived, bootReconcile)
+				return runPollingMode(cmd, cfg, configPath, projectPath, replace, dashboardMode, noGateway, allowArchived, bootReconcile)
+			}
+
+			// Gateway mode does not replace a running daemon.
+			if replace {
+				applyStartReadGuardConfig(cfg, configPath)
 			}
 
 			// Full daemon mode with gateway
@@ -2343,7 +2357,7 @@ func approvalRepoResolver(cfg *config.Config, defaultProjectPath string) func(pr
 // desktop app (and any other client hitting /health) can reach the daemon.
 // bootReconcile carries the GH-3600 upgrade verification outcome for the
 // dashboard to surface; may be nil.
-func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, replace, dashboardMode, noGateway, allowArchived bool, bootReconcile *upgrade.BootReconcileResult) error {
+func runPollingMode(cmd *cobra.Command, cfg *config.Config, configPath, projectPath string, replace, dashboardMode, noGateway, allowArchived bool, bootReconcile *upgrade.BootReconcileResult) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -2358,6 +2372,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		return err
 	}
 	defer func() { _ = daemonLock.Release() }()
+	// GH-6455: with --replace the old daemon has stopped now and released
+	// the gateway port that the run_as_user preflight listens on.
+	if replace {
+		applyStartReadGuardConfig(cfg, configPath)
+	}
 
 	// GH-4393: log the resolved, symlink-evaluated absolute DB path in the
 	// first lines of daemon.log. The 2026-07-16 cutover incident produced a

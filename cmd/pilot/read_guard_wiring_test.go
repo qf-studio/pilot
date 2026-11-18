@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -8,7 +9,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/gateway"
 )
 
 // mainGoFunc returns the body of the top-level func name in main.go.
@@ -42,22 +45,23 @@ func callsIdent(body *ast.BlockStmt, name string) bool {
 
 // mutation pin: `pilot start` stops handing the loaded config path and claude_code settings to the read guard (the main.go SetReadGuardConfig wiring dropped) -> this test fails
 func TestStartCmdWiresReadGuardConfig(t *testing.T) {
-	if !callsIdent(mainGoFunc(t, "newStartCmd"), "applyReadGuardConfig") {
-		t.Error("newStartCmd does not call applyReadGuardConfig: the loaded config path never reaches the helper spawns")
+	if !callsIdent(mainGoFunc(t, "newStartCmd"), "applyStartReadGuardConfig") ||
+		!callsIdent(mainGoFunc(t, "applyStartReadGuardConfig"), "applyReadGuardConfig") {
+		t.Error("newStartCmd does not call applyReadGuardConfig through applyStartReadGuardConfig: the loaded config path never reaches the helper spawns")
 	}
 
 	cfgPath := filepath.Join(t.TempDir(), "custom.yaml")
 	t.Cleanup(func() { executor.SetReadGuardConfig(nil) })
 
 	off := false
-	applyReadGuardConfig(&executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{ReadGuard: &off}}, cfgPath, 0)
+	applyReadGuardConfig(&executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{ReadGuard: &off}}, cfgPath, 0, "")
 	got := executor.ReadGuardConfig()
 	if got == nil || got.ConfigPath != cfgPath || got.ReadGuardEnabled() {
 		t.Errorf("ReadGuardConfig() = %+v, want ConfigPath %q and guard off", got, cfgPath)
 	}
 
 	// No executor.claude_code block: the path is still protected.
-	applyReadGuardConfig(nil, cfgPath, 0)
+	applyReadGuardConfig(nil, cfgPath, 0, "")
 	got = executor.ReadGuardConfig()
 	if got == nil || got.ConfigPath != cfgPath || !got.ReadGuardEnabled() {
 		t.Errorf("ReadGuardConfig() = %+v, want ConfigPath %q and guard on", got, cfgPath)
@@ -130,13 +134,83 @@ func TestReadGuardConfigRunsRunAsUserPreflight(t *testing.T) {
 	})
 	cfgPath := filepath.Join(t.TempDir(), "custom.yaml")
 
-	applyReadGuardConfig(&executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{RunAsUser: "pilot-no-such-user-6321"}}, cfgPath, 0)
+	applyReadGuardConfig(&executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{RunAsUser: "pilot-no-such-user-6321"}}, cfgPath, 0, "")
 	if err := executor.RunAsUserPreflightError(); err == nil {
 		t.Error("a run_as_user that does not exist left spawns open: the preflight is not wired into applyReadGuardConfig")
 	}
 
-	applyReadGuardConfig(&executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{}}, cfgPath, 0)
+	applyReadGuardConfig(&executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{}}, cfgPath, 0, "")
 	if err := executor.RunAsUserPreflightError(); err != nil {
 		t.Errorf("empty run_as_user: preflight error %v, want none", err)
+	}
+}
+
+// capturePreflight replaces the run_as_user preflight with a stub that
+// records the claude_code config it gets.
+func capturePreflight(t *testing.T) func() *executor.ClaudeCodeConfig {
+	t.Helper()
+	var got *executor.ClaudeCodeConfig
+	prev := preflightRunAsUser
+	preflightRunAsUser = func(cfg *executor.ClaudeCodeConfig, _ string, _ bool, _ int) { got = cfg }
+	t.Cleanup(func() {
+		preflightRunAsUser = prev
+		executor.SetReadGuardConfig(nil)
+	})
+	return func() *executor.ClaudeCodeConfig { return got }
+}
+
+// writeGatewayConfig writes a config file with the gateway port and host.
+func writeGatewayConfig(t *testing.T, port int, host string) string {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	body := fmt.Sprintf("version: \"1.0\"\ngateway:\n  host: %q\n  port: %d\n", host, port)
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return cfgPath
+}
+
+// GH-6455: only the daemon start passes the gateway port and host of the
+// config to the run_as_user preflight; with --replace after the old daemon
+// has stopped.
+// mutation pin: drop the assignment of the gateway port at the daemon start
+// -> this test fails.
+func TestStartCmdPassesGatewayToRunAsPreflight(t *testing.T) {
+	if !callsIdent(mainGoFunc(t, "newStartCmd"), "applyStartReadGuardConfig") {
+		t.Error("newStartCmd does not call applyStartReadGuardConfig")
+	}
+	if !callsIdent(mainGoFunc(t, "runPollingMode"), "applyStartReadGuardConfig") {
+		t.Error("runPollingMode does not call applyStartReadGuardConfig: pilot start --replace never probes the gateway port")
+	}
+	got := capturePreflight(t)
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	applyStartReadGuardConfig(&config.Config{Gateway: &gateway.Config{Host: "0.0.0.0", Port: 9123}}, cfgPath)
+	if c := got(); c == nil || c.RunAsGatewayPort != 9123 || c.RunAsGatewayHost != "0.0.0.0" || c.ConfigPath != cfgPath {
+		t.Errorf("preflight got %+v, want gateway port 9123, host 0.0.0.0 and ConfigPath %q", c, cfgPath)
+	}
+}
+
+// The daemon start loads the YAML file: its gateway port reaches the
+// preflight.
+func TestStartCmdYAMLGatewayPortReachesRunAsPreflight(t *testing.T) {
+	got := capturePreflight(t)
+	cfgPath := writeGatewayConfig(t, 9234, "0.0.0.0")
+	cfg, err := loadConfigRegisteringSecrets(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyStartReadGuardConfig(cfg, cfgPath)
+	if c := got(); c == nil || c.RunAsGatewayPort != 9234 || c.RunAsGatewayHost != "0.0.0.0" {
+		t.Errorf("preflight got %+v, want gateway port 9234 and host 0.0.0.0 from the file", c)
+	}
+}
+
+// Every other entry point passes no gateway port: a running daemon holds it.
+func TestEntrypointPassesNoGatewayToRunAsPreflight(t *testing.T) {
+	got := capturePreflight(t)
+	cfgPath := writeGatewayConfig(t, 9234, "0.0.0.0")
+	applyReadGuardConfigFromFile(cfgPath)
+	if c := got(); c == nil || c.RunAsGatewayPort != 0 || c.RunAsGatewayHost != "" || c.ConfigPath != cfgPath {
+		t.Errorf("preflight got %+v, want no gateway port and host and ConfigPath %q", c, cfgPath)
 	}
 }
