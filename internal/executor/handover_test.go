@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -788,4 +789,323 @@ func TestHandOverBranchIgnoresGitDir(t *testing.T) {
 		t.Errorf("refs of the other repository changed: %q, want %q", got, otherRefs)
 	}
 	assertEmptyDir(t, tmp)
+}
+
+// withDaemonEnv runs fn with vars set in the environment of the test process,
+// the environment the git commands of the daemon side inherit, and unsets them
+// before it returns, so the git commands of the test (wsGit) never see them;
+// t.Setenv restores the values of before at the end of the test.
+func withDaemonEnv(t *testing.T, vars map[string]string, fn func()) {
+	t.Helper()
+	for name, value := range vars {
+		t.Setenv(name, value)
+	}
+	defer func() {
+		for name := range vars {
+			_ = os.Unsetenv(name)
+		}
+	}()
+	fn()
+}
+
+// handOverWithDaemonEnv hands a new commit of the workspace over with vars
+// set in the daemon environment and checks that it arrives in the daemon's
+// repository, objects included; it returns the commit.
+func handOverWithDaemonEnv(t *testing.T, e *handOverEnv, vars map[string]string) string {
+	t.Helper()
+	head := commitFile(t, e.ws, "a.txt", "one")
+	e.sudoLog = mockSudoAgent(t, e.repo, "")
+	tmp := handOverTmpDir(t)
+	var sha string
+	var err error
+	withDaemonEnv(t, vars, func() {
+		sha, err = handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+	})
+	if err != nil || sha != head {
+		t.Fatalf("handOverBranch = %s, %v, want %s", sha, err, head)
+	}
+	if got := wsGit(t, e.repo, "rev-parse", handOverRef(handOverTestTask)); got != head {
+		t.Errorf("%s in the daemon repository = %s, want %s", handOverRef(handOverTestTask), got, head)
+	}
+	if out, err := exec.Command("git", "-C", e.repo, "fsck", "--connectivity-only", "--no-dangling").CombinedOutput(); err != nil {
+		t.Errorf("git fsck of the daemon repository: %v: %s", err, out)
+	}
+	assertEmptyDir(t, tmp)
+	return head
+}
+
+// mutation pin: let GIT_COMMON_DIR pass handOverEnvAllowed -> a row of this
+// test fails
+func TestHandOverDaemonGitEnvAllowList(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// vars are the names and values set in the daemon environment.
+		vars func(t *testing.T) map[string]string
+		// handOver, when set, runs a real hand-over with vars and checks it.
+		handOver func(t *testing.T, vars map[string]string)
+	}{
+		{name: "GIT_DIR", vars: func(t *testing.T) map[string]string {
+			return map[string]string{"GIT_DIR": filepath.Join(t.TempDir(), ".git")}
+		}},
+		{name: "GIT_WORK_TREE", vars: func(t *testing.T) map[string]string {
+			return map[string]string{"GIT_WORK_TREE": t.TempDir()}
+		}},
+		{name: "GIT_INDEX_FILE", vars: func(t *testing.T) map[string]string {
+			return map[string]string{"GIT_INDEX_FILE": filepath.Join(t.TempDir(), "index")}
+		}},
+		{name: "GIT_OBJECT_DIRECTORY", vars: func(t *testing.T) map[string]string {
+			return map[string]string{"GIT_OBJECT_DIRECTORY": filepath.Join(t.TempDir(), "objects")}
+		}},
+		{name: "GIT_ALTERNATE_OBJECT_DIRECTORIES", vars: func(t *testing.T) map[string]string {
+			return map[string]string{"GIT_ALTERNATE_OBJECT_DIRECTORIES": filepath.Join(t.TempDir(), "objects")}
+		}},
+		{name: "GIT_NAMESPACE", vars: func(*testing.T) map[string]string {
+			return map[string]string{"GIT_NAMESPACE": "forged"}
+		}},
+		{
+			name: "GIT_COMMON_DIR",
+			vars: func(t *testing.T) map[string]string {
+				other := t.TempDir()
+				wsGit(t, other, "init", "-q")
+				return map[string]string{"GIT_COMMON_DIR": filepath.Join(other, ".git")}
+			},
+			// The pack and the ref land in the daemon's repository, nothing in
+			// the other one.
+			handOver: func(t *testing.T, vars map[string]string) {
+				e := newHandOverEnv(t)
+				other := filepath.Dir(vars["GIT_COMMON_DIR"])
+				objects := wsGit(t, other, "count-objects", "-v")
+				head := handOverWithDaemonEnv(t, e, vars)
+				if got := wsGit(t, other, "for-each-ref"); got != "" {
+					t.Errorf("the hand-over wrote refs into the other repository: %s", got)
+				}
+				if got := wsGit(t, other, "count-objects", "-v"); got != objects {
+					t.Errorf("the hand-over wrote objects into the other repository:\n%s\nwant:\n%s", got, objects)
+				}
+				if exec.Command("git", "-C", other, "cat-file", "-e", head).Run() == nil {
+					t.Errorf("the head %s is in the other repository", head)
+				}
+			},
+		},
+		{
+			name: "GIT_EXEC_PATH",
+			vars: func(t *testing.T) map[string]string {
+				return map[string]string{"GIT_EXEC_PATH": t.TempDir()}
+			},
+			// Each program git could start from its exec path is a marker
+			// script: none runs. The daemon's repository is a partial clone
+			// and the agent sends a branch on an object only the daemon has:
+			// the quarantine check misses it and git starts a lazy fetch, a
+			// git process it finds through its exec path.
+			handOver: func(t *testing.T, vars map[string]string) {
+				e := newHandOverEnv(t)
+				marker := filepath.Join(t.TempDir(), "marker")
+				for _, name := range []string{"git", "git-fetch", "git-index-pack", "git-unpack-objects",
+					"git-cat-file", "git-rev-list", "git-merge-base", "git-update-ref", "git-gc",
+					"git-maintenance", "git-upload-pack", "git-remote-https"} {
+					body := fmt.Sprintf("#!/bin/sh\necho %s >> '%s'\nexit 1\n", name, marker)
+					if err := os.WriteFile(filepath.Join(vars["GIT_EXEC_PATH"], name), []byte(body), 0o755); err != nil { //nolint:gosec // marker must be executable
+						t.Fatal(err)
+					}
+				}
+				private := e.daemonOnlyCommit(t, "private.txt", "private")
+				clone := e.cloneOfDaemon(t)
+				wsGit(t, clone, "checkout", "-q", "-b", "forged", private)
+				tip := commitFile(t, clone, "agent.txt", "agent")
+				stream := forgedHandOverPack(t, clone, tip, "^"+private)
+				wsGit(t, e.repo, "config", "core.repositoryformatversion", "1")
+				wsGit(t, e.repo, "config", "extensions.partialClone", "origin")
+				wsGit(t, e.repo, "config", "remote.origin.promisor", "true")
+				withDaemonEnv(t, vars, func() {
+					_ = runForgedHandOver(t, e, stream, tip, "did not come from the workspace")
+				})
+				if raw, err := os.ReadFile(marker); err == nil {
+					t.Errorf("a program of GIT_EXEC_PATH ran during the hand-over: %q", raw)
+				}
+			},
+		},
+		{
+			name: "GIT_GRAFT_FILE",
+			vars: func(t *testing.T) map[string]string {
+				return map[string]string{"GIT_GRAFT_FILE": filepath.Join(t.TempDir(), "grafts")}
+			},
+			// The graft makes the base the parent of an orphan commit the
+			// agent sends: the ancestor check still refuses it.
+			handOver: func(t *testing.T, vars map[string]string) {
+				e := newHandOverEnv(t)
+				orphan := wsGit(t, e.ws, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "-m", "orphan", "HEAD^{tree}")
+				if err := os.WriteFile(vars["GIT_GRAFT_FILE"], []byte(orphan+" "+e.base+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				stream := forgedHandOverPack(t, e.ws, orphan)
+				withDaemonEnv(t, vars, func() {
+					_ = runForgedHandOver(t, e, stream, orphan, "not an ancestor")
+				})
+			},
+		},
+		{name: "GIT_TRACE", vars: func(t *testing.T) map[string]string {
+			return map[string]string{"GIT_TRACE": filepath.Join(t.TempDir(), "trace")}
+		}},
+		{name: "GIT_CONFIG_GLOBAL", vars: func(t *testing.T) map[string]string {
+			return map[string]string{"GIT_CONFIG_GLOBAL": filepath.Join(t.TempDir(), "config")}
+		}},
+		{name: "GIT_CONFIG_COUNT", vars: func(t *testing.T) map[string]string {
+			return map[string]string{"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": t.TempDir()}
+		}},
+		{name: "GIT_CONFIG_PARAMETERS", vars: func(t *testing.T) map[string]string {
+			return map[string]string{"GIT_CONFIG_PARAMETERS": "'core.hookspath'='" + t.TempDir() + "'"}
+		}},
+		{name: "GIT_SSH_COMMAND", vars: func(t *testing.T) map[string]string {
+			return map[string]string{"GIT_SSH_COMMAND": filepath.Join(t.TempDir(), "ssh")}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vars := tc.vars(t)
+			repo := t.TempDir()
+			q := handOverQuarantine{dir: filepath.Join(repo, "quarantine"), objects: filepath.Join(repo, "objects")}
+			var cmds map[string]*exec.Cmd
+			withDaemonEnv(t, vars, func() {
+				cmds = map[string]*exec.Cmd{
+					"handOverDaemonGit":         handOverDaemonGit(context.Background(), repo, "status"),
+					"quarantine":                q.git(context.Background(), repo, false, "cat-file", "--batch-check"),
+					"quarantine with alternate": q.git(context.Background(), repo, true, "cat-file", "-t", "HEAD"),
+				}
+			})
+			for kind, cmd := range cmds {
+				if cmd.Err != nil {
+					t.Fatalf("%s: %v", kind, cmd.Err)
+				}
+				for name, value := range vars {
+					if slices.Contains(cmd.Env, name+"="+value) {
+						t.Errorf("%s: the environment holds %s=%s of the daemon", kind, name, value)
+					}
+				}
+				if !slices.Contains(cmd.Env, "GIT_TERMINAL_PROMPT=0") {
+					t.Errorf("%s: the environment lacks GIT_TERMINAL_PROMPT=0", kind)
+				}
+			}
+			for _, want := range []string{"GIT_NO_REPLACE_OBJECTS=1", "GIT_OBJECT_DIRECTORY=" + q.dir, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + q.objects} {
+				if !slices.Contains(cmds["quarantine with alternate"].Env, want) {
+					t.Errorf("quarantine with alternate: the environment lacks %s", want)
+				}
+			}
+			if tc.handOver != nil {
+				tc.handOver(t, vars)
+			}
+		})
+	}
+}
+
+// mutation pin: remove the removeHandOverRef of the failed update-ref -> this
+// test fails
+func TestHandOverBranchFailureAfterTheRefRemovesTheRef(t *testing.T) {
+	e := newHandOverEnv(t)
+	commitFile(t, e.ws, "a.txt", "one")
+	e.sudoLog = mockSudoAgent(t, e.repo, "")
+	tmp := handOverTmpDir(t)
+	packsBefore := e.packFiles(t)
+	// The seam: the real update-ref sets the hand-over ref, then the step
+	// fails (exit 3; exit 4 is a failure of the real update-ref).
+	var wrote bool
+	prev := execCommandContext
+	execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" && slices.Contains(args, "update-ref") && !slices.Contains(args, "-d") {
+			wrote = true
+			return prev(c, "sh", append([]string{"-c", `git "$@" || exit 4; exit 3`, "sh"}, args...)...)
+		}
+		return prev(c, name, args...)
+	}
+	t.Cleanup(func() { execCommandContext = prev })
+
+	sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+	if err == nil {
+		t.Fatalf("handOverBranch = %s with a failed step after the ref, want an error", sha)
+	}
+	if !wrote || !strings.Contains(err.Error(), "exit status 3") {
+		t.Fatalf("the seam did not write the ref and fail: %v", err)
+	}
+	assertEmptyDir(t, tmp)
+	e.assertNothingLeft(t, packsBefore)
+}
+
+// mutation pin: remove GIT_NO_REPLACE_OBJECTS from the tip commands
+// (handOverQuarantine.git) -> this test fails
+func TestHandOverBranchIgnoresDaemonReplaceRefs(t *testing.T) {
+	e := newHandOverEnv(t)
+	head := commitFile(t, e.ws, "a.txt", "one")
+	// The daemon's repository replaces the tip with an orphan commit: with
+	// the replace ref in effect the base is no ancestor of the tip. git
+	// replace wants both objects, update-ref only the replacement.
+	orphan := wsGit(t, e.repo, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "-m", "orphan", e.base+"^{tree}")
+	wsGit(t, e.repo, "update-ref", "refs/replace/"+head, orphan)
+	e.sudoLog = mockSudoAgent(t, e.repo, "")
+	handOverTmpDir(t)
+
+	sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+	if err != nil || sha != head {
+		t.Fatalf("handOverBranch = %s, %v with a replace ref of the tip in the daemon repository, want %s", sha, err, head)
+	}
+	if got := wsGit(t, e.repo, "rev-parse", handOverRef(handOverTestTask)); got != head {
+		t.Errorf("%s = %s, want %s", handOverRef(handOverTestTask), got, head)
+	}
+}
+
+// mutation pin: set cmd.WaitDelay = 0 at the end of handOverDaemonGit -> this
+// test fails
+func TestHandOverDaemonGitWaitDelay(t *testing.T) {
+	// Parallel: the wait delay runs next to the other tests. The test sets
+	// no environment and no seam.
+	t.Parallel()
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("setsid not available")
+	}
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	t.Cleanup(func() {
+		if raw, err := os.ReadFile(pidFile); err == nil {
+			_ = exec.Command("kill", "-KILL", strings.TrimSpace(string(raw))).Run()
+		}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := handOverDaemonGit(ctx, t.TempDir(), "status")
+	if cmd.Err != nil {
+		t.Fatal(cmd.Err)
+	}
+	// The mock git ignores the signals it can and leaves a child in a session
+	// of its own that holds the output pipe: the group kill does not reach
+	// it, only the wait delay ends the wait.
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf(`trap '' TERM INT HUP; setsid sh -c 'trap "" TERM INT HUP; echo $$ > %s; exec sleep 60' & exec sleep 60`, pidFile)
+	cmd.Path, cmd.Args = sh, []string{"sh", "-c", script}
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if raw, err := os.ReadFile(pidFile); err == nil && strings.HasSuffix(string(raw), "\n") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the child of the mock git did not start")
+		}
+	}
+	start := time.Now()
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("the mock git ended with no error after the cancel")
+		}
+		if elapsed := time.Since(start); elapsed > procgroup.DefaultWaitDelay+2*time.Second {
+			t.Errorf("the wait ended %v after the cancel, want within the wait delay %v", elapsed, procgroup.DefaultWaitDelay)
+		}
+	case <-time.After(procgroup.DefaultWaitDelay + 10*time.Second):
+		t.Fatalf("the wait did not end %v after the cancel", procgroup.DefaultWaitDelay+10*time.Second)
+	}
 }
