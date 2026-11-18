@@ -306,7 +306,10 @@ func TestSecretGate_CoAuthorStripRunsNoHook(t *testing.T) {
 						}
 					}
 				}
-				if path == "amend" && writes["commit"] != 1 || path == "rewrite" && (writes["commit-tree"] != 2 || writes["update-ref"] != 1) {
+				// The amend of HEAD is one commit-tree and one update-ref too (no git
+				// commit: it would run the clean filters, TASK-651).
+				if path == "amend" && (writes["commit"] != 0 || writes["commit-tree"] != 1 || writes["update-ref"] != 1) ||
+					path == "rewrite" && (writes["commit-tree"] != 2 || writes["update-ref"] != 1) {
 					t.Errorf("recorded strip writes %v, want the %s path", writes, path)
 				}
 				msgs := f.branchMessages()
@@ -352,7 +355,7 @@ func TestSecretGate_CoAuthorStripIgnoresReplaceRefs(t *testing.T) {
 	}
 }
 
-// mutation pin: remove checkCommitNUL -> this test fails
+// mutation pin: remove the NUL check of checkCommitObjects -> this test fails
 func TestSecretGate_CommitWithNULByteIsRefused(t *testing.T) {
 	for name, rest := range map[string]string{"secret after the NUL": secretGateValue, "no secret": "more text"} {
 		t.Run(name, func(t *testing.T) {

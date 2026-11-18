@@ -28,7 +28,7 @@ var ErrPushRefused = errors.New("push refused")
 // It names the commit and the file, never the value.
 type PushRangeError struct {
 	Commit string // short SHA of the commit that adds the secret
-	File   string // path of the file, or CommitMessageFile
+	File   string // path of the file, CommitMessageFile or a CommitHeaderFile
 	Kind   string // Match.Kind of the hit: KindConfiguredValue or a pattern prefix
 }
 
@@ -454,7 +454,7 @@ func checkRange(ctx context.Context, dir, diffBase string, logArgs []string, hea
 	if err := checkCommitEncodings(ctx, dir, logArgs); err != nil {
 		return err
 	}
-	if err := checkCommitNUL(ctx, dir, logArgs); err != nil {
+	if err := checkCommitObjects(ctx, dir, logArgs); err != nil {
 		return err
 	}
 	if cerr := ctxError(ctx); cerr != nil {
@@ -523,17 +523,21 @@ func checkCommitEncodings(ctx context.Context, dir string, logArgs []string) err
 	return nil
 }
 
-// checkCommitNUL refuses a range that holds a commit whose raw object has a 0
-// byte. git prints a message only up to its first NUL, so the scan would read the
-// first part while the push sends the whole object (GH-6353). The objects are
-// read raw, in one cat-file --batch call over the commit list, through the
-// gate's exec helper (no replace refs, the gate's config).
+// checkCommitObjects reads the raw object of every commit of the range, in one
+// cat-file --batch call over the commit list, through the gate's exec helper (no
+// replace refs, the gate's config). It refuses a commit whose object has a 0
+// byte: git prints a message only up to its first NUL, so the scan would read
+// the first part while the push sends the whole object (GH-6353). It scans the
+// header of each object (author, committer, encoding and every other header
+// line) with the patterns and registered values of the message: the message
+// scan (%B) does not read them, and the push sends them (TASK-651). Oldest
+// commit first, so the error names the first offender.
 //
 // Tags are not checked: every push the gate clears sends refs/heads refspecs with
 // --no-follow-tags and push.followTags=false, so no annotated tag object leaves
 // with it.
-func checkCommitNUL(ctx context.Context, dir string, logArgs []string) error {
-	list, err := gitOutput(ctx, dir, append([]string{"rev-list"}, logArgs...)...)
+func checkCommitObjects(ctx context.Context, dir string, logArgs []string) error {
+	list, err := gitOutput(ctx, dir, append([]string{"rev-list", "--reverse"}, logArgs...)...)
 	if cerr := ctxError(ctx); cerr != nil {
 		return cerr
 	}
@@ -556,10 +560,14 @@ func checkCommitNUL(ctx context.Context, dir string, logArgs []string) error {
 	if serr := cmd.Start(); serr != nil {
 		return fmt.Errorf("secret gate: git cat-file: %w", serr)
 	}
-	verdict := readBatchForNUL(bufio.NewReader(stdout))
+	verdict := readBatchObjects(bufio.NewReader(stdout))
 	if verdict != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		var hit *PushRangeError
+		if errors.As(verdict, &hit) {
+			return verdict // a hit stays a hit
+		}
 		if cerr := ctxError(ctx); cerr != nil {
 			return cerr
 		}
@@ -574,10 +582,12 @@ func checkCommitNUL(ctx context.Context, dir string, logArgs []string) error {
 	return nil
 }
 
-// readBatchForNUL reads cat-file --batch output ("<sha> <type> <size>\n",
-// the object, "\n" per record) and returns a *PushScanError for the first
-// commit that holds a 0 byte. An object is streamed, never held whole.
-func readBatchForNUL(r *bufio.Reader) error {
+// readBatchObjects reads cat-file --batch output ("<sha> <type> <size>\n",
+// the object, "\n" per record). It returns a *PushScanError for the first
+// commit that holds a 0 byte or a header above maxCommitScanBytes, and a
+// *PushRangeError for the first commit with a secret in a header line. An
+// object is streamed; only its header is held.
+func readBatchObjects(r *bufio.Reader) error {
 	chunk := make([]byte, 64<<10)
 	for {
 		header, err := r.ReadString('\n')
@@ -596,10 +606,21 @@ func readBatchForNUL(r *bufio.Reader) error {
 			return fmt.Errorf("secret gate: git cat-file: unexpected size %q", printableValue(f[2]))
 		}
 		nul := false
+		var head []byte // the object up to the blank line that ends its header
+		inHead := true
 		for size > 0 {
 			n, rerr := r.Read(chunk[:min(int64(len(chunk)), size)])
 			if bytes.IndexByte(chunk[:n], 0) >= 0 {
 				nul = true
+			}
+			if inHead {
+				from := max(0, len(head)-1)
+				head = append(head, chunk[:n]...)
+				if i := bytes.Index(head[from:], []byte("\n\n")); i >= 0 {
+					head, inHead = head[:from+i+1], false
+				} else if len(head) > maxCommitScanBytes {
+					return &PushScanError{Reason: fmt.Sprintf("commit %s has a header of more than %d bytes, too large to scan", shortSHA([]byte(f[0])), maxCommitScanBytes)}
+				}
 			}
 			size -= int64(n)
 			if rerr != nil && size > 0 {
@@ -609,10 +630,59 @@ func readBatchForNUL(r *bufio.Reader) error {
 		if nul {
 			return &PushScanError{Reason: fmt.Sprintf("commit %s holds a NUL byte; the commit is not pushed", shortSHA([]byte(f[0])))}
 		}
+		if name, kind, hit := scanCommitHeader(head); hit {
+			return newPushRangeError(shortSHA([]byte(f[0])), CommitHeaderFile(name), kind)
+		}
 		if _, err := r.Discard(1); err != nil { // the newline after the object
 			return fmt.Errorf("secret gate: git cat-file: %w", err)
 		}
 	}
+}
+
+// CommitHeaderFile is PushRangeError.File when the secret is in the header
+// line name of a commit object (author, committer, an extra header).
+func CommitHeaderFile(name string) string {
+	return "the commit header " + printableValue(name)
+}
+
+// scanCommitHeader scans each header line of a raw commit object, a
+// multi-line value (gpgsig, mergetag: lines that start with a space) as one,
+// and returns the name of the first line with a hit. The whole line is
+// scanned, the name with it: an extra header can carry the value in its name.
+func scanCommitHeader(head []byte) (name, kind string, hit bool) {
+	var (
+		cur     string
+		entry   bytes.Buffer
+		started bool
+	)
+	flush := func() bool {
+		defer entry.Reset()
+		if !started {
+			return false
+		}
+		if k, ok := firstHit(entry.Bytes(), false); ok {
+			name, kind = cur, k
+			return true
+		}
+		return false
+	}
+	for _, line := range bytes.Split(bytes.TrimSuffix(head, []byte{'\n'}), []byte{'\n'}) {
+		if started && len(line) > 0 && line[0] == ' ' {
+			entry.WriteByte('\n')
+			entry.Write(line[1:])
+			continue
+		}
+		if flush() {
+			return name, kind, true
+		}
+		n, _, _ := bytes.Cut(line, []byte{' '})
+		cur, started = string(n), true
+		entry.Write(line)
+	}
+	if flush() {
+		return name, kind, true
+	}
+	return "", "", false
 }
 
 // isUTF8Name reports whether an encoding header names UTF-8: any case, with or

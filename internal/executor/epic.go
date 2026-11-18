@@ -302,14 +302,15 @@ func (r *Runner) PlanEpic(ctx context.Context, task *Task, executionPath string)
 	if err != nil {
 		return nil, err
 	}
-	// GH-5278: scrub the ambient environment before layering the explicit
-	// ANTHROPIC_MODEL override on top — this subprocess is model-controlled.
-	setAgentEnv(cmd, append(modelSubprocessEnvFor(ctx, os.Environ()), "ANTHROPIC_MODEL="+planningModel))
-
 	// Set working directory - use executionPath which respects worktree isolation
 	if executionPath != "" {
 		cmd.Dir = executionPath
 	}
+
+	// GH-5278: scrub the ambient environment before layering the explicit
+	// ANTHROPIC_MODEL override on top — this subprocess is model-controlled.
+	// After cmd.Dir: the git identity of the agent user follows the directory.
+	setAgentEnv(cmd, append(modelSubprocessEnvFor(ctx, os.Environ()), "ANTHROPIC_MODEL="+planningModel))
 
 	// Capture output
 	var stdout, stderr bytes.Buffer

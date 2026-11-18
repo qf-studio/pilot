@@ -1051,14 +1051,48 @@ func (g *GitOperations) unpublishedCommits(ctx context.Context) (commits []strin
 	return commits, false, nil
 }
 
+// amendHeadWithoutAnthropicCoAuthor replaces HEAD with a commit of the same
+// tree and parents, the author of HEAD and the stripped message; the committer
+// is the present identity, as with an amend.
+//
+// Decision: commit-tree and update-ref, not `git commit --amend`: git commit
+// refreshes the index and so runs the clean filters of the repository
+// (.gitattributes plus filter.*.clean, both writable by the session) as the
+// user of the strip (TASK-651).
 func (g *GitOperations) amendHeadWithoutAnthropicCoAuthor(ctx context.Context) error {
 	msg, err := g.commitMessage(ctx, "HEAD")
 	if err != nil {
 		return err
 	}
-	amend := g.gitHardened(ctx, "commit", "--amend", "--only", "--no-verify", "--allow-empty", "-F", "-")
+	meta, err := g.gitOutput(ctx, "log", "-1", "--date=raw", "--format=%H%n%an%n%ae%n%ad%n%T%n%P", "HEAD")
+	if err != nil {
+		return err
+	}
+	// A root commit has an empty %P line, which the trim drops.
+	f := strings.Split(strings.TrimRight(meta, "\n"), "\n")
+	if len(f) == 5 {
+		f = append(f, "")
+	}
+	if len(f) < 6 {
+		return fmt.Errorf("unexpected commit metadata for HEAD")
+	}
+	args := []string{"commit-tree", f[4]}
+	for _, p := range strings.Fields(f[5]) {
+		args = append(args, "-p", p)
+	}
+	amend := g.gitHardened(ctx, append(args, "-F", "-")...)
+	appendGitEnv(amend, "GIT_AUTHOR_NAME="+f[1], "GIT_AUTHOR_EMAIL="+f[2], "GIT_AUTHOR_DATE="+f[3])
 	amend.Stdin = strings.NewReader(stripAnthropicCoAuthorLines(msg))
-	if output, err := amend.CombinedOutput(); err != nil {
+	out, err := amend.Output()
+	if err != nil {
+		var stderr []byte
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = ee.Stderr
+		}
+		return fmt.Errorf("failed to amend commit message: %w: %s", err, stderr)
+	}
+	if output, err := g.gitHardened(ctx, "update-ref",
+		"-m", "pilot: strip Anthropic co-author trailer", "HEAD", strings.TrimSpace(string(out)), f[0]).CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to amend commit message: %w: %s", err, output)
 	}
 	return nil

@@ -921,9 +921,16 @@ func (s *runAsSettings) agentEnvFor(env []string) []string {
 
 // setAgentEnv sets cmd.Env for a command made by agentCommand. With the option
 // empty (or cmd built without sudo) it assigns env unchanged. With the option
-// set it assigns the allowlisted env and writes the names of those entries
-// into the --preserve-env flag.
+// set it assigns the allowlisted env plus the git identity of the agent user
+// for the directory cmd.Dir (agentGitIdentityFor) and writes the names of
+// those entries into the --preserve-env flag.
 func setAgentEnv(cmd *exec.Cmd, env []string) {
+	setAgentEnvIn(cmd, env, cmd.Dir)
+}
+
+// setAgentEnvIn is setAgentEnv for a command that runs in dir, for the sites
+// that set cmd.Dir later or pass the directory in argv (git -C).
+func setAgentEnvIn(cmd *exec.Cmd, env []string, dir string) {
 	if _, ok := agentCmdUser(cmd); !ok {
 		cmd.Env = env
 		return
@@ -939,7 +946,7 @@ func setAgentEnv(cmd *exec.Cmd, env []string) {
 		cmd.Env = env
 		return
 	}
-	out := s.agentEnvFor(env)
+	out := lastEnvWins(append(s.agentEnvFor(env), agentGitIdentityFor(s, dir)...))
 	cmd.Env = out
 	setPreserveEnvNames(cmd, out)
 }
