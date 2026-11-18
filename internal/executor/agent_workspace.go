@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,7 +44,22 @@ const (
 	agentWorkspaceRemoveTimeout = 60 * time.Second
 	// agentWorkspaceProjectLen is the length of PROJECT in a workspace name.
 	agentWorkspaceProjectLen = 8
+	// agentWorkspaceLostAge is the age after which the sweep removes a
+	// workspace whose commits are in no ref of the daemon's repository.
+	agentWorkspaceLostAge = 7 * 24 * time.Hour
+	// agentWorkspaceNotSafe is the reason a workspace stays when a commit of
+	// it is in no ref of the daemon's repository (agentWorkspaceTipSafe).
+	agentWorkspaceNotSafe = "a commit of the workspace is in no ref of the daemon's repository"
 )
+
+// agentWorkspaceSafeRefs are the refs of the daemon's repository that hold a
+// commit of a workspace outside it: the remote-tracking refs, the recovery
+// refs and the hand-over refs.
+var agentWorkspaceSafeRefs = []string{"refs/remotes", "refs/pilot-recovery", "refs/pilot/handover"}
+
+// agentWorkspaceNow is the clock of the sweep for the age of a workspace.
+// Tests only replace it.
+var agentWorkspaceNow = time.Now
 
 // agentWorkspaceStoreScript stores standard input as the file $1, which must
 // not exist, readable by the agent user only.
@@ -264,8 +280,10 @@ func agentWorkspaceBase(path string) string {
 
 // finishAgentWorkspace is the cleanup of the agent workspace of a run. The
 // workspace is removed only when its commits are safe outside it: the last
-// push of a hand-over succeeded, a recovery ref of this run holds them in the
-// daemon's repository, or the workspace has no commit above the base. In any
+// push of a hand-over succeeded or a recovery ref of this run holds them in the
+// daemon's repository, and in both cases no commit of the workspace is in no
+// ref there (agentWorkspaceTipSafe); or the workspace has no commit above the
+// base. In any
 // other case it stays and one Error line names its path; the sweep at the
 // daemon start (sweepAgentWorkspaces) removes it later. Once the workspace is
 // removed, the hand-over ref of the task is deleted (removeHandOverRef).
@@ -297,14 +315,20 @@ func finishAgentWorkspace(s *runAsSettings, wsPath string, rec *agentWorkspaceRe
 // can make it read 0; that only loses the agent's own work, and every commit
 // that left the workspace is checked by the daemon in its own repository.
 func agentWorkspaceKeepReason(ctx context.Context, wsPath string, rec *agentWorkspaceRecord) string {
+	if _, err := os.Lstat(wsPath); errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
 	_, pushed, recoverySHA := rec.state()
 	if pushed {
+		if !agentWorkspaceTipSafe(ctx, wsPath, rec.daemonRepo, rec.base) {
+			return agentWorkspaceNotSafe
+		}
 		return ""
 	}
 	if recoverySHA != "" && daemonRefSHA(ctx, rec.daemonRepo, recoveryRefName(rec.taskID)) == recoverySHA {
-		return ""
-	}
-	if _, err := os.Lstat(wsPath); errors.Is(err, fs.ErrNotExist) {
+		if !agentWorkspaceTipSafe(ctx, wsPath, rec.daemonRepo, rec.base) {
+			return agentWorkspaceNotSafe
+		}
 		return ""
 	}
 	cmd := gitCommandIn(ctx, wsPath, append(secretpatterns.HooksOffArgs(),
@@ -318,6 +342,98 @@ func agentWorkspaceKeepReason(ctx context.Context, wsPath string, rec *agentWork
 		return fmt.Sprintf("%s commit(s) above the base %s were not pushed and no recovery ref holds them", n, rec.base)
 	}
 	return ""
+}
+
+// agentWorkspaceTipSafe reports whether every commit the workspace at wsPath
+// points at is safe outside it: the commit of HEAD and of each local branch,
+// read as the agent user in the workspace (hooks off, replace refs off). Each
+// must exist in the daemon's repository and be contained in a ref of
+// agentWorkspaceSafeRefs there (git for-each-ref --contains, as the daemon
+// user), or be base or an ancestor of it. A read error, a value that is not a
+// full hex object name, or a commit the daemon's repository does not have
+// gives false. base is "" when no record of the workspace exists (the sweep).
+//
+// Decision: base is a parameter: the record of the run holds it, the sweep has
+// none; the agent can write any value into the workspace, so the daemon never
+// reads the base from there. A workspace without a .git directory gives false:
+// git would search the parents of the workspace for a repository.
+func agentWorkspaceTipSafe(ctx context.Context, wsPath, daemonRepo, base string) bool {
+	if fi, err := os.Lstat(filepath.Join(wsPath, ".git")); err != nil || !fi.IsDir() {
+		return false
+	}
+	read := func(args ...string) ([]string, bool) {
+		cmd := gitCommandIn(ctx, wsPath, append(secretpatterns.HooksOffArgs(), args...)...)
+		appendGitEnv(cmd, "GIT_NO_REPLACE_OBJECTS=1")
+		out, err := cmd.Output()
+		if err != nil {
+			return nil, false
+		}
+		return strings.Fields(string(out)), true
+	}
+	head, ok := read("rev-parse", "--verify", "-q", "HEAD")
+	if !ok || len(head) != 1 {
+		return false
+	}
+	branches, ok := read("for-each-ref", "--format=%(objectname)", "refs/heads/")
+	if !ok {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, sha := range append(head, branches...) {
+		if seen[sha] {
+			continue
+		}
+		seen[sha] = true
+		if !isFullObjectName(sha) || !daemonCommitSafe(ctx, daemonRepo, sha, base) {
+			return false
+		}
+	}
+	return true
+}
+
+// isFullObjectName reports whether s is a full lower-case hex object name
+// (SHA-1 or SHA-256).
+func isFullObjectName(s string) bool {
+	return (len(s) == 40 || len(s) == 64) && isLowerHex(s)
+}
+
+// daemonCommitSafe reports whether sha is a commit of the daemon's repository
+// that a ref of agentWorkspaceSafeRefs contains, or base or an ancestor of it.
+// Every command runs in the daemon's repository as the daemon user, hardened
+// as the hand-over (handOverDaemonGit, handOverGitArgs), replace refs off.
+func daemonCommitSafe(ctx context.Context, daemonRepo, sha, base string) bool {
+	run := func(args ...string) ([]byte, error) {
+		cmd := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs(args...)...)
+		appendGitEnv(cmd, "GIT_NO_REPLACE_OBJECTS=1")
+		return cmd.Output()
+	}
+	if out, err := run("cat-file", "-t", sha); err != nil || strings.TrimSpace(string(out)) != "commit" {
+		return false
+	}
+	args := append([]string{"for-each-ref", "--count=1", "--format=%(refname)", "--contains", sha}, agentWorkspaceSafeRefs...)
+	if out, err := run(args...); err == nil && strings.TrimSpace(string(out)) != "" {
+		return true
+	}
+	if base == "" {
+		return false
+	}
+	_, err := run("merge-base", "--is-ancestor", sha, base)
+	return err == nil
+}
+
+// agentWorkspaceAge is the age of the workspace named name, read from the
+// NANOSECONDS of its name; false when it does not parse.
+func agentWorkspaceAge(name string) (time.Duration, bool) {
+	rest := strings.TrimSuffix(name, agentWorkspaceBundleSuffix)
+	i := strings.LastIndexByte(rest, '-')
+	if i < 0 {
+		return 0, false
+	}
+	ns, err := strconv.ParseInt(rest[i+1:], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return agentWorkspaceNow().Sub(time.Unix(0, ns)), true
 }
 
 // daemonRefSHA is the commit ref holds in the daemon's repository, "" when it
@@ -704,10 +820,14 @@ func agentWorkspaceOrphans(repoPath, taskID string) (*runAsSettings, []string, e
 
 // sweepAgentWorkspaces removes the orphan workspaces of the project of
 // repoPath (of one task when taskID is set) through removeAgentWorkspace and
-// logs one Info line per removed workspace. It returns the count and the
-// bytes freed. Nothing happens with the option empty. While the preflight
-// flag is set it removes nothing, starts no process and logs one Warn line
-// with the count of the workspaces it found.
+// logs one Info line per removed workspace. A workspace whose commits are not
+// safe outside it (agentWorkspaceTipSafe, no base) stays with one Error line
+// that names the task, the path and the age; once older than
+// agentWorkspaceLostAge it is removed with one Error line that says its
+// commits are lost. A bundle file is removed as it is. It returns the count
+// and the bytes freed. Nothing happens with the option empty. While the
+// preflight flag is set it removes nothing, starts no process and logs one
+// Warn line with the count of the workspaces it found.
 func sweepAgentWorkspaces(repoPath, taskID string) (int, int64) {
 	s, orphans, err := agentWorkspaceOrphans(repoPath, taskID)
 	if err != nil {
@@ -725,9 +845,34 @@ func sweepAgentWorkspaces(repoPath, taskID string) (int, int64) {
 	removed := 0
 	var freed int64
 	for _, p := range orphans {
-		_, task, _ := parseAgentWorkspaceName(filepath.Base(p))
+		name := filepath.Base(p)
+		_, task, _ := parseAgentWorkspaceName(name)
+		lost := false
+		if !strings.HasSuffix(name, agentWorkspaceBundleSuffix) && !agentWorkspaceSweepSafe(p, repoPath) {
+			age, known := agentWorkspaceAge(name)
+			if !known || age <= agentWorkspaceLostAge {
+				slog.Error("agent workspace kept: "+agentWorkspaceNotSafe,
+					slog.String("task_id", task),
+					slog.String("path", p),
+					slog.String("age", age.Round(time.Second).String()),
+				)
+				continue
+			}
+			lost = true
+		}
 		size := dirSizeBytes(p)
 		if removeAgentWorkspace(s, p) != nil {
+			continue
+		}
+		removed++
+		freed += size
+		if lost {
+			age, _ := agentWorkspaceAge(name)
+			slog.Error("Removed orphaned agent workspace older than 7 days: its commits are lost",
+				slog.String("task_id", task),
+				slog.String("path", p),
+				slog.String("age", age.Round(time.Second).String()),
+			)
 			continue
 		}
 		slog.Info("Removed orphaned agent workspace",
@@ -735,8 +880,14 @@ func sweepAgentWorkspaces(repoPath, taskID string) (int, int64) {
 			slog.String("path", p),
 			slog.String("size_mb", fmt.Sprintf("%.1f", float64(size)/(1024*1024))),
 		)
-		removed++
-		freed += size
 	}
 	return removed, freed
+}
+
+// agentWorkspaceSweepSafe is agentWorkspaceTipSafe of an orphan workspace,
+// bounded by agentWorkspaceRemoveTimeout.
+func agentWorkspaceSweepSafe(wsPath, repoPath string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), agentWorkspaceRemoveTimeout)
+	defer cancel()
+	return agentWorkspaceTipSafe(ctx, wsPath, repoPath, "")
 }
