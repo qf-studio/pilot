@@ -59,9 +59,9 @@ func (f *secretGateFixture) commitWithExtraHeader(extra string) string {
 }
 
 // assertHeaderRefusal checks a refusal of the gate for the header line name
-// of the commit sha: the SHA and the name in the error, never the value, no
-// push, one alert.
-func (f *secretGateFixture) assertHeaderRefusal(err error, sha, name string) {
+// at line number line of the commit sha: the SHA and the CommitHeaderFile
+// label in the error, never the value, no push, one alert.
+func (f *secretGateFixture) assertHeaderRefusal(err error, sha, name string, line int) {
 	f.t.Helper()
 	if !IsPushRefused(err) {
 		f.t.Fatalf("push of a secret in the %s header: %v, want a refusal", name, err)
@@ -70,10 +70,11 @@ func (f *secretGateFixture) assertHeaderRefusal(err error, sha, name string) {
 	if !errors.As(err, &pre) {
 		f.t.Fatalf("not a secret hit: %v", err)
 	}
-	if pre.File != secretpatterns.CommitHeaderFile(name) || !strings.HasPrefix(sha, pre.Commit) {
-		f.t.Errorf("refusal names commit %s and %q, want %s and %q", pre.Commit, pre.File, sha[:12], secretpatterns.CommitHeaderFile(name))
+	want := secretpatterns.CommitHeaderFile(name, line)
+	if pre.File != want || !strings.HasPrefix(sha, pre.Commit) {
+		f.t.Errorf("refusal names commit %s and %q, want %s and %q", pre.Commit, pre.File, sha[:12], want)
 	}
-	if !strings.Contains(err.Error(), pre.Commit) || !strings.Contains(err.Error(), "header "+name) {
+	if !strings.Contains(err.Error(), pre.Commit) || !strings.Contains(err.Error(), want) {
 		f.t.Errorf("error text %q does not name the commit and the header", err)
 	}
 	if strings.Contains(err.Error(), secretGateValue) {
@@ -95,7 +96,7 @@ func TestSecretGate_RegisteredValueInAuthorNameRefused(t *testing.T) {
 	sha := f.run("rev-parse", "HEAD")
 
 	err := f.git.Push(context.Background(), "pilot/GH-9", "GH-9")
-	f.assertHeaderRefusal(err, sha, "author")
+	f.assertHeaderRefusal(err, sha, "author", 3)
 }
 
 func TestSecretGate_RegisteredValueInExtraHeaderRefused(t *testing.T) {
@@ -104,7 +105,7 @@ func TestSecretGate_RegisteredValueInExtraHeaderRefused(t *testing.T) {
 	sha := f.commitWithExtraHeader("x-note " + secretGateValue)
 
 	err := f.git.Push(context.Background(), "pilot/GH-9", "GH-9")
-	f.assertHeaderRefusal(err, sha, "x-note")
+	f.assertHeaderRefusal(err, sha, "x-note", 5) // printed as "header line 5"
 }
 
 func TestSecretGate_ValueInMultiLineHeaderRefused(t *testing.T) {
@@ -113,7 +114,7 @@ func TestSecretGate_ValueInMultiLineHeaderRefused(t *testing.T) {
 	sha := f.commitWithExtraHeader("x-block first line\n second " + secretGateValue + "\n third")
 
 	err := f.git.Push(context.Background(), "pilot/GH-9", "GH-9")
-	f.assertHeaderRefusal(err, sha, "x-block")
+	f.assertHeaderRefusal(err, sha, "x-block", 5)
 }
 
 func TestSecretGate_CleanCommitHeadersPass(t *testing.T) {
