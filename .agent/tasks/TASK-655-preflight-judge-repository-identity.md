@@ -1,6 +1,6 @@
 # TASK-655: Pre-flight judge — the judge knows the repository it works for, and a link to that repository is never "external"
 
-**Status**: 🚀 **J1 DISPATCHED 2026-11-17 ~20:20Z → [pilot#6456](https://github.com/qf-studio/pilot/issues/6456)** (`pilot` + `no-decompose`)
+**Status**: ✅ **J1 MERGED 2026-11-18 04:44Z (PR#6483); no run-it review yet.** Dispatched 2026-11-17 ~20:20Z → [pilot#6456](https://github.com/qf-studio/pilot/issues/6456) (`pilot` + `no-decompose`)
 **Created**: 2026-11-17
 **Assignee**: Pilot
 
@@ -45,7 +45,7 @@ The judge gets the repository slug and one sentence that says links to it are in
 ## Route
 
 ### Phase 1: the fix
-- [ ] 1. The judge gets the repository slug, and a same-repository link is never "external" (#6456)
+- [x] 1. The judge gets the repository slug, and a same-repository link is never "external" (#6456)
 
 ### Waits for you
 - [ ] Nothing.
@@ -55,7 +55,7 @@ The judge gets the repository slug and one sentence that says links to it are in
 ## Implementation
 
 ### Phase 1: the fix
-- [ ] **J1** ([#6456](https://github.com/qf-studio/pilot/issues/6456), dispatched 11-17 ~20:20Z) the shim builds a repository context from the slug; a guard turns a `reject_out_of_scope` verdict into an accept when all GitHub links of the body name the project repository; tests.
+- [x] **J1** (PR#6483 merged 11-18 04:44Z) ([#6456](https://github.com/qf-studio/pilot/issues/6456), dispatched 11-17 ~20:20Z) the shim builds a repository context from the slug; a guard turns a `reject_out_of_scope` verdict into an accept when all GitHub links of the body name the project repository; tests.
 
 **Files**:
 - `cmd/pilot/poller_github.go` - the shim
