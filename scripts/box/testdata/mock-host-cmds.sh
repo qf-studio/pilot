@@ -42,6 +42,7 @@
 # MOCK_SUDO_LATE (names of files in $SUDOERS_DIR that sudo reads only late, see
 # below),
 # MOCK_REAL_PATH (PATH for the real tools the mocks delegate to),
+# MOCK_LOCALE_LOG (a file: each call appends its command and the LC_ALL it sees),
 # MOCK_PROC_TERM_IGNORED=1 (pkill -TERM ends no process), MOCK_PROC_UNKILLABLE=1
 # (pkill -KILL ends none either), MOCK_PGREP_RC (pgrep exits with this code and
 # lists nothing; 127 stands for a pgrep that is not found).
@@ -61,6 +62,7 @@ sandbox="${MOCK_SANDBOX:?}"
 real() { PATH="${MOCK_REAL_PATH:?}" "$@"; }
 
 echo "${cmd} $*" >>"${MOCK_CALL_LOG:?}"
+[ -z "${MOCK_LOCALE_LOG:-}" ] || echo "${cmd} LC_ALL=${LC_ALL-}" >>"$MOCK_LOCALE_LOG"
 mutating() { echo "${cmd} $*" >>"${MOCK_MUT_LOG:?}"; }
 
 # inside_sandbox PATH — refuse (exit 1) to act on a real path outside the sandbox.
@@ -100,6 +102,8 @@ real_stat() {
 
 # meta_of PATH — "owner group mode" of PATH as the stat mock reports it.
 # Every ancestor of the sandbox, and the sandbox itself, reads as root:root 0755.
+# A path without a record that the test user owns reads as a path of the daemon
+# user (ec2-user), as the daemon user makes the entries of the data dir on a host.
 meta_of() {
     local p="$1" rs u g a mf
     if [ "$p" = / ] || case "${sandbox}/" in "$p"/*) true ;; *) false ;; esac; then
@@ -110,6 +114,7 @@ meta_of() {
         rs="$(real stat -f '%Su:%Sg' "$p"):$(bsd_mode "$p")"
     fi
     IFS=: read -r u g a <<<"$rs"
+    [ "$u" != "$(real id -un)" ] || u=ec2-user
     mf="$(meta_file "$p")"
     if [ -e "$mf" ]; then IFS=: read -r u g <"$mf"; fi
     echo "${u} ${g} ${a}"

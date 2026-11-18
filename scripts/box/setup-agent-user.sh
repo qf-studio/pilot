@@ -25,7 +25,8 @@
 #                     Every path it prints is shell-quoted. An entry whose name or
 #                     resolved path is not a plain path in the data dir ([A-Za-z0-9
 #                     ._/-], a link out of the data dir included), or that resolves
-#                     to the data dir or to the agent root or a path in it, gets no
+#                     to the data dir or to the agent root or a path in it, or that
+#                     is open and does not belong to the daemon user, gets no
 #                     chmod and no record: the step fails with one line that names it.
 #   group             system group (default: pilot)
 #   agent-user        system user, no login shell, home AGENT_ROOT/home
@@ -367,10 +368,12 @@ check_agent_root() {
 }
 
 # shq S — S quoted for a shell, on one line: in single quotes, or in the form of
-# printf %q ($'...') when S has a control character (a newline) or a quote.
+# printf %q ($'...') when S has a quote or a byte outside space to tilde (a
+# newline, or a byte of 0x80 to 0x9f that a terminal reads as a C1 control: in
+# the C locale [[:cntrl:]] does not match those).
 shq() {
     case "$1" in
-        *[[:cntrl:]]* | *\'*) printf '%q' "$1" ;;
+        *[!\ -~]* | *\'*) printf '%q' "$1" ;;
         *) printf "'%s'" "$1" ;;
     esac
 }
@@ -538,9 +541,11 @@ record_modes() {
 # a plain path in the data dir (plain_data_path; a link out of it is one), or
 # that resolves to the data dir or to the agent root or a path in it (a chmod
 # there takes the traverse of the agent user away), is neither recorded nor
-# given a chmod: one line names it, for a look by hand.
+# given a chmod: one line names it, for a look by hand. So is an open entry that
+# does not belong to the daemon user (one of root, as the parent of a nested
+# agent root): the chmod as the daemon user would fail on it.
 step_daemon_private() {
-    local e real meta grp mode fix lines=() records=()
+    local e real meta owner grp mode fix lines=() records=()
     meta="$(stat -L -c '%G:%a' "$DATA_DIR")" || return 1
     if [ $((8#${meta#*:} & 8#066)) -ne 0 ]; then
         lines+=("$(printf 'the data dir %s gives more than traverse (group %s, mode %s): %s' \
@@ -564,7 +569,9 @@ step_daemon_private() {
                 continue
                 ;;
         esac
-        meta="$(stat -L -c '%G:%a' "$e")" || return 1
+        meta="$(stat -L -c '%U:%G:%a' "$e")" || return 1
+        owner="${meta%%:*}"
+        meta="${meta#*:}"
         grp="${meta%%:*}"
         mode=$((8#${meta#*:}))
         fix=""
@@ -574,6 +581,11 @@ step_daemon_private() {
             fix="o-rwx"
         fi
         [ -n "$fix" ] || continue
+        if [ "$owner" != "$DAEMON_USER" ]; then
+            lines+=("$(printf 'the entry %s belongs to %s, not to %s (group %s, mode %s): no chmod is printed, look at it by hand' \
+                "$(shq "$e")" "$owner" "$DAEMON_USER" "$grp" "${meta#*:}")")
+            continue
+        fi
         lines+=("$(printf 'the agent user can reach %s (group %s, mode %s): %s' \
             "$(shq "$e")" "$grp" "${meta#*:}" "$(chmod_as_daemon_line "$fix" "$real")")")
         records+=("${meta#*:}"$'\t'"${real}")
@@ -584,8 +596,12 @@ step_daemon_private() {
             echo "run each chmod line below as root, as it is: runuser runs chmod as ${DAEMON_USER}, so it changes only what ${DAEMON_USER} owns" >&2
         fi
         printf '%s\n' "${lines[@]}" >&2
-        if [ "${#records[@]}" -gt 0 ]; then record_modes "${records[@]}" || true; fi
-        echo "no mode was changed; run each chmod above and run again" >&2
+        if [ "${#records[@]}" -gt 0 ]; then
+            record_modes "${records[@]}" || true
+            echo "no mode was changed; run each chmod above and run again" >&2
+        else
+            echo "no mode was changed; look at each entry above by hand and run again" >&2
+        fi
         return 1
     fi
     RESULT=skipped

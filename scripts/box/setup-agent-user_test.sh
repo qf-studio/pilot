@@ -1296,6 +1296,9 @@ check "nothing was mutated" test ! -s "$MUT_LOG"
 check "the entry is named" grep -qF "the entry '${DATA_DIR}/linked' is not a plain path in the data dir" "$OUT"
 check_not "no chmod on the target outside" grep -qF "${SANDBOX}/elsewhere" "$OUT"
 check "no record is written for it" test ! -e "$RECORD"
+# mutation pin: the closing sentence names the chmod lines with none printed -> this test fails
+check_not "only a refused entry: the closing sentence names no chmod line" grep -qF "run each chmod" "$OUT"
+check "only a refused entry: the closing sentence says to look by hand" has_line "$OUT" "no mode was changed; look at each entry above by hand and run again"
 chmod 700 "${SANDBOX}/elsewhere"
 check_not "a closed target outside fails the apply too" run_setup --
 rm "${DATA_DIR}/linked"
@@ -1320,6 +1323,61 @@ fi
 check "the entry is printed in quotes" grep -qF "the entry '${DATA_DIR}/with space' is not a plain path in the data dir" "$OUT"
 check_not "it is printed nowhere without quotes" grep -qE "(^|[^'])${DATA_DIR}/with space" "$OUT"
 check "no record is written for it" test ! -e "$RECORD"
+teardown_sandbox
+
+# shq_c1_case — shq as the script defines it, in the C locale the script sets: a
+# name with U+009B (0xC2 0x9B) and a name with the byte 0x9B alone, a C1 control
+# for a terminal, come out in printable ASCII only, and a shell reads each back
+# as it was. Called once, below.
+# mutation pin: shq takes [[:cntrl:]] for the escaped form again -> this test fails
+shq_c1_case() {
+    local def name out back
+    def="$(sed -n '/^shq() {$/,/^}$/p' "$SETUP_SCRIPT")"
+    for name in "a"$'\xc2\x9b'"b" "a"$'\x9b'"b"; do
+        out="$(LC_ALL=C /bin/bash -c "${def}"$'\n''shq "$1"' _ "$name")"
+        back=""
+        eval "back=${out}"
+        if [ -n "$out" ] && [ -z "$(printf '%s' "$out" | LC_ALL=C tr -d ' -~')" ] && [ "$back" = "$name" ]; then
+            pass "shq prints $(printf '%s' "$name" | od -An -tx1 | tr -s ' ') as ${out}"
+        else
+            fail_test "shq prints a byte outside printable ASCII for $(printf '%s' "$name" | od -An -tx1 | tr -s ' '): $(printf '%s' "$out" | od -An -tx1 | tr -s ' ')"
+        fi
+    done
+}
+
+echo "=== test: shq escapes a name with a C1 control byte ==="
+shq_c1_case
+
+# mutation pin: the line export LC_ALL=C is removed -> this test fails
+echo "=== test: the commands of the script run in the C locale, whatever locale it starts in ==="
+setup_sandbox
+build_repos
+LOCALE_LOG="${SANDBOX}/locale.log"
+run_setup LC_ALL=en_US.UTF-8 MOCK_LOCALE_LOG="$LOCALE_LOG" -- --dry-run || true
+check "a mocked command ran" test -s "$LOCALE_LOG"
+check_not "every mocked command sees LC_ALL=C" grep -qvx '[a-z0-9]* LC_ALL=C' "$LOCALE_LOG"
+teardown_sandbox
+
+echo "=== test: an open entry of root (the parent of a nested agent root) gets no chmod and no record; the apply fails and names its owner ==="
+setup_sandbox
+build_repos
+mkdir "${DATA_DIR}/outer"
+chmod 755 "${DATA_DIR}/outer"
+set_meta "${DATA_DIR}/outer" root:root
+: >"$MUT_LOG"
+if run_setup -- --agent-root "${DATA_DIR}/outer/agent"; then
+    fail_test "apply must fail on an open entry of root"
+else
+    pass "apply exits non-zero"
+fi
+expect_step daemon-private failed
+check "nothing was mutated" test ! -s "$MUT_LOG"
+check "one line names the entry and its owner, for a look by hand" has_line "$OUT" "the entry '${DATA_DIR}/outer' belongs to root, not to ec2-user (group root, mode 755): no chmod is printed, look at it by hand"
+check "one line names an entry" test "$(grep -c '^the entry ' "$OUT" | tr -d ' ')" = 1
+check_not "no chmod line is printed" grep -qE "chmod ([go]+-rwx?|[0-7]{3,4}) " "$OUT"
+check "no record is written" test ! -e "$RECORD"
+check_not "the closing sentence names no chmod line" grep -qF "run each chmod" "$OUT"
+check "the closing sentence says to look by hand" has_line "$OUT" "no mode was changed; look at each entry above by hand and run again"
 teardown_sandbox
 
 # mutation pin: daemon-private accepts a link to the data dir -> this test fails
