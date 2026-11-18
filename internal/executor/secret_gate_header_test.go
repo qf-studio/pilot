@@ -58,9 +58,9 @@ func (f *secretGateFixture) commitWithExtraHeader(extra string) string {
 	return sha
 }
 
-// assertHeaderRefusal checks a refusal of the gate for the header line name
-// of the commit sha: the SHA and the name in the error, never the value, no
-// push, one alert.
+// assertHeaderRefusal checks a refusal of the gate for the header line label
+// (a known header name or "line N") of the commit sha: the SHA and the label
+// in the error, never the value, no push, one alert.
 func (f *secretGateFixture) assertHeaderRefusal(err error, sha, name string) {
 	f.t.Helper()
 	if !IsPushRefused(err) {
@@ -104,7 +104,7 @@ func TestSecretGate_RegisteredValueInExtraHeaderRefused(t *testing.T) {
 	sha := f.commitWithExtraHeader("x-note " + secretGateValue)
 
 	err := f.git.Push(context.Background(), "pilot/GH-9", "GH-9")
-	f.assertHeaderRefusal(err, sha, "x-note")
+	f.assertHeaderRefusal(err, sha, "line 5") // an extra header name is not printed
 }
 
 func TestSecretGate_ValueInMultiLineHeaderRefused(t *testing.T) {
@@ -113,7 +113,7 @@ func TestSecretGate_ValueInMultiLineHeaderRefused(t *testing.T) {
 	sha := f.commitWithExtraHeader("x-block first line\n second " + secretGateValue + "\n third")
 
 	err := f.git.Push(context.Background(), "pilot/GH-9", "GH-9")
-	f.assertHeaderRefusal(err, sha, "x-block")
+	f.assertHeaderRefusal(err, sha, "line 5")
 }
 
 func TestSecretGate_CleanCommitHeadersPass(t *testing.T) {

@@ -517,10 +517,33 @@ func checkCommitEncodings(ctx context.Context, dir string, logArgs []string) err
 		if len(enc) == 0 || isUTF8Name(string(enc)) {
 			continue
 		}
-		return &PushScanError{Reason: fmt.Sprintf("commit %s has the encoding %s; only UTF-8 commit messages are pushed",
-			shortSHA(sha), Redact(printableValue(string(enc))))}
+		return &PushScanError{Reason: fmt.Sprintf("commit %s has %s; only UTF-8 commit messages are pushed",
+			shortSHA(sha), encodingLabel(string(enc)))}
 	}
 	return nil
+}
+
+// maxEncodingNameLen is the longest encoding value the refusal prints.
+const maxEncodingNameLen = 40
+
+// encodingLabel names an encoding header that is not UTF-8 for the refusal: the
+// value itself only when it is a plain charset name (letters, digits, "-", "_",
+// "." and ":", at most maxEncodingNameLen characters) the redaction leaves as
+// it is, else a fixed text. The value is never cut: a cut secret no longer
+// equals the registered value, so the redaction would not find it (TASK-651).
+func encodingLabel(enc string) string {
+	const unnamed = "an encoding header that is not UTF-8"
+	if enc == "" || len(enc) > maxEncodingNameLen || Redact(enc) != enc {
+		return unnamed
+	}
+	for _, r := range enc {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			r == '-' || r == '_' || r == '.' || r == ':'
+		if !ok {
+			return unnamed
+		}
+	}
+	return "the encoding " + enc
 }
 
 // checkCommitObjects reads the raw object of every commit of the range, in one
@@ -531,13 +554,14 @@ func checkCommitEncodings(ctx context.Context, dir string, logArgs []string) err
 // header of each object (author, committer, encoding and every other header
 // line) with the patterns and registered values of the message: the message
 // scan (%B) does not read them, and the push sends them (TASK-651). Oldest
-// commit first, so the error names the first offender.
+// commit first (--topo-order: no child before its parent, whatever the dates),
+// so the error names the first offender.
 //
 // Tags are not checked: every push the gate clears sends refs/heads refspecs with
 // --no-follow-tags and push.followTags=false, so no annotated tag object leaves
 // with it.
 func checkCommitObjects(ctx context.Context, dir string, logArgs []string) error {
-	list, err := gitOutput(ctx, dir, append([]string{"rev-list", "--reverse"}, logArgs...)...)
+	list, err := gitOutput(ctx, dir, append([]string{"rev-list", "--reverse", "--topo-order"}, logArgs...)...)
 	if cerr := ctxError(ctx); cerr != nil {
 		return cerr
 	}
@@ -599,11 +623,11 @@ func readBatchObjects(r *bufio.Reader) error {
 		}
 		f := strings.Fields(header)
 		if len(f) != 3 {
-			return fmt.Errorf("secret gate: git cat-file: unexpected record %q", printableValue(strings.TrimSpace(header)))
+			return fmt.Errorf("secret gate: git cat-file: unexpected record %q", printableValue(Redact(strings.TrimSpace(header))))
 		}
 		size, err := strconv.ParseInt(f[2], 10, 64)
 		if err != nil || size < 0 {
-			return fmt.Errorf("secret gate: git cat-file: unexpected size %q", printableValue(f[2]))
+			return fmt.Errorf("secret gate: git cat-file: unexpected size %q", printableValue(Redact(f[2])))
 		}
 		nul := false
 		var head []byte // the object up to the blank line that ends its header
@@ -639,16 +663,36 @@ func readBatchObjects(r *bufio.Reader) error {
 	}
 }
 
-// CommitHeaderFile is PushRangeError.File when the secret is in the header
-// line name of a commit object (author, committer, an extra header).
-func CommitHeaderFile(name string) string {
-	return "the commit header " + printableValue(name)
+// CommitHeaderFile is PushRangeError.File when the secret is in a header line
+// of a commit object. label is the name of the line when it is one git writes
+// (knownHeaderNames), else "line N" (headerLabel).
+func CommitHeaderFile(label string) string {
+	return "the commit header " + label
+}
+
+// knownHeaderNames are the header names git writes into a commit object. Only
+// these are printed: any other name is chosen by whoever wrote the object and
+// can be the secret itself.
+var knownHeaderNames = map[string]bool{
+	"tree": true, "parent": true, "author": true, "committer": true,
+	"encoding": true, "gpgsig": true, "gpgsig-sha256": true, "mergetag": true,
+}
+
+// headerLabel is the CommitHeaderFile label of the header line with the given
+// name at line number line (from 1): the name when it is known, else
+// "line N". The name is never printed in part (TASK-651).
+func headerLabel(name string, line int) string {
+	if knownHeaderNames[name] {
+		return name
+	}
+	return "line " + strconv.Itoa(line)
 }
 
 // scanCommitHeader scans each header line of a raw commit object, a
 // multi-line value (gpgsig, mergetag: lines that start with a space) as one,
-// and returns the name of the first line with a hit. The whole line is
-// scanned, the name with it: an extra header can carry the value in its name.
+// and returns the headerLabel of the first line with a hit; a continuation
+// line counts under the line it continues. The whole line is scanned, the
+// name with it: an extra header can carry the value in its name.
 func scanCommitHeader(head []byte) (name, kind string, hit bool) {
 	var (
 		cur     string
@@ -666,7 +710,7 @@ func scanCommitHeader(head []byte) (name, kind string, hit bool) {
 		}
 		return false
 	}
-	for _, line := range bytes.Split(bytes.TrimSuffix(head, []byte{'\n'}), []byte{'\n'}) {
+	for i, line := range bytes.Split(bytes.TrimSuffix(head, []byte{'\n'}), []byte{'\n'}) {
 		if started && len(line) > 0 && line[0] == ' ' {
 			entry.WriteByte('\n')
 			entry.Write(line[1:])
@@ -676,7 +720,7 @@ func scanCommitHeader(head []byte) (name, kind string, hit bool) {
 			return name, kind, true
 		}
 		n, _, _ := bytes.Cut(line, []byte{' '})
-		cur, started = string(n), true
+		cur, started = headerLabel(string(n), i+1), true
 		entry.Write(line)
 	}
 	if flush() {
@@ -693,7 +737,8 @@ func isUTF8Name(name string) bool {
 }
 
 // printableValue makes an attacker-chosen header value safe to print: control
-// characters become "?" and a long value is cut.
+// characters become "?" and a long value is cut. Redact the value first: a cut
+// value is never passed to the redaction.
 func printableValue(v string) string {
 	const maxLen = 40
 	var b strings.Builder
