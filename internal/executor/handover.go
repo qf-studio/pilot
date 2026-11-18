@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
+	"syscall"
 
 	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 )
@@ -36,6 +38,27 @@ var errHandOverTooLarge = errors.New("hand-over: the bundle stream is over the s
 // the agent command.
 const handOverStderrMax = 64 << 10
 
+// errHandOverNotBundle is the error of a bundle stream that does not start
+// with the signature of a git bundle.
+var errHandOverNotBundle = errors.New("hand-over: the stream is not a git bundle")
+
+// handOverBundleSignatures are the first lines of a git bundle that the fetch
+// accepts: version 2 and version 3 (sha256 or capabilities).
+var handOverBundleSignatures = []string{"# v2 git bundle\n", "# v3 git bundle\n"}
+
+// handOverEnvDenied are the names of the daemon environment that a git
+// command of the daemon during a hand-over never gets: each of them points
+// git at another repository, object store, index or config. Every name that
+// starts with GIT_CONFIG is removed too (handOverEnvAllowed).
+var handOverEnvDenied = map[string]bool{
+	"GIT_DIR":                          true,
+	"GIT_WORK_TREE":                    true,
+	"GIT_INDEX_FILE":                   true,
+	"GIT_OBJECT_DIRECTORY":             true,
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
+	"GIT_NAMESPACE":                    true,
+}
+
 // handOverRef is the hand-over ref of a task in the daemon's repository.
 func handOverRef(taskID string) string {
 	return handOverRefPrefix + sanitizeBranchName(taskID)
@@ -46,6 +69,97 @@ func handOverRef(taskID string) string {
 // (GitScanConfig, hooks off included) before args.
 func handOverGitArgs(args ...string) []string {
 	return append(secretpatterns.GitScanConfig(), args...)
+}
+
+// handOverEnvAllowed reports whether the variable name reaches a git command
+// of the daemon during a hand-over.
+func handOverEnvAllowed(name string) bool {
+	return !handOverEnvDenied[name] && !strings.HasPrefix(name, "GIT_CONFIG")
+}
+
+// handOverDaemonGit builds a git command of the daemon in daemonRepo during a
+// hand-over (args as given): the environment of the daemon without the names
+// of handOverEnvDenied and GIT_CONFIG*, a process group of its own, and a
+// cancel of ctx that kills that group, so a child such as index-pack that holds
+// the output pipe dies with it; the wait delay of configureProcessGroup bounds
+// the wait. A command the constructor failed closed, or one of the agent route
+// (agentCommand already kills its group through sudo), is left as it is.
+func handOverDaemonGit(ctx context.Context, daemonRepo string, args ...string) *exec.Cmd {
+	cmd := gitCommandIn(ctx, daemonRepo, args...)
+	if gitRouteFailed(cmd) {
+		return cmd
+	}
+	if _, agent := agentCmdUser(cmd); agent {
+		return cmd
+	}
+	env := cmd.Env
+	if env == nil {
+		env = os.Environ()
+	}
+	kept := make([]string, 0, len(env))
+	for _, kv := range env {
+		if name, _, _ := strings.Cut(kv, "="); handOverEnvAllowed(name) {
+			kept = append(kept, kv)
+		}
+	}
+	cmd.Env = kept
+	configureProcessGroup(cmd)
+	cmd.Cancel = func() error { return killProcessGroup(cmd, syscall.SIGKILL) }
+	return cmd
+}
+
+// checkHandOverBundleHeader fails unless the file at path starts with the
+// signature line of a git bundle. Decision: `git fetch FILE` reads FILE as a
+// bundle only with that signature; any other file is taken as a local
+// repository (a regular file as a gitfile, `gitdir: PATH`), and git-upload-pack
+// would serve the daemon a repository of its choice as the daemon user.
+func checkHandOverBundleHeader(path string) error {
+	f, err := os.Open(path) //nolint:gosec // the temporary file of the daemon
+	if err != nil {
+		return fmt.Errorf("hand-over: open the bundle file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	head := make([]byte, len(handOverBundleSignatures[0]))
+	if _, err := io.ReadFull(f, head); err != nil {
+		return errHandOverNotBundle
+	}
+	for _, sig := range handOverBundleSignatures {
+		if string(head) == sig {
+			return nil
+		}
+	}
+	return errHandOverNotBundle
+}
+
+// checkHandOverTip reads the object the hand-over ref holds, without a peel,
+// and checks it: a commit, not the base, with the base as an ancestor. It
+// returns the SHA of the ref; on a failure the error names the rule.
+func checkHandOverTip(ctx context.Context, daemonRepo, ref, baseSHA string) (string, error) {
+	read := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("rev-parse", "--verify", "-q", ref)...)
+	appendGitEnv(read, "GIT_NO_REPLACE_OBJECTS=1")
+	out, err := read.Output()
+	sha := strings.TrimSpace(string(out))
+	if err != nil || !isLowerHex(sha) {
+		return "", fmt.Errorf("hand-over: read %s: %v", ref, err)
+	}
+	typ := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("cat-file", "-t", sha)...)
+	appendGitEnv(typ, "GIT_NO_REPLACE_OBJECTS=1")
+	out, err = typ.Output()
+	if err != nil {
+		return "", fmt.Errorf("hand-over: read the type of %s: %v", ref, err)
+	}
+	if t := strings.TrimSpace(string(out)); t != "commit" {
+		return "", fmt.Errorf("hand-over: %s holds a %s, the tip must be a commit", ref, t)
+	}
+	if sha == baseSHA {
+		return "", fmt.Errorf("hand-over: %s is the base %s, the tip must be a commit above the base", ref, baseSHA)
+	}
+	anc := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("merge-base", "--is-ancestor", baseSHA, sha)...)
+	appendGitEnv(anc, "GIT_NO_REPLACE_OBJECTS=1")
+	if out, err := anc.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("hand-over: the base %s is not an ancestor of %s (%s): %w: %s", baseSHA, ref, sha, err, strings.TrimSpace(string(out)))
+	}
+	return sha, nil
 }
 
 // handOverBranch takes the commits of branch since baseSHA out of the agent
@@ -61,9 +175,12 @@ func handOverGitArgs(args ...string) []string {
 // agentCommand). Step two runs in daemonRepo as the daemon user: one fetch
 // from the bundle file with the explicit refspec
 // +refs/heads/BRANCH:refs/pilot/handover/TASK, no tags, fetch.fsckObjects on,
-// hooks off and GIT_NO_REPLACE_OBJECTS=1. A ref of the bundle other than the
-// branch never reaches the daemon's repository. The temporary file is removed
-// on every path; a failed hand-over leaves no hand-over ref.
+// hooks off and GIT_NO_REPLACE_OBJECTS=1, only after the file passed
+// checkHandOverBundleHeader. A ref of the bundle other than the branch never
+// reaches the daemon's repository. The tip must pass checkHandOverTip. Every
+// git command of this step runs through handOverDaemonGit (no GIT_DIR and the
+// like, a group kill on a cancel of ctx). The temporary file is removed on
+// every path; a failed hand-over leaves no hand-over ref.
 func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, baseSHA string) (string, error) {
 	if sanitizeBranchName(taskID) == "" {
 		return "", errors.New("hand-over: no task ID")
@@ -85,7 +202,7 @@ func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, 
 	}
 	// A ref name holds no ':', '*', space or '^': the refspec below cannot be
 	// widened through the branch name.
-	if out, err := gitCommandIn(ctx, daemonRepo, "check-ref-format", branchRef).CombinedOutput(); err != nil {
+	if out, err := handOverDaemonGit(ctx, daemonRepo, "check-ref-format", branchRef).CombinedOutput(); err != nil {
 		return "", fmt.Errorf("hand-over: %q is not a valid branch name: %w: %s", branch, err, strings.TrimSpace(string(out)))
 	}
 
@@ -115,8 +232,11 @@ func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, 
 	if err := tmp.Close(); err != nil {
 		return "", fmt.Errorf("hand-over: write the bundle file: %w", err)
 	}
+	if err := checkHandOverBundleHeader(bundlePath); err != nil {
+		return "", err
+	}
 
-	fetch := gitCommandIn(ctx, daemonRepo, handOverGitArgs(
+	fetch := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs(
 		"-c", "fetch.fsckObjects=true",
 		"-c", "gc.auto=0",
 		"fetch", "-q", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules",
@@ -127,13 +247,10 @@ func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, 
 		return "", fmt.Errorf("hand-over: fetch from the bundle into %s: %w: %s", ref, err, strings.TrimSpace(string(out)))
 	}
 
-	read := gitCommandIn(ctx, daemonRepo, handOverGitArgs("rev-parse", "--verify", "-q", ref+"^{commit}")...)
-	appendGitEnv(read, "GIT_NO_REPLACE_OBJECTS=1")
-	out, err := read.Output()
-	sha := strings.TrimSpace(string(out))
-	if err != nil || !isLowerHex(sha) {
+	sha, err := checkHandOverTip(ctx, daemonRepo, ref, baseSHA)
+	if err != nil {
 		_ = removeHandOverRef(daemonRepo, taskID)
-		return "", fmt.Errorf("hand-over: read %s: %v", ref, err)
+		return "", err
 	}
 	return sha, nil
 }
@@ -205,7 +322,7 @@ func removeHandOverRef(daemonRepo, taskID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), agentWorkspaceRemoveTimeout)
 	defer cancel()
 	ref := handOverRef(taskID)
-	cmd := gitCommandIn(ctx, daemonRepo, handOverGitArgs("update-ref", "-d", ref)...)
+	cmd := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("update-ref", "-d", ref)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("hand-over: delete %s: %w: %s", ref, err, strings.TrimSpace(string(out)))
 	}
