@@ -3,212 +3,208 @@ package secretpatterns
 import (
 	"context"
 	"errors"
-	"os/exec"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
-// TASK-651: the refusal of a hit in a commit header names the commit and the
-// place, never a part of the value: an unknown header name is printed as
-// "line N", an encoding value only when it is a plain charset name the
-// redaction leaves as it is.
-
-// runtimeValue builds an n-character value at run time that no part of a
-// refusal text (fixed words, a hex SHA) can hold 8 characters of.
+// runtimeValue builds a fake value of n characters at run time: a fake token
+// of internal/testutil, then a count, so that no 8-character part of it is a
+// word the refusal text could hold by chance.
 func runtimeValue(n int) string {
-	return strings.Repeat("kQ7wZ", n/5+1)[:n]
-}
-
-// writeCommit writes the raw commit object obj (git hash-object -t commit -w)
-// and returns its SHA.
-func (f *pushFixture) writeCommit(obj string) string {
-	f.t.Helper()
-	cmd := exec.Command("git", "hash-object", "-t", "commit", "-w", "--stdin")
-	cmd.Dir = f.local
-	cmd.Stdin = strings.NewReader(obj)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		f.t.Fatalf("hash-object: %v\n%s", err, out)
+	var b strings.Builder
+	b.WriteString(testutil.FakeGitHubToken)
+	for i := 0; b.Len() < n; i++ {
+		b.WriteString("-" + strconv.Itoa(i*7919))
 	}
-	return strings.TrimSpace(string(out))
+	return b.String()[:n]
 }
 
-// headerCommit writes a commit on top of HEAD with the tree of HEAD and the
-// header line extra after the committer.
-func (f *pushFixture) headerCommit(extra string) string {
-	f.t.Helper()
-	return f.writeCommit("tree " + f.git("rev-parse", "HEAD^{tree}") + "\nparent " + f.git("rev-parse", "HEAD") +
-		"\nauthor t <t@example.com> 1700000000 +0000\ncommitter t <t@example.com> 1700000000 +0000\n" +
-		extra + "\n\nclean\n")
-}
-
-// assertNoPartOf fails when text holds a substring of 8 or more characters of v.
-func assertNoPartOf(t *testing.T, text, v string) {
-	t.Helper()
-	for i := 0; i+8 <= len(v); i++ {
-		if strings.Contains(text, v[i:i+8]) {
-			t.Errorf("refusal %q holds %q, a part of the value", text, v[i:i+8])
-			return
+// leakedPart returns the first part of 8 or more characters of value that is
+// in text, or "".
+func leakedPart(text, value string) string {
+	for i := 0; i+8 <= len(value); i++ {
+		if strings.Contains(text, value[i:i+8]) {
+			return value[i : i+8]
 		}
 	}
+	return ""
 }
 
-// headerValueRows are the values of the header name and the encoding tables.
-// register is false for a shape value: the patterns find it.
-func headerValueRows() []struct {
-	name     string
-	value    string
-	register bool
-} {
-	return []struct {
-		name     string
-		value    string
-		register bool
-	}{
-		{"registered value of 20", runtimeValue(20), true},
-		{"registered value of 40", runtimeValue(40), true},
-		{"registered value of 41", runtimeValue(41), true},
-		{"registered value of 80", runtimeValue(80), true},
-		{"shape value longer than 40", telegramShaped(), false},
-		{"registered value with a space", runtimeValue(12) + " " + runtimeValue(12), true},
-		{"registered value with a colon", runtimeValue(12) + ":" + runtimeValue(12), true},
+// writeCommit writes a raw commit object with the given parents, committer
+// date and extra header lines after the committer, and returns its SHA.
+func (f *pushFixture) writeCommit(parents []string, date int64, author string, extra ...string) string {
+	f.t.Helper()
+	obj := "tree " + f.git("rev-parse", "HEAD^{tree}") + "\n"
+	for _, p := range parents {
+		obj += "parent " + p + "\n"
 	}
+	if author == "" {
+		author = "t"
+	}
+	stamp := strconv.FormatInt(date, 10) + " +0000"
+	obj += "author " + author + " <t@example.com> " + stamp + "\ncommitter t <t@example.com> " + stamp + "\n"
+	for _, e := range extra {
+		obj += e + "\n"
+	}
+	obj += "\nclean\n"
+	file := filepath.Join(f.t.TempDir(), "obj")
+	if err := os.WriteFile(file, []byte(obj), 0o644); err != nil {
+		f.t.Fatal(err)
+	}
+	return f.git("hash-object", "-t", "commit", "-w", file)
 }
 
-// mutation pin: print the name of an unknown header line (headerLabel returns
-// name) -> this test fails
+// headerValueRows are the values of the header tables: registered unless
+// shape is set.
+var headerValueRows = []struct {
+	name  string
+	value func() string
+	shape bool
+}{
+	{"registered 20", func() string { return runtimeValue(20) }, false},
+	{"registered 40", func() string { return runtimeValue(40) }, false},
+	{"registered 41", func() string { return runtimeValue(41) }, false},
+	{"registered 80", func() string { return runtimeValue(80) }, false},
+	{"shape longer than 40", telegramShaped, true},
+	{"registered with a space", func() string { return runtimeValue(20) + " " + runtimeValue(30) }, false},
+	{"registered with a colon", func() string { return runtimeValue(20) + ":" + runtimeValue(30) }, false},
+}
+
+// mutation pin: print the name of an unknown header line -> this test fails
 func TestCheckPushRange_HeaderNameIsNeverPrinted(t *testing.T) {
-	for _, tc := range headerValueRows() {
+	for _, tc := range headerValueRows {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPushFixture(t)
-			if tc.register {
-				RegisterSecretValues(tc.value)
+			v := tc.value()
+			if !tc.shape {
+				RegisterSecretValues(v)
 			}
-			extra := tc.value + " note"
-			if strings.Contains(tc.value, " ") {
-				extra = tc.value // the value is the whole header line
+			if Redact(v) == v {
+				t.Fatalf("fixture: %q is not a secret", v)
 			}
-			sha := f.headerCommit(extra)
+			// The value is the whole header line: its name, or its name and
+			// value when it holds a space.
+			sha := f.writeCommit([]string{f.git("rev-parse", "HEAD")}, 1700000000, "", v)
 
 			err := CheckPushRange(context.Background(), f.local, "main", sha)
 			var pre *PushRangeError
 			if !errors.As(err, &pre) {
 				t.Fatalf("got %v, want a *PushRangeError", err)
 			}
-			if want := CommitHeaderFile("line 5"); pre.File != want {
+			if want := CommitHeaderFile("", 5); pre.File != want {
 				t.Errorf("file %q, want %q", pre.File, want)
 			}
 			if !strings.Contains(err.Error(), "header line 5") {
-				t.Errorf("refusal %q does not name the header line", err)
+				t.Errorf("error %q does not hold the label header line 5", err)
 			}
-			assertNoPartOf(t, err.Error(), tc.value)
+			if part := leakedPart(err.Error(), v); part != "" {
+				t.Errorf("error %q holds %q of the value", err, part)
+			}
 		})
 	}
 }
 
-// mutation pin: cut before the redaction in checkCommitEncodings
-// (Redact(printableValue(enc))) -> this test fails
+// mutation pin: cut before the redaction in checkCommitEncodings -> this test fails
 func TestCheckPushRange_EncodingValueIsNeverPrinted(t *testing.T) {
-	for _, tc := range headerValueRows() {
+	for _, tc := range headerValueRows {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPushFixture(t)
-			if tc.register {
-				RegisterSecretValues(tc.value)
+			v := tc.value()
+			if !tc.shape {
+				RegisterSecretValues(v)
 			}
-			sha := f.headerCommit("encoding " + tc.value)
+			sha := f.writeCommit([]string{f.git("rev-parse", "HEAD")}, 1700000000, "", "encoding "+v)
 
 			err := CheckPushRange(context.Background(), f.local, "main", sha)
-			if !errors.Is(err, ErrPushRefused) {
-				t.Fatalf("got %v, want a refusal", err)
+			var scan *PushScanError
+			if !errors.As(err, &scan) {
+				t.Fatalf("got %v, want a *PushScanError", err)
 			}
-			assertNoPartOf(t, err.Error(), tc.value)
+			if !strings.Contains(err.Error(), "has an encoding header that is not UTF-8;") {
+				t.Errorf("error %q does not hold the fixed text", err)
+			}
+			if part := leakedPart(err.Error(), v); part != "" {
+				t.Errorf("error %q holds %q of the value", err, part)
+			}
 		})
 	}
 }
 
-func TestCheckPushRange_EncodingLabel(t *testing.T) {
+func TestCheckPushRange_EncodingNameRules(t *testing.T) {
+	for enc, printed := range map[string]bool{
+		"ISO-8859-1":            true,
+		"x_mac.roman:2":         true,
+		strings.Repeat("e", 40): true,
+		strings.Repeat("e", 41): false,
+		"ISO 8859":              false,
+		"latin/1":               false,
+	} {
+		f := newPushFixture(t)
+		sha := f.writeCommit([]string{f.git("rev-parse", "HEAD")}, 1700000000, "", "encoding "+enc)
+		err := CheckPushRange(context.Background(), f.local, "main", sha)
+		if err == nil {
+			t.Fatalf("encoding %q: got nil, want a refusal", enc)
+		}
+		if got := strings.Contains(err.Error(), "has the encoding "+enc+";"); got != printed {
+			t.Errorf("encoding %q: printed %v, want %v: %v", enc, got, printed, err)
+		}
+	}
+}
+
+func TestCheckPushRange_AuthorHitNamesAuthor(t *testing.T) {
+	f := newPushFixture(t)
+	v := runtimeValue(30)
+	RegisterSecretValues(v)
+	sha := f.writeCommit([]string{f.git("rev-parse", "HEAD")}, 1700000000, "dev "+v)
+
+	err := CheckPushRange(context.Background(), f.local, "main", sha)
+	var pre *PushRangeError
+	if !errors.As(err, &pre) {
+		t.Fatalf("got %v, want a *PushRangeError", err)
+	}
+	if want := CommitHeaderFile("author", 3); pre.File != want || want != "the commit header author" {
+		t.Errorf("file %q, want %q", pre.File, want)
+	}
+	if part := leakedPart(err.Error(), v); part != "" {
+		t.Errorf("error %q holds %q of the value", err, part)
+	}
+}
+
+func TestCommitHeaderFile_ContinuationCountsUnderItsLine(t *testing.T) {
 	ResetSecretValuesForTest()
 	t.Cleanup(ResetSecretValuesForTest)
-	RegisterSecretValues(runtimeValue(20))
-	for enc, want := range map[string]string{
-		"IBM037":                "the encoding IBM037",
-		"ISO-8859-1":            "the encoding ISO-8859-1",
-		"x_mac.roman:2":         "the encoding x_mac.roman:2",
-		strings.Repeat("a", 40): "the encoding " + strings.Repeat("a", 40),
-		strings.Repeat("a", 41): "an encoding header that is not UTF-8",
-		"ISO 8859":              "an encoding header that is not UTF-8",
-		"ISO/8859":              "an encoding header that is not UTF-8",
-		runtimeValue(20):        "an encoding header that is not UTF-8",
-		"x" + runtimeValue(20):  "an encoding header that is not UTF-8",
-	} {
-		if got := encodingLabel(enc); got != want {
-			t.Errorf("encodingLabel(%q) = %q, want %q", enc, got, want)
-		}
+	v := runtimeValue(30)
+	RegisterSecretValues(v)
+	head := []byte("tree t\nauthor a\nx-block first\n second " + v + "\n third\nx-after clean\n")
+	name, line, _, hit := scanCommitHeader(head)
+	if !hit || CommitHeaderFile(name, line) != "the commit header line 3" {
+		t.Errorf("got %q line %d hit %v, want line 3", name, line, hit)
 	}
 }
 
-func TestCheckPushRange_KnownHeaderNameIsPrinted(t *testing.T) {
+// mutation pin: rev-list --reverse without --topo-order -> this test fails
+func TestCheckPushRange_MergeWithSkewNamesTheParent(t *testing.T) {
 	f := newPushFixture(t)
-	value := runtimeValue(20)
-	RegisterSecretValues(value)
-	sha := f.writeCommit("tree " + f.git("rev-parse", "HEAD^{tree}") + "\nparent " + f.git("rev-parse", "HEAD") +
-		"\nauthor dev " + value + " <t@example.com> 1700000000 +0000\ncommitter t <t@example.com> 1700000000 +0000\n\nclean\n")
+	v := runtimeValue(30)
+	RegisterSecretValues(v)
+	base := f.git("rev-parse", "HEAD")
+	// parent is dated after its child; the merge lists both, so a date walk
+	// reaches the parent before the child.
+	parent := f.writeCommit([]string{base}, 1900000000, "", "x-note "+v)
+	child := f.writeCommit([]string{parent}, 1700000000, "", "x-note "+v)
+	merge := f.writeCommit([]string{child, parent}, 1600000000, "")
 
-	err := CheckPushRange(context.Background(), f.local, "main", sha)
+	err := CheckPushRange(context.Background(), f.local, "main", merge)
 	var pre *PushRangeError
 	if !errors.As(err, &pre) {
 		t.Fatalf("got %v, want a *PushRangeError", err)
 	}
-	if pre.File != CommitHeaderFile("author") || !strings.Contains(err.Error(), "the commit header author") {
-		t.Errorf("refusal %q, want it to name the author header", err)
-	}
-	assertNoPartOf(t, err.Error(), value)
-}
-
-func TestCheckPushRange_ContinuationLineCountsUnderItsHeader(t *testing.T) {
-	f := newPushFixture(t)
-	value := runtimeValue(20)
-	RegisterSecretValues(value)
-	sha := f.headerCommit("x-block first\n second " + value + "\n third")
-
-	err := CheckPushRange(context.Background(), f.local, "main", sha)
-	var pre *PushRangeError
-	if !errors.As(err, &pre) || pre.File != CommitHeaderFile("line 5") {
-		t.Fatalf("got %v, want a refusal for the commit header line 5", err)
-	}
-}
-
-// mutation pin: rev-list --reverse without --topo-order in checkCommitObjects
-// -> this test fails (the child P1 is named)
-func TestCheckPushRange_HeaderHitAcrossMergeNamesTheParent(t *testing.T) {
-	f := newPushFixture(t)
-	value := runtimeValue(20)
-	RegisterSecretValues(value)
-	tree := f.git("rev-parse", "HEAD^{tree}")
-	commit := func(date string, extra string, parents ...string) string {
-		obj := "tree " + tree + "\n"
-		for _, p := range parents {
-			obj += "parent " + p + "\n"
-		}
-		obj += "author t <t@example.com> " + date + " +0000\ncommitter t <t@example.com> " + date + " +0000\n"
-		if extra != "" {
-			obj += extra + "\n"
-		}
-		return f.writeCommit(obj + "\nclean\n")
-	}
-	// The parent q is dated after its children p1 and p2: by date alone q is
-	// listed between p2 and p1.
-	q := commit("2000000000", "x-note "+value, f.git("rev-parse", "HEAD"))
-	p1 := commit("1700000000", "x-note "+value, q)
-	p2 := commit("1700000100", "", q)
-	m := commit("1700000200", "", p1, p2)
-
-	err := CheckPushRange(context.Background(), f.local, "main", m)
-	var pre *PushRangeError
-	if !errors.As(err, &pre) {
-		t.Fatalf("got %v, want a *PushRangeError", err)
-	}
-	if !strings.HasPrefix(q, pre.Commit) {
-		t.Errorf("refusal names %s, want the parent %s (child %s)", pre.Commit, q[:12], p1[:12])
+	if !strings.HasPrefix(parent, pre.Commit) {
+		t.Errorf("refusal names %s, want the parent %s (child %s)", pre.Commit, parent[:12], child[:12])
 	}
 }
