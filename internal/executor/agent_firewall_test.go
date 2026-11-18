@@ -141,7 +141,7 @@ func TestRunAsFirewallGatewayPortBlockedPasses(t *testing.T) {
 	var mu sync.Mutex
 	var dialed []string
 	prev := runAsAgentDial
-	runAsAgentDial = func(s *runAsSettings, addr string) agentDialResult {
+	runAsAgentDial = func(s *runAsSettings, addr string, timeout time.Duration) agentDialResult {
 		mu.Lock()
 		dialed = append(dialed, addr)
 		mu.Unlock()
@@ -152,7 +152,7 @@ func TestRunAsFirewallGatewayPortBlockedPasses(t *testing.T) {
 			}
 			return agentDialFailed
 		}
-		return agentDialAs(s, addr)
+		return agentDialAs(s, addr, timeout)
 	}
 	t.Cleanup(func() { runAsAgentDial = prev })
 
@@ -253,7 +253,7 @@ func TestRunAsFirewallNotRunWithOptionEmpty(t *testing.T) {
 	prevCheck, prevDial := runAsFirewallCheck, runAsAgentDial
 	ran := false
 	runAsFirewallCheck = func(*runAsSettings) string { ran = true; return "unexpected" }
-	runAsAgentDial = func(*runAsSettings, string) agentDialResult { ran = true; return agentDialFailed }
+	runAsAgentDial = func(*runAsSettings, string, time.Duration) agentDialResult { ran = true; return agentDialFailed }
 	t.Cleanup(func() { runAsFirewallCheck, runAsAgentDial = prevCheck, prevDial })
 	PreflightRunAsUser(&ClaudeCodeConfig{RunAsGatewayPort: 9091}, "", true, 0)
 	if ran {
@@ -297,6 +297,29 @@ func TestRunAsFirewallMetadataTimeoutPasses(t *testing.T) {
 	}
 }
 
+// GH-6477: the tests shorten runAsDialTimeout; the control connection keeps
+// its own limit, so a slow mock sudo under -race does not read as a probe
+// tool that does not work.
+// mutation pin: bound the control connection by runAsDialTimeout -> this
+// test fails.
+func TestRunAsFirewallControlDialKeepsItsLimit(t *testing.T) {
+	prev := runAsDialTimeout
+	runAsDialTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { runAsDialTimeout = prev })
+	gw, md := loopbackPort(t, false), loopbackPort(t, false)
+	// Every connection but the gateway and metadata ones (the control one)
+	// answers after more than runAsDialTimeout.
+	slowControl := fmt.Sprintf(`case "$1" in -[0-9]*) kill -s KILL -- "$1"; exit $? ;; esac
+case "$*" in *"/dev/tcp/127.0.0.1/%d"*) exit 1 ;; *"/dev/tcp/127.0.0.1/%d"*) ;; *"/dev/tcp/"*) sleep 1 ;; esac`, gw, md)
+	log, sudoLog, err := runFirewallPreflight(t, slowControl, gw, md)
+	if err != nil {
+		t.Fatalf("preflight error %v, want a pass:\n%s", err, log.String())
+	}
+	if n := firewallProbes(t, sudoLog); n != 3 {
+		t.Errorf("want the control, metadata and gateway connections, got %q", sudoCalls(t, sudoLog))
+	}
+}
+
 // GH-6455: a failed result is not kept (pilot start --replace: the port was
 // held by the old daemon); a passed one is.
 func TestRunAsFirewallFailedResultIsNotKept(t *testing.T) {
@@ -327,16 +350,67 @@ func TestRunAsFirewallFailedResultIsNotKept(t *testing.T) {
 	}
 }
 
-// GH-6455: with a gateway host that is not a loopback address the gateway
-// port on a non-loopback local address must be closed too.
-func TestRunAsFirewallNonLoopbackGatewayHost(t *testing.T) {
-	ip := firstLocalIPv4()
-	if ip == "" {
-		t.Skip("the host has no non-loopback IPv4 address")
+// secondProbeAddr returns a local IPv4 address other than 127.0.0.1 that the
+// test can listen on: 127.0.0.2 (all of 127.0.0.0/8 is local on Linux), else
+// the first local IPv4 address of the host.
+func secondProbeAddr(t *testing.T) string {
+	t.Helper()
+	for _, ip := range []string{"127.0.0.2", firstLocalIPv4()} {
+		if ip == "" {
+			continue
+		}
+		if l, err := net.Listen("tcp", net.JoinHostPort(ip, "0")); err == nil {
+			_ = l.Close()
+			return ip
+		}
 	}
+	t.Fatal("no local IPv4 address other than 127.0.0.1 to listen on")
+	return ""
+}
+
+// freePortOn returns a port that is free on every host of hosts.
+func freePortOn(t *testing.T, hosts ...string) int {
+	t.Helper()
+	for try := 0; try < 20; try++ {
+		first, err := net.Listen("tcp", net.JoinHostPort(hosts[0], "0"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := first.Addr().(*net.TCPAddr).Port
+		ls, free := []net.Listener{first}, true
+		for _, h := range hosts[1:] {
+			l, err := net.Listen("tcp", net.JoinHostPort(h, fmt.Sprint(port)))
+			if err != nil {
+				free = false
+				break
+			}
+			ls = append(ls, l)
+		}
+		for _, l := range ls {
+			_ = l.Close()
+		}
+		if free {
+			return port
+		}
+	}
+	t.Fatalf("no port free on all of %q", hosts)
+	return 0
+}
+
+// GH-6455: with a gateway host that is not a loopback address the gateway
+// port on a non-loopback local address must be closed too. GH-6477: the
+// local address is stubbed, so the test runs on a runner with no
+// non-loopback IPv4 address too, and the port is free on both addresses.
+// mutation pin: probe the gateway port on 127.0.0.1 only for a gateway host
+// 0.0.0.0 -> this test fails (on every runner, it no longer skips).
+func TestRunAsFirewallNonLoopbackGatewayHost(t *testing.T) {
+	ip := secondProbeAddr(t)
+	prev := runAsLocalIPv4
+	runAsLocalIPv4 = func() string { return ip }
+	t.Cleanup(func() { runAsLocalIPv4 = prev })
 	for _, blocked := range []bool{false, true} {
 		t.Run(fmt.Sprintf("blocked=%v", blocked), func(t *testing.T) {
-			port := loopbackPort(t, false)
+			port := freePortOn(t, "127.0.0.1", ip)
 			extra := rejectPort(port)
 			if blocked {
 				extra += fmt.Sprintf("\n"+`case "$*" in *"/dev/tcp/%s/%d"*) exit 1 ;; esac`, ip, port)
@@ -353,6 +427,59 @@ func TestRunAsFirewallNonLoopbackGatewayHost(t *testing.T) {
 				t.Errorf("want the control, metadata and two gateway connections, got %q", sudoCalls(t, sudoLog))
 			}
 		})
+	}
+}
+
+// GH-6477: a gateway host that is a specific IP is probed itself, not the
+// first local address of the host.
+// mutation pin: probe the first local IPv4 address for a gateway host
+// 10.0.0.5 -> this test fails.
+func TestRunAsGatewayProbeHostsSpecificIP(t *testing.T) {
+	prev := runAsLocalIPv4
+	runAsLocalIPv4 = func() string { return "192.0.2.7" }
+	t.Cleanup(func() { runAsLocalIPv4 = prev })
+	for host, want := range map[string]string{
+		"10.0.0.5":      "127.0.0.1 10.0.0.5",
+		"0.0.0.0":       "127.0.0.1 192.0.2.7",
+		"":              "127.0.0.1 192.0.2.7",
+		"::":            "127.0.0.1 192.0.2.7",
+		"pilot.example": "127.0.0.1 192.0.2.7",
+		"127.0.0.1":     "127.0.0.1",
+		"localhost":     "127.0.0.1",
+	} {
+		if got := strings.Join(runAsGatewayProbeHosts(host), " "); got != want {
+			t.Errorf("runAsGatewayProbeHosts(%q) = %q, want %q", host, got, want)
+		}
+	}
+}
+
+// GH-6477: a link-local address is not the local address of the probe.
+// mutation pin: take the first non-loopback address, link-local included
+// -> this test fails.
+func TestFirstLocalIPv4SkipsLinkLocal(t *testing.T) {
+	ipNet := func(cidr string) net.Addr {
+		ip, n, err := net.ParseCIDR(cidr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n.IP = ip
+		return n
+	}
+	for _, tc := range []struct {
+		addrs []string
+		want  string
+	}{
+		{[]string{"127.0.0.1/8", "169.254.10.20/16", "10.0.0.5/24"}, "10.0.0.5"},
+		{[]string{"::1/128", "fe80::1/64", "169.254.10.20/16", "192.168.1.4/24"}, "192.168.1.4"},
+		{[]string{"127.0.0.1/8", "169.254.10.20/16"}, ""},
+	} {
+		var addrs []net.Addr
+		for _, a := range tc.addrs {
+			addrs = append(addrs, ipNet(a))
+		}
+		if got := firstLocalIPv4Of(addrs); got != tc.want {
+			t.Errorf("firstLocalIPv4Of(%q) = %q, want %q", tc.addrs, got, tc.want)
+		}
 	}
 }
 
