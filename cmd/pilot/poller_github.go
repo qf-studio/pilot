@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -420,6 +421,11 @@ func (s *sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoCon
 			Confidence: 1,
 		}, nil
 	}
+	// GH-6456: the SDK poller always passes an empty repoContext, so without
+	// this the judge sees no repository and reads links to it as external.
+	if repoContext == "" && s.repoFullName != "" {
+		repoContext = preflightRepoContext(s.repoFullName)
+	}
 	v, err := s.judge.JudgeIssue(ctx, title, body, repoContext)
 	if err != nil {
 		if s.metrics != nil {
@@ -429,12 +435,56 @@ func (s *sdkPreFlightJudge) JudgeIssue(ctx context.Context, title, body, repoCon
 		return sdkcore.Verdict{}, err
 	}
 	s.trackerFor().RecordSuccess()
+	if v.Decision == executor.PreFlightRejectOutOfScope && onlyOwnRepoLinks(body, s.repoFullName) {
+		logging.WithComponent("github-sdk-poller").Warn("pre-flight: overrode reject_out_of_scope, links point to the project repository",
+			slog.String("title", title),
+			slog.String("repo", s.repoFullName),
+			slog.String("judge_reason", v.Reason))
+		return sdkcore.Verdict{
+			Accepted:   true,
+			Decision:   string(executor.PreFlightAccept),
+			Reason:     "links point to the project repository",
+			Confidence: v.Confidence,
+		}, nil
+	}
 	return sdkcore.Verdict{
 		Accepted:   !v.IsRejection(),
 		Decision:   string(v.Decision),
 		Reason:     v.Reason,
 		Confidence: v.Confidence,
 	}, nil
+}
+
+// preflightRepoContext is the repoContext the shim sends the judge when the
+// caller sends none (GH-6456).
+func preflightRepoContext(repoFullName string) string {
+	return "This issue is filed in the GitHub repository " + repoFullName +
+		". The code of that repository is available to the developer. Links to github.com/" + repoFullName +
+		", and issue or PR numbers such as #123, point to this repository and are not external resources."
+}
+
+// githubRepoLinkRe matches github.com/OWNER/NAME links in any case.
+var githubRepoLinkRe = regexp.MustCompile(`(?i)github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)`)
+
+// onlyOwnRepoLinks reports whether body links to github.com/repoFullName at
+// least once and to no other github.com/OWNER/NAME. Slugs are compared whole
+// and case-insensitively, so qf-studio/pilot-console is not qf-studio/pilot.
+func onlyOwnRepoLinks(body, repoFullName string) bool {
+	if repoFullName == "" {
+		return false
+	}
+	matches := githubRepoLinkRe.FindAllStringSubmatch(body, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	for _, m := range matches {
+		// A sentence-ending dot or a clone suffix is not part of the name.
+		name := strings.TrimSuffix(strings.TrimRight(m[2], "."), ".git")
+		if !strings.EqualFold(m[1]+"/"+name, repoFullName) {
+			return false
+		}
+	}
+	return true
 }
 
 // warnAutopilotFixLabelMissing logs when the configured autopilot issue_labels

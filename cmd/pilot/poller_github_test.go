@@ -399,6 +399,145 @@ func TestSdkPreFlightJudge_JudgeIssue_TimeoutIncrementsMetricOnce(t *testing.T) 
 	}
 }
 
+// fakePreFlightJudgeCmd writes a judge command that records its arguments and
+// standard input (where the prompt goes, see extractStdinPrompt) to the
+// returned file and prints a verdict in the format parsePreFlightResponse reads.
+func fakePreFlightJudgeCmd(t *testing.T, decision, reason string) (cmd, record string) {
+	t.Helper()
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available on this system")
+	}
+	dir := t.TempDir()
+	cmd = dir + "/fake-claude.sh"
+	record = dir + "/record.txt"
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\ncat >> %q\nprintf 'DECISION: %s\\nREASON: %s\\nCONFIDENCE: 0.9\\n'\n",
+		record, record, decision, reason)
+	if err := os.WriteFile(cmd, []byte(script), 0o755); err != nil {
+		t.Fatalf("failed to write fake judge script: %v", err)
+	}
+	return cmd, record
+}
+
+func readRecord(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read judge record: %v", err)
+	}
+	return string(b)
+}
+
+// mutation pin: remove the repoContext assignment in JudgeIssue -> this test fails
+func TestSdkPreFlightJudge_JudgeIssue_RepoContext(t *testing.T) {
+	t.Run("empty value gets the slug", func(t *testing.T) {
+		cmd, record := fakePreFlightJudgeCmd(t, "accept", "clear task")
+		sp := &sdkPreFlightJudge{judge: executor.NewIntentJudge(cmd), repoFullName: "qf-studio/pilot"}
+		if _, err := sp.JudgeIssue(context.Background(), "title", "body", ""); err != nil {
+			t.Fatalf("JudgeIssue: %v", err)
+		}
+		got := readRecord(t, record)
+		if !strings.Contains(got, "## Repository Context\n"+preflightRepoContext("qf-studio/pilot")) {
+			t.Errorf("prompt lacks the repository context for the slug:\n%s", got)
+		}
+		if !strings.Contains(got, "This issue is filed in the GitHub repository qf-studio/pilot.") {
+			t.Errorf("prompt lacks the slug sentence:\n%s", got)
+		}
+	})
+	t.Run("caller value passes unchanged", func(t *testing.T) {
+		cmd, record := fakePreFlightJudgeCmd(t, "accept", "clear task")
+		sp := &sdkPreFlightJudge{judge: executor.NewIntentJudge(cmd), repoFullName: "qf-studio/pilot"}
+		if _, err := sp.JudgeIssue(context.Background(), "title", "body", "caller context"); err != nil {
+			t.Fatalf("JudgeIssue: %v", err)
+		}
+		got := readRecord(t, record)
+		if !strings.Contains(got, "## Repository Context\ncaller context") {
+			t.Errorf("prompt lacks the caller's repository context:\n%s", got)
+		}
+		if strings.Contains(got, "This issue is filed in the GitHub repository") {
+			t.Errorf("caller's repository context was replaced:\n%s", got)
+		}
+	})
+}
+
+// mutation pin: make onlyOwnRepoLinks match by prefix -> the pilot-console row fails
+func TestOnlyOwnRepoLinks(t *testing.T) {
+	const repo = "qf-studio/pilot"
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"own links only", "See https://github.com/qf-studio/pilot/pull/6475 and https://github.com/qf-studio/pilot/issues/6402.", true},
+		{"own and foreign", "See https://github.com/qf-studio/pilot/pull/1 and https://github.com/other/repo/pull/2", false},
+		{"foreign only", "See https://github.com/other/repo/pull/2", false},
+		{"no link", "Fix the poller, see #6475.", false},
+		{"slug prefix of another slug", "See https://github.com/qf-studio/pilot-console/pull/3", false},
+		{"own and prefix slug", "https://github.com/qf-studio/pilot/pull/1 https://github.com/qf-studio/pilot-console/pull/3", false},
+		{"upper case host and slug", "See https://GitHub.COM/QF-Studio/Pilot/pull/6475", true},
+		{"clone url", "git clone https://github.com/qf-studio/pilot.git", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := onlyOwnRepoLinks(tt.body, repo); got != tt.want {
+				t.Errorf("onlyOwnRepoLinks(%q, %q) = %v, want %v", tt.body, repo, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSdkPreFlightJudge_JudgeIssue_OutOfScopeOwnLinks(t *testing.T) {
+	const (
+		ownBody     = "Follow-up from https://github.com/qf-studio/pilot/pull/6475."
+		foreignBody = "Follow-up from https://github.com/qf-studio/pilot/pull/6475 and https://github.com/other/repo/pull/2."
+		judgeReason = "requires working with the external repository"
+	)
+	tests := []struct {
+		name         string
+		decision     string
+		body         string
+		wantAccepted bool
+		wantDecision string
+		wantReason   string
+		wantWarn     bool
+	}{
+		{"out of scope with own links is accepted", "reject_out_of_scope", ownBody, true, "accept", "links point to the project repository", true},
+		{"out of scope with a foreign link stays rejected", "reject_out_of_scope", foreignBody, false, "reject_out_of_scope", judgeReason, false},
+		{"vague with own links stays rejected", "reject_vague", ownBody, false, "reject_vague", judgeReason, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := captureLogs(t)
+			cmd, _ := fakePreFlightJudgeCmd(t, tt.decision, judgeReason)
+			sp := &sdkPreFlightJudge{judge: executor.NewIntentJudge(cmd), repoFullName: "qf-studio/pilot"}
+			v, err := sp.JudgeIssue(context.Background(), "the title", tt.body, "")
+			if err != nil {
+				t.Fatalf("JudgeIssue: %v", err)
+			}
+			if v.Accepted != tt.wantAccepted || v.Decision != tt.wantDecision || v.Reason != tt.wantReason {
+				t.Errorf("verdict = %+v, want accepted=%v decision=%q reason=%q", v, tt.wantAccepted, tt.wantDecision, tt.wantReason)
+			}
+			if got := sp.trackerFor().ConsecutiveFailures(); got != 0 {
+				t.Errorf("consecutiveFailures = %d, want 0 after a successful judge call", got)
+			}
+			out := logs()
+			warned := strings.Contains(out, "overrode reject_out_of_scope")
+			if warned != tt.wantWarn {
+				t.Fatalf("warn line written = %v, want %v:\n%s", warned, tt.wantWarn, out)
+			}
+			if tt.wantWarn {
+				if n := strings.Count(out, "overrode reject_out_of_scope"); n != 1 {
+					t.Errorf("warn lines = %d, want 1:\n%s", n, out)
+				}
+				for _, want := range []string{"level=WARN", `title="the title"`, `judge_reason="` + judgeReason + `"`} {
+					if !strings.Contains(out, want) {
+						t.Errorf("warn line lacks %s:\n%s", want, out)
+					}
+				}
+			}
+		})
+	}
+}
+
 // --- GH-4669: fail-open observability (streak alert + no retry storm) ---
 
 // TestSdkPreFlightJudge_FiresStreakAlertExactlyOnceAtThreshold drives
