@@ -700,8 +700,9 @@ const (
 	agentDialNoAnswer
 )
 
-// runAsAgentDial opens one TCP connection to addr as the agent user and
-// reports how it ended; tests replace it to stand for a reject rule.
+// runAsAgentDial opens one TCP connection to addr as the agent user, bounded
+// by timeout, and reports how it ended; tests replace it to stand for a
+// reject rule.
 var runAsAgentDial = agentDialAs
 
 // runAsMetadataAddr is the instance metadata address that the firewall of
@@ -709,12 +710,18 @@ var runAsAgentDial = agentDialAs
 // a loopback port: the real one may answer on a cloud host.
 var runAsMetadataAddr = "169.254.169.254:80"
 
-// runAsDialTimeout bounds each connection of the firewall probe; tests
-// shorten it.
+// runAsDialTimeout bounds each connection of the firewall probe but the
+// control one; tests shorten it.
 var runAsDialTimeout = 3 * time.Second
 
-// runAsLocalIPv4 returns the first non-loopback IPv4 address of the host, ""
-// when it has none; tests replace it.
+// runAsControlDialTimeout bounds the control connection of the firewall
+// probe. Tests do not shorten it: the control connection must connect, and a
+// short limit on a slow host (mock sudo under -race) reads as a probe tool
+// that does not work (GH-6477).
+const runAsControlDialTimeout = 3 * time.Second
+
+// runAsLocalIPv4 returns the first local IPv4 address of the host that is
+// neither loopback nor link-local, "" when it has none; tests replace it.
 var runAsLocalIPv4 = firstLocalIPv4
 
 // checkRunAsFirewall proves that the firewall rules of the agent user are
@@ -722,8 +729,9 @@ var runAsLocalIPv4 = firstLocalIPv4
 // connection to a listener of the daemon on 127.0.0.1 must connect; then the
 // connections to the metadata address and to the gateway port on 127.0.0.1
 // must not, all of them in parallel. When the gateway host is not a loopback
-// address, the gateway port on the first non-loopback local IPv4 address
-// must not connect either. With no gateway port (every entry point but the
+// address, the gateway port on that address must not connect either: the
+// host itself for a specific IP, else the first local IPv4 address
+// (runAsGatewayProbeHosts). With no gateway port (every entry point but the
 // daemon start) the gateway part is skipped. The result is empty on success,
 // else the failed check, which names the address or the port.
 //
@@ -741,7 +749,7 @@ func checkRunAsFirewall(s *runAsSettings) string {
 	if err != nil {
 		return "firewall probe: the daemon cannot open a control listener on 127.0.0.1"
 	}
-	ok := runAsAgentDial(s, control.Addr().String()) == agentDialConnected
+	ok := runAsAgentDial(s, control.Addr().String(), runAsControlDialTimeout) == agentDialConnected
 	_ = control.Close()
 	if !ok {
 		return "firewall probe: the agent user cannot connect to a control listener on 127.0.0.1, the probe tool (bash /dev/tcp) does not work"
@@ -757,15 +765,11 @@ func checkRunAsFirewall(s *runAsSettings) string {
 		slog.Default().Debug("run_as_user firewall probe: no gateway port, the gateway port is not probed",
 			slog.String("run_as_user", s.user))
 	} else {
-		hosts := []string{"127.0.0.1"}
-		if !loopbackGatewayHost(s.gatewayHost) {
-			if ip := runAsLocalIPv4(); ip != "" {
-				hosts = append(hosts, ip)
-			} else {
-				slog.Default().Warn("run_as_user firewall probe: the gateway host is not a loopback address and the host has no non-loopback IPv4 address, the gateway port is probed on 127.0.0.1 only",
-					slog.String("run_as_user", s.user),
-					slog.String("gateway_host", s.gatewayHost))
-			}
+		hosts := runAsGatewayProbeHosts(s.gatewayHost)
+		if len(hosts) == 1 && !loopbackGatewayHost(s.gatewayHost) {
+			slog.Default().Warn("run_as_user firewall probe: the gateway host is not a loopback address and the host has no non-loopback IPv4 address, the gateway port is probed on 127.0.0.1 only",
+				slog.String("run_as_user", s.user),
+				slog.String("gateway_host", s.gatewayHost))
 		}
 		for _, h := range hosts {
 			l, err := net.Listen("tcp", net.JoinHostPort(h, strconv.Itoa(port)))
@@ -782,13 +786,13 @@ func checkRunAsFirewall(s *runAsSettings) string {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		metadata = runAsAgentDial(s, runAsMetadataAddr)
+		metadata = runAsAgentDial(s, runAsMetadataAddr, runAsDialTimeout)
 	}()
 	for i, l := range gateways {
 		wg.Add(1)
 		go func(i int, addr string) {
 			defer wg.Done()
-			results[i] = runAsAgentDial(s, addr)
+			results[i] = runAsAgentDial(s, addr, runAsDialTimeout)
 		}(i, l.Addr().String())
 	}
 	wg.Wait()
@@ -817,15 +821,39 @@ func loopbackGatewayHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// firstLocalIPv4 returns the first non-loopback IPv4 address of the
-// interfaces of the host, "" when there is none.
+// runAsGatewayProbeHosts returns the addresses on which the probe listens on
+// the gateway port: 127.0.0.1, and for a gateway host that is not a loopback
+// address also that host when it is a specific IP, else the first local IPv4
+// address (runAsLocalIPv4) when the host has one (GH-6477).
+func runAsGatewayProbeHosts(gatewayHost string) []string {
+	hosts := []string{"127.0.0.1"}
+	if loopbackGatewayHost(gatewayHost) {
+		return hosts
+	}
+	if ip := net.ParseIP(gatewayHost); ip != nil && !ip.IsUnspecified() {
+		return append(hosts, ip.String())
+	}
+	if ip := runAsLocalIPv4(); ip != "" {
+		hosts = append(hosts, ip)
+	}
+	return hosts
+}
+
+// firstLocalIPv4 returns the first IPv4 address of the interfaces of the
+// host that is neither loopback nor link-local, "" when there is none.
 func firstLocalIPv4() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return ""
 	}
+	return firstLocalIPv4Of(addrs)
+}
+
+// firstLocalIPv4Of is firstLocalIPv4 over addrs. A link-local address
+// (169.254.0.0/16) is skipped: no gateway is reached there (GH-6477).
+func firstLocalIPv4Of(addrs []net.Addr) string {
 	for _, a := range addrs {
-		if n, ok := a.(*net.IPNet); ok && !n.IP.IsLoopback() {
+		if n, ok := a.(*net.IPNet); ok && !n.IP.IsLoopback() && !n.IP.IsLinkLocalUnicast() {
 			if ip4 := n.IP.To4(); ip4 != nil {
 				return ip4.String()
 			}
@@ -835,15 +863,15 @@ func firstLocalIPv4() string {
 }
 
 // agentDialAs runs `bash -c ': </dev/tcp/HOST/PORT'` as the agent user with
-// the agent environment, bounded by runAsDialTimeout, and reports how it
-// ended: exit 0 is a connection, an end by the time limit no answer, any
-// other result a failed connection.
-func agentDialAs(s *runAsSettings, addr string) agentDialResult {
+// the agent environment, bounded by timeout, and reports how it ended: exit 0
+// is a connection, an end by the time limit no answer, any other result a
+// failed connection.
+func agentDialAs(s *runAsSettings, addr string, timeout time.Duration) agentDialResult {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return agentDialFailed
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), runAsDialTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd, err := agentCommandAs(ctx, s, "bash", "-c", ": </dev/tcp/"+host+"/"+port)
 	if err != nil {
