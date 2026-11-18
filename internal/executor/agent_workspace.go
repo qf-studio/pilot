@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 )
 
 // TASK-651 (design: .agent/system/agent-isolation-design.md, 4.2): with
@@ -118,7 +120,8 @@ func agentWorkspaceRoot(s *runAsSettings) (string, error) {
 // createAgentWorkspace creates the agent workspace of a task run and returns
 // its path and a cleanup function with the contract of the worktree cleanup
 // (safe to call more than once; it removes the workspace through
-// removeAgentWorkspace and deletes no branch of the daemon's repository).
+// removeAgentWorkspace when its commits are safe, finishAgentWorkspace, and
+// deletes no branch of the daemon's repository).
 //
 // baseRef has the meaning of the baseBranch of CreateWorktreeWithBranch: an
 // explicit ref (origin/BRANCH, a commit SHA, FETCH_HEAD) or "" for a fresh
@@ -186,7 +189,8 @@ func (m *WorktreeManager) createAgentWorkspace(ctx context.Context, taskID, bran
 		return "", nil, err
 	}
 
-	agentWorkspaceBases.Store(wsPath, sha)
+	rec := &agentWorkspaceRecord{base: sha, branch: branch, taskID: taskID, daemonRepo: m.repoPath}
+	agentWorkspaceBases.Store(wsPath, rec)
 
 	slog.Info("Created agent workspace with branch",
 		slog.String("task_id", taskID),
@@ -196,23 +200,135 @@ func (m *WorktreeManager) createAgentWorkspace(ctx context.Context, taskID, bran
 		slog.String("workspace", wsPath),
 	)
 	var once sync.Once
-	return wsPath, func() { once.Do(remove) }, nil
+	return wsPath, func() { once.Do(func() { finishAgentWorkspace(s, wsPath, rec) }) }, nil
 }
 
-// agentWorkspaceBases holds the base commit of each live agent workspace by
-// its path, the ^BASE of the hand-over (handOverBranch). The daemon records
-// it: the refs of the workspace are the agent's. Stored when
-// createAgentWorkspace returns, deleted by its cleanup.
+// agentWorkspaceBases holds the record of each live agent workspace by its
+// path (agentWorkspaceRecord). The daemon records it: the refs of the
+// workspace are the agent's. Stored when createAgentWorkspace returns,
+// deleted by its cleanup.
 var agentWorkspaceBases sync.Map
+
+// agentWorkspaceRecord is what the daemon knows of a live agent workspace:
+// the base commit (the ^BASE of the hand-over, handOverBranch), the task
+// branch, the task, the daemon's repository, and what became of the commits:
+// the head of the last hand-over, whether the last push of a hand-over
+// succeeded, and the commit a recovery ref of this run pins.
+type agentWorkspaceRecord struct {
+	base, branch, taskID, daemonRepo string
+
+	mu          sync.Mutex
+	handOverSHA string
+	pushed      bool
+	recoverySHA string
+}
+
+func (r *agentWorkspaceRecord) setHandOver(sha string, pushed bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.handOverSHA, r.pushed = sha, pushed
+}
+
+func (r *agentWorkspaceRecord) setRecovery(sha string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recoverySHA = sha
+}
+
+func (r *agentWorkspaceRecord) state() (handOverSHA string, pushed bool, recoverySHA string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.handOverSHA, r.pushed, r.recoverySHA
+}
+
+// agentWorkspaceRecordOf is the record of the workspace at path, nil when
+// none is on record.
+func agentWorkspaceRecordOf(path string) *agentWorkspaceRecord {
+	if v, ok := agentWorkspaceBases.Load(filepath.Clean(path)); ok {
+		rec, _ := v.(*agentWorkspaceRecord)
+		return rec
+	}
+	return nil
+}
 
 // agentWorkspaceBase is the base commit of the workspace at path, "" when
 // none is on record.
 func agentWorkspaceBase(path string) string {
-	if v, ok := agentWorkspaceBases.Load(filepath.Clean(path)); ok {
-		sha, _ := v.(string)
-		return sha
+	if rec := agentWorkspaceRecordOf(path); rec != nil {
+		return rec.base
 	}
 	return ""
+}
+
+// finishAgentWorkspace is the cleanup of the agent workspace of a run. The
+// workspace is removed only when its commits are safe outside it: the last
+// push of a hand-over succeeded, a recovery ref of this run holds them in the
+// daemon's repository, or the workspace has no commit above the base. In any
+// other case it stays and one Error line names its path; the sweep at the
+// daemon start (sweepAgentWorkspaces) removes it later. Once the workspace is
+// removed, the hand-over ref of the task is deleted (removeHandOverRef).
+func finishAgentWorkspace(s *runAsSettings, wsPath string, rec *agentWorkspaceRecord) {
+	agentWorkspaceBases.Delete(wsPath)
+	ctx, cancel := context.WithTimeout(context.Background(), agentWorkspaceRemoveTimeout)
+	defer cancel()
+	if why := agentWorkspaceKeepReason(ctx, wsPath, rec); why != "" {
+		slog.Error("agent workspace kept: its commits are not safe outside it",
+			slog.String("task_id", rec.taskID),
+			slog.String("branch", rec.branch),
+			slog.String("path", wsPath),
+			slog.String("reason", why),
+		)
+		return
+	}
+	if removeAgentWorkspace(s, wsPath) != nil {
+		return
+	}
+	if err := removeHandOverRef(rec.daemonRepo, rec.taskID); err != nil {
+		slog.Warn("agent workspace removed, its hand-over ref was not",
+			slog.String("task_id", rec.taskID), slog.String("repo", rec.daemonRepo), slog.Any("error", err))
+	}
+}
+
+// agentWorkspaceKeepReason is "" when the workspace at wsPath may be removed
+// (finishAgentWorkspace), else why it stays. Decision: the count of the
+// commits above the base runs in the workspace as the agent user, so the agent
+// can make it read 0; that only loses the agent's own work, and every commit
+// that left the workspace is checked by the daemon in its own repository.
+func agentWorkspaceKeepReason(ctx context.Context, wsPath string, rec *agentWorkspaceRecord) string {
+	_, pushed, recoverySHA := rec.state()
+	if pushed {
+		return ""
+	}
+	if recoverySHA != "" && daemonRefSHA(ctx, rec.daemonRepo, recoveryRefName(rec.taskID)) == recoverySHA {
+		return ""
+	}
+	if _, err := os.Lstat(wsPath); errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	cmd := gitCommandIn(ctx, wsPath, append(secretpatterns.HooksOffArgs(),
+		"rev-list", "--count", "HEAD", "--branches", "^"+rec.base)...)
+	appendGitEnv(cmd, "GIT_NO_REPLACE_OBJECTS=1")
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Sprintf("the commits above the base %s could not be counted: %v", rec.base, err)
+	}
+	if n := strings.TrimSpace(string(out)); n != "0" {
+		return fmt.Sprintf("%s commit(s) above the base %s were not pushed and no recovery ref holds them", n, rec.base)
+	}
+	return ""
+}
+
+// daemonRefSHA is the commit ref holds in the daemon's repository, "" when it
+// does not resolve.
+func daemonRefSHA(ctx context.Context, daemonRepo, ref string) string {
+	cmd := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("rev-parse", "--verify", "-q", ref+"^{commit}")...)
+	appendGitEnv(cmd, "GIT_NO_REPLACE_OBJECTS=1")
+	out, err := cmd.Output()
+	sha := strings.TrimSpace(string(out))
+	if err != nil || !isLowerHex(sha) {
+		return ""
+	}
+	return sha
 }
 
 // resolveCommitSHA resolves ref to a commit SHA in the daemon's repository.

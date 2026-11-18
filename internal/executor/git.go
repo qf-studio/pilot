@@ -3,7 +3,9 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -73,6 +75,9 @@ type GitOperations struct {
 	// handOverBase is the base commit of the workspace, the ^BASE of the
 	// hand-over; "" when the workspace has none on record.
 	handOverBase string
+	// workspace is the daemon's record of the agent workspace (the task
+	// branch, the push and recovery state); nil when none is on record.
+	workspace *agentWorkspaceRecord
 
 	handOverMu sync.Mutex
 	// handOverSHA is the head of the last hand-over of a push.
@@ -99,8 +104,41 @@ func newGitOperationsForWorkspace(workspace, daemonRepo string) *GitOperations {
 		return g
 	}
 	g.daemonRepo = daemonRepo
+	g.workspace = agentWorkspaceRecordOf(workspace)
 	g.handOverBase = agentWorkspaceBase(workspace)
 	return g
+}
+
+// taskBranch is the task branch of the agent workspace as the daemon recorded
+// it, "" when none is on record. The HEAD of the workspace is the agent's.
+func (g *GitOperations) taskBranch() string {
+	if g.workspace == nil {
+		return ""
+	}
+	return g.workspace.branch
+}
+
+// ghDirForDaemonRepo is the directory of a gh command of g and the arguments
+// that name its repository. With an agent workspace (TASK-651) it is the
+// daemon's repository and `--repo OWNER/NAME` from the origin remote of that
+// repository: gh reads the repository from the git config of its directory,
+// and the git config of the workspace is the agent's, so the agent would
+// choose the repository the daemon token acts on. Otherwise it is projectPath
+// and no argument, the call of today.
+func (g *GitOperations) ghDirForDaemonRepo(ctx context.Context) (string, []string, error) {
+	if g.daemonRepo == "" {
+		return g.projectPath, nil, nil
+	}
+	cmd := handOverDaemonGit(ctx, g.daemonRepo, handOverGitArgs("remote", "get-url", "origin")...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", nil, fmt.Errorf("gh: read the origin remote of the daemon's repository %s: %w", g.daemonRepo, err)
+	}
+	owner, name, err := parseGitHubRemoteURL(strings.TrimSpace(string(out)))
+	if err != nil {
+		return "", nil, fmt.Errorf("gh: the origin remote of the daemon's repository %s: %w", g.daemonRepo, err)
+	}
+	return g.daemonRepo, []string{"--repo", owner + "/" + name}, nil
 }
 
 // remoteDir is the directory of the remote commands: the daemon's repository
@@ -390,7 +428,7 @@ type memoryGraphDoc struct {
 // of the memory-doc guards below. Returns (nil, nil) when the file is
 // absent — a project without one has no drift gate to protect.
 func (g *GitOperations) loadMemoryGraph() (*memoryGraphDoc, error) {
-	raw, err := os.ReadFile(filepath.Join(g.projectPath, graphJSONRelPath))
+	raw, err := readMemoryGraphFile(filepath.Join(g.projectPath, graphJSONRelPath))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -403,6 +441,46 @@ func (g *GitOperations) loadMemoryGraph() (*memoryGraphDoc, error) {
 		return nil, fmt.Errorf("failed to parse graph.json: %w", err)
 	}
 	return &graph, nil
+}
+
+// readMemoryGraphFile is os.ReadFile for the reads of the memory-doc guards.
+// TASK-651: with the option set and a path inside the workspace root the file
+// is read through agentReadFile, so a link the agent put at the path is
+// followed as the agent user, never as the daemon user. A read error there
+// gives the result of today for a missing file (an error that wraps
+// fs.ErrNotExist) and one Warn line.
+func readMemoryGraphFile(path string) ([]byte, error) {
+	if runAsSettingsNow() == nil {
+		return os.ReadFile(path) // #nosec G304 -- the os call of today
+	}
+	if agent, err := agentFileRoute(path); err == nil && !agent {
+		return os.ReadFile(path) // #nosec G304 -- a path outside the workspace root
+	}
+	raw, err := agentReadFile(context.Background(), path)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			slog.Warn("memory-doc guard: read as the agent user failed, taken as a missing file",
+				slog.String("path", path), slog.Any("error", err))
+		}
+		return nil, &fs.PathError{Op: "read", Path: path, Err: fs.ErrNotExist}
+	}
+	return raw, nil
+}
+
+// memoryGraphFileExists is the existence check of a memory doc that a
+// graph.json node names: os.Stat with the option empty or a path outside the
+// workspace root, readMemoryGraphFile otherwise.
+func memoryGraphFileExists(path string) bool {
+	if runAsSettingsNow() == nil {
+		_, err := os.Stat(path)
+		return err == nil
+	}
+	if agent, err := agentFileRoute(path); err == nil && !agent {
+		_, err := os.Stat(path)
+		return err == nil
+	}
+	_, err := readMemoryGraphFile(path)
+	return err == nil
 }
 
 // loadMemoryGraphAtRef reads and parses graph.json as it existed at ref
@@ -524,7 +602,7 @@ func (g *GitOperations) indexedMemoryPaths() (map[string]bool, error) {
 				filepath.Join(g.projectPath, rawPath),
 				filepath.Join(g.projectPath, ".agent", "knowledge", rawPath),
 			} {
-				if _, statErr := os.Stat(candidate); statErr != nil {
+				if !memoryGraphFileExists(candidate) {
 					continue
 				}
 				if rel, relErr := filepath.Rel(g.projectPath, candidate); relErr == nil {
@@ -1247,6 +1325,9 @@ func (g *GitOperations) PushForceWithLease(ctx context.Context, branchName, expe
 // returns before the push.
 func (g *GitOperations) pushHandOver(ctx context.Context, branchName, expectedRemoteSHA, taskID string) error {
 	branch := strings.TrimPrefix(branchName, "refs/heads/")
+	if g.workspace != nil {
+		g.workspace.setHandOver("", false)
+	}
 	sha, err := handOverBranch(ctx, g.projectPath, g.daemonRepo, taskID, branch, g.handOverBase)
 	if err != nil {
 		return err
@@ -1254,6 +1335,9 @@ func (g *GitOperations) pushHandOver(ctx context.Context, branchName, expectedRe
 	g.handOverMu.Lock()
 	g.handOverSHA = sha
 	g.handOverMu.Unlock()
+	if g.workspace != nil {
+		g.workspace.setHandOver(sha, false)
+	}
 	if err := checkSecretGateTip(ctx, g.daemonRepo, sha, branchName, taskID); err != nil {
 		return err
 	}
@@ -1269,6 +1353,9 @@ func (g *GitOperations) pushHandOver(ctx context.Context, branchName, expectedRe
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w: %s", what, err, output)
+	}
+	if g.workspace != nil {
+		g.workspace.setHandOver(sha, true)
 	}
 	g.warnPushedCoAuthor(ctx, branch, sha, taskID)
 	return nil
@@ -1314,11 +1401,22 @@ func (g *GitOperations) CreatePR(ctx context.Context, title, body, baseBranch st
 		return "", err
 	}
 
+	dir, repoArgs, err := g.ghDirForDaemonRepo(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to create PR: %w", err)
+	}
+
 	// GH-2177: Detect current branch to pass --head explicitly.
 	// In worktree mode, gh may see uncommitted changes and refuse to infer the head branch.
 	// Using --head bypasses the dirty working tree check.
+	// TASK-651: an agent workspace gives the task branch the daemon recorded;
+	// the HEAD of the workspace is the agent's and is not read.
 	headBranch := ""
-	if branchCmd := g.gitCmd(ctx, "rev-parse", "--abbrev-ref", "HEAD"); branchCmd != nil {
+	if g.daemonRepo != "" {
+		if headBranch = g.taskBranch(); headBranch == "" {
+			return "", fmt.Errorf("failed to create PR: no task branch on record for the agent workspace %s", g.projectPath)
+		}
+	} else if branchCmd := g.gitCmd(ctx, "rev-parse", "--abbrev-ref", "HEAD"); branchCmd != nil {
 		if out, err := branchCmd.Output(); err == nil {
 			headBranch = strings.TrimSpace(string(out))
 		}
@@ -1332,9 +1430,10 @@ func (g *GitOperations) CreatePR(ctx context.Context, title, body, baseBranch st
 	if headBranch != "" {
 		args = append(args, "--head", headBranch)
 	}
+	args = append(args, repoArgs...)
 
 	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
-	cmd.Dir = g.projectPath
+	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
 
@@ -1394,13 +1493,17 @@ func extractPRURL(text string) string {
 // dependency CreatePR already relies on — so the executor needs no github.Client
 // wiring (the merge-detection API lives only on *github.Client).
 func (g *GitOperations) FindMergedPRByBranch(ctx context.Context, branch string) (string, error) {
-	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "pr", "list",
+	dir, repoArgs, err := g.ghDirForDaemonRepo(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to list merged PRs for %s: %w", branch, err)
+	}
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", append([]string{"pr", "list",
 		"--head", branch,
 		"--state", "merged",
 		"--json", "url",
 		"--limit", "1",
-	))
-	cmd.Dir = g.projectPath
+	}, repoArgs...)...))
+	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("failed to list merged PRs for %s: %w: %s", branch, err, output)
@@ -1413,13 +1516,17 @@ func (g *GitOperations) FindMergedPRByBranch(ctx context.Context, branch string)
 // already-open PR from a prior/retried dispatch of the same branch instead of
 // racing gh CLI into a duplicate PR.
 func (g *GitOperations) FindOpenPRByBranch(ctx context.Context, branch string) (string, error) {
-	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "pr", "list",
+	dir, repoArgs, err := g.ghDirForDaemonRepo(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to list open PRs for %s: %w", branch, err)
+	}
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", append([]string{"pr", "list",
 		"--head", branch,
 		"--state", "open",
 		"--json", "url",
 		"--limit", "1",
-	))
-	cmd.Dir = g.projectPath
+	}, repoArgs...)...))
+	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("failed to list open PRs for %s: %w: %s", branch, err, output)
@@ -1431,11 +1538,15 @@ func (g *GitOperations) FindOpenPRByBranch(ctx context.Context, branch string) (
 // "MERGED" or "CLOSED" (GH-5991). Never derived from mergedAt, which can read
 // null on an already-merged squash-merge PR.
 func (g *GitOperations) GetPRStateByURL(ctx context.Context, prURL string) (string, error) {
-	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "pr", "view", prURL,
+	dir, repoArgs, err := g.ghDirForDaemonRepo(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to read PR state for %s: %w", prURL, err)
+	}
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", append([]string{"pr", "view", prURL,
 		"--json", "state",
 		"--jq", ".state",
-	))
-	cmd.Dir = g.projectPath
+	}, repoArgs...)...))
+	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("failed to read PR state for %s: %w: %s", prURL, err, output)
@@ -1866,17 +1977,85 @@ func (g *GitOperations) DeleteBranch(ctx context.Context, branchName string) err
 // GH-3785: prevents child-worker commits from being stranded in the object
 // store with no reachable ref once a push/PR failure leads to worktree
 // cleanup.
+//
+// TASK-651: for an agent workspace the ref is created in the daemon's
+// repository from the hand-over SHA (createHandOverRecoveryRef); the workspace
+// is removed after the run and would take the ref with it.
 func (g *GitOperations) CreateRecoveryRef(ctx context.Context, taskID, fromRef string) (string, error) {
 	if fromRef == "" {
 		fromRef = "HEAD"
 	}
-	refName := "refs/pilot-recovery/" + sanitizeBranchName(taskID)
+	if g.daemonRepo != "" {
+		return g.createHandOverRecoveryRef(ctx, taskID, fromRef)
+	}
+	refName := recoveryRefName(taskID)
 	cmd := g.gitCmd(ctx, "update-ref", refName, fromRef)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("failed to create recovery ref %s: %w: %s", refName, err, output)
 	}
 	return refName, nil
+}
+
+// recoveryRefName is the recovery ref of a task: refs/pilot-recovery/TASK.
+func recoveryRefName(taskID string) string {
+	return "refs/pilot-recovery/" + sanitizeBranchName(taskID)
+}
+
+// createHandOverRecoveryRef is CreateRecoveryRef for an agent workspace: the
+// ref is created in the daemon's repository, as the daemon user with hooks
+// off, at the hand-over SHA of this run. When no hand-over ref of this run
+// exists, the branch is handed over first (handOverBranch): fromRef
+// refs/heads/BRANCH names it, any other fromRef means the task branch on
+// record. A failure is logged as one Error line that names the task and the
+// workspace path: the commits are then in the workspace only.
+func (g *GitOperations) createHandOverRecoveryRef(ctx context.Context, taskID, fromRef string) (string, error) {
+	refName := recoveryRefName(taskID)
+	sha, err := g.recoveryHandOverSHA(ctx, taskID, fromRef)
+	if err == nil {
+		cmd := handOverDaemonGit(ctx, g.daemonRepo, handOverGitArgs("update-ref", refName, sha)...)
+		if out, uerr := cmd.CombinedOutput(); uerr != nil {
+			err = fmt.Errorf("failed to create recovery ref %s: %w: %s", refName, uerr, strings.TrimSpace(string(out)))
+		}
+	}
+	if err != nil {
+		slog.Error("Recovery ref of the agent workspace failed: the commits are in the workspace only",
+			slog.String("task_id", taskID),
+			slog.String("workspace", g.projectPath),
+			slog.Any("error", err),
+		)
+		return "", err
+	}
+	if g.workspace != nil {
+		g.workspace.setRecovery(sha)
+	}
+	return refName, nil
+}
+
+// recoveryHandOverSHA is the head of the hand-over ref of this run in the
+// daemon's repository; without one it hands the branch over first.
+func (g *GitOperations) recoveryHandOverSHA(ctx context.Context, taskID, fromRef string) (string, error) {
+	if sha := daemonRefSHA(ctx, g.daemonRepo, handOverRef(taskID)); sha != "" {
+		// A ref left by an earlier run of the task is not this run's.
+		if g.workspace == nil {
+			return sha, nil
+		}
+		if last, _, _ := g.workspace.state(); last == sha {
+			return sha, nil
+		}
+	}
+	branch := g.taskBranch()
+	if b, ok := strings.CutPrefix(fromRef, "refs/heads/"); ok {
+		branch = b
+	}
+	sha, err := handOverBranch(ctx, g.projectPath, g.daemonRepo, taskID, branch, g.handOverBase)
+	if err != nil {
+		return "", err
+	}
+	if g.workspace != nil {
+		g.workspace.setHandOver(sha, false)
+	}
+	return sha, nil
 }
 
 // GitDiff holds numstat output from `git diff --numstat origin/main...HEAD`.
