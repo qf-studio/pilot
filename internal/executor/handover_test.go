@@ -529,10 +529,11 @@ func TestHandOverBranchRefusesThinPack(t *testing.T) {
 	e := newHandOverEnv(t)
 	secret := handOverSecretText()
 	private := e.daemonOnlyCommit(t, "secret.txt", secret)
-	// The agent has a commit above the base whose blob is a delta against
-	// the blob of the private commit; a thin pack leaves that base out.
+	// The agent has a commit above the private commit whose blob is a delta
+	// against the blob of the private commit; a thin pack leaves that base
+	// out (pack-objects takes thin bases only from the edge commits).
 	clone := e.cloneOfDaemon(t)
-	wsGit(t, clone, "checkout", "-q", "-b", "forged", e.base)
+	wsGit(t, clone, "checkout", "-q", "-b", "forged", private)
 	tip := commitFile(t, clone, "secret.txt", secret+"one more line\n")
 	pack := handOverPackBytes(t, clone, []string{"--revs", "--thin"}, tip, "^"+private)
 	// The fixture: the pack is thin, it cannot be indexed on its own.
