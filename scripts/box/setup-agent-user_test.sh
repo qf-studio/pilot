@@ -285,7 +285,45 @@ expect_refused() {
 ALL_STEPS="daemon-private group agent-user daemon-membership firewall-ipv4 firewall-ipv6 firewall-unit directories sudoers-rule cloud-init-sudoers agent-proof"
 # daemon-private and agent-proof are checks: they change nothing, so they report skipped.
 CHANGE_STEPS="group agent-user daemon-membership firewall-ipv4 firewall-ipv6 firewall-unit directories sudoers-rule cloud-init-sudoers"
-UNDO_STEPS="sudoers-rule cloud-init-sudoers agent-processes firewall-unit firewall-ipv4 firewall-ipv6"
+UNDO_STEPS="sudoers-rule agent-processes firewall-unit firewall-ipv4 firewall-ipv6 cloud-init-sudoers"
+RULE_FILE_NAME="90-pilot-agent-runas"
+
+# fail_rm_of PATH — an rm in the stub bin that fails when one of its arguments
+# is PATH (nothing is removed) and runs the real rm for every other call: a
+# removal of the sudo rule file that fails.
+fail_rm_of() {
+    local real_rm
+    real_rm="$(command -v rm)"
+    cat >"${STUB_BIN}/rm" <<EOF
+#!/bin/bash
+for a in "\$@"; do
+    if [ "\$a" = '$1' ]; then
+        echo "rm: cannot remove '\$a': Operation not permitted" >&2
+        exit 1
+    fi
+done
+exec '${real_rm}' "\$@"
+EOF
+    chmod 755 "${STUB_BIN}/rm"
+}
+
+# pgrep_fails_after PREFIX RC — the pgrep of the mocks until the call log has a
+# line that starts with PREFIX (a pkill of the undo); from then on pgrep exits
+# RC with no output.
+pgrep_fails_after() {
+    mkdir -p "${SANDBOX}/mockbin"
+    ln -s "$MOCK_CMDS" "${SANDBOX}/mockbin/pgrep"
+    rm -f "${STUB_BIN}/pgrep"
+    cat >"${STUB_BIN}/pgrep" <<EOF
+#!/bin/bash
+if grep -q '^$1' "\$MOCK_CALL_LOG"; then
+    echo "pgrep: failure after $1" >&2
+    exit $2
+fi
+exec '${SANDBOX}/mockbin/pgrep' "\$@"
+EOF
+    chmod 755 "${STUB_BIN}/pgrep"
+}
 
 echo "=== test: dry run — prints every command, changes nothing ==="
 setup_sandbox
@@ -786,10 +824,13 @@ for pgrep_rc in 127 2; do
     check "undo exits non-zero" test "$rc" != 0
     expect_step agent-processes failed
     if [ "$pgrep_rc" = 127 ]; then
-        check "the line says pgrep is not found" grep -qF "pgrep not found (exit 127): the processes of pilot-agent are not known; none is stopped" "$OUT"
+        reason="pgrep not found (exit 127): the processes of pilot-agent are not known; none is stopped"
+        check "the line says pgrep is not found" grep -qF "$reason" "$OUT"
     else
-        check "the line says pgrep failed" grep -qF "pgrep -u pilot-agent failed (exit 2): the processes of pilot-agent are not known; none is stopped" "$OUT"
+        reason="pgrep -u pilot-agent failed (exit 2): the processes of pilot-agent are not known; none is stopped"
+        check "the line says pgrep failed" grep -qF "$reason" "$OUT"
     fi
+    check "the reason is the note of the summary line" has_line "$OUT" "step agent-processes: failed - ${reason}"
     check_not "no pkill ran" grep -q '^pkill ' "$CALL_LOG"
     for s in firewall-unit firewall-ipv4 firewall-ipv6; do
         expect_step "$s" "done"
@@ -810,6 +851,134 @@ else
 fi
 expect_step agent-processes skipped
 check "the summary says there is no process" grep -qF "step agent-processes: skipped - no process of pilot-agent" "$OUT"
+teardown_sandbox
+
+echo "=== test: undo with a pgrep that exits 0 with no output — the step fails with a reason, exit non-zero ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+mkdir -p "${STATE_DIR}/procs"
+printf '4101\n' >"${STATE_DIR}/procs/pilot-agent"
+rc=0
+run_setup MOCK_PGREP_RC=0 -- --undo || rc=$?
+check "undo exits non-zero" test "$rc" != 0
+expect_step agent-processes failed
+reason="pgrep -u pilot-agent exited 0 with no process id: the processes of pilot-agent are not known; none is stopped"
+check "one line gives the reason" has_line "$OUT" "$reason"
+check "the reason is the note of the summary line" has_line "$OUT" "step agent-processes: failed - ${reason}"
+check_not "no pkill ran" grep -q '^pkill ' "$CALL_LOG"
+expect_step firewall-ipv4 "done"
+teardown_sandbox
+
+# The process list fails on the second count (after the TERM) and on the third
+# (after the KILL, with a TERM that ends no process).
+for when in TERM KILL; do
+    echo "=== test: undo with a pgrep that fails after the ${when} — the step fails with the reason as its note ==="
+    setup_sandbox
+    run_setup -- >/dev/null || true
+    mkdir -p "${STATE_DIR}/procs"
+    printf '4101\n' >"${STATE_DIR}/procs/pilot-agent"
+    pgrep_fails_after "pkill -${when} " 2
+    : >"$CALL_LOG"
+    envs=()
+    [ "$when" = TERM ] || envs=(MOCK_PROC_TERM_IGNORED=1)
+    rc=0
+    run_setup ${envs[@]+"${envs[@]}"} -- --undo || rc=$?
+    check "undo exits non-zero" test "$rc" != 0
+    check "pkill -${when} ran" grep -q "^pkill -${when} -u pilot-agent$" "$CALL_LOG"
+    expect_step agent-processes failed
+    reason="pgrep -u pilot-agent failed (exit 2): the processes of pilot-agent are not known; after the ${when}"
+    check "one line gives the reason" has_line "$OUT" "$reason"
+    check "the reason is the note of the summary line" has_line "$OUT" "step agent-processes: failed - ${reason}"
+    expect_step firewall-ipv4 "done"
+    check "the failed step is named at the end" has_line "$OUT" "undo: failed steps: agent-processes (every other step ran; see the summary)"
+    teardown_sandbox
+done
+
+# mutation pin: undo_firewall_allowed is removed (the firewall steps run after a failed removal of the rule) -> this test fails
+echo "=== test: undo with a failed rm of the sudo rule file — the firewall stays, the cloud-init file is restored, exit 1 ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+RULE="${SUDOERS_DIR}/${RULE_FILE_NAME}"
+fail_rm_of "$RULE"
+: >"$CALL_LOG"
+rc=0
+run_setup -- --undo || rc=$?
+check "undo exits 1" test "$rc" = 1
+check "the rule file exists" test -e "$RULE"
+expect_step sudoers-rule failed
+check_not "no iptables or ip6tables call deletes or flushes" grep -qE '^ip6?tables -w -[DFX] ' "$CALL_LOG"
+check_not "no call stops, disables or removes the unit" grep -qE '^systemctl (stop|disable|daemon-reload)' "$CALL_LOG"
+check_not "the removal of the unit file is not printed" grep -qF "+ rm -f ${SYSTEMD_DIR}/pilot-agent-firewall.service" "$OUT"
+check "the unit file is still there" test -e "${SYSTEMD_DIR}/pilot-agent-firewall.service"
+check "the chain is still in place (v4 and v6)" grep -q PILOT_AGENT_EGRESS "${STATE_DIR}/iptables.rules" "${STATE_DIR}/ip6tables.rules"
+for s in firewall-unit firewall-ipv4 firewall-ipv6; do
+    check "summary: ${s} not run" has_line "$OUT" "step ${s}: not run: the sudo rule is still in place"
+done
+check "one line says to remove the rule file by hand and run --undo again" has_line "$OUT" "the sudo rule ${RULE} is still in place, so the firewall of pilot-agent stays: remove the rule file by hand (rm -f '${RULE}') and run --undo again"
+check "the cloud-init file is restored" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL"
+expect_step cloud-init-sudoers "done"
+check "the end line names the failed and the not run steps" has_line "$OUT" "undo: failed steps: sudoers-rule; not run: firewall-unit firewall-ipv4 firewall-ipv6 (see the summary)"
+# the operator removes the rule file by hand: the next undo removes the firewall
+rm -f "${STUB_BIN}/rm"
+rm -f "$RULE"
+if run_setup -- --undo; then
+    pass "the next undo exits 0"
+else
+    cat "$OUT"
+    fail_test "the next undo exited non-zero"
+fi
+for s in firewall-unit firewall-ipv4 firewall-ipv6; do
+    expect_step "$s" "done"
+done
+check_not "the firewall chains are removed" grep -q PILOT_AGENT_EGRESS "${STATE_DIR}/iptables.rules" "${STATE_DIR}/ip6tables.rules"
+teardown_sandbox
+
+echo "=== test: undo with a failed rm of a rule file that is a dangling link — the firewall stays ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+RULE="${SUDOERS_DIR}/${RULE_FILE_NAME}"
+rm -f "$RULE"
+ln -s "${SANDBOX}/nowhere" "$RULE"
+fail_rm_of "$RULE"
+: >"$CALL_LOG"
+rc=0
+run_setup -- --undo || rc=$?
+check "undo exits 1" test "$rc" = 1
+check "the link is still there" test -L "$RULE"
+check_not "no iptables or ip6tables call deletes or flushes" grep -qE '^ip6?tables -w -[DFX] ' "$CALL_LOG"
+check "summary: firewall-ipv4 not run" has_line "$OUT" "step firewall-ipv4: not run: the sudo rule is still in place"
+teardown_sandbox
+
+# mutation pin: cloud-init-sudoers goes back to the second place of the undo -> this test fails
+echo "=== test: undo order — sudo rule, agent processes, unit, IPv4, IPv6, then the cloud-init file ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+mkdir -p "${STATE_DIR}/procs"
+printf '4101\n' >"${STATE_DIR}/procs/pilot-agent"
+: >"$CALL_LOG"
+if run_setup -- --undo; then
+    pass "undo exits 0"
+else
+    cat "$OUT"
+    fail_test "undo exited non-zero"
+fi
+stop_n="$(first_line_of "$OUT" '^stop the daemon before --undo: a daemon that runs can start an agent process until the sudo rule is removed$' || true)"
+first_step_n="$(first_line_of "$OUT" '^== ' || true)"
+check "the stop-the-daemon line comes before the first step" test -n "$stop_n" -a "${stop_n:-0}" -lt "${first_step_n:-0}"
+prev=0
+for pattern in '^pkill -TERM -u pilot-agent$' '^systemctl stop pilot-agent-firewall.service$' '^iptables -w -[DFX] ' '^ip6tables -w -[DFX] ' "^install -m [0-7]+ -o [^ ]+ -g [^ ]+ ${BAK} ${SUDOERS_DIR}/90-cloud-init-users\$"; do
+    n="$(first_line "$pattern" || true)"
+    if [ -n "$n" ] && [ "$n" -gt "$prev" ]; then
+        pass "undo in order: ${pattern}"
+        prev="$n"
+    else
+        fail_test "undo out of order or missing: ${pattern} (line '${n}', after ${prev})"
+    fi
+done
+last_fw_n="$(grep -nE '^ip6?tables -w -[DFX] ' "$CALL_LOG" | tail -1 | cut -d: -f1)"
+restore_n="$(first_line "^install -m [0-7]+ -o [^ ]+ -g [^ ]+ ${BAK} " || true)"
+check "the restore of the cloud-init file comes after the last firewall call" test -n "$restore_n" -a "${restore_n:-0}" -gt "${last_fw_n:-0}"
+check "the summary lists the steps in the undo order" test "$(grep -E '^step [a-z0-9-]+: ' "$OUT" | sed -E 's/^step ([a-z0-9-]+): .*/\1/' | tr '\n' ' ')" = "${UNDO_STEPS} "
 teardown_sandbox
 
 echo "=== test: failing visudo — no sudoers file, non-zero exit, nothing after it ==="
@@ -1922,6 +2091,62 @@ else
 fi
 check "the third apply puts the rule back" test "$(cat "${SUDOERS_DIR}/90-pilot-agent-runas")" = "$EXPECTED_RULE"
 check_not "no removal line" grep -qF "sudo rule removed" "$OUT"
+teardown_sandbox
+
+# drop_ipv4_firewall — the IPv4 rules of an earlier apply are gone.
+drop_ipv4_firewall() {
+    mock_run iptables -w -D OUTPUT -m owner --uid-owner pilot-agent -j PILOT_AGENT_EGRESS
+    mock_run iptables -w -F PILOT_AGENT_EGRESS
+    mock_run iptables -w -X PILOT_AGENT_EGRESS
+}
+
+echo "=== test: a second apply that fails at the firewall with a failed rm of the rule file — the summary says to remove it by hand ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+RULE="${SUDOERS_DIR}/${RULE_FILE_NAME}"
+drop_ipv4_firewall
+fail_rm_of "$RULE"
+rc=0
+run_setup IPTABLES_CMD=iptables-not-installed -- || rc=$?
+check "the second apply exits 1" test "$rc" = 1
+expect_step firewall-ipv4 failed
+check "the rule file is still there" test -e "$RULE"
+check "the summary says the rule is not removed, to remove by hand" has_line "$OUT" "sudo rule NOT removed: ${RULE} (firewall-ipv4 failed); remove it by hand"
+check_not "no line says the rule is removed" grep -qF "sudo rule removed" "$OUT"
+teardown_sandbox
+
+echo "=== test: a second apply that fails at the firewall with a rule file that is a dangling link — the link is gone ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+RULE="${SUDOERS_DIR}/${RULE_FILE_NAME}"
+rm -f "$RULE"
+ln -s "${SANDBOX}/nowhere" "$RULE"
+drop_ipv4_firewall
+rc=0
+run_setup IPTABLES_CMD=iptables-not-installed -- || rc=$?
+check "the second apply exits 1" test "$rc" = 1
+check_not "the link is gone" test -L "$RULE"
+check "one line says the rule is removed, the daemon cannot start the agent user" has_line "$OUT" "firewall-ipv4 failed before the sudoers-rule step: removing the sudo rule of an earlier apply, ${RULE}, so that the daemon cannot start the agent user without the complete firewall"
+check "the summary lists the removal" has_line "$OUT" "sudo rule removed: ${RULE} (firewall-ipv4 failed; the next apply that passes puts it back)"
+teardown_sandbox
+
+echo "=== test: the removal line after --keep-daemon-sudo says the daemon user still has sudo through the cloud-init file ==="
+setup_sandbox
+if run_setup -- --keep-daemon-sudo; then
+    pass "the first apply with --keep-daemon-sudo exits 0"
+else
+    cat "$OUT"
+    fail_test "the first apply with --keep-daemon-sudo failed"
+fi
+RULE="${SUDOERS_DIR}/${RULE_FILE_NAME}"
+check "the first apply installed the sudo rule" test -e "$RULE"
+drop_ipv4_firewall
+rc=0
+run_setup IPTABLES_CMD=iptables-not-installed -- --keep-daemon-sudo || rc=$?
+check "the second apply exits 1" test "$rc" = 1
+check_not "no sudoers rule file exists" test -e "$RULE"
+check "one line says the rule is removed and the daemon user still has sudo through the cloud-init file" has_line "$OUT" "firewall-ipv4 failed before the sudoers-rule step: removing the sudo rule of an earlier apply, ${RULE}; ec2-user still has sudo through ${SUDOERS_DIR}/90-cloud-init-users (an active root line), so the daemon can still start the agent user without the complete firewall"
+check_not "no line says the daemon cannot start the agent user" grep -qF "so that the daemon cannot start the agent user" "$OUT"
 teardown_sandbox
 
 echo "=== test: a second apply with IPv6 on and no ip6tables (the first ran with IPv6 off) removes the sudo rule ==="
