@@ -37,7 +37,7 @@ import (
 // every tick it doesn't, the streak resets to 0 and no event fires. The alerts
 // engine's lane_starvation rule (handleLaneStarvation) — not this method —
 // decides whether the streak has crossed RuleCondition.LaneStarvationPollCycles
-// and is due (cooldown, per lane), mirroring how handleAutopilotMetrics owns
+// and the cooldown (per lane) is clear, mirroring how handleAutopilotMetrics owns
 // FailedQueueThreshold/PRStuckTimeout instead of the emitting side
 // pre-filtering.
 func (c *Controller) reconcileLaneStarvation(ctx context.Context) {
