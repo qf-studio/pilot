@@ -538,23 +538,26 @@ func newSweepFixture(t *testing.T) *sweepFixture {
 	if pa == pb {
 		t.Fatal("two repositories with one project id")
 	}
-	mk := func(name string, dir bool) string {
+	// Each workspace is a clone of its repository whose tip is in
+	// refs/remotes/origin/main there: safe to remove (agentWorkspaceTipSafe).
+	for _, repo := range []string{f.repoA, f.repoB} {
+		wsGit(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	}
+	mk := func(name, repo string) string {
 		p := filepath.Join(root, name)
-		if dir {
-			if err := os.MkdirAll(filepath.Join(p, "src"), 0o755); err != nil {
-				t.Fatal(err)
-			}
+		if repo != "" {
+			wsGit(t, root, "clone", "-q", "--shared", repo, p)
 		} else if err := os.WriteFile(p, []byte("bundle"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return p
 	}
-	f.a1 = mk("pilot-ws-"+pa+"-GH-1-100", true)
-	f.a1Bundle = mk("pilot-ws-"+pa+"-GH-1-100.bundle", false)
-	f.a2 = mk("pilot-ws-"+pa+"-GH-2-200", true)
-	f.a12 = mk("pilot-ws-"+pa+"-GH-1-2-300", true)
-	f.b1 = mk("pilot-ws-"+pb+"-GH-1-400", true)
-	f.other = mk("not-a-workspace", true)
+	f.a1 = mk("pilot-ws-"+pa+"-GH-1-100", f.repoA)
+	f.a1Bundle = mk("pilot-ws-"+pa+"-GH-1-100.bundle", "")
+	f.a2 = mk("pilot-ws-"+pa+"-GH-2-200", f.repoA)
+	f.a12 = mk("pilot-ws-"+pa+"-GH-1-2-300", f.repoA)
+	f.b1 = mk("pilot-ws-"+pb+"-GH-1-400", f.repoB)
+	f.other = mk("not-a-workspace", f.repoA)
 	return f
 }
 
@@ -1188,8 +1191,9 @@ func TestRunAsUserPreflightRefusalDefaultOn(t *testing.T) {
 
 // TestAgentWorkspaceSweepWaitsForThePreflight: with the option set, the sweep
 // at daemon start and the removal of a workspace start no sudo process after
-// a refused preflight (one Warn line with the directory count), and one rm -rf
-// as the agent user after a passed one.
+// a refused preflight (one Warn line with the directory count), and after a
+// passed one the read of agentWorkspaceTipSafe and one rm -rf as the agent
+// user.
 func TestAgentWorkspaceSweepWaitsForThePreflight(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("file owners")
@@ -1201,7 +1205,7 @@ func TestAgentWorkspaceSweepWaitsForThePreflight(t *testing.T) {
 		wantCalls int
 	}{
 		{"refused preflight", true, 0},
-		{"passed preflight", false, 1},
+		{"passed preflight", false, 2},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1220,9 +1224,8 @@ func TestAgentWorkspaceSweepWaitsForThePreflight(t *testing.T) {
 				t.Fatal(err)
 			}
 			ws := filepath.Join(root, "pilot-ws-"+project+"-GH-1-100")
-			if err := os.MkdirAll(filepath.Join(ws, "src"), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			wsGit(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+			wsGit(t, root, "clone", "-q", "--shared", repo, ws)
 			logPath := mockSudoAgent(t, "", "")
 			if _, err := workspacePreflight(t, root, me, nil, true, 0); (err != nil) != tc.refusal {
 				t.Fatalf("preflight error = %v, want refused = %v", err, tc.refusal)
@@ -1239,8 +1242,8 @@ func TestAgentWorkspaceSweepWaitsForThePreflight(t *testing.T) {
 				t.Fatalf("sudo calls = %q, want %d", calls, tc.wantCalls)
 			}
 			if !tc.refusal {
-				if !strings.HasSuffix(calls[0], "-- rm -rf -- "+ws) {
-					t.Errorf("sudo call = %q, want rm -rf of the workspace", calls[0])
+				if !strings.Contains(calls[0], " rev-parse HEAD --branches") || !strings.HasSuffix(calls[1], "-- rm -rf -- "+ws) {
+					t.Errorf("sudo calls = %q, want the read of the tips, then rm -rf of the workspace", calls)
 				}
 				assertPresence(t, []string{ws}, nil)
 				return
@@ -1262,5 +1265,148 @@ func TestAgentWorkspaceSweepWaitsForThePreflight(t *testing.T) {
 				t.Errorf("want one Warn line naming the directory count, got:\n%s", buf.String())
 			}
 		})
+	}
+}
+
+// GH-6492: a workspace is removed only when agentWorkspaceTipSafe holds for
+// it: at the end of the run after a push or a recovery ref, and at the sweeps.
+
+// assertWorkspaceKept checks that ws is on disk and that logs hold one Error
+// line that keeps it, with its path and reason.
+func assertWorkspaceKept(t *testing.T, logs, ws, reason string) {
+	t.Helper()
+	if _, err := os.Lstat(ws); err != nil {
+		t.Fatalf("workspace removed: %v", err)
+	}
+	kept := logLines(logs, "ERROR", "agent workspace kept")
+	if len(kept) != 1 || !strings.Contains(kept[0], "path="+ws) || !strings.Contains(kept[0], reason) {
+		t.Errorf("Error lines %q: want one that keeps %s with %q", kept, ws, reason)
+	}
+}
+
+func TestAgentWorkspaceFinishChecksTheTip(t *testing.T) {
+	tests := []struct {
+		name string
+		// run is what the run does in the workspace after its first commit.
+		run      func(t *testing.T, e *handOverPushEnv)
+		wantKept string // "" when the workspace is removed
+	}{
+		{"pushed, no later commit", func(t *testing.T, e *handOverPushEnv) {
+			if err := e.git.Push(context.Background(), e.branch, handOverTestTask); err != nil {
+				t.Fatalf("Push: %v", err)
+			}
+		}, ""},
+		{"pushed, then one more commit", func(t *testing.T, e *handOverPushEnv) {
+			if err := e.git.Push(context.Background(), e.branch, handOverTestTask); err != nil {
+				t.Fatalf("Push: %v", err)
+			}
+			commitFile(t, e.ws, "b.txt", "two")
+		}, agentWorkspaceTipUnsafe},
+		{"failed push, no recovery ref", func(t *testing.T, e *handOverPushEnv) {
+			wsGit(t, e.repo, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing"))
+			if err := e.git.Push(context.Background(), e.branch, handOverTestTask); err == nil {
+				t.Fatal("Push to a missing remote: no error")
+			}
+			// The hand-over ref holds the commit: only the record of the
+			// push can remove the workspace.
+			if daemonRefSHA(context.Background(), e.repo, handOverRef(handOverTestTask)) == "" {
+				t.Fatal("no hand-over ref after the hand-over")
+			}
+		}, "were not pushed and no recovery ref holds them"},
+		{"recovery ref, then one more commit", func(t *testing.T, e *handOverPushEnv) {
+			if _, err := e.git.CreateRecoveryRef(context.Background(), handOverTestTask, "HEAD"); err != nil {
+				t.Fatalf("CreateRecoveryRef: %v", err)
+			}
+			commitFile(t, e.ws, "b.txt", "two")
+		}, agentWorkspaceTipUnsafe},
+		{"pushed, HEAD broken", func(t *testing.T, e *handOverPushEnv) {
+			if err := e.git.Push(context.Background(), e.branch, handOverTestTask); err != nil {
+				t.Fatalf("Push: %v", err)
+			}
+			wsGit(t, e.ws, "symbolic-ref", "HEAD", "refs/heads/missing")
+		}, agentWorkspaceTipUnsafe},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newHandOverPushEnv(t)
+			logs := captureLog(t)
+			commitFile(t, e.ws, "a.txt", "one")
+			tc.run(t, e)
+			e.cleanup()
+			if tc.wantKept != "" {
+				assertWorkspaceKept(t, logs.String(), e.ws, tc.wantKept)
+				return
+			}
+			assertPresence(t, []string{e.ws}, nil)
+			if kept := logLines(logs.String(), "ERROR", ""); len(kept) != 0 {
+				t.Errorf("Error lines for a removed workspace: %q", kept)
+			}
+		})
+	}
+}
+
+func TestAgentWorkspaceSweepChecksTheTip(t *testing.T) {
+	e := newHandOverEnv(t)
+	logs := captureLog(t)
+	head := commitFile(t, e.ws, "a.txt", "one")
+
+	// The commit is in no ref of the daemon's repository: both sweeps keep it.
+	if removed, err := PruneOrphanedWorktreeForTask(context.Background(), e.repo, handOverTestTask); err != nil || removed != 0 {
+		t.Fatalf("PruneOrphanedWorktreeForTask = %d, %v; want 0, nil", removed, err)
+	}
+	assertWorkspaceKept(t, logs.String(), e.ws, agentWorkspaceTipUnsafe)
+	if kept := logLines(logs.String(), "ERROR", "agent workspace kept")[0]; !strings.Contains(kept, "task_id="+handOverTestTask+" ") || !strings.Contains(kept, " age=") {
+		t.Errorf("Error line %q: want the task and the age", kept)
+	}
+	logs.Reset()
+	if removed, _ := sweepAgentWorkspaces(e.repo, ""); removed != 0 {
+		t.Errorf("sweep removed %d, want 0", removed)
+	}
+	assertWorkspaceKept(t, logs.String(), e.ws, agentWorkspaceTipUnsafe)
+
+	// The tip in refs/remotes/origin/ of the daemon's repository: removed.
+	wsGit(t, e.repo, "fetch", "-q", e.ws, e.branch)
+	wsGit(t, e.repo, "update-ref", "refs/remotes/origin/"+e.branch, head)
+	logs.Reset()
+	if removed, _ := sweepAgentWorkspaces(e.repo, ""); removed != 1 {
+		t.Errorf("sweep removed %d, want 1", removed)
+	}
+	assertPresence(t, []string{e.ws}, nil)
+	if n := len(logLines(logs.String(), "INFO", "Removed orphaned agent workspace")); n != 1 {
+		t.Errorf("%d Info lines for the removed workspace, want 1:\n%s", n, logs.String())
+	}
+	if lines := logLines(logs.String(), "ERROR", ""); len(lines) != 0 {
+		t.Errorf("Error lines for a safe workspace: %q", lines)
+	}
+}
+
+func TestAgentWorkspaceSweepKeepsABrokenHead(t *testing.T) {
+	e := newHandOverEnv(t)
+	logs := captureLog(t)
+	wsGit(t, e.ws, "symbolic-ref", "HEAD", "refs/heads/missing")
+	if removed, _ := sweepAgentWorkspaces(e.repo, ""); removed != 0 {
+		t.Errorf("sweep removed %d, want 0", removed)
+	}
+	assertWorkspaceKept(t, logs.String(), e.ws, agentWorkspaceTipUnsafe)
+}
+
+func TestAgentWorkspaceSweepRemovesALostWorkspaceAfterSevenDays(t *testing.T) {
+	e := newHandOverEnv(t)
+	logs := captureLog(t)
+	commitFile(t, e.ws, "a.txt", "one")
+	prev := agentWorkspaceAge
+	agentWorkspaceAge = func(string) (time.Duration, bool) { return agentWorkspaceLostAge + time.Hour, true }
+	t.Cleanup(func() { agentWorkspaceAge = prev })
+
+	if removed, _ := sweepAgentWorkspaces(e.repo, ""); removed != 1 {
+		t.Errorf("sweep removed %d, want 1", removed)
+	}
+	assertPresence(t, []string{e.ws}, nil)
+	lost := logLines(logs.String(), "ERROR", "its commits are lost")
+	if len(lost) != 1 || !strings.Contains(lost[0], "path="+e.ws) || !strings.Contains(lost[0], "task_id="+handOverTestTask+" ") {
+		t.Errorf("Error lines %q: want one with the task and the path %s", lost, e.ws)
+	}
+	if n := len(logLines(logs.String(), "", "")); n != 1 {
+		t.Errorf("want one log line, got:\n%s", logs.String())
 	}
 }

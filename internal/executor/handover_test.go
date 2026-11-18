@@ -297,8 +297,11 @@ func TestHandOverBranchSizeLimit(t *testing.T) {
 	e := newHandOverEnv(t)
 	commitFile(t, e.ws, "a.txt", strings.Repeat("x", 4096))
 	// The kill of the agent command: `sudo ... kill -s KILL -- -PGID` reaches
-	// the mock as "-PGID" after the "--".
-	e.sudoLog = mockSudoAgent(t, e.repo, `case "$1" in -[0-9]*) exec kill -s KILL -- "$1" ;; esac`)
+	// the mock as "-PGID" after the "--". pack-objects stays alive after git
+	// exits: a small pack fits in the pipe, and git could exit before the
+	// cancel, so only the sudo kill ends it.
+	e.sudoLog = mockSudoAgent(t, e.repo, `case "$1" in -[0-9]*) exec kill -s KILL -- "$1" ;; esac
+case "$*" in *pack-objects*) "$@"; exec sleep 60 ;; esac`)
 	prev := handOverMaxPackBytes
 	handOverMaxPackBytes = 64
 	t.Cleanup(func() { handOverMaxPackBytes = prev })
