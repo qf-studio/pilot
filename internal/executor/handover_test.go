@@ -106,6 +106,57 @@ func writeGitHook(t *testing.T, gitDir, name, marker string) {
 	}
 }
 
+// packFiles lists objects/pack of the daemon's repository.
+func (e *handOverEnv) packFiles(t *testing.T) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(e.repo, ".git", "objects", "pack"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, en := range entries {
+		names = append(names, en.Name())
+	}
+	return names
+}
+
+// assertNothingLeft checks the daemon's repository after a failed hand-over:
+// no hand-over ref, the file list of objects/pack as before and no quarantine
+// directory.
+func (e *handOverEnv) assertNothingLeft(t *testing.T, packsBefore []string) {
+	t.Helper()
+	e.assertNoHandOverRef(t)
+	if got := e.packFiles(t); !slices.Equal(got, packsBefore) {
+		t.Errorf("objects/pack after the hand-over: %q, want %q", got, packsBefore)
+	}
+	quarantines, err := filepath.Glob(filepath.Join(e.repo, ".git", "objects", handOverQuarantinePrefix+"*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(quarantines) != 0 {
+		t.Errorf("quarantine directories left: %q", quarantines)
+	}
+}
+
+// daemonOnlyCommit commits name with content on a branch of the daemon's
+// repository that the workspace does not have, above the base, and returns it.
+func (e *handOverEnv) daemonOnlyCommit(t *testing.T, name, content string) string {
+	t.Helper()
+	wsGit(t, e.repo, "checkout", "-q", "-b", "private", e.base)
+	sha := commitFile(t, e.repo, name, content)
+	wsGit(t, e.repo, "checkout", "-q", "main")
+	return sha
+}
+
+// cloneOfDaemon is a clone of the daemon's repository, so it holds the
+// commits that only the daemon's repository has, for forged packs.
+func (e *handOverEnv) cloneOfDaemon(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "clone")
+	wsGit(t, e.repo, "clone", "-q", "--no-local", e.repo, dir)
+	return dir
+}
+
 func TestHandOverBranch(t *testing.T) {
 	tests := []struct {
 		name string
@@ -120,26 +171,32 @@ func TestHandOverBranch(t *testing.T) {
 			name: "head and commits arrive",
 			setup: func(t *testing.T, e *handOverEnv) (string, string, string) {
 				commitFile(t, e.ws, "a.txt", "one")
-				return e.branch, commitFile(t, e.ws, "b.txt", "two"), ""
+				commitFile(t, e.ws, "b.txt", "two")
+				return e.branch, commitFile(t, e.ws, "c.txt", "three"), ""
 			},
 			check: func(t *testing.T, e *handOverEnv, sha string, _ []string) {
-				if got := wsGit(t, e.repo, "rev-list", "--count", e.base+".."+sha); got != "2" {
-					t.Errorf("daemon repository has %s commits after the base, want 2", got)
+				if got := wsGit(t, e.repo, "rev-list", "--count", e.base+".."+sha); got != "3" {
+					t.Errorf("daemon repository has %s commits after the base, want 3", got)
 				}
-				if got := wsGit(t, e.repo, "show", sha+":b.txt"); got != "two" {
-					t.Errorf("b.txt in the daemon repository = %q", got)
+				if got := wsGit(t, e.repo, "show", sha+":c.txt"); got != "three" {
+					t.Errorf("c.txt in the daemon repository = %q", got)
 				}
-				var bundle, fetch int
+				var pack, daemonSide int
 				for _, c := range sudoCalls(t, e.sudoLog) {
-					if strings.Contains(c, " bundle create - ") {
-						bundle++
+					if strings.Contains(c, " pack-objects --stdout --revs ") && !strings.Contains(c, "--thin") {
+						pack++
 					}
-					if strings.Contains(c, " fetch ") || strings.Contains(c, " rev-parse ") {
-						fetch++
+					for _, cmd := range []string{" fetch ", " index-pack ", " cat-file ", " update-ref ", " bundle "} {
+						if strings.Contains(c, cmd) {
+							daemonSide++
+						}
 					}
 				}
-				if bundle != 1 || fetch != 0 {
-					t.Errorf("sudo calls %q: want the bundle command as the agent user once and no fetch or rev-parse", sudoCalls(t, e.sudoLog))
+				if pack != 1 || daemonSide != 0 {
+					t.Errorf("sudo calls %q: want pack-objects (not thin) as the agent user once and no command of the daemon side", sudoCalls(t, e.sudoLog))
+				}
+				if out, err := exec.Command("git", "-C", e.repo, "fsck", "--connectivity-only", "--no-dangling").CombinedOutput(); err != nil {
+					t.Errorf("git fsck of the daemon repository: %v: %s", err, out)
 				}
 			},
 		},
@@ -182,30 +239,6 @@ func TestHandOverBranch(t *testing.T) {
 			},
 		},
 		{
-			name: "a second ref in the bundle reaches no ref of the daemon",
-			setup: func(t *testing.T, e *handOverEnv) (string, string, string) {
-				head := commitFile(t, e.ws, "a.txt", "one")
-				// The agent answers the bundle command with a bundle that
-				// also holds a tag and a forged origin/main.
-				extra := fmt.Sprintf(`case "$*" in
-*"bundle create - "*)
-  git tag -f forged-tag HEAD >/dev/null 2>&1
-  git update-ref refs/remotes/origin/main HEAD
-  exec git bundle create - refs/heads/%s refs/tags/forged-tag refs/remotes/origin/main ^%s ;;
-esac`, e.branch, e.base)
-				return e.branch, head, extra
-			},
-			check: func(t *testing.T, e *handOverEnv, sha string, before []string) {
-				want := append(append([]string{}, before...), handOverRef(handOverTestTask)+" "+sha)
-				got := e.daemonRefs(t)
-				slices.Sort(got)
-				slices.Sort(want)
-				if !slices.Equal(got, want) {
-					t.Errorf("daemon refs after the hand-over:\n%s\nwant the refs before plus the hand-over ref:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
-				}
-			},
-		},
-		{
 			name: "a branch the workspace does not have",
 			setup: func(t *testing.T, e *handOverEnv) (string, string, string) {
 				commitFile(t, e.ws, "a.txt", "one")
@@ -221,6 +254,7 @@ esac`, e.branch, e.base)
 			e.sudoLog = mockSudoAgent(t, e.repo, extra)
 			tmp := handOverTmpDir(t)
 			before := e.daemonRefs(t)
+			packsBefore := e.packFiles(t)
 
 			sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, branch, e.base)
 			assertEmptyDir(t, tmp)
@@ -239,7 +273,7 @@ esac`, e.branch, e.base)
 				if err == nil {
 					t.Fatalf("handOverBranch = %s, want an error", sha)
 				}
-				e.assertNoHandOverRef(t)
+				e.assertNothingLeft(t, packsBefore)
 				return
 			}
 			if err != nil {
@@ -258,17 +292,18 @@ esac`, e.branch, e.base)
 	}
 }
 
-// mutation pin: remove the size limit of the bundle stream -> this test fails
+// mutation pin: remove the size limit of the pack stream -> this test fails
 func TestHandOverBranchSizeLimit(t *testing.T) {
 	e := newHandOverEnv(t)
 	commitFile(t, e.ws, "a.txt", strings.Repeat("x", 4096))
 	// The kill of the agent command: `sudo ... kill -s KILL -- -PGID` reaches
 	// the mock as "-PGID" after the "--".
 	e.sudoLog = mockSudoAgent(t, e.repo, `case "$1" in -[0-9]*) exec kill -s KILL -- "$1" ;; esac`)
-	prev := handOverMaxBundleBytes
-	handOverMaxBundleBytes = 64
-	t.Cleanup(func() { handOverMaxBundleBytes = prev })
+	prev := handOverMaxPackBytes
+	handOverMaxPackBytes = 64
+	t.Cleanup(func() { handOverMaxPackBytes = prev })
 	tmp := handOverTmpDir(t)
+	packsBefore := e.packFiles(t)
 
 	sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
 	if err == nil {
@@ -278,7 +313,7 @@ func TestHandOverBranchSizeLimit(t *testing.T) {
 		t.Errorf("error = %v, want the size limit of 64 bytes", err)
 	}
 	assertEmptyDir(t, tmp)
-	e.assertNoHandOverRef(t)
+	e.assertNothingLeft(t, packsBefore)
 	var killed bool
 	for _, c := range sudoCalls(t, e.sudoLog) {
 		killed = killed || strings.Contains(c, "kill -s KILL -- -")
@@ -314,11 +349,18 @@ func TestHandOverRefRemove(t *testing.T) {
 }
 
 // handOverStreamSudo is the shell code of the mock sudo that answers the
-// bundle command of the agent user with the contents of path.
-func handOverStreamSudo(path string) string {
+// pack-objects command of the agent user with the contents of path. With tip
+// set, the agent also answers the count with 1 and the rev-parse with tip.
+func handOverStreamSudo(path, tip string) string {
+	answers := ""
+	if tip != "" {
+		answers = fmt.Sprintf(`*" rev-list --count "*) echo 1; exit 0 ;;
+*" rev-parse --verify "*) echo %s; exit 0 ;;
+`, tip)
+	}
 	return fmt.Sprintf(`case "$*" in
-*"bundle create - "*) exec cat '%s' ;;
-esac`, path)
+%s*" pack-objects "*) exec cat '%s' ;;
+esac`, answers, path)
 }
 
 // writeHandOverStream writes content into a file of the test and returns it.
@@ -331,37 +373,53 @@ func writeHandOverStream(t *testing.T, content []byte) string {
 	return path
 }
 
-// forgedHandOverBundle is a v2 bundle that names refs/heads/BRANCH with the
-// object obj and holds the objects of obj ^base, with base as prerequisite
-// unless base is "". Built from git pack-objects in dir, so the header can
-// name any object, a tag included.
-func forgedHandOverBundle(t *testing.T, dir, branch, obj, base string) string {
+// handOverPackBytes is the output of `git pack-objects --stdout` in dir with
+// the lines on its standard input (args before them, such as --revs).
+func handOverPackBytes(t *testing.T, dir string, args []string, lines ...string) []byte {
 	t.Helper()
-	header := "# v2 git bundle\n"
-	revs := obj + "\n"
-	if base != "" {
-		header += "-" + base + "\n"
-		revs += "^" + base + "\n"
-	}
-	header += obj + " refs/heads/" + branch + "\n\n"
-	cmd := exec.Command("git", "-C", dir, "pack-objects", "--stdout", "--revs", "-q")
-	cmd.Stdin = strings.NewReader(revs)
+	cmd := exec.Command("git", append([]string{"-C", dir, "pack-objects", "--stdout", "-q"}, args...)...)
+	cmd.Stdin = strings.NewReader(strings.Join(lines, "\n") + "\n")
 	pack, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("pack-objects: %v", err)
+		t.Fatalf("pack-objects %v: %v", args, err)
 	}
-	return writeHandOverStream(t, append([]byte(header), pack...))
+	return pack
 }
 
-// runForgedHandOver runs the hand-over with the mock sudo answering the bundle
-// command with the file stream and checks that it fails with an error that
-// holds want, removes the temporary file and leaves no hand-over ref and no
-// new ref in the daemon's repository.
-func runForgedHandOver(t *testing.T, e *handOverEnv, stream, want string) error {
+// forgedHandOverPack is a pack of `git pack-objects --stdout --revs` in dir
+// with the rev lines, in a file of the test.
+func forgedHandOverPack(t *testing.T, dir string, revs ...string) string {
 	t.Helper()
-	e.sudoLog = mockSudoAgent(t, e.repo, handOverStreamSudo(stream))
+	return writeHandOverStream(t, handOverPackBytes(t, dir, []string{"--revs"}, revs...))
+}
+
+// gitCommandsSeen wraps execCommandContext for one test and returns the
+// argument lists of the git commands of the daemon side it built.
+func gitCommandsSeen(t *testing.T) *[]string {
+	t.Helper()
+	var seen []string
+	prev := execCommandContext
+	execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" {
+			seen = append(seen, strings.Join(args, " "))
+		}
+		return prev(c, name, args...)
+	}
+	t.Cleanup(func() { execCommandContext = prev })
+	return &seen
+}
+
+// runForgedHandOver runs the hand-over with the mock sudo answering the
+// pack-objects command with the file stream (and the tip, when set) and
+// checks that it fails with an error that holds want, removes the temporary
+// file and leaves no hand-over ref, no new ref, no quarantine and the file
+// list of objects/pack of before in the daemon's repository.
+func runForgedHandOver(t *testing.T, e *handOverEnv, stream, tip, want string) error {
+	t.Helper()
+	e.sudoLog = mockSudoAgent(t, e.repo, handOverStreamSudo(stream, tip))
 	tmp := handOverTmpDir(t)
 	before := e.daemonRefs(t)
+	packsBefore := e.packFiles(t)
 	sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
 	if err == nil {
 		t.Fatalf("handOverBranch = %s, want an error", sha)
@@ -370,112 +428,315 @@ func runForgedHandOver(t *testing.T, e *handOverEnv, stream, want string) error 
 		t.Errorf("error = %v, want %q", err, want)
 	}
 	assertEmptyDir(t, tmp)
-	e.assertNoHandOverRef(t)
+	e.assertNothingLeft(t, packsBefore)
 	if got := e.daemonRefs(t); !slices.Equal(got, before) {
 		t.Errorf("daemon refs after the hand-over:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(before, "\n"))
 	}
 	return err
 }
 
-// mutation pin: remove the call of checkHandOverBundleHeader -> this test fails
-func TestHandOverBranchRefusesGitdirStream(t *testing.T) {
-	e := newHandOverEnv(t)
-	// A second repository the agent user cannot read, with the task branch
-	// above the base: served to the daemon, it would pass every later check.
-	other := filepath.Join(t.TempDir(), "other")
-	wsGit(t, e.repo, "clone", "-q", e.repo, other)
-	wsGit(t, other, "checkout", "-q", "-b", e.branch)
-	secret := commitFile(t, other, "secret.txt", "secret")
-	stream := writeHandOverStream(t, []byte("gitdir: "+filepath.Join(other, ".git")+"\n"))
-	trace := filepath.Join(t.TempDir(), "trace")
-	t.Setenv("GIT_TRACE", trace)
-
-	err := runForgedHandOver(t, e, stream, errHandOverNotBundle.Error())
-	if !errors.Is(err, errHandOverNotBundle) {
-		t.Errorf("error = %v, want errHandOverNotBundle", err)
-	}
-	if raw, _ := os.ReadFile(trace); strings.Contains(string(raw), "upload-pack") {
-		t.Errorf("git-upload-pack ran during the hand-over:\n%s", raw)
-	}
-	if exec.Command("git", "-C", e.repo, "cat-file", "-e", secret).Run() == nil {
-		t.Errorf("commit %s of the second repository reached the daemon repository", secret)
-	}
-}
-
-func TestHandOverBranchRefusesNonBundleStreams(t *testing.T) {
-	for _, tc := range []struct{ name, content string }{
-		{"empty stream", ""},
-		{"garbage stream", "not a bundle at all\n\x00\x01\x02"},
-		{"short signature", "# v2 git bun"},
-		{"v1 signature", "# v1 git bundle\n"},
+// mutation pin: remove the call of checkHandOverPackHeader -> this test fails
+func TestHandOverBranchRefusesNonPackStreams(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// stream builds the stream the agent sends.
+		stream func(t *testing.T, e *handOverEnv) []byte
+	}{
+		{"gitdir stream", func(t *testing.T, e *handOverEnv) []byte {
+			// A second repository the agent user cannot read, with the task
+			// branch above the base.
+			other := filepath.Join(t.TempDir(), "other")
+			wsGit(t, e.repo, "clone", "-q", e.repo, other)
+			wsGit(t, other, "checkout", "-q", "-b", e.branch)
+			commitFile(t, other, "secret.txt", "secret")
+			return []byte("gitdir: " + filepath.Join(other, ".git") + "\n")
+		}},
+		{"empty stream", func(*testing.T, *handOverEnv) []byte { return nil }},
+		{"bundle file", func(t *testing.T, e *handOverEnv) []byte {
+			path := filepath.Join(t.TempDir(), "b.bundle")
+			wsGit(t, e.ws, "bundle", "create", "-q", path, "refs/heads/"+e.branch, "^"+e.base)
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return raw
+		}},
+		{"garbage stream", func(*testing.T, *handOverEnv) []byte { return []byte("not a pack at all\n\x00\x01\x02") }},
+		{"version 3 pack", func(*testing.T, *handOverEnv) []byte { return []byte("PACK\x00\x00\x00\x03\x00\x00\x00\x00") }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newHandOverEnv(t)
 			commitFile(t, e.ws, "a.txt", "one")
-			err := runForgedHandOver(t, e, writeHandOverStream(t, []byte(tc.content)), errHandOverNotBundle.Error())
-			if !errors.Is(err, errHandOverNotBundle) {
-				t.Errorf("error = %v, want errHandOverNotBundle", err)
+			stream := writeHandOverStream(t, tc.stream(t, e))
+			trace := filepath.Join(t.TempDir(), "trace")
+			t.Setenv("GIT_TRACE", trace)
+			seen := gitCommandsSeen(t)
+
+			err := runForgedHandOver(t, e, stream, "", errHandOverNotPack.Error())
+			if !errors.Is(err, errHandOverNotPack) {
+				t.Errorf("error = %v, want errHandOverNotPack", err)
+			}
+			// The marker: no git command of the daemon read the file.
+			for _, c := range *seen {
+				for _, cmd := range []string{"index-pack", "fetch", "bundle", "upload-pack"} {
+					if strings.Contains(c, cmd) {
+						t.Errorf("git %s ran on the stream", c)
+					}
+				}
+			}
+			if raw, _ := os.ReadFile(trace); strings.Contains(string(raw), "upload-pack") || strings.Contains(string(raw), "index-pack") {
+				t.Errorf("a git command read the stream:\n%s", raw)
 			}
 		})
 	}
 }
 
-func TestCheckHandOverBundleHeader(t *testing.T) {
+func TestCheckHandOverPackHeader(t *testing.T) {
 	for _, tc := range []struct {
 		content string
 		ok      bool
 	}{
-		{"# v2 git bundle\n", true},
-		{"# v3 git bundle\n@object-format=sha256\n", true},
-		{"# v2 git bundle", false},
-		{"# v4 git bundle\n", false},
+		{"PACK\x00\x00\x00\x02\x00\x00\x00\x00", true},
+		{"PACK\x00\x00\x00\x02", true},
+		{"PACK\x00\x00\x00\x03", false},
+		{"PACK\x00\x00\x00", false},
+		{"# v2 git bundle\n", false},
 		{"gitdir: /x/.git\n", false},
 		{"", false},
 	} {
-		err := checkHandOverBundleHeader(writeHandOverStream(t, []byte(tc.content)))
+		err := checkHandOverPackHeader(writeHandOverStream(t, []byte(tc.content)))
 		if (err == nil) != tc.ok {
-			t.Errorf("checkHandOverBundleHeader(%q) = %v, want ok=%v", tc.content, err, tc.ok)
+			t.Errorf("checkHandOverPackHeader(%q) = %v, want ok=%v", tc.content, err, tc.ok)
+		}
+		if err != nil && !errors.Is(err, errHandOverNotPack) {
+			t.Errorf("checkHandOverPackHeader(%q) = %v, want errHandOverNotPack", tc.content, err)
 		}
 	}
 }
 
-func TestHandOverBranchRefusesBranchAtBase(t *testing.T) {
-	e := newHandOverEnv(t)
-	// The branch of the workspace is at the base: a bundle of the whole
-	// history names the base itself.
-	_ = runForgedHandOver(t, e, forgedHandOverBundle(t, e.ws, e.branch, e.base, ""), "above the base")
+// handOverSecretText is a file large enough that git stores a small change of
+// it as a delta against it.
+func handOverSecretText() string {
+	var b strings.Builder
+	for i := 0; i < 400; i++ {
+		fmt.Fprintf(&b, "secret line %d of the daemon repository %x\n", i, i*7919)
+	}
+	return b.String()
 }
 
-// mutation pin: remove the ancestor check -> this test fails
-func TestHandOverBranchRefusesOrphanHistory(t *testing.T) {
+// mutation pin: add --fix-thin to the index-pack command -> this test fails
+func TestHandOverBranchRefusesThinPack(t *testing.T) {
 	e := newHandOverEnv(t)
-	orphan := wsGit(t, e.ws, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "-m", "orphan", "HEAD^{tree}")
-	_ = runForgedHandOver(t, e, forgedHandOverBundle(t, e.ws, e.branch, orphan, ""), "not an ancestor")
-	if exec.Command("git", "-C", e.repo, "merge-base", "--is-ancestor", e.base, orphan).Run() == nil {
-		t.Fatal("the orphan commit has the base as an ancestor; the fixture is wrong")
+	secret := handOverSecretText()
+	private := e.daemonOnlyCommit(t, "secret.txt", secret)
+	// The agent has a commit above the private commit whose blob is a delta
+	// against the blob of the private commit; a thin pack leaves that base
+	// out (pack-objects takes thin bases only from the edge commits).
+	clone := e.cloneOfDaemon(t)
+	wsGit(t, clone, "checkout", "-q", "-b", "forged", private)
+	tip := commitFile(t, clone, "secret.txt", secret+"one more line\n")
+	pack := handOverPackBytes(t, clone, []string{"--revs", "--thin"}, tip, "^"+private)
+	// The fixture: the pack is thin, it cannot be indexed on its own.
+	empty := t.TempDir()
+	wsGit(t, empty, "init", "-q")
+	idx := exec.Command("git", "-C", empty, "index-pack", "--stdin")
+	idx.Stdin = strings.NewReader(string(pack))
+	if out, err := idx.CombinedOutput(); err == nil {
+		t.Fatalf("the forged pack is not thin: %s", out)
+	}
+
+	_ = runForgedHandOver(t, e, writeHandOverStream(t, pack), tip, "index-pack")
+	if exec.Command("git", "-C", e.repo, "cat-file", "-e", tip).Run() == nil {
+		t.Errorf("the forged commit %s reached the daemon repository", tip)
 	}
 }
 
-func TestHandOverBranchRefusesAnnotatedTag(t *testing.T) {
+// mutation pin: remove the call of verifyHandOverObjects -> this test fails
+func TestHandOverBranchRefusesDaemonOnlyParent(t *testing.T) {
 	e := newHandOverEnv(t)
-	commitFile(t, e.ws, "a.txt", "one")
-	wsGit(t, e.ws, "-c", "user.email=t@example.com", "-c", "user.name=T", "tag", "-a", "-m", "tag", "forged", "HEAD")
-	tag := wsGit(t, e.ws, "rev-parse", "refs/tags/forged")
-	_ = runForgedHandOver(t, e, forgedHandOverBundle(t, e.ws, e.branch, tag, e.base), "must be a commit")
+	private := e.daemonOnlyCommit(t, "private.txt", "private")
+	// The agent commits on top of the private commit and sends a pack that
+	// does not hold it: index-pack finds the parent through the alternate.
+	clone := e.cloneOfDaemon(t)
+	wsGit(t, clone, "checkout", "-q", "-b", "forged", private)
+	tip := commitFile(t, clone, "agent.txt", "agent")
+	stream := forgedHandOverPack(t, clone, tip, "^"+private)
+
+	err := runForgedHandOver(t, e, stream, tip, "did not come from the workspace")
+	if err != nil && !strings.Contains(err.Error(), private) {
+		t.Errorf("error = %v, want the private commit %s named", err, private)
+	}
 }
 
-func TestHandOverBranchCancelDuringFetch(t *testing.T) {
+func TestHandOverBranchRefusesDamagedPack(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// pack returns the stream and the tip the agent names.
+		pack func(t *testing.T, e *handOverEnv) ([]byte, string)
+	}{
+		{"truncated pack", func(t *testing.T, e *handOverEnv) ([]byte, string) {
+			tip := commitFile(t, e.ws, "a.txt", handOverSecretText())
+			pack := handOverPackBytes(t, e.ws, []string{"--revs"}, tip, "^"+e.base)
+			return pack[:len(pack)-40], tip
+		}},
+		{"pack with a damaged byte", func(t *testing.T, e *handOverEnv) ([]byte, string) {
+			tip := commitFile(t, e.ws, "a.txt", handOverSecretText())
+			pack := handOverPackBytes(t, e.ws, []string{"--revs"}, tip, "^"+e.base)
+			pack[len(pack)/2] ^= 0xff
+			return pack, tip
+		}},
+		{"pack with a corrupt commit", func(t *testing.T, e *handOverEnv) ([]byte, string) {
+			tree := wsGit(t, e.ws, "rev-parse", e.base+"^{tree}")
+			cmd := exec.Command("git", "-C", e.ws, "hash-object", "-t", "commit", "-w", "--literally", "--stdin")
+			cmd.Stdin = strings.NewReader("tree " + tree + "\nparent " + e.base + "\nauthor nobody\ncommitter nobody\n\nbroken\n")
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("hash-object: %v", err)
+			}
+			tip := strings.TrimSpace(string(out))
+			return handOverPackBytes(t, e.ws, nil, tip), tip
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newHandOverEnv(t)
+			pack, tip := tc.pack(t, e)
+			_ = runForgedHandOver(t, e, writeHandOverStream(t, pack), tip, "index-pack")
+		})
+	}
+}
+
+func TestHandOverBranchUpdateRefFails(t *testing.T) {
+	e := newHandOverEnv(t)
+	commitFile(t, e.ws, "a.txt", handOverSecretText())
+	e.sudoLog = mockSudoAgent(t, e.repo, "")
+	tmp := handOverTmpDir(t)
+	packsBefore := e.packFiles(t)
+	var failed bool
+	prev := execCommandContext
+	execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" && slices.Contains(args, "update-ref") && !slices.Contains(args, "-d") {
+			failed = true
+			return prev(c, "false")
+		}
+		return prev(c, name, args...)
+	}
+	t.Cleanup(func() { execCommandContext = prev })
+
+	sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+	if err == nil {
+		t.Fatalf("handOverBranch = %s with a failed update-ref, want an error", sha)
+	}
+	if !failed {
+		t.Fatalf("the update-ref seam did not run: %v", err)
+	}
+	assertEmptyDir(t, tmp)
+	e.assertNothingLeft(t, packsBefore)
+}
+
+func TestHandOverBranchNothingNew(t *testing.T) {
+	e := newHandOverEnv(t)
+	e.sudoLog = mockSudoAgent(t, e.repo, "")
+	tmp := handOverTmpDir(t)
+	packsBefore := e.packFiles(t)
+
+	sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+	if !errors.Is(err, errHandOverNothingNew) {
+		t.Fatalf("handOverBranch = %s, %v, want errHandOverNothingNew", sha, err)
+	}
+	for _, c := range sudoCalls(t, e.sudoLog) {
+		if strings.Contains(c, "pack-objects") {
+			t.Errorf("pack-objects ran for a branch at the base: %q", c)
+		}
+	}
+	assertEmptyDir(t, tmp)
+	e.assertNothingLeft(t, packsBefore)
+}
+
+func TestHandOverBranchRefusesTip(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// forge returns the pack the agent sends and the tip it names.
+		forge func(t *testing.T, e *handOverEnv) (stream, tip string)
+		want  string
+	}{
+		{"annotated tag", func(t *testing.T, e *handOverEnv) (string, string) {
+			commitFile(t, e.ws, "a.txt", "one")
+			wsGit(t, e.ws, "-c", "user.email=t@example.com", "-c", "user.name=T", "tag", "-a", "-m", "tag", "forged", "HEAD")
+			tag := wsGit(t, e.ws, "rev-parse", "refs/tags/forged")
+			return forgedHandOverPack(t, e.ws, tag, "^"+e.base), tag
+		}, "must be a commit"},
+		{"tree", func(t *testing.T, e *handOverEnv) (string, string) {
+			head := commitFile(t, e.ws, "a.txt", "one")
+			return forgedHandOverPack(t, e.ws, head, "^"+e.base), wsGit(t, e.ws, "rev-parse", head+"^{tree}")
+		}, "must be a commit"},
+		{"blob", func(t *testing.T, e *handOverEnv) (string, string) {
+			head := commitFile(t, e.ws, "a.txt", "one")
+			return forgedHandOverPack(t, e.ws, head, "^"+e.base), wsGit(t, e.ws, "rev-parse", head+":a.txt")
+		}, "must be a commit"},
+		{"the base", func(t *testing.T, e *handOverEnv) (string, string) {
+			head := commitFile(t, e.ws, "a.txt", "one")
+			return forgedHandOverPack(t, e.ws, head, "^"+e.base), e.base
+		}, "above the base"},
+		// mutation pin: remove the ancestor check -> this case fails
+		{"orphan history", func(t *testing.T, e *handOverEnv) (string, string) {
+			orphan := wsGit(t, e.ws, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "-m", "orphan", "HEAD^{tree}")
+			if exec.Command("git", "-C", e.ws, "merge-base", "--is-ancestor", e.base, orphan).Run() == nil {
+				t.Fatal("the orphan commit has the base as an ancestor; the fixture is wrong")
+			}
+			return forgedHandOverPack(t, e.ws, orphan), orphan
+		}, "not an ancestor"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newHandOverEnv(t)
+			stream, tip := tc.forge(t, e)
+			_ = runForgedHandOver(t, e, stream, tip, tc.want)
+		})
+	}
+}
+
+func TestHandOverBranchSweepsOldQuarantines(t *testing.T) {
+	e := newHandOverEnv(t)
+	head := commitFile(t, e.ws, "a.txt", "one")
+	e.sudoLog = mockSudoAgent(t, e.repo, "")
+	handOverTmpDir(t)
+	objects := filepath.Join(e.repo, ".git", "objects")
+	old := filepath.Join(objects, handOverQuarantinePrefix+"old")
+	fresh := filepath.Join(objects, handOverQuarantinePrefix+"fresh")
+	for _, dir := range []string{old, fresh} {
+		if err := os.MkdirAll(filepath.Join(dir, "pack"), 0o755); err != nil { //nolint:gosec // test directory
+			t.Fatal(err)
+		}
+	}
+	twoHours := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(old, twoHours, twoHours); err != nil {
+		t.Fatal(err)
+	}
+
+	sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+	if err != nil || sha != head {
+		t.Fatalf("handOverBranch = %s, %v, want %s", sha, err, head)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("the quarantine of over an hour %s is still there: %v", old, err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("the quarantine of under an hour %s was removed: %v", fresh, err)
+	}
+}
+
+func TestHandOverBranchCancelDuringIndexPack(t *testing.T) {
 	e := newHandOverEnv(t)
 	commitFile(t, e.ws, "a.txt", "one")
 	e.sudoLog = mockSudoAgent(t, e.repo, "")
 	tmp := handOverTmpDir(t)
+	packsBefore := e.packFiles(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// The fetch is slow and has a child that holds the output pipe, as
-	// index-pack does: only a kill of the group ends the wait early.
+	// index-pack is slow and has a child that holds the output pipe: only a
+	// kill of the group ends the wait early.
 	prev := execCommandContext
 	execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
-		if name == "git" && slices.Contains(args, "fetch") {
+		if name == "git" && slices.Contains(args, "index-pack") {
 			time.AfterFunc(200*time.Millisecond, cancel)
 			return prev(c, "sh", "-c", "sleep 60 & sleep 60")
 		}
@@ -493,7 +754,7 @@ func TestHandOverBranchCancelDuringFetch(t *testing.T) {
 		t.Errorf("handOverBranch returned %v after the start, want within the wait delay %v", elapsed, procgroup.DefaultWaitDelay)
 	}
 	assertEmptyDir(t, tmp)
-	e.assertNoHandOverRef(t)
+	e.assertNothingLeft(t, packsBefore)
 }
 
 func TestHandOverBranchIgnoresGitDir(t *testing.T) {
@@ -506,11 +767,12 @@ func TestHandOverBranchIgnoresGitDir(t *testing.T) {
 	otherRefs := wsGit(t, other, "for-each-ref")
 
 	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(other, ".git", "objects"))
 	t.Setenv("GIT_CONFIG_COUNT", "1")
 	t.Setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
 	t.Setenv("GIT_CONFIG_VALUE_0", t.TempDir())
 	sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
-	for _, name := range []string{"GIT_DIR", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"} {
+	for _, name := range []string{"GIT_DIR", "GIT_OBJECT_DIRECTORY", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"} {
 		_ = os.Unsetenv(name)
 	}
 	if err != nil {
