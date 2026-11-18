@@ -5,13 +5,19 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
+	"github.com/qf-studio/pilot/internal/adapters/telegram"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
+	"github.com/qf-studio/pilot/internal/singleton"
 )
 
 // mainGoFunc returns the body of the top-level func name in main.go.
@@ -54,14 +60,14 @@ func TestStartCmdWiresReadGuardConfig(t *testing.T) {
 	t.Cleanup(func() { executor.SetReadGuardConfig(nil) })
 
 	off := false
-	applyReadGuardConfig(&executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{ReadGuard: &off}}, cfgPath, 0, "")
+	applyReadGuardConfig(&executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{ReadGuard: &off}}, cfgPath, 0, "", false)
 	got := executor.ReadGuardConfig()
 	if got == nil || got.ConfigPath != cfgPath || got.ReadGuardEnabled() {
 		t.Errorf("ReadGuardConfig() = %+v, want ConfigPath %q and guard off", got, cfgPath)
 	}
 
 	// No executor.claude_code block: the path is still protected.
-	applyReadGuardConfig(nil, cfgPath, 0, "")
+	applyReadGuardConfig(nil, cfgPath, 0, "", false)
 	got = executor.ReadGuardConfig()
 	if got == nil || got.ConfigPath != cfgPath || !got.ReadGuardEnabled() {
 		t.Errorf("ReadGuardConfig() = %+v, want ConfigPath %q and guard on", got, cfgPath)
@@ -134,12 +140,12 @@ func TestReadGuardConfigRunsRunAsUserPreflight(t *testing.T) {
 	})
 	cfgPath := filepath.Join(t.TempDir(), "custom.yaml")
 
-	applyReadGuardConfig(&executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{RunAsUser: "pilot-no-such-user-6321"}}, cfgPath, 0, "")
+	applyReadGuardConfig(&executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{RunAsUser: "pilot-no-such-user-6321"}}, cfgPath, 0, "", false)
 	if err := executor.RunAsUserPreflightError(); err == nil {
 		t.Error("a run_as_user that does not exist left spawns open: the preflight is not wired into applyReadGuardConfig")
 	}
 
-	applyReadGuardConfig(&executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{}}, cfgPath, 0, "")
+	applyReadGuardConfig(&executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{}}, cfgPath, 0, "", false)
 	if err := executor.RunAsUserPreflightError(); err != nil {
 		t.Errorf("empty run_as_user: preflight error %v, want none", err)
 	}
@@ -212,5 +218,65 @@ func TestEntrypointPassesNoGatewayToRunAsPreflight(t *testing.T) {
 	applyReadGuardConfigFromFile(cfgPath)
 	if c := got(); c == nil || c.RunAsGatewayPort != 0 || c.RunAsGatewayHost != "" || c.ConfigPath != cfgPath {
 		t.Errorf("preflight got %+v, want no gateway port and host and ConfigPath %q", c, cfgPath)
+	}
+}
+
+// GH-6480: with --replace the preflight runs in runPollingMode after the old
+// daemon has stopped (acquireDaemonLockFn). The config ends runPollingMode
+// right after the preflight (telegram enabled without a bot token).
+// mutation pin: move the preflight before the stop, or drop its call in
+// runPollingMode -> this test fails.
+func TestStartReplaceRunsAsPreflightAfterOldDaemonStop(t *testing.T) {
+	var order []string
+	prevLock, prevPreflight, prevTransport := acquireDaemonLockFn, preflightRunAsUser, http.DefaultTransport
+	acquireDaemonLockFn = func(cfg *config.Config, replace bool) (*singleton.Lock, error) {
+		if !replace {
+			t.Error("acquireDaemonLockFn called without replace")
+		}
+		order = append(order, "stop")
+		return singleton.Acquire(t.TempDir())
+	}
+	var got *executor.ClaudeCodeConfig
+	preflightRunAsUser = func(cfg *executor.ClaudeCodeConfig, _ string, _ bool, _ int) {
+		order = append(order, "preflight")
+		got = cfg
+	}
+	t.Cleanup(func() {
+		acquireDaemonLockFn, preflightRunAsUser, http.DefaultTransport = prevLock, prevPreflight, prevTransport
+		executor.SetReadGuardConfig(nil)
+	})
+
+	cfg := config.DefaultConfig()
+	cfg.Memory.Path = t.TempDir()
+	cfg.Gateway = &gateway.Config{Host: "127.0.0.1", Port: 9345}
+	cfg.Adapters.Telegram = &telegram.Config{Enabled: true}
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	err := runPollingMode(&cobra.Command{}, cfg, cfgPath, t.TempDir(), true, false, true, false, nil)
+	if err == nil || !strings.Contains(err.Error(), "bot_token") {
+		t.Fatalf("runPollingMode error = %v, want the telegram bot_token refusal after the preflight", err)
+	}
+	if strings.Join(order, ",") != "stop,preflight" {
+		t.Fatalf("calls ran as %q, want the stop of the old daemon, then the preflight", order)
+	}
+	if got == nil || got.RunAsGatewayPort != 9345 || !got.RunAsRequireGatewayPort {
+		t.Errorf("preflight got %+v, want gateway port 9345 of the daemon start", got)
+	}
+}
+
+// GH-6480: the daemon start with a gateway port of 0 (or no gateway block)
+// asks the preflight to refuse (TestRunAsFirewallDaemonStartGatewayPortZeroRefuses
+// in the executor package); every other entry point skips the gateway part.
+func TestStartCmdGatewayPortZeroIsRefusedByRunAsPreflight(t *testing.T) {
+	got := capturePreflight(t)
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	for _, gw := range []*gateway.Config{{Host: "0.0.0.0", Port: 0}, nil} {
+		applyStartReadGuardConfig(&config.Config{Gateway: gw}, cfgPath)
+		if c := got(); c == nil || c.RunAsGatewayPort != 0 || !c.RunAsRequireGatewayPort {
+			t.Errorf("gateway %+v: preflight got %+v, want port 0 with the gateway port required", gw, c)
+		}
+	}
+	applyReadGuardConfigFromFile(writeGatewayConfig(t, 9234, "0.0.0.0"))
+	if c := got(); c == nil || c.RunAsRequireGatewayPort {
+		t.Errorf("preflight got %+v, want no gateway port required outside the daemon start", c)
 	}
 }

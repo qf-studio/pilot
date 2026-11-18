@@ -11,6 +11,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,10 +67,12 @@ type runAsSettings struct {
 	// gatewayPort is the gateway port of the config that checkRunAsFirewall
 	// probes; 0 skips that part of the probe.
 	gatewayPort int
-	// gatewayHost is the gateway host of the config: when it is not a
-	// loopback address checkRunAsFirewall also probes the gateway port on a
-	// non-loopback local address.
+	// gatewayHost is the gateway host of the config: gatewayProbeAddrs
+	// picks the addresses checkRunAsFirewall probes the gateway port on.
 	gatewayHost string
+	// requireGatewayPort is set by the daemon start: a gateway port of 0 or
+	// below is then a refusal, not a skipped part of the probe.
+	requireGatewayPort bool
 }
 
 // runAsState is the process-wide state of the option: the settings and the
@@ -324,9 +327,10 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 	var rawUser, rawGroup, rawRoot, rawDataDir string
 	var gatewayPort int
 	var gatewayHost string
+	var requireGatewayPort bool
 	if cfg != nil {
 		rawUser, rawGroup, rawRoot, rawDataDir = cfg.RunAsUser, cfg.RunAsGroup, cfg.RunAsWorkspaceDir, cfg.RunAsDataDir
-		gatewayPort, gatewayHost = cfg.RunAsGatewayPort, cfg.RunAsGatewayHost
+		gatewayPort, gatewayHost, requireGatewayPort = cfg.RunAsGatewayPort, cfg.RunAsGatewayHost, cfg.RunAsRequireGatewayPort
 	}
 	userName, group := strings.TrimSpace(rawUser), strings.TrimSpace(rawGroup)
 	root := strings.TrimSpace(rawRoot)
@@ -360,6 +364,7 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 		runAsCur.settings.user == userName && runAsCur.settings.group == group &&
 		runAsCur.settings.workspaceRoot == root && runAsCur.settings.dataDir == dataDir &&
 		runAsCur.settings.gatewayPort == gatewayPort && runAsCur.settings.gatewayHost == gatewayHost &&
+		runAsCur.settings.requireGatewayPort == requireGatewayPort &&
 		runAsCur.useWorktree == useWorktree && runAsCur.poolSize == worktreePoolSize
 	runAsMu.RUnlock()
 	if same {
@@ -402,7 +407,7 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 		case worktreePoolSize > 0:
 			failed = "run_as_user requires worktree_pool_size 0"
 		default:
-			s.workspaceRoot, s.dataDir, s.gatewayPort, s.gatewayHost = root, dataDir, gatewayPort, gatewayHost
+			s.workspaceRoot, s.dataDir, s.gatewayPort, s.gatewayHost, s.requireGatewayPort = root, dataDir, gatewayPort, gatewayHost, requireGatewayPort
 			if failed = refusedRunAsWorkspaceRoot(root, dataDir, cfg); failed == "" {
 				failed = runAsWorkspaceCheck(s)
 			}
@@ -414,7 +419,7 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 			}
 		}
 	}
-	s.workspaceRoot, s.dataDir, s.gatewayPort, s.gatewayHost = root, dataDir, gatewayPort, gatewayHost
+	s.workspaceRoot, s.dataDir, s.gatewayPort, s.gatewayHost, s.requireGatewayPort = root, dataDir, gatewayPort, gatewayHost, requireGatewayPort
 	if failed != "" {
 		slog.Default().Error("run_as_user preflight failed: no model process and no tool of the model will run",
 			slog.String("check", failed),
@@ -690,14 +695,18 @@ var runAsFirewallCheck = checkRunAsFirewall
 type agentDialResult int
 
 const (
-	// agentDialFailed: the connection failed before the time limit, as a
-	// reject rule with a TCP reset makes it fail.
+	// agentDialFailed: the probe ran and the connection failed before the
+	// time limit, as a reject rule with a TCP reset makes it fail.
 	agentDialFailed agentDialResult = iota
-	// agentDialConnected: the connection was made.
+	// agentDialConnected: the probe ran and the connection was made.
 	agentDialConnected
 	// agentDialNoAnswer: the connection ended by the time limit or by the
 	// context, with no answer.
 	agentDialNoAnswer
+	// agentDialNotRun: the probe ended before the time limit without its
+	// marker line: it never tried to connect (sudo refused the agent user,
+	// bash is missing, the probe was killed).
+	agentDialNotRun
 )
 
 // runAsAgentDial opens one TCP connection to addr as the agent user and
@@ -713,37 +722,45 @@ var runAsMetadataAddr = "169.254.169.254:80"
 // shorten it.
 var runAsDialTimeout = 3 * time.Second
 
-// runAsLocalIPv4 returns the first non-loopback IPv4 address of the host, ""
-// when it has none; tests replace it.
-var runAsLocalIPv4 = firstLocalIPv4
+// runAsInterfaceAddrs is net.InterfaceAddrs, the addresses of the interfaces
+// of the host; tests replace it with a fake list.
+var runAsInterfaceAddrs = net.InterfaceAddrs
+
+// runAsGatewayPortCheck is the refusal of the daemon start when the config
+// has no gateway port for the probe.
+const runAsGatewayPortCheck = "run_as_user needs a gateway port for the firewall probe"
 
 // checkRunAsFirewall proves that the firewall rules of the agent user are
 // active. All connections run as the agent user (runAsAgentDial). A control
 // connection to a listener of the daemon on 127.0.0.1 must connect; then the
-// connections to the metadata address and to the gateway port on 127.0.0.1
-// must not, all of them in parallel. When the gateway host is not a loopback
-// address, the gateway port on the first non-loopback local IPv4 address
-// must not connect either. With no gateway port (every entry point but the
-// daemon start) the gateway part is skipped. The result is empty on success,
-// else the failed check, which names the address or the port.
+// connections to the metadata address and to the gateway port on each
+// address of gatewayProbeAddrs must not, all of them in parallel. With no
+// gateway port the daemon start is refused (requireGatewayPort); every other
+// entry point skips the gateway part. A probe that did not run (no marker,
+// agentDialNotRun) is a refusal for every connection. The result is empty on
+// success, else the failed check, which names the address or the port.
 //
 // Decision: the preflight runs before the gateway starts, and a closed port
 // fails as a reject rule does, so the daemon listens on the gateway port for
 // the time of the probe. A probe tool that does not work fails every
-// connection too and would read as a blocked one; the control connection
-// tells them apart. The rules of the host script reject the gateway port
-// with a TCP reset, so a blocked connection to it fails at once: one with no
-// answer by the time limit proves no rule (a slow sudo) and is a refusal. The
-// metadata address is rejected without a reset, and a timeout there is a
-// block.
+// connection too and would read as a blocked one: the marker line of the
+// probe tells a failed connection from a probe that never ran, and the
+// control connection proves the tool once. The rules of the host script
+// reject the gateway port with a TCP reset, so a blocked connection to it
+// fails at once: one with no answer by the time limit proves no rule (a slow
+// sudo) and is a refusal. The metadata address is rejected without a reset,
+// and a timeout there is a block.
 func checkRunAsFirewall(s *runAsSettings) string {
 	control, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "firewall probe: the daemon cannot open a control listener on 127.0.0.1"
 	}
-	ok := runAsAgentDial(s, control.Addr().String()) == agentDialConnected
+	res := runAsAgentDial(s, control.Addr().String())
 	_ = control.Close()
-	if !ok {
+	if res != agentDialConnected {
+		if res == agentDialNotRun {
+			return "firewall probe: the probe did not run for the control listener on 127.0.0.1, the probe tool (bash /dev/tcp) does not work"
+		}
 		return "firewall probe: the agent user cannot connect to a control listener on 127.0.0.1, the probe tool (bash /dev/tcp) does not work"
 	}
 
@@ -753,21 +770,14 @@ func checkRunAsFirewall(s *runAsSettings) string {
 			_ = l.Close()
 		}
 	}()
-	if port := s.gatewayPort; port == 0 {
+	if port := s.gatewayPort; port <= 0 {
+		if s.requireGatewayPort {
+			return runAsGatewayPortCheck
+		}
 		slog.Default().Debug("run_as_user firewall probe: no gateway port, the gateway port is not probed",
 			slog.String("run_as_user", s.user))
 	} else {
-		hosts := []string{"127.0.0.1"}
-		if !loopbackGatewayHost(s.gatewayHost) {
-			if ip := runAsLocalIPv4(); ip != "" {
-				hosts = append(hosts, ip)
-			} else {
-				slog.Default().Warn("run_as_user firewall probe: the gateway host is not a loopback address and the host has no non-loopback IPv4 address, the gateway port is probed on 127.0.0.1 only",
-					slog.String("run_as_user", s.user),
-					slog.String("gateway_host", s.gatewayHost))
-			}
-		}
-		for _, h := range hosts {
+		for _, h := range gatewayProbeAddrs(s.gatewayHost) {
 			l, err := net.Listen("tcp", net.JoinHostPort(h, strconv.Itoa(port)))
 			if err != nil {
 				return fmt.Sprintf("firewall probe: the daemon cannot listen on the gateway port %d on %s", port, h)
@@ -792,8 +802,11 @@ func checkRunAsFirewall(s *runAsSettings) string {
 		}(i, l.Addr().String())
 	}
 	wg.Wait()
-	if metadata == agentDialConnected {
+	switch metadata {
+	case agentDialConnected:
 		return "firewall: the agent user reached the metadata address " + runAsMetadataAddr
+	case agentDialNotRun:
+		return "firewall probe: the probe did not run for the metadata address " + runAsMetadataAddr
 	}
 	for i, l := range gateways {
 		host := l.Addr().(*net.TCPAddr).IP.String()
@@ -802,61 +815,85 @@ func checkRunAsFirewall(s *runAsSettings) string {
 			return fmt.Sprintf("firewall: the agent user reached the gateway port %d on %s", s.gatewayPort, host)
 		case agentDialNoAnswer:
 			return fmt.Sprintf("firewall probe: no answer from the gateway port %d on %s within %s, a reject rule answers at once", s.gatewayPort, host, runAsDialTimeout)
+		case agentDialNotRun:
+			return fmt.Sprintf("firewall probe: the probe did not run for the gateway port %d on %s", s.gatewayPort, host)
 		}
 	}
 	return ""
 }
 
-// loopbackGatewayHost reports whether the gateway host binds loopback only:
-// "localhost" or a loopback IP. An empty host binds every address.
-func loopbackGatewayHost(host string) bool {
-	if host == "localhost" {
-		return true
-	}
+// gatewayProbeAddrs returns the IPv4 addresses the gateway port is probed on
+// for the gateway host of the config. A literal IP that is loopback or an
+// address of a local interface is probed on that address only; a literal IP
+// that is not local is returned too, and the listen on it fails (a refusal).
+// An empty host, a wildcard address, a host name and an IPv6 address are
+// probed on 127.0.0.1 and each non-loopback local IPv4 address; with no such
+// address one Warn line says so. IPv6 addresses are not probed.
+func gatewayProbeAddrs(host string) []string {
 	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-// firstLocalIPv4 returns the first non-loopback IPv4 address of the
-// interfaces of the host, "" when there is none.
-func firstLocalIPv4() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return ""
+	if ip4 := ip.To4(); ip4 != nil && !ip4.IsUnspecified() {
+		return []string{ip4.String()}
 	}
+	if ip != nil && !ip.IsUnspecified() {
+		slog.Default().Warn("run_as_user firewall probe: the gateway host is an IPv6 address, the gateway port is probed on the local IPv4 addresses only",
+			slog.String("gateway_host", host))
+	}
+	out := []string{"127.0.0.1"}
+	addrs, _ := runAsInterfaceAddrs()
 	for _, a := range addrs {
-		if n, ok := a.(*net.IPNet); ok && !n.IP.IsLoopback() {
-			if ip4 := n.IP.To4(); ip4 != nil {
-				return ip4.String()
-			}
+		n, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if ip4 := n.IP.To4(); ip4 != nil && !ip4.IsLoopback() && !slices.Contains(out, ip4.String()) {
+			out = append(out, ip4.String())
 		}
 	}
-	return ""
+	if len(out) == 1 {
+		slog.Default().Warn("run_as_user firewall probe: the gateway host is not a loopback address and the host has no non-loopback IPv4 address, the gateway port is probed on 127.0.0.1 only",
+			slog.String("gateway_host", host))
+	}
+	return out
 }
 
-// agentDialAs runs `bash -c ': </dev/tcp/HOST/PORT'` as the agent user with
-// the agent environment, bounded by runAsDialTimeout, and reports how it
-// ended: exit 0 is a connection, an end by the time limit no answer, any
-// other result a failed connection.
+// runAsProbeMarker starts the line the probe prints with the exit status of
+// its redirect: the proof that the probe ran.
+const runAsProbeMarker = "pilot-probe="
+
+// agentDialAs runs `bash -c ': 2>/dev/null </dev/tcp/HOST/PORT; echo
+// pilot-probe=$?'` as the agent user with the agent environment, bounded by
+// runAsDialTimeout, and reports how it ended: an end by the time limit is no
+// answer, the marker with 0 a connection, the marker with another status a
+// failed connection, and an end with no marker a probe that did not run.
 func agentDialAs(s *runAsSettings, addr string) agentDialResult {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return agentDialFailed
+		return agentDialNotRun
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), runAsDialTimeout)
 	defer cancel()
-	cmd, err := agentCommandAs(ctx, s, "bash", "-c", ": </dev/tcp/"+host+"/"+port)
+	cmd, err := agentCommandAs(ctx, s, "bash", "-c", ": 2>/dev/null </dev/tcp/"+host+"/"+port+"; echo "+runAsProbeMarker+"$?")
 	if err != nil {
-		return agentDialFailed
+		return agentDialNotRun
 	}
 	setAgentEnv(cmd, gitAgentBaseEnv())
-	switch err := cmd.Run(); {
-	case err == nil:
-		return agentDialConnected
-	case ctx.Err() != nil:
+	out, _ := cmd.Output()
+	if ctx.Err() != nil {
 		return agentDialNoAnswer
 	}
-	return agentDialFailed
+	for _, line := range strings.Split(string(out), "\n") {
+		status, ok := strings.CutPrefix(strings.TrimSpace(line), runAsProbeMarker)
+		if !ok {
+			continue
+		}
+		if status == "0" {
+			return agentDialConnected
+		}
+		if _, err := strconv.Atoi(status); err == nil {
+			return agentDialFailed
+		}
+	}
+	return agentDialNotRun
 }
 
 // sudoProbeOK runs `sudo -n -u <user> [-g <group>] true` with the 5 second

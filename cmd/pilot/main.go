@@ -453,8 +453,10 @@ func main() {
 // run_as_user preflight probes as closed to the agent user (GH-6431). Only the
 // daemon start passes them (applyStartReadGuardConfig): the probe listens on
 // the gateway port, which a running daemon holds. Every other entry point
-// passes 0 and "", and the probe skips the gateway part (GH-6455).
-func applyReadGuardConfig(execCfg *executor.BackendConfig, configPath string, gatewayPort int, gatewayHost string) {
+// passes 0, "" and false, and the probe skips the gateway part (GH-6455).
+// requireGatewayPort (the daemon start) makes a gateway port of 0 or below a
+// refusal of the preflight (GH-6480).
+func applyReadGuardConfig(execCfg *executor.BackendConfig, configPath string, gatewayPort int, gatewayHost string, requireGatewayPort bool) {
 	var claudeCode *executor.ClaudeCodeConfig
 	var backendType string
 	poolSize := 0
@@ -466,6 +468,7 @@ func applyReadGuardConfig(execCfg *executor.BackendConfig, configPath string, ga
 	}
 	claudeCode.ConfigPath = configPath
 	claudeCode.RunAsGatewayPort, claudeCode.RunAsGatewayHost = gatewayPort, gatewayHost
+	claudeCode.RunAsRequireGatewayPort = requireGatewayPort
 	executor.SetReadGuardConfig(claudeCode)
 	// TASK-651: fail-closed check of claude_code.run_as_user at every
 	// entrypoint that can spawn a model process. Does nothing when empty.
@@ -484,7 +487,7 @@ func applyStartReadGuardConfig(cfg *config.Config, configPath string) {
 	if cfg.Gateway != nil {
 		gatewayPort, gatewayHost = cfg.Gateway.Port, cfg.Gateway.Host
 	}
-	applyReadGuardConfig(cfg.Executor, configPath, gatewayPort, gatewayHost)
+	applyReadGuardConfig(cfg.Executor, configPath, gatewayPort, gatewayHost, true)
 }
 
 // applyReadGuardConfigFromFile is applyReadGuardConfig for entrypoints that do
@@ -511,7 +514,7 @@ func applyReadGuardConfigFromFile(cfgPath string) {
 		execCfg = &executor.BackendConfig{Type: e.Type, ClaudeCode: e.ClaudeCode, UseWorktree: e.UseWorktree, WorktreePoolSize: e.WorktreePoolSize}
 	}
 	// GH-6455: no gateway port: a running daemon holds it.
-	applyReadGuardConfig(execCfg, cfgPath, 0, "")
+	applyReadGuardConfig(execCfg, cfgPath, 0, "", false)
 }
 
 // gatewayChatNeedsOwnRunner reports whether gateway mode must build a
@@ -2330,6 +2333,10 @@ func acquireDaemonLock(cfg *config.Config, replace bool) (*singleton.Lock, error
 	return nil, fmt.Errorf("timeout waiting for existing pilot daemon (pid %d) to release lock", held.PID)
 }
 
+// acquireDaemonLockFn is acquireDaemonLock for runPollingMode; tests replace
+// it to see the stop of the old daemon in order with the preflight.
+var acquireDaemonLockFn = acquireDaemonLock
+
 // approvalRepoResolver builds the GitHubHandlerConfig.ResolveRepo callback
 // (GH-5716): it maps approval.Request.Project (memory.CanonicalizeProjectPath of
 // the controller's project path) to the GitHub owner/repo that project's PRs
@@ -2367,7 +2374,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, configPath, projectP
 	// exactly the duplicate-work failure mode this closes. This supersedes
 	// the Telegram-only 409 check further down, which is blind to
 	// github-only/headless runs.
-	daemonLock, err := acquireDaemonLock(cfg, replace)
+	daemonLock, err := acquireDaemonLockFn(cfg, replace)
 	if err != nil {
 		return err
 	}
