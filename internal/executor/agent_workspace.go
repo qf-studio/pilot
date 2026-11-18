@@ -157,6 +157,8 @@ func (m *WorktreeManager) createAgentWorkspace(ctx context.Context, taskID, bran
 	if err != nil {
 		return "", nil, err
 	}
+	// Before the first git command of the agent user in the workspace.
+	rememberAgentGitIdentity(ctx, project, m.repoPath)
 
 	base := m.resolveBaseBranch(ctx)
 	ref := baseRef

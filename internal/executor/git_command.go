@@ -22,8 +22,9 @@ import (
 //     from a directory outside it fails closed (gitArgIntoRoot).
 //   - agent route: run_as_user set and a directory inside the workspace root.
 //     The command comes from agentCommand (sudo, as the agent user) and its
-//     environment is the allowlist plus the git variables of gitAgentEnv, so
-//     no hook, filter or config value of a workspace runs as the daemon user.
+//     environment is the allowlist, the git identity of the agent user
+//     (agentGitIdentityFor) and the git variables of gitAgentEnv, so no hook,
+//     filter or config value of a workspace runs as the daemon user.
 //
 // Every failure on the agent route sets cmd.Err: Run, Output, CombinedOutput
 // and Start return it and no process starts. There is no fallback to the
@@ -93,7 +94,7 @@ func gitCommand(ctx context.Context, routeDir string, args ...string) *exec.Cmd 
 	if err != nil {
 		return failedGitCommand(args, fmt.Errorf("run_as_user: git in %s: %w", routeDir, err))
 	}
-	setAgentEnv(cmd, gitAgentBaseEnv())
+	setAgentEnvIn(cmd, gitAgentBaseEnv(), routeDir)
 	return cmd
 }
 
