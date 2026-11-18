@@ -628,7 +628,7 @@ var backends = []backendInfo{
 		name:        "opencode",
 		backendType: "opencode",
 		command:     "opencode",
-		versionArgs: []string{"version"},
+		versionArgs: []string{"--version"},
 		installCmd:  "go install github.com/opencode-ai/opencode@latest",
 	},
 }
