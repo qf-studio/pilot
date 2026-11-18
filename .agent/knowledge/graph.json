@@ -1315,6 +1315,11 @@
         "name": "Github-Api",
         "aliases": [],
         "domain": "general"
+      },
+      "documentation": {
+        "name": "Documentation",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -9328,6 +9333,58 @@
         ],
         "created": "2026-11-17",
         "last_validated": "2026-11-17"
+      },
+      "mem-322": {
+        "type": "pitfall",
+        "summary": "A parked ticket (pilot-needs-human after a pre-PR review with a blocking defect) is not fixed by a comment plus the removal of the label: the daemon opens the PR for the pushed branch as it is, with no new agent run, and the defect merges (PR 6484, 2026-11-18). After a retry, compare the commit of the PR with the commit of the hold comment before a report; when they are equal, file a fix ticket.",
+        "path": "memories/pitfalls/mem-322.md",
+        "confidence": 0.9,
+        "concepts": [
+          "autopilot",
+          "review",
+          "workflow-discipline"
+        ],
+        "created": "2026-11-18",
+        "last_validated": "2026-11-18"
+      },
+      "mem-323": {
+        "type": "pitfall",
+        "summary": "The daemon files its own follow-up ticket (post-merge-review minors) for a merged PR, and that ticket can change the same files as the next planned leg: issue 6480 was built on main from before PR 6485 merged and its PR 6486 got a conflict in four files that the auto-rebase could not solve (2026-11-18). Before a dispatch, look for an open ticket with the label post-merge-review on the same files and wait for it; a conflicted PR is closed and the ticket runs again on the new main.",
+        "path": "memories/pitfalls/mem-323.md",
+        "confidence": 0.9,
+        "concepts": [
+          "autopilot",
+          "dispatch",
+          "workflow-discipline"
+        ],
+        "created": "2026-11-18",
+        "last_validated": "2026-11-18"
+      },
+      "mem-324": {
+        "type": "decision",
+        "summary": "run_as_user hand-over transport (founder call 2026-11-18): the agent user sends a plain pack that is not thin (git pack-objects --stdout --revs); the daemon checks the PACK signature, runs git index-pack --strict with no --fix-thin into a quarantine object directory, requires each object of rev-list --objects TIP --not BASE in the quarantine alone, then moves the pack and sets refs/pilot/handover/TASK. No git fetch and no bundle on an agent stream: a thin bundle copies a private commit into the new pack, a broken bundle header starts the repository transport on the file, a filter capability and a partial clone make git fetch objects that the agent names (GIT_NO_LAZY_FETCH=1 closes the last one).",
+        "path": "memories/decisions/mem-324.md",
+        "confidence": 0.9,
+        "concepts": [
+          "security",
+          "git",
+          "architecture"
+        ],
+        "created": "2026-11-18",
+        "last_validated": "2026-11-18"
+      },
+      "mem-325": {
+        "type": "learning",
+        "summary": "Docs PRs of one planning session: start each from origin/main after the docs PR before it merged. A branch on top of a pending docs branch conflicts after the squash merge (twice on 2026-11-17 and 11-18), and a merge of main into it brings Go files into the push, so the pre-push gate runs the full test suite. When a dispatch cannot wait: edit and dispatch on a local branch, commit locally, and rebuild on main with git checkout COMMIT -- FILES. Restore graph.json with git checkout -- before each graph command, because a hook rewrites it and drops issue links.",
+        "path": "memories/learnings/mem-325.md",
+        "confidence": 0.9,
+        "concepts": [
+          "workflow-discipline",
+          "git",
+          "documentation"
+        ],
+        "created": "2026-11-18",
+        "last_validated": "2026-11-18"
       }
     }
   },
@@ -13646,6 +13703,26 @@
       "from": "TASK-655",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "mem-322",
+      "to": "TASK-651",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-323",
+      "to": "TASK-651",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-324",
+      "to": "TASK-651",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-325",
+      "to": "TASK-651",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -13853,7 +13930,8 @@
       "approval-cards-are-in-slack-a-tap-on-the-wrong-card-approves-another-pr"
     ],
     "architecture": [
-      "mem-148"
+      "mem-148",
+      "mem-324"
     ],
     "authentication": [
       "TASK-368",
@@ -14016,7 +14094,9 @@
       "mem-282",
       "mem-290",
       "mem-307",
-      "mem-320"
+      "mem-320",
+      "mem-322",
+      "mem-323"
     ],
     "aws": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -14607,7 +14687,8 @@
       "declined-run-repicked-and-evidence-fail-files-false-fix-issue",
       "TASK-634",
       "mem-301",
-      "mem-321"
+      "mem-321",
+      "mem-323"
     ],
     "dispatcher": [
       "alert-engine-counts-operator-cancels",
@@ -14849,7 +14930,9 @@
       "tag-push-runs-full-pre-push-gate",
       "mem-299",
       "mem-308",
-      "mem-314"
+      "mem-314",
+      "mem-324",
+      "mem-325"
     ],
     "git-operations": [
       "mem-011",
@@ -15408,7 +15491,8 @@
       "mem-305",
       "mem-306",
       "mem-308",
-      "mem-314"
+      "mem-314",
+      "mem-324"
     ],
     "ship-test": [],
     "shipped-check": [
@@ -15881,7 +15965,10 @@
       "public-repo-agent-tree-holds-public-product-docs-only",
       "mem-318",
       "mem-320",
-      "mem-321"
+      "mem-321",
+      "mem-322",
+      "mem-323",
+      "mem-325"
     ],
     "worktree": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -15992,7 +16079,8 @@
       "mem-301",
       "mem-302",
       "mem-305",
-      "mem-320"
+      "mem-320",
+      "mem-322"
     ],
     "operations": [
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid"
@@ -16349,13 +16437,16 @@
     ],
     "simplification": [
       "TASK-651"
+    ],
+    "documentation": [
+      "mem-325"
     ]
   },
-  "last_updated": "2026-11-17T22:09:39.423966+00:00",
+  "last_updated": "2026-11-18T17:32:59.180753+00:00",
   "stats": {
-    "total_nodes": 802,
-    "total_edges": 863,
-    "memory_count": 446
+    "total_nodes": 807,
+    "total_edges": 867,
+    "memory_count": 450
   },
   "metadata": {
     "last_updated": null
