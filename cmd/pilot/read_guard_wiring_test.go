@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -9,12 +10,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
+	"github.com/qf-studio/pilot/internal/singleton"
 )
 
 // mainGoFunc returns the body of the top-level func name in main.go.
@@ -183,14 +186,11 @@ func TestStartCmdPassesGatewayToRunAsPreflight(t *testing.T) {
 	if !callsIdent(mainGoFunc(t, "newStartCmd"), "applyStartReadGuardConfig") {
 		t.Error("newStartCmd does not call applyStartReadGuardConfig")
 	}
-	if !callsIdent(mainGoFunc(t, "runPollingMode"), "replaceStartPreflight") {
-		t.Error("runPollingMode does not call replaceStartPreflight: pilot start --replace never probes the gateway port")
-	}
 	got := capturePreflight(t)
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	applyStartReadGuardConfig(&config.Config{Gateway: &gateway.Config{Host: "0.0.0.0", Port: 9123}}, cfgPath)()
-	if c := got(); c == nil || c.RunAsGatewayPort != 9123 || c.RunAsGatewayHost != "0.0.0.0" || c.ConfigPath != cfgPath {
-		t.Errorf("preflight got %+v, want gateway port 9123, host 0.0.0.0 and ConfigPath %q", c, cfgPath)
+	if c := got(); c == nil || c.RunAsGatewayPort != 9123 || c.RunAsGatewayHost != "0.0.0.0" || !c.RunAsGatewayRequired || c.ConfigPath != cfgPath {
+		t.Errorf("preflight got %+v, want gateway port 9123, host 0.0.0.0, the gateway required and ConfigPath %q", c, cfgPath)
 	}
 }
 
@@ -214,8 +214,8 @@ func TestEntrypointPassesNoGatewayToRunAsPreflight(t *testing.T) {
 	got := capturePreflight(t)
 	cfgPath := writeGatewayConfig(t, 9234, "0.0.0.0")
 	applyReadGuardConfigFromFile(cfgPath)
-	if c := got(); c == nil || c.RunAsGatewayPort != 0 || c.RunAsGatewayHost != "" || c.ConfigPath != cfgPath {
-		t.Errorf("preflight got %+v, want no gateway port and host and ConfigPath %q", c, cfgPath)
+	if c := got(); c == nil || c.RunAsGatewayPort != 0 || c.RunAsGatewayHost != "" || c.RunAsGatewayRequired || c.ConfigPath != cfgPath {
+		t.Errorf("preflight got %+v, want no gateway port and host, the gateway not required and ConfigPath %q", c, cfgPath)
 	}
 }
 
@@ -379,5 +379,104 @@ func TestStartCmdCallsStartReadGuardConfigOnEveryPath(t *testing.T) {
 	}
 	if !callsIdent(body, name) {
 		t.Errorf("newStartCmd never runs the preflight %s", name)
+	}
+}
+
+// stubDaemonLock replaces the lock of the daemon start: it records "stop"
+// in order, where acquireDaemonLock stops the old daemon with --replace.
+func stubDaemonLock(t *testing.T, order *[]string) {
+	t.Helper()
+	prev := daemonLockAcquire
+	daemonLockAcquire = func(*config.Config, bool) (*singleton.Lock, error) {
+		*order = append(*order, "stop")
+		return nil, nil
+	}
+	t.Cleanup(func() { daemonLockAcquire = prev })
+}
+
+// GH-6480: with --replace the run_as_user preflight runs after the stop of
+// the old daemon, which holds the gateway port the probe listens on; without
+// it the start has run the preflight already.
+// mutation pin: run the preflight before the lock, or drop it -> this test
+// fails.
+func TestRunAsReplacePreflightRunsAfterStop(t *testing.T) {
+	for _, replace := range []bool{true, false} {
+		t.Run(fmt.Sprintf("replace=%v", replace), func(t *testing.T) {
+			var order []string
+			stubDaemonLock(t, &order)
+			cfg := &config.Config{Gateway: &gateway.Config{Host: "127.0.0.1", Port: 9567}}
+			if _, err := lockDaemonForStart(cfg, replace, func() { order = append(order, "preflight") }); err != nil {
+				t.Fatal(err)
+			}
+			want := "stop"
+			if replace {
+				want = "stop,preflight"
+			}
+			if got := strings.Join(order, ","); got != want {
+				t.Errorf("order %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// GH-6480: a lock that fails runs no preflight.
+func TestRunAsReplaceLockErrorRunsNoPreflight(t *testing.T) {
+	prev := daemonLockAcquire
+	daemonLockAcquire = func(*config.Config, bool) (*singleton.Lock, error) { return nil, errors.New("held") }
+	t.Cleanup(func() { daemonLockAcquire = prev })
+	ran := false
+	if _, err := lockDaemonForStart(&config.Config{}, true, func() { ran = true }); err == nil || ran {
+		t.Errorf("error %v, preflight ran %v: want the lock error and no preflight", err, ran)
+	}
+}
+
+// GH-6480: runPollingMode takes the lock of the daemon start through
+// lockDaemonForStart with the replace flag and the preflight of the start,
+// not through acquireDaemonLock directly.
+func TestRunAsPollingModeLocksThroughLockDaemonForStart(t *testing.T) {
+	body := mainGoFunc(t, "runPollingMode")
+	if callsIdent(body, "acquireDaemonLock") {
+		t.Error("runPollingMode calls acquireDaemonLock directly: pilot start --replace never runs the preflight")
+	}
+	var args []string
+	ast.Inspect(body, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "lockDaemonForStart" {
+				for _, a := range call.Args {
+					if aid, ok := a.(*ast.Ident); ok {
+						args = append(args, aid.Name)
+					}
+				}
+			}
+		}
+		return true
+	})
+	if got := strings.Join(args, ","); got != "cfg,replace,startPreflight" {
+		t.Errorf("runPollingMode calls lockDaemonForStart with %q, want cfg, replace and startPreflight", got)
+	}
+}
+
+// GH-6480: with run_as_user set, a daemon start with a gateway port of 0 (no
+// gateway block, or port 0) is refused by the preflight; another entry point
+// with no port is not refused for it.
+func TestStartGatewayPortZeroRefusesRunAsPreflight(t *testing.T) {
+	t.Cleanup(func() {
+		executor.SetReadGuardConfig(nil)
+		executor.PreflightRunAsUser(nil, "", true, 0)
+	})
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	runAs := func() *executor.BackendConfig {
+		return &executor.BackendConfig{ClaudeCode: &executor.ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents"}}
+	}
+	const want = "run_as_user needs a gateway port for the firewall probe"
+	for name, gw := range map[string]*gateway.Config{"no gateway block": nil, "port 0": {Host: "127.0.0.1", Port: 0}} {
+		applyStartReadGuardConfig(&config.Config{Executor: runAs(), Gateway: gw}, cfgPath)()
+		if err := executor.RunAsUserPreflightError(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: preflight error %v, want a refusal naming %q", name, err, want)
+		}
+	}
+	applyReadGuardConfig(runAs(), cfgPath, 0, "")
+	if err := executor.RunAsUserPreflightError(); err == nil || strings.Contains(err.Error(), want) {
+		t.Errorf("entry point with no port: preflight error %v, want the refusal of another check", err)
 	}
 }

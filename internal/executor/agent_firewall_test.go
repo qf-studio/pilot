@@ -86,7 +86,33 @@ func firewallProbes(t *testing.T, sudoLog string) int {
 
 // rejectPort is mock sudo code that fails the probe of port on 127.0.0.1.
 func rejectPort(port int) string {
-	return fmt.Sprintf(`case "$*" in *"/dev/tcp/127.0.0.1/%d"*) exit 1 ;; esac`, port)
+	return rejectAddr("127.0.0.1", port)
+}
+
+// rejectAddr is mock sudo code that fails the connection of the probe of
+// port on ip: the probe runs and prints the marker with status 1, as bash
+// does for a refused connection.
+func rejectAddr(ip string, port int) string {
+	return fmt.Sprintf(`case "$*" in *"/dev/tcp/%s/%d;"*) echo %s1; exit 0 ;; esac`, ip, port, runAsProbeMarker)
+}
+
+// gatewayProbesOn returns, sorted, the addresses on which a probe of the
+// sudo log connected to port.
+func gatewayProbesOn(t *testing.T, sudoLog string, port int) []string {
+	t.Helper()
+	var out []string
+	for _, c := range sudoCalls(t, sudoLog) {
+		_, rest, ok := strings.Cut(c, "/dev/tcp/")
+		if !ok {
+			continue
+		}
+		addr, _, _ := strings.Cut(rest, ";")
+		if i := strings.LastIndex(addr, "/"); i > 0 && addr[i+1:] == fmt.Sprint(port) {
+			out = append(out, addr[:i])
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // slowPort is mock sudo code that holds the probe of port on 127.0.0.1 for
@@ -166,7 +192,7 @@ func TestRunAsFirewallGatewayPortBlockedPasses(t *testing.T) {
 	}
 	var probes int
 	for _, c := range sudoCalls(t, sudoLog) {
-		if strings.Contains(c, "-u pilot-agent") && strings.Contains(c, "-- bash -c : </dev/tcp/127.0.0.1/") {
+		if strings.Contains(c, "-u pilot-agent") && strings.Contains(c, "-- bash -c : 2>/dev/null </dev/tcp/127.0.0.1/") {
 			probes++
 		}
 	}
@@ -310,7 +336,7 @@ func TestRunAsFirewallControlDialKeepsItsLimit(t *testing.T) {
 	// Every connection but the gateway and metadata ones (the control one)
 	// answers after more than runAsDialTimeout.
 	slowControl := fmt.Sprintf(`case "$1" in -[0-9]*) kill -s KILL -- "$1"; exit $? ;; esac
-case "$*" in *"/dev/tcp/127.0.0.1/%d"*) exit 1 ;; *"/dev/tcp/127.0.0.1/%d"*) ;; *"/dev/tcp/"*) sleep 1 ;; esac`, gw, md)
+case "$*" in *"/dev/tcp/127.0.0.1/%d;"*) echo %s1; exit 0 ;; *"/dev/tcp/127.0.0.1/%d;"*) ;; *"/dev/tcp/"*) sleep 1 ;; esac`, gw, runAsProbeMarker, md)
 	log, sudoLog, err := runFirewallPreflight(t, slowControl, gw, md)
 	if err != nil {
 		t.Fatalf("preflight error %v, want a pass:\n%s", err, log.String())
@@ -355,10 +381,7 @@ func TestRunAsFirewallFailedResultIsNotKept(t *testing.T) {
 // the first local IPv4 address of the host.
 func secondProbeAddr(t *testing.T) string {
 	t.Helper()
-	for _, ip := range []string{"127.0.0.2", firstLocalIPv4()} {
-		if ip == "" {
-			continue
-		}
+	for _, ip := range append([]string{"127.0.0.2"}, localIPv4s()...) {
 		if l, err := net.Listen("tcp", net.JoinHostPort(ip, "0")); err == nil {
 			_ = l.Close()
 			return ip
@@ -405,15 +428,13 @@ func freePortOn(t *testing.T, hosts ...string) int {
 // 0.0.0.0 -> this test fails (on every runner, it no longer skips).
 func TestRunAsFirewallNonLoopbackGatewayHost(t *testing.T) {
 	ip := secondProbeAddr(t)
-	prev := runAsLocalIPv4
-	runAsLocalIPv4 = func() string { return ip }
-	t.Cleanup(func() { runAsLocalIPv4 = prev })
+	stubLocalIPv4s(t, ip)
 	for _, blocked := range []bool{false, true} {
 		t.Run(fmt.Sprintf("blocked=%v", blocked), func(t *testing.T) {
 			port := freePortOn(t, "127.0.0.1", ip)
 			extra := rejectPort(port)
 			if blocked {
-				extra += fmt.Sprintf("\n"+`case "$*" in *"/dev/tcp/%s/%d"*) exit 1 ;; esac`, ip, port)
+				extra += "\n" + rejectAddr(ip, port)
 			}
 			log, sudoLog, err := runFirewallPreflightHost(t, extra, port, "0.0.0.0", 0)
 			if !blocked {
@@ -430,33 +451,45 @@ func TestRunAsFirewallNonLoopbackGatewayHost(t *testing.T) {
 	}
 }
 
-// GH-6477: a gateway host that is a specific IP is probed itself, not the
-// first local address of the host.
-// mutation pin: probe the first local IPv4 address for a gateway host
-// 10.0.0.5 -> this test fails.
-func TestRunAsGatewayProbeHostsSpecificIP(t *testing.T) {
-	prev := runAsLocalIPv4
-	runAsLocalIPv4 = func() string { return "192.0.2.7" }
-	t.Cleanup(func() { runAsLocalIPv4 = prev })
+// stubLocalIPv4s replaces the local IPv4 addresses of the host.
+func stubLocalIPv4s(t *testing.T, ips ...string) {
+	t.Helper()
+	prev := runAsLocalIPv4s
+	runAsLocalIPv4s = func() []string { return ips }
+	t.Cleanup(func() { runAsLocalIPv4s = prev })
+}
+
+// GH-6480: a literal IPv4 host is probed on that address alone, the second
+// local address and 127.0.0.2 too; a wildcard, an empty host or a host name
+// on 127.0.0.1 and every local address.
+// mutation pin: return only the first non-loopback address for each host ->
+// this test fails.
+func TestGatewayProbeAddrs(t *testing.T) {
+	stubLocalIPv4s(t, "10.0.0.5", "10.0.0.6")
 	for host, want := range map[string]string{
-		"10.0.0.5":      "127.0.0.1 10.0.0.5",
-		"0.0.0.0":       "127.0.0.1 192.0.2.7",
-		"":              "127.0.0.1 192.0.2.7",
-		"::":            "127.0.0.1 192.0.2.7",
-		"pilot.example": "127.0.0.1 192.0.2.7",
+		"10.0.0.6":      "10.0.0.6",
+		"10.0.0.5":      "10.0.0.5",
+		"127.0.0.2":     "127.0.0.2",
 		"127.0.0.1":     "127.0.0.1",
-		"localhost":     "127.0.0.1",
+		"192.0.2.9":     "192.0.2.9",
+		"0.0.0.0":       "127.0.0.1 10.0.0.5 10.0.0.6",
+		"":              "127.0.0.1 10.0.0.5 10.0.0.6",
+		"::":            "127.0.0.1 10.0.0.5 10.0.0.6",
+		"pilot.example": "127.0.0.1 10.0.0.5 10.0.0.6",
+		"localhost":     "127.0.0.1 10.0.0.5 10.0.0.6",
+		"::1":           "127.0.0.1",
+		"2001:db8::1":   "127.0.0.1",
 	} {
-		if got := strings.Join(runAsGatewayProbeHosts(host), " "); got != want {
-			t.Errorf("runAsGatewayProbeHosts(%q) = %q, want %q", host, got, want)
+		if got := strings.Join(gatewayProbeAddrs(host), " "); got != want {
+			t.Errorf("gatewayProbeAddrs(%q) = %q, want %q", host, got, want)
 		}
 	}
 }
 
-// GH-6477: a link-local address is not the local address of the probe.
-// mutation pin: take the first non-loopback address, link-local included
-// -> this test fails.
-func TestFirstLocalIPv4SkipsLinkLocal(t *testing.T) {
+// GH-6477: a link-local address is not a local address of the probe.
+// mutation pin: take every non-loopback address, link-local included ->
+// this test fails.
+func TestRunAsFirewallLocalIPv4sOfSkipsLinkLocal(t *testing.T) {
 	ipNet := func(cidr string) net.Addr {
 		ip, n, err := net.ParseCIDR(cidr)
 		if err != nil {
@@ -469,16 +502,16 @@ func TestFirstLocalIPv4SkipsLinkLocal(t *testing.T) {
 		addrs []string
 		want  string
 	}{
-		{[]string{"127.0.0.1/8", "169.254.10.20/16", "10.0.0.5/24"}, "10.0.0.5"},
-		{[]string{"::1/128", "fe80::1/64", "169.254.10.20/16", "192.168.1.4/24"}, "192.168.1.4"},
+		{[]string{"127.0.0.1/8", "169.254.10.20/16", "10.0.0.5/24", "10.0.1.7/24"}, "10.0.0.5 10.0.1.7"},
+		{[]string{"::1/128", "fe80::1/64", "169.254.10.20/16", "192.168.1.4/24", "2001:db8::1/64"}, "192.168.1.4"},
 		{[]string{"127.0.0.1/8", "169.254.10.20/16"}, ""},
 	} {
 		var addrs []net.Addr
 		for _, a := range tc.addrs {
 			addrs = append(addrs, ipNet(a))
 		}
-		if got := firstLocalIPv4Of(addrs); got != tc.want {
-			t.Errorf("firstLocalIPv4Of(%q) = %q, want %q", tc.addrs, got, tc.want)
+		if got := strings.Join(localIPv4sOf(addrs), " "); got != tc.want {
+			t.Errorf("localIPv4sOf(%q) = %q, want %q", tc.addrs, got, tc.want)
 		}
 	}
 }
@@ -486,9 +519,7 @@ func TestFirstLocalIPv4SkipsLinkLocal(t *testing.T) {
 // With no non-loopback local address that part is skipped with one Warn
 // line; the loopback part still runs.
 func TestRunAsFirewallNonLoopbackGatewayHostNoAddressWarns(t *testing.T) {
-	prev := runAsLocalIPv4
-	runAsLocalIPv4 = func() string { return "" }
-	t.Cleanup(func() { runAsLocalIPv4 = prev })
+	stubLocalIPv4s(t)
 	port := loopbackPort(t, false)
 	log, sudoLog, err := runFirewallPreflightHost(t, rejectPort(port), port, "0.0.0.0", 0)
 	if err != nil {
@@ -510,5 +541,215 @@ func TestLoopbackGatewayHost(t *testing.T) {
 		if got := loopbackGatewayHost(host); got != want {
 			t.Errorf("loopbackGatewayHost(%q) = %v, want %v", host, got, want)
 		}
+	}
+}
+
+// notRunProbes are mock sudo ends of a probe that never reports a connection
+// try: the probe is killed, bash is missing (127), sudo fails for the agent
+// user before bash runs.
+var notRunProbes = map[string]string{
+	"killed":    `kill -s KILL $$`,
+	"exit127":   `echo "bash: command not found" >&2; exit 127`,
+	"sudo_fail": `echo "sudo: unable to fork: Resource temporarily unavailable" >&2; exit 1`,
+}
+
+// onAddr is mock sudo code that runs body for the probe of port on
+// 127.0.0.1.
+func onAddr(port int, body string) string {
+	return fmt.Sprintf(`case "$*" in *"/dev/tcp/127.0.0.1/%d;"*) %s ;; esac`, port, body)
+}
+
+// GH-6480: a probe of the gateway port that did not run proves no reject
+// rule and is a refusal; the control connection still connects.
+// mutation pin: count a probe with no marker as a failed connection -> this
+// test fails.
+func TestRunAsFirewallGatewayProbeNotRunRefuses(t *testing.T) {
+	for name, body := range notRunProbes {
+		t.Run(name, func(t *testing.T) {
+			port := loopbackPort(t, false)
+			log, sudoLog, err := runFirewallPreflight(t, onAddr(port, body), port, 0)
+			requireFirewallRefusal(t, log, err, fmt.Sprintf("the probe of the gateway port %d on 127.0.0.1 did not run", port))
+			if n := firewallProbes(t, sudoLog); n != 3 {
+				t.Errorf("want the control, metadata and gateway connections, got %q", sudoCalls(t, sudoLog))
+			}
+		})
+	}
+}
+
+// GH-6480: the same for the metadata address.
+func TestRunAsFirewallMetadataProbeNotRunRefuses(t *testing.T) {
+	for name, body := range notRunProbes {
+		t.Run(name, func(t *testing.T) {
+			gw, md := loopbackPort(t, false), loopbackPort(t, false)
+			log, _, err := runFirewallPreflight(t, rejectPort(gw)+"\n"+onAddr(md, body), gw, md)
+			requireFirewallRefusal(t, log, err, fmt.Sprintf("the probe of the metadata address 127.0.0.1:%d did not run", md))
+		})
+	}
+}
+
+// GH-6480: the control connection reads the marker too: a probe that exits
+// 0 without it does not prove a connection.
+func TestRunAsFirewallControlWithoutMarkerRefuses(t *testing.T) {
+	gw, md := loopbackPort(t, false), loopbackPort(t, false)
+	extra := rejectPort(gw) + "\n" + rejectPort(md) + "\n" + `case "$*" in *"/dev/tcp/"*) exit 0 ;; esac`
+	log, _, err := runFirewallPreflight(t, extra, gw, md)
+	requireFirewallRefusal(t, log, err, "the probe tool (bash /dev/tcp) does not work")
+}
+
+func TestRunAsFirewallProbeMarkerResult(t *testing.T) {
+	for out, want := range map[string]agentDialResult{
+		runAsProbeMarker + "0\n":            agentDialConnected,
+		runAsProbeMarker + "1\n":            agentDialFailed,
+		"motd\n" + runAsProbeMarker + "1\n": agentDialFailed,
+		"":                                  agentDialNotRun,
+		runAsProbeMarker + "\n":             agentDialNotRun,
+		runAsProbeMarker + "x\n":            agentDialNotRun,
+		runAsProbeMarker + "0\n" + runAsProbeMarker + "1\n": agentDialNotRun,
+	} {
+		if got := probeMarkerResult(out); got != want {
+			t.Errorf("probeMarkerResult(%q) = %d, want %d", out, got, want)
+		}
+	}
+}
+
+// loopbackAliases skips the test unless the daemon can listen on every
+// address of ips (all of 127.0.0.0/8 is local on Linux).
+func loopbackAliases(t *testing.T, ips ...string) {
+	t.Helper()
+	for _, ip := range ips {
+		l, err := net.Listen("tcp", net.JoinHostPort(ip, "0"))
+		if err != nil {
+			t.Skipf("cannot listen on %s: %v", ip, err)
+		}
+		_ = l.Close()
+	}
+}
+
+// GH-6480: a gateway host that is the second local address is probed on
+// that address, not on 127.0.0.1 or the first local address.
+func TestRunAsFirewallGatewayHostSecondLocalAddress(t *testing.T) {
+	loopbackAliases(t, "127.0.0.2", "127.0.0.3")
+	stubLocalIPv4s(t, "127.0.0.2", "127.0.0.3")
+	port := freePortOn(t, "127.0.0.1", "127.0.0.2", "127.0.0.3")
+	log, sudoLog, err := runFirewallPreflightHost(t, rejectAddr("127.0.0.3", port), port, "127.0.0.3", 0)
+	if err != nil || strings.Contains(log.String(), "level=WARN") {
+		t.Fatalf("preflight error %v, want a pass without Warn line:\n%s", err, log.String())
+	}
+	if got := strings.Join(gatewayProbesOn(t, sudoLog, port), " "); got != "127.0.0.3" {
+		t.Errorf("gateway port %d probed on %q, want 127.0.0.3 only", port, got)
+	}
+}
+
+// GH-6480: a gateway host 127.0.0.2 is probed on 127.0.0.2; a probe there
+// that connects is a refusal.
+func TestRunAsFirewallGatewayHostOtherLoopback(t *testing.T) {
+	loopbackAliases(t, "127.0.0.2")
+	for _, blocked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("blocked=%v", blocked), func(t *testing.T) {
+			port := freePortOn(t, "127.0.0.1", "127.0.0.2")
+			extra := rejectPort(port)
+			if blocked {
+				extra = rejectAddr("127.0.0.2", port)
+			}
+			log, sudoLog, err := runFirewallPreflightHost(t, extra, port, "127.0.0.2", 0)
+			if !blocked {
+				requireFirewallRefusal(t, log, err, fmt.Sprintf("reached the gateway port %d on 127.0.0.2", port))
+				return
+			}
+			if err != nil {
+				t.Fatalf("preflight error %v, want a pass:\n%s", err, log.String())
+			}
+			if got := strings.Join(gatewayProbesOn(t, sudoLog, port), " "); got != "127.0.0.2" {
+				t.Errorf("gateway port %d probed on %q, want 127.0.0.2 only", port, got)
+			}
+		})
+	}
+}
+
+// GH-6480: a wildcard gateway host is probed on 127.0.0.1 and on each local
+// address, the last one included.
+func TestRunAsFirewallWildcardGatewayHostEveryAddress(t *testing.T) {
+	loopbackAliases(t, "127.0.0.2", "127.0.0.3")
+	stubLocalIPv4s(t, "127.0.0.2", "127.0.0.3")
+	for _, lastBlocked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("last_blocked=%v", lastBlocked), func(t *testing.T) {
+			port := freePortOn(t, "127.0.0.1", "127.0.0.2", "127.0.0.3")
+			extra := rejectPort(port) + "\n" + rejectAddr("127.0.0.2", port)
+			if lastBlocked {
+				extra += "\n" + rejectAddr("127.0.0.3", port)
+			}
+			log, sudoLog, err := runFirewallPreflightHost(t, extra, port, "0.0.0.0", 0)
+			if !lastBlocked {
+				requireFirewallRefusal(t, log, err, fmt.Sprintf("reached the gateway port %d on 127.0.0.3", port))
+				return
+			}
+			if err != nil {
+				t.Fatalf("preflight error %v, want a pass:\n%s", err, log.String())
+			}
+			if got := strings.Join(gatewayProbesOn(t, sudoLog, port), " "); got != "127.0.0.1 127.0.0.2 127.0.0.3" {
+				t.Errorf("gateway port %d probed on %q, want 127.0.0.1, 127.0.0.2 and 127.0.0.3", port, got)
+			}
+		})
+	}
+}
+
+// GH-6480: a passed result is kept for the same gateway only: another
+// gateway port or another gateway host runs the probes again.
+// mutation pin: drop the gateway port or the gateway host from the compare
+// of the kept result -> this test fails.
+func TestRunAsFirewallPassedResultKeptForSameGatewayOnly(t *testing.T) {
+	loopbackAliases(t, "127.0.0.2")
+	a := freePortOn(t, "127.0.0.1", "127.0.0.2")
+	b := freePortOn(t, "127.0.0.1", "127.0.0.2")
+	for b == a {
+		b = freePortOn(t, "127.0.0.1", "127.0.0.2")
+	}
+	extra := rejectPort(a) + "\n" + rejectPort(b) + "\n" + rejectAddr("127.0.0.2", b)
+	log, sudoLog, err := runFirewallPreflight(t, extra, a, 0)
+	if err != nil {
+		t.Fatalf("first preflight: %v\n%s", err, log.String())
+	}
+	for _, step := range []struct {
+		name string
+		cfg  *ClaudeCodeConfig
+	}{
+		{"another gateway port", firewallConfig(b, "127.0.0.1")},
+		{"another gateway host", firewallConfig(b, "127.0.0.2")},
+	} {
+		before := firewallProbes(t, sudoLog)
+		PreflightRunAsUser(step.cfg, "", true, 0)
+		if err := RunAsUserPreflightError(); err != nil {
+			t.Fatalf("%s: preflight error %v", step.name, err)
+		}
+		if after := firewallProbes(t, sudoLog); after <= before {
+			t.Errorf("%s: the probes did not run again after a passed result (%d connections before, %d after)", step.name, before, after)
+		}
+	}
+}
+
+// GH-6480: at the daemon start (RunAsGatewayRequired) a gateway port of 0
+// or below is a refusal, and no probe runs; with the option empty nothing
+// happens.
+func TestRunAsUserDaemonStartWithoutGatewayPortRefuses(t *testing.T) {
+	for _, port := range []int{0, -1} {
+		t.Run(fmt.Sprint(port), func(t *testing.T) {
+			setRunAsStateForTest(t, nil, "")
+			sudoLog := mockSudoAgent(t, "", "")
+			stubRunAsHost(t, "linux", "1000", map[string]string{"pilot-agent": t.TempDir()})
+			runAsFirewallCheck = checkRunAsFirewall
+			log := captureLog(t)
+			cfg := firewallConfig(port, "")
+			cfg.RunAsGatewayRequired = true
+			PreflightRunAsUser(cfg, "", true, 0)
+			requireFirewallRefusal(t, log, RunAsUserPreflightError(), runAsGatewayPortCheck)
+			if n := firewallProbes(t, sudoLog); n != 0 {
+				t.Errorf("want no probe, got %q", sudoCalls(t, sudoLog))
+			}
+
+			PreflightRunAsUser(&ClaudeCodeConfig{RunAsGatewayRequired: true, RunAsGatewayPort: port}, "", true, 0)
+			if err := RunAsUserPreflightError(); err != nil {
+				t.Errorf("option empty: preflight error %v, want none", err)
+			}
+		})
 	}
 }

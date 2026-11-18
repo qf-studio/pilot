@@ -457,14 +457,15 @@ func main() {
 // the gateway port, which a running daemon holds. Every other entry point
 // passes 0 and "", and the probe skips the gateway part (GH-6455).
 func applyReadGuardConfig(execCfg *executor.BackendConfig, configPath string, gatewayPort int, gatewayHost string) {
-	setReadGuardConfig(execCfg, configPath, gatewayPort, gatewayHost)()
+	setReadGuardConfig(execCfg, configPath, gatewayPort, gatewayHost, false)()
 }
 
 // setReadGuardConfig is applyReadGuardConfig without the run_as_user
 // preflight: it sets the read guard config and returns the preflight with the
 // inputs of this call, so a later run sees what a run at once would see
-// (GH-6477).
-func setReadGuardConfig(execCfg *executor.BackendConfig, configPath string, gatewayPort int, gatewayHost string) (preflight func()) {
+// (GH-6477). daemonStart makes a gateway port of 0 or below a refusal of the
+// preflight (GH-6480).
+func setReadGuardConfig(execCfg *executor.BackendConfig, configPath string, gatewayPort int, gatewayHost string, daemonStart bool) (preflight func()) {
 	var claudeCode *executor.ClaudeCodeConfig
 	var backendType string
 	poolSize := 0
@@ -476,6 +477,7 @@ func setReadGuardConfig(execCfg *executor.BackendConfig, configPath string, gate
 	}
 	claudeCode.ConfigPath = configPath
 	claudeCode.RunAsGatewayPort, claudeCode.RunAsGatewayHost = gatewayPort, gatewayHost
+	claudeCode.RunAsGatewayRequired = daemonStart
 	executor.SetReadGuardConfig(claudeCode)
 	// TASK-651: fail-closed check of claude_code.run_as_user at every
 	// entrypoint that can spawn a model process. Does nothing when empty.
@@ -491,13 +493,36 @@ var preflightRunAsUser = executor.PreflightRunAsUser
 // only entry point that passes the gateway port and host of the config to
 // the run_as_user preflight. It sets the read guard config at once and
 // returns the preflight, which the caller runs at once or, with --replace,
-// once the old daemon has stopped.
+// once the old daemon has stopped. With run_as_user set, a gateway port of 0
+// or below is a refusal of the preflight (GH-6480).
 func applyStartReadGuardConfig(cfg *config.Config, configPath string) (preflight func()) {
 	gatewayPort, gatewayHost := 0, ""
 	if cfg.Gateway != nil {
 		gatewayPort, gatewayHost = cfg.Gateway.Port, cfg.Gateway.Host
 	}
-	return setReadGuardConfig(cfg.Executor, configPath, gatewayPort, gatewayHost)
+	return setReadGuardConfig(cfg.Executor, configPath, gatewayPort, gatewayHost, true)
+}
+
+// daemonLockAcquire is acquireDaemonLock and replaceStartRun is
+// replaceStartPreflight; tests replace them to see the order of the two.
+var (
+	daemonLockAcquire = acquireDaemonLock
+	replaceStartRun   = replaceStartPreflight
+)
+
+// lockDaemonForStart takes the single-instance lock of the daemon start and,
+// with replace, runs the run_as_user preflight once the old daemon has
+// stopped (GH-6455, GH-6480): the old daemon holds the gateway port the
+// probe listens on until then.
+func lockDaemonForStart(cfg *config.Config, replace bool, startPreflight func()) (*singleton.Lock, error) {
+	lock, err := daemonLockAcquire(cfg, replace)
+	if err != nil {
+		return nil, err
+	}
+	if replace {
+		replaceStartRun(cfg, startPreflight)
+	}
+	return lock, nil
 }
 
 // gatewayPortWait bounds how long the daemon start with --replace waits for
@@ -2432,17 +2457,14 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, startPreflight func(
 	// exactly the duplicate-work failure mode this closes. This supersedes
 	// the Telegram-only 409 check further down, which is blind to
 	// github-only/headless runs.
-	daemonLock, err := acquireDaemonLock(cfg, replace)
+	// GH-6455: with --replace the old daemon has stopped once the lock is
+	// taken; GH-6477: its gateway may still hold the port that the
+	// run_as_user preflight listens on, replaceStartPreflight waits for it.
+	daemonLock, err := lockDaemonForStart(cfg, replace, startPreflight)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = daemonLock.Release() }()
-	// GH-6455: with --replace the old daemon has stopped now; GH-6477: its
-	// gateway may still hold the port that the run_as_user preflight listens
-	// on, replaceStartPreflight waits for it.
-	if replace {
-		replaceStartPreflight(cfg, startPreflight)
-	}
 
 	// GH-4393: log the resolved, symlink-evaluated absolute DB path in the
 	// first lines of daemon.log. The 2026-07-16 cutover incident produced a

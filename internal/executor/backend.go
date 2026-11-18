@@ -1372,11 +1372,14 @@ type ClaudeCodeConfig struct {
 	// (checkRunAsFirewall). Set by the daemon start only; 0 skips that part
 	// of the probe. Not YAML-configurable.
 	RunAsGatewayPort int `yaml:"-"`
-	// RunAsGatewayHost is the gateway host of the loaded config: when it is
-	// not a loopback address the probe also checks the gateway port on a
-	// non-loopback local address. Set with RunAsGatewayPort. Not
-	// YAML-configurable.
+	// RunAsGatewayHost is the gateway host of the loaded config: it decides
+	// the addresses on which the probe checks the gateway port
+	// (gatewayProbeAddrs). Set with RunAsGatewayPort. Not YAML-configurable.
 	RunAsGatewayHost string `yaml:"-"`
+	// RunAsGatewayRequired is set by the daemon start only: with run_as_user
+	// set, a RunAsGatewayPort of 0 or below is then a refusal, not a skip of
+	// the gateway part of the probe (GH-6480). Not YAML-configurable.
+	RunAsGatewayRequired bool `yaml:"-"`
 
 	// EnvPassthrough lists environment variable names that survive the
 	// model-subprocess env scrub (GH-5275/GH-5276) even if they would
