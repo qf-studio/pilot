@@ -109,7 +109,9 @@
 - [ ] **H7** (dispatch-ready, below; after H8 and H9; H3 is merged; same files; must merge before the removal of the preflight refusal) from the run-it review of PR#6461: the "already published" forgiveness after a failed push compares the remote head with the HEAD of the workspace, which the agent controls, so a failed hand-over reads as a delivered push; the hand-over SHA is recorded before the gate, so the count of new commits uses a refused commit; a push with nothing above the base is retried as an infra failure; the fetch of the count and two `ls-remote` probes run with credentials and without the hooks-off arguments; four guards with no test.
 - **Notes from the review of PR#6461 that H6 and H7 do not cover:** no daemon-user git command ran in the workspace in any driven case (20 daemon git calls over the delivery methods, 0 in the workspace; 0 marker lines from the daemon side with a hostile workspace config of 20 keys and 8 hooks); the gate refused each secret case (later removed, merged side branch, merge commit, orphan history, commit message, binary attribute, replace ref, moved remote-tracking refs); branch names with `:`, `..`, `^`, `*`, spaces are refused and names such as `--mirror` or `+plus` go to `refs/heads/NAME` only; the refused commit stays under `refs/pilot/handover/TASK` until the next hand-over (the lifetime of the ref is in H3); with `GIT_DIR` in the daemon environment the gate, the push with credentials and the probes would follow it (H5 covers `handover.go` only: **H7 takes the same environment cleanup for the delivery commands**); a token in the environment of the agent-side bundle command is not caught by a test under the mock sudo (real `env_reset` not exercised). Not run: real sudo, Linux, the `default_branch` setting of the gate.
 - [x] **H2** (PR#6461 merged 11-17 22:47Z; run-it review done, see H6 and H7) ([#6445](https://github.com/qf-studio/pilot/issues/6445), dispatched 11-17 ~18:20Z) hand-over, part 2: the secret gate, the push and the remote probes run in the daemon's repository on the hand-over ref.
-- [x] **H3** (PR#6482 merged 11-18 04:31Z; no run-it review yet) ([#6462](https://github.com/qf-studio/pilot/issues/6462), dispatched 11-17 ~22:55Z) hand-over, part 3: the four `gh` commands and the recovery ref use the daemon's repository; the workspace stays until its commits are safe; the graph reads go through the helper.
+- [ ] **H11** ([#6492](https://github.com/qf-studio/pilot/issues/6492), dispatched 11-18 ~11:40Z) from the run-it review of PR#6482 (comment on the PR): the clean-up removes a workspace as "pushed" also when the agent made a commit after the last push, with no log line; the sweep at the daemon start and the prune of a task remove a kept workspace with no check, so its commits are lost; no test for the rule "keep the workspace after a failed push" (a mutation that records "pushed" before the push passes the suite).
+- **Notes from the review of PR#6482 for a later leg (H12, to write after H7: `git.go` and `epic.go`):** ghDirForDaemonRepo keeps only the last two path segments of the daemon's remote, so a GitHub Enterprise or GitLab remote gives `--repo owner/name` with no host and `gh` resolves it against github.com with the daemon token (derivation reproduced, real gh not run); a remote that ends in `.git/` gives `owner/name.git`; the parse error for a one-segment remote with credentials prints the credential; three more `gh` commands run in the workspace (`epic.go`: sub-issue, label, comment calls take the execution path); a FIFO in place of `graph.json` stalls each read for 30 s or more and the reads use a background context; `refs/pilot/handover/TASK` stays for ever after a sweep and the next hand-over of the task deletes it, also when it is the only copy of the commits. Held in the review: the four `gh` commands ran in the daemon's repository with the daemon's `--repo` and `--head` against a hostile workspace config; the recovery ref is made in the daemon's repository; "pushed" is the exit status of the daemon's own push. Not run: a real second user, real sudo, real gh.
+- [x] **H3** (PR#6482 merged 11-18 04:31Z; run-it review done, see H11 and the notes line above) ([#6462](https://github.com/qf-studio/pilot/issues/6462), dispatched 11-17 ~22:55Z) hand-over, part 3: the four `gh` commands and the recovery ref use the daemon's repository; the workspace stays until its commits are safe; the graph reads go through the helper.
 - [ ] **H10** ([#6490](https://github.com/qf-studio/pilot/issues/6490), dispatched 11-18 ~11:15Z) from the run-it review of PR#6484 (comment on the PR): the refusal text of the secret gate prints up to 40 characters of a secret in three cases — the name of an extra header line (a registered value of 41 or more characters, or a shape value longer than 40), the value of an `encoding` header longer than 40 (older code, GH-6343), and a value with a space written as one header line. The text goes to the error, the log line, the alert and the issue comment. **This code runs for each user of the product, with the option empty too.** PR#6484 merged the commit cc24cf2fe that the hold comment named: the retry of 11-18 did not run the agent again, so neither point of the retry comment landed (the label removal alone made the daemon open the PR for the pushed branch).
 - **Notes from the review of PR#6484 that H10 does not cover:** the header scan refuses each place tried (author, committer, a second encoding line, an invented header, continuation lines, a header after gpgsig, mergetag, CRLF, a NUL byte, the root commit, a merge commit, the first and last commit of 2000); no false refusal for 150 signed commits (GPG ed25519, GPG rsa4096, SSH ed25519), tree and parent lines, token-like emails, a long non-ASCII name; 2000 commits cost 0.10 s and 6 git processes; the identity of the agent works with no identity in the workspace, and a newline or `<>` in user.name of the daemon's repository injects no header; **not refused:** a value split over a header line and its continuation, the base64 form of a value in gpgsig, the message of an annotated tag (tag objects are not scanned; read: no push sends a tag); a `user.name` of only `<>` in the daemon's repository makes each commit of the agent user fail. Not run: Linux, real sudo.
 - [x] **H4** (PR#6484 merged 11-18 06:03Z; run-it review done, see H10) ([#6463](https://github.com/qf-studio/pilot/issues/6463), dispatched 11-17 ~22:55Z; parked by Pilot 11-18 02:23Z: the pre-PR review found one blocking defect (a part of a secret in the name of an extra header line can show in the refusal) and the fix round had no time left; branch `pilot/GH-6463` at cc24cf2fe; started again 11-18 ~03:55Z with a comment that narrows the retry to that defect and one comment fix) a git identity for the commits of the agent user; the secret gate also scans the header lines of a commit.
@@ -1608,6 +1610,47 @@ A scan of tag objects. A value split over a header line and its continuation lin
 
 - Navigator TASK-651 in this repo · review comment of PR#6484 · hold comment of issue 6463
 
+### LEG H11 — repo: qf-studio/pilot — title: fix(executor): run_as_user workspace clean-up — a commit after the last push keeps the workspace, the start-up sweep keeps a workspace whose commits are in no ref of the daemon's repository
+
+probe: present qf-studio/pilot func[[:space:]]agentWorkspaceKeepReason\(
+probe: present qf-studio/pilot func[[:space:]]finishAgentWorkspace\(
+probe: present qf-studio/pilot func[[:space:]]sweepAgentWorkspaces\(
+probe: absent  qf-studio/pilot func[[:space:]]agentWorkspaceTipSafe\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-651. With run_as_user set, each run works in a clone that the agent user owns (the workspace). finishAgentWorkspace (`internal/executor/agent_workspace.go`) removes the workspace at the end of the run only when its commits are safe outside it; agentWorkspaceKeepReason decides. A kept workspace is removed later by sweepAgentWorkspaces at the daemon start and by PruneOrphanedWorktreeForTask (`internal/executor/worktree.go`). A run-it review found:
+
+- agentWorkspaceKeepReason returns "remove" as soon as the record says "pushed", and for a recovery ref it compares only the ref with the recorded SHA. Neither is compared with the tip of the workspace. A commit that the agent makes after a good push, or after a failed push and before the recovery ref, is removed with the workspace and no log line.
+- The sweep and the prune remove a kept workspace with no check and one Info line. A workspace that was kept because its commits were in no ref loses them at the next daemon start.
+- No test pins the rule "the workspace stays after a failed push": a change that records "pushed" before `git push` runs passes the suite.
+
+The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below, only in `agent_workspace.go`, `worktree.go` and their test files. With the option empty nothing changes.
+
+## Scope
+
+1. A function agentWorkspaceTipSafe(ctx, wsPath, daemonRepo): it reads, as the agent user in the workspace (hooks off, replace refs off), the commit of HEAD and of each local branch. It returns true only when each of those commits exists in the daemon's repository and is contained in one or more refs of `refs/remotes/`, `refs/pilot-recovery/` or `refs/pilot/handover/` there (a daemon-side `git for-each-ref --contains`), or is the base of the workspace or an ancestor of it. A read error, a value that is not a full hex object name, or a commit the daemon's repository does not have gives false.
+2. agentWorkspaceKeepReason: the "pushed" case and the recovery ref case also need agentWorkspaceTipSafe. When it is false the workspace stays, with the reason "a commit of the workspace is in no ref of the daemon's repository". The case "no commit above the base" stays as today.
+3. sweepAgentWorkspaces and PruneOrphanedWorktreeForTask: before the removal of a workspace they call agentWorkspaceTipSafe. A workspace that is not safe stays, and one Error line names the task, the path and its age. A workspace that is not safe and older than seven days is removed with one Error line that says that its commits are lost. A workspace that is safe is removed as today.
+4. Tests (mock sudo fixture of the workspace tests): a push that succeeds, then one more commit in the workspace -> the workspace stays and the Error line names it; a push that fails with no recovery ref -> the workspace stays (the test must fail when "pushed" is recorded before the push); a recovery ref, then one more commit -> the workspace stays; a pushed workspace with no later commit is removed; the sweep keeps a workspace with a commit in no ref and removes one whose tip is in `refs/remotes/origin/`; the sweep removes a workspace older than seven days with the "lost" line (the age through a seam); a workspace whose HEAD is broken stays.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'AgentWorkspace|RunAsUser|Sweep|PruneOrphaned'` passes; paste the output into the PR body.
+- [ ] Remove the call of agentWorkspaceTipSafe in the "pushed" case -> the test with the commit after the push fails.
+- [ ] Record "pushed" before the push runs -> the failed-push test fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The lifetime of the hand-over ref. The `gh` commands. The reads of `graph.json`. A new hand-over at the sweep. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comment of PR#6482
+
 ### LEG U4 — repo: qf-studio/pilot — title: feat(executor): run_as_user gates — quality gates, workflow hooks, evidence commands and the lint fix run as the agent user with an allowlist environment
 
 probe: present qf-studio/pilot \)[[:space:]]createAgentWorkspace\(
@@ -1979,3 +2022,4 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - P6 → https://github.com/qf-studio/pilot/issues/6480
 - H8 → https://github.com/qf-studio/pilot/issues/6488
 - H10 → https://github.com/qf-studio/pilot/issues/6490
+- H11 → https://github.com/qf-studio/pilot/issues/6492
