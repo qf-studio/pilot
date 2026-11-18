@@ -63,19 +63,6 @@ const handOverQuarantinePrefix = "pilot-handover-incoming-"
 // left-over of a daemon that was killed and the next hand-over removes it.
 const handOverQuarantineMaxAge = time.Hour
 
-// handOverEnvDenied are the names of the daemon environment that a git
-// command of the daemon during a hand-over never gets: each of them points
-// git at another repository, object store, index or config. Every name that
-// starts with GIT_CONFIG is removed too (handOverEnvAllowed).
-var handOverEnvDenied = map[string]bool{
-	"GIT_DIR":                          true,
-	"GIT_WORK_TREE":                    true,
-	"GIT_INDEX_FILE":                   true,
-	"GIT_OBJECT_DIRECTORY":             true,
-	"GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
-	"GIT_NAMESPACE":                    true,
-}
-
 // handOverRef is the hand-over ref of a task in the daemon's repository.
 func handOverRef(taskID string) string {
 	return handOverRefPrefix + sanitizeBranchName(taskID)
@@ -88,18 +75,31 @@ func handOverGitArgs(args ...string) []string {
 	return append(secretpatterns.GitScanConfig(), args...)
 }
 
-// handOverEnvAllowed reports whether the variable name reaches a git command
-// of the daemon during a hand-over.
+// handOverEnvAllowed reports whether the variable name of the daemon
+// environment reaches a git command of the daemon during a hand-over. Decision:
+// an allow rule, no list of denied names: no name that starts with GIT_ passes
+// (GIT_COMMON_DIR, GIT_EXEC_PATH, GIT_GRAFT_FILE, GIT_TRACE each passed the
+// list of before). The GIT_ values a hand-over needs are set after the filter.
 func handOverEnvAllowed(name string) bool {
-	return !handOverEnvDenied[name] && !strings.HasPrefix(name, "GIT_CONFIG")
+	return !strings.HasPrefix(name, "GIT_")
+}
+
+// handOverDaemonEnv is env without the names handOverEnvAllowed refuses, plus
+// GIT_TERMINAL_PROMPT=0.
+func handOverDaemonEnv(env []string) []string {
+	kept := slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return !handOverEnvAllowed(name)
+	})
+	return append(kept, "GIT_TERMINAL_PROMPT=0")
 }
 
 // handOverDaemonGit builds a git command of the daemon in daemonRepo during a
-// hand-over (args as given): the environment of the daemon without the names
-// of handOverEnvDenied and GIT_CONFIG*, a process group of its own, and a
-// cancel of ctx that kills that group, so a child such as index-pack that holds
-// the output pipe dies with it; the wait delay of configureProcessGroup bounds
-// the wait. A command the constructor failed closed, or one of the agent route
+// hand-over (args as given): the environment of the daemon through
+// handOverDaemonEnv, a process group of its own, and a cancel of ctx that
+// kills that group, so a child such as index-pack that holds the output pipe
+// dies with it; the wait delay of configureProcessGroup bounds the wait. A
+// command the constructor failed closed, or one of the agent route
 // (agentCommand already kills its group through sudo), is left as it is.
 func handOverDaemonGit(ctx context.Context, daemonRepo string, args ...string) *exec.Cmd {
 	cmd := gitCommandIn(ctx, daemonRepo, args...)
@@ -113,13 +113,7 @@ func handOverDaemonGit(ctx context.Context, daemonRepo string, args ...string) *
 	if env == nil {
 		env = os.Environ()
 	}
-	kept := make([]string, 0, len(env))
-	for _, kv := range env {
-		if name, _, _ := strings.Cut(kv, "="); handOverEnvAllowed(name) {
-			kept = append(kept, kv)
-		}
-	}
-	cmd.Env = kept
+	cmd.Env = handOverDaemonEnv(env)
 	configureProcessGroup(cmd)
 	cmd.Cancel = func() error { return killProcessGroup(cmd, syscall.SIGKILL) }
 	return cmd
@@ -135,8 +129,8 @@ type handOverQuarantine struct {
 // that reads and writes objects in the quarantine: GIT_OBJECT_DIRECTORY is the
 // quarantine and, with alternate, GIT_ALTERNATE_OBJECT_DIRECTORIES is the
 // object directory of the daemon's repository; without it the quarantine is
-// the only object directory. Decision: handOverDaemonGit removes both names of
-// the daemon environment, these are set on purpose. A command that routes to
+// the only object directory. Decision: handOverDaemonGit removes every GIT_
+// name of the daemon environment, these are set on purpose. A command that routes to
 // the agent user would lose them, so it fails closed.
 func (q handOverQuarantine) git(ctx context.Context, daemonRepo string, alternate bool, args ...string) *exec.Cmd {
 	cmd := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs(args...)...)
@@ -349,8 +343,8 @@ func removeHandOverFiles(paths []string) {
 // verifyHandOverObjects through the quarantine. Only then the pack moves into
 // objects/pack and update-ref sets the hand-over ref; a failed update-ref
 // removes the moved files. Every git command of this step runs through
-// handOverDaemonGit (no GIT_DIR and the like, a group kill on a cancel of
-// ctx). The temporary file and the quarantine are removed on every path; a
+// handOverDaemonGit (no GIT_ name of the daemon environment, a group kill on
+// a cancel of ctx). The temporary file and the quarantine are removed on every path; a
 // failed hand-over leaves objects/pack as it was and no hand-over ref.
 func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, baseSHA string) (string, error) {
 	if sanitizeBranchName(taskID) == "" {
