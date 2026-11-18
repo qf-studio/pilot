@@ -24,6 +24,9 @@ import (
 type handOverEnv struct {
 	*agentWorkspaceEnv
 	ws, branch, base string
+	// cleanup is the cleanup of the workspace that createAgentWorkspace
+	// returned; it also runs at the end of the test.
+	cleanup func()
 }
 
 const handOverTestTask = "GH-1"
@@ -39,7 +42,7 @@ func newHandOverEnv(t *testing.T) *handOverEnv {
 		t.Fatalf("createAgentWorkspace: %v", err)
 	}
 	t.Cleanup(cleanup)
-	return &handOverEnv{agentWorkspaceEnv: e, ws: ws, branch: branch, base: wsGit(t, e.repo, "rev-parse", "HEAD")}
+	return &handOverEnv{agentWorkspaceEnv: e, ws: ws, branch: branch, base: wsGit(t, e.repo, "rev-parse", "HEAD"), cleanup: cleanup}
 }
 
 // commitFile commits name with content on the checked-out branch of dir.
