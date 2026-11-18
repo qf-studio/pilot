@@ -529,15 +529,9 @@ func checkCommitEncodings(ctx context.Context, dir string, logArgs []string) err
 // redaction leaves unchanged; any other value is attacker-chosen and can be
 // the secret, so it gets a fixed text (TASK-651).
 func describeEncoding(enc string) string {
-	const fixed = "an encoding header that is not UTF-8"
-	if enc == "" || len(enc) > 40 || Redact(enc) != enc {
-		return fixed
-	}
-	for i := 0; i < len(enc); i++ {
-		c := enc[i]
-		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || strings.IndexByte("-_.:", c) >= 0) {
-			return fixed
-		}
+	const charsetChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.:"
+	if enc == "" || len(enc) > 40 || strings.Trim(enc, charsetChars) != "" || Redact(enc) != enc {
+		return "an encoding header that is not UTF-8"
 	}
 	return "the encoding " + enc
 }
