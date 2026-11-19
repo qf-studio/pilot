@@ -1618,6 +1618,44 @@ The environment of the hand-over commands in `handover.go`. The gh commands. Net
 
 - Navigator TASK-651 in this repo · review comment of PR#6520
 
+### LEG H19 — repo: qf-studio/pilot — title: fix(secretpatterns): the secret gate sees a submodule path with every diff config — fixed submodule arguments for the two scan commands, a length limit for the printed path, tests for the copy and merge headers
+
+probe: present qf-studio/pilot func[[:space:]]unquoteGitPath\(
+probe: present qf-studio/pilot func[[:space:]]scanPatch\(
+probe: present qf-studio/pilot func[[:space:]]TestDaemonGitEnvDropsInheritedGitNames\(
+probe: absent  qf-studio/pilot func[[:space:]]TestPushRangeSubmodulePathAnyConfig\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+The secret gate (`internal/executor/secretpatterns/pushrange.go`) scans the commits of a push for registered secret values and refuses the push. It reads the paths of a commit from the output of two git commands: the `git diff` of checkRange and the `git log -p` of scanCommits. This code runs for each user. A run-it review found the points below. Keep the change small: only the items below, only in `pushrange.go` and its test files.
+
+- Both commands take the print mode for a submodule entry (a gitlink, mode 160000) from the config. With `diff.submodule=log` or `diff.submodule=diff` git prints a `Submodule PATH ...` line and no `diff --git` block. With `diff.ignoreSubmodules=all`, or with `ignore = all` for the path in a `.gitmodules` file of the working tree, git prints nothing for the entry. scanPatch then sees no path, and a registered value in the path of a submodule entry passes the gate. The tree of the push holds the plain value. With the arguments `--submodule=short --ignore-submodules=none` on both commands each of these cases is refused.
+- The refusal prints the path whole. A path of 200 KB gives an error text, a log line, an alert and an issue comment of 200 KB.
+- No test pins the unquote of the path on a `copy to` line and on a `diff --cc` line, and no test pins the rule for the byte 0x7f of printableText.
+
+## Scope
+
+1. The `git diff` of checkRange and the `git log -p` of scanCommits get the arguments `--submodule=short` and `--ignore-submodules=none`.
+2. The printed path of a refusal is cut after the redaction: at most the last 200 characters, with `...` in front when it was cut. The scan still reads the whole path.
+3. Tests: a function TestPushRangeSubmodulePathAnyConfig — a table with one row for each way (`diff.submodule=log`, `diff.submodule=diff`, `diff.ignoreSubmodules=all`, a `.gitmodules` file in the working tree with `ignore = all` and no commit of it, a committed `.gitmodules` with `ignore = all`), each with a gitlink entry made by `git update-index --add --cacheinfo 160000,SHA,PATH` whose path holds a registered fake value: CheckPush refuses and the error holds no part of the value; one row with a value that holds a double quote; a path of 5000 characters with the value at its start gives an error text under 400 characters with no part of the value; an empty file with a quote in its name added by a merge commit (the `diff --cc` header) is refused; a 100 % copy under `diff.renames=copies` to a name with the value is refused; a name with the byte 0x7f is printed in its escaped form.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/secretpatterns/` passes; paste the output into the PR body.
+- [ ] Remove `--ignore-submodules=none` -> a row of TestPushRangeSubmodulePathAnyConfig fails.
+- [ ] Remove `--submodule=short` -> a row of TestPushRangeSubmodulePathAnyConfig fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The content of a `.gitmodules` file (the escaped form of a config value). The commits inside a submodule. A mode-only change of a file whose name holds a value. The environment of the git commands. The redaction rules for file content.
+
+## Refs
+
+- Navigator TASK-651 and TASK-650 in this repo · review comment of PR#6523
+
 ### LEG H18 — repo: qf-studio/pilot — title: fix(executor): run_as_user push, records — a forgiven push is recorded, the count is 0 when nothing is published, a hand-over error is never forgiven, the WIP SHA is the published one
 
 probe: present qf-studio/pilot func[[:space:]]TestDaemonGitEnvDropsInheritedGitNames\(
