@@ -39,7 +39,12 @@ func TestPushRangeSubmodulePathAnyConfig(t *testing.T) {
 		{"diff.submodule=diff", func(f *pushFixture, v string) { f.git("config", "diff.submodule", "diff") }, ""},
 		{"diff.ignoreSubmodules=all", func(f *pushFixture, v string) { f.git("config", "diff.ignoreSubmodules", "all") }, ""},
 		{"uncommitted .gitmodules ignore=all", func(f *pushFixture, v string) { f.writeWorkFile(".gitmodules", ignoreAll(v)) }, ""},
-		{"committed .gitmodules ignore=all", func(f *pushFixture, v string) { f.commit(".gitmodules", ignoreAll(v), "add gitmodules") }, ""},
+		// The .gitmodules commit is pushed to main first: in the range its content
+		// holds the value and the push would be refused for that file alone.
+		{"committed .gitmodules ignore=all", func(f *pushFixture, v string) {
+			f.commit(".gitmodules", ignoreAll(v), "add gitmodules")
+			f.git("push", "origin", "HEAD:main")
+		}, ""},
 		{"no config", func(f *pushFixture, v string) {}, ""},
 		{"path with a double quote", func(f *pushFixture, v string) { f.git("config", "diff.submodule", "log") }, `"&`},
 	}
@@ -50,7 +55,11 @@ func TestPushRangeSubmodulePathAnyConfig(t *testing.T) {
 			RegisterSecretValues(v)
 			tc.setup(f, v)
 			f.addGitlink(v)
-			assertRefusedUnprinted(t, CheckPush(context.Background(), f.local, "pilot/GH-1", PushOptions{}), v)
+			err := CheckPush(context.Background(), f.local, "pilot/GH-1", PushOptions{})
+			assertRefusedUnprinted(t, err, v)
+			if pre := err.(*PushRangeError); pre.File == ".gitmodules" {
+				t.Errorf("refused for .gitmodules, want the gitlink path")
+			}
 		})
 	}
 }
