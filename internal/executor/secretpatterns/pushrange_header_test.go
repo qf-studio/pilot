@@ -39,6 +39,12 @@ func leakedPart(text, value string) string {
 // date and extra header lines after the committer, and returns its SHA.
 func (f *pushFixture) writeCommit(parents []string, date int64, author string, extra ...string) string {
 	f.t.Helper()
+	return f.writeCommitMessage(parents, date, author, "clean", extra...)
+}
+
+// writeCommitMessage is writeCommit with the message msg.
+func (f *pushFixture) writeCommitMessage(parents []string, date int64, author, msg string, extra ...string) string {
+	f.t.Helper()
 	obj := "tree " + f.git("rev-parse", "HEAD^{tree}") + "\n"
 	for _, p := range parents {
 		obj += "parent " + p + "\n"
@@ -51,7 +57,7 @@ func (f *pushFixture) writeCommit(parents []string, date int64, author string, e
 	for _, e := range extra {
 		obj += e + "\n"
 	}
-	obj += "\nclean\n"
+	obj += "\n" + msg + "\n"
 	file := filepath.Join(f.t.TempDir(), "obj")
 	if err := os.WriteFile(file, []byte(obj), 0o644); err != nil {
 		f.t.Fatal(err)

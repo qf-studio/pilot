@@ -37,13 +37,14 @@ type PushRangeError struct {
 const CommitMessageFile = "the commit message"
 
 func (e *PushRangeError) Error() string {
-	return fmt.Sprintf("push refused: commit %s adds a secret value in %s", e.Commit, Redact(e.File))
+	return fmt.Sprintf("push refused: commit %s adds a secret value in %s", e.Commit, printableText(e.File))
 }
 
 // newPushRangeError builds the verdict with the file path masked: a path can
 // hold the secret itself, and the error, the log line and the alert print it.
+// Control bytes of the path are not kept raw (TASK-651).
 func newPushRangeError(commit, file, kind string) *PushRangeError {
-	return &PushRangeError{Commit: commit, File: Redact(file), Kind: kind}
+	return &PushRangeError{Commit: commit, File: printableText(file), Kind: kind}
 }
 
 // Is makes errors.Is(err, ErrPushRefused) true for a *PushRangeError.
@@ -504,8 +505,10 @@ func checkRange(ctx context.Context, dir, diffBase string, logArgs []string, hea
 // command, so the scan would read other text than the bytes the remote receives;
 // the gate does not try to decode it (GH-6343). The records are NUL-terminated
 // (-z): no header value holds a NUL, so a value cannot forge another record.
+// Oldest commit first (--reverse --topo-order), so the error names the first
+// offender whatever the commit dates say.
 func checkCommitEncodings(ctx context.Context, dir string, logArgs []string) error {
-	out, err := gitOutput(ctx, dir, append([]string{"log", "--no-show-signature", "-z", "--format=%H%n%e"}, logArgs...)...)
+	out, err := gitOutput(ctx, dir, append([]string{"log", "--no-show-signature", "--reverse", "--topo-order", "-z", "--format=%H%n%e"}, logArgs...)...)
 	if cerr := ctxError(ctx); cerr != nil {
 		return cerr
 	}
@@ -724,13 +727,10 @@ func printableValue(v string) string {
 	const maxLen = 40
 	var b strings.Builder
 	n := 0
-	for _, r := range Redact(v) {
+	for _, r := range printableText(v) {
 		if n == maxLen {
 			b.WriteString("...")
 			break
-		}
-		if r < 0x20 || r == 0x7f {
-			r = '?'
 		}
 		b.WriteRune(r)
 		n++
@@ -738,8 +738,22 @@ func printableValue(v string) string {
 	return b.String()
 }
 
+// printableText is printableValue without the cut, for a file path: the path
+// names the file to fix, so it is printed whole. Redacted first, then each
+// control character becomes "?".
+func printableText(v string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, Redact(v))
+}
+
 // scanCommits scans every selected commit on its own, streaming git's output so
-// a huge commit is cut off at maxCommitScanBytes instead of read whole.
+// a huge commit is cut off at maxCommitScanBytes instead of read whole. Oldest
+// commit first: --topo-order keeps a parent before its child across a merge
+// whatever the commit dates say.
 //
 // Decision: records are separated by a random marker drawn per call, not by a
 // control byte. With --text a binary file's own bytes reach the stream, and a
@@ -754,7 +768,7 @@ func scanCommits(ctx context.Context, dir string, logArgs []string, opts PushOpt
 	start, msgMark, patchMark := []byte(mark+"S\n"), []byte("\n"+mark+"M\n"), []byte("\n"+mark+"P\n")
 	format := "--format=" + mark + "S%n%H%n" + mark + "M%n%B%n" + mark + "P"
 
-	args := append(GitScanConfig(), "log", "--no-show-signature", "-p", "--cc", "--text", "--no-textconv", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--reverse", "--no-color", format)
+	args := append(GitScanConfig(), "log", "--no-show-signature", "-p", "--cc", "--text", "--no-textconv", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--reverse", "--topo-order", "--no-color", format)
 	args = append(args, logArgs...)
 	defer gitCallDone(args)
 	cmd := gitCommand(ctx, dir, args...)
@@ -861,7 +875,9 @@ func firstHit(text []byte, skipPatterns bool) (string, bool) {
 // first, with the same patterns and values as its content (GH-6334). File
 // headers (diff --git … +++ b/<path>) are read only in the header block, before
 // the first hunk: an added line that starts with "++ " shows up in a hunk as
-// "+++ …" and is scanned, not taken for a file name.
+// "+++ …" and is scanned, not taken for a file name. A path git prints quoted
+// (it holds a '"', a '\' or a control byte) is scanned and kept in its plain
+// form, the bytes the push sends (TASK-651).
 func scanPatch(patch []byte, opts PushOptions) (file, kind string, hit bool) {
 	var (
 		cur      string
@@ -890,28 +906,22 @@ func scanPatch(patch []byte, opts PushOptions) (file, kind string, hit bool) {
 			if flush() {
 				return file, kind, true
 			}
-			// The new path is the last " b/" part; "+++" or "rename to" below
-			// replace it when the diff has them (a path may hold " b/" itself).
-			rest := string(line[len("diff --git "):])
-			cur, inHeader = rest, true
-			if i := strings.LastIndex(rest, " b/"); i >= 0 {
-				cur = rest[i+len(" b/"):]
-			}
+			cur, inHeader = diffGitNewPath(string(line[len("diff --git "):])), true
 		case bytes.HasPrefix(line, []byte("diff --cc ")):
 			if flush() {
 				return file, kind, true
 			}
-			cur, inHeader = string(line[len("diff --cc "):]), true
+			cur, inHeader = unquoteGitPath(string(line[len("diff --cc "):])), true
 		case inHeader && bytes.HasPrefix(line, []byte("@@")):
 			inHeader = false
 		case inHeader:
 			switch {
 			case bytes.HasPrefix(line, []byte("+++ ")):
-				cur = strings.TrimSuffix(strings.TrimPrefix(string(line[4:]), "b/"), "\t")
+				cur = strings.TrimPrefix(unquoteGitPath(strings.TrimSuffix(string(line[4:]), "\t")), "b/")
 			case bytes.HasPrefix(line, []byte("rename to ")):
-				cur = string(line[len("rename to "):])
+				cur = unquoteGitPath(string(line[len("rename to "):]))
 			case bytes.HasPrefix(line, []byte("copy to ")):
-				cur = string(line[len("copy to "):])
+				cur = unquoteGitPath(string(line[len("copy to "):]))
 			}
 		case len(line) > 0 && line[0] == '+':
 			added.Write(line[1:])
@@ -923,6 +933,81 @@ func scanPatch(patch []byte, opts PushOptions) (file, kind string, hit bool) {
 	}
 	return "", "", false
 }
+
+// diffGitNewPath is the new path of a "diff --git" line, given the text after
+// "diff --git ": the second of its two paths, unquoted, without "b/". "+++" or
+// "rename to" below replace it when the diff has them. A quoted path starts at
+// the last '"' that no backslash escapes; a plain one is the part after the
+// last " b/" (a path may hold " b/" itself).
+func diffGitNewPath(rest string) string {
+	if strings.HasSuffix(rest, `"`) {
+		for i := len(rest) - 2; i >= 0; i-- {
+			if rest[i] != '"' {
+				continue
+			}
+			n := 0
+			for n < i && rest[i-1-n] == '\\' {
+				n++
+			}
+			if n%2 == 0 {
+				return strings.TrimPrefix(unquoteGitPath(rest[i:]), "b/")
+			}
+		}
+	}
+	if i := strings.LastIndex(rest, " b/"); i >= 0 {
+		return rest[i+len(" b/"):]
+	}
+	return rest
+}
+
+// unquoteGitPath returns the plain bytes of a path git prints in quotes: a
+// path that holds a '"', a '\' or a control byte is written in double quotes
+// with C escapes (\", \\, \a, \b, \f, \n, \r, \t, \v and octal \NNN). Any other
+// text, and a quoted text with a broken escape, is returned as it is.
+func unquoteGitPath(s string) string {
+	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
+		return s
+	}
+	in := s[1 : len(s)-1]
+	var b strings.Builder
+	for i := 0; i < len(in); i++ {
+		c := in[i]
+		if c != '\\' {
+			b.WriteByte(c)
+			continue
+		}
+		if i++; i == len(in) {
+			return s
+		}
+		switch c = in[i]; c {
+		case '"', '\\':
+			b.WriteByte(c)
+		case 'a':
+			b.WriteByte('\a')
+		case 'b':
+			b.WriteByte('\b')
+		case 'f':
+			b.WriteByte('\f')
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case 'v':
+			b.WriteByte('\v')
+		default:
+			if i+3 > len(in) || in[i] < '0' || in[i] > '3' || !isOctalDigit(in[i+1]) || !isOctalDigit(in[i+2]) {
+				return s
+			}
+			b.WriteByte((in[i]-'0')<<6 | (in[i+1]-'0')<<3 | (in[i+2] - '0'))
+			i += 2
+		}
+	}
+	return b.String()
+}
+
+func isOctalDigit(c byte) bool { return c >= '0' && c <= '7' }
 
 // gitCallDone is called after every git call of the gate with its arguments. A
 // test seam: it lets a test end the context between two calls.
