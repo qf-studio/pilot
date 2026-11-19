@@ -126,7 +126,7 @@ var runAsAllowedEnv = map[string]bool{
 	"PATH": true, "LANG": true, "LC_ALL": true, "TERM": true, "TZ": true, "TMPDIR": true,
 	"GOCACHE": true, "GOMODCACHE": true, "GOFLAGS": true, "GOTOOLCHAIN": true,
 	"GOPROXY": true, "GONOSUMDB": true, "GOPRIVATE": true,
-	"NODE_OPTIONS": true, "PILOT_EXECUTOR": true,
+	"NODE_OPTIONS": true, "PILOT_EXECUTOR": true, "PILOT_TASK_ID": true,
 }
 
 // runAsGhGuardEnv lists the names the gh guard shim hands to the `pilot
@@ -141,8 +141,9 @@ var runAsGhGuardEnv = map[string]bool{
 }
 
 // runAsAllowedEnvPrefixes are the prefixes the allowlist keeps: how the CLI
-// is configured, routed and billed.
-var runAsAllowedEnvPrefixes = []string{"CLAUDE_", "ANTHROPIC_"}
+// is configured, routed and billed, and the changed-package scope of the
+// quality gates (quality.EnvChangedPackages and its siblings).
+var runAsAllowedEnvPrefixes = []string{"CLAUDE_", "ANTHROPIC_", "PILOT_CHANGED_"}
 
 // runAsDevNull is the null device every sudo command of the option reads as
 // standard input when the caller sets none. Opened once, never closed: each
@@ -325,6 +326,9 @@ func resolveRunAs(userName, group string) (*runAsSettings, string) {
 // With the option empty it clears any earlier state and does nothing else. Called at the same place as the read
 // guard config, for every entrypoint that spawns.
 func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree bool, worktreePoolSize int) {
+	// The gates run through the builder of the executor; with the option
+	// empty it is the default builder of internal/quality.
+	registerGateCommandBuilder()
 	var rawUser, rawGroup, rawRoot, rawDataDir string
 	var gatewayPort int
 	var gatewayHost string
