@@ -422,7 +422,7 @@ func TestHandOverPushDeletedBranchRefIsNotForgiven(t *testing.T) {
 	}
 
 	result := &ExecutionResult{TaskID: handOverTestTask, Success: true}
-	if r.pushTaskBranch(ctx, task, e.git, result, r.log) {
+	if r.pushTaskBranch(ctx, task, e.git, result, nil, r.log) {
 		t.Fatal("pushTaskBranch went on to the PR after a failed hand-over")
 	}
 	if result.Success || result.PRUrl != "" || !strings.Contains(result.Error, "push") {
@@ -483,7 +483,7 @@ func TestHandOverPushNothingNew(t *testing.T) {
 	}
 
 	result := &ExecutionResult{TaskID: handOverTestTask, Success: true}
-	if r.pushTaskBranch(ctx, task, e.git, result, r.log) {
+	if r.pushTaskBranch(ctx, task, e.git, result, nil, r.log) {
 		t.Fatal("pushTaskBranch went on to the PR with nothing new")
 	}
 	want := &ExecutionResult{}
@@ -654,5 +654,217 @@ func TestHandOverPushGatesTheSHANotTheRef(t *testing.T) {
 	}
 	if got := e.remoteHead(t, e.branch); got != head {
 		t.Errorf("remote head = %q, want the gated commit %q", got, head)
+	}
+}
+
+// detachedWork commits a file on a detached HEAD of the workspace: the HEAD
+// of the workspace holds a commit above the base, the task branch (the
+// branch of the hand-over) stays at the base, so a push finds nothing new.
+func (e *handOverPushEnv) detachedWork(t *testing.T) string {
+	t.Helper()
+	wsGit(t, e.ws, "checkout", "-q", "--detach")
+	return commitFile(t, e.ws, "detached.txt", "work")
+}
+
+// TestHandOverPushNothingNewIsTheNoChangesErrorType: the nothing-new path of
+// pushTaskBranch is the no-commit path of the PR guard, ErrorTypeNoChanges of
+// the backend result included, and the run ends no_op.
+// mutation pin: the nothing-new path of pushTaskBranch without backendResult.ErrorType = ErrorTypeNoChanges -> this test fails
+func TestHandOverPushNothingNewIsTheNoChangesErrorType(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	r := newSilentRunnerTask359()
+	task := &Task{ID: handOverTestTask, Branch: e.branch}
+	result := &ExecutionResult{TaskID: handOverTestTask, Success: true}
+	backend := &BackendResult{}
+
+	if r.pushTaskBranch(context.Background(), task, e.git, result, backend, r.log) {
+		t.Fatal("pushTaskBranch went on to the PR with nothing new")
+	}
+	if backend.ErrorType != string(ErrorTypeNoChanges) {
+		t.Errorf("backend ErrorType = %q, want %q (the no-commit path)", backend.ErrorType, ErrorTypeNoChanges)
+	}
+	if got := TerminalStatus(result); got != "no_op" {
+		t.Errorf("TerminalStatus = %q, want no_op", got)
+	}
+}
+
+// TestHandOverPushNothingNewDecomposedParent: the push loop of a decomposed
+// parent stops on nothing new after one attempt and ends as its no-commits
+// guard ends, not as a push failure after the retries.
+// mutation pin: the decomposed-parent push loop retries IsPushNothingNew and fails it as a push failure -> this test fails
+func TestHandOverPushNothingNewDecomposedParent(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	// The guard of the decomposed parent counts against the local base branch.
+	wsGit(t, e.ws, "branch", "main", e.base)
+	e.detachedWork(t)
+	r := newSilentRunnerTask359()
+	task := &Task{ID: handOverTestTask, Title: "add feature", Branch: e.branch, BaseBranch: "main", CreatePR: true}
+	result := &ExecutionResult{TaskID: handOverTestTask, Success: true}
+
+	r.finalizeDecomposedParentPR(context.Background(), task, e.git, result)
+
+	if result.Success || result.Error != decomposedParentNoCommitsError {
+		t.Errorf("result: success=%v error=%q, want the no-commits guard %q", result.Success, result.Error, decomposedParentNoCommitsError)
+	}
+	var tips int
+	for _, c := range sudoCalls(t, e.sudoLog) {
+		if strings.Contains(c, "rev-list --count "+e.base+"..refs/heads/"+e.branch) {
+			tips++
+		}
+	}
+	if tips != 1 {
+		t.Errorf("%d hand-over attempts, want 1 (nothing new is not retried)", tips)
+	}
+	if got := e.remoteHead(t, e.branch); got != "" {
+		t.Errorf("the branch reached the remote at %s", got)
+	}
+}
+
+// TestHandOverPushNothingNewHoldIsNotAPushFailure: the hold push of a timeout
+// salvage with nothing new is not a failed push: the worktree is not kept
+// for it and the hold reason does not say the push failed.
+// mutation pin: holdPushedBranch sends IsPushNothingNew to pushFailureForgiven and takes the push-failure path -> this test fails
+func TestHandOverPushNothingNewHoldIsNotAPushFailure(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	r := newSilentRunnerTask359()
+	// Not a GitHub task: the hold posts no issue comment.
+	task := &Task{ID: handOverTestTask, Branch: e.branch, SourceAdapter: "linear"}
+	result := &ExecutionResult{TaskID: handOverTestTask}
+	var preserve bool
+
+	r.holdPushedBranch(context.Background(), task, e.git, result, r.log, "backend timeout", e.ws, &preserve)
+
+	if preserve {
+		t.Error("worktree preserved for a hold with nothing to push")
+	}
+	if result.Error != "backend timeout" {
+		t.Errorf("hold reason %q, want %q (no push failure)", result.Error, "backend timeout")
+	}
+	if result.BranchPushed == nil || *result.BranchPushed {
+		t.Errorf("BranchPushed = %v, want false: nothing reached the remote", result.BranchPushed)
+	}
+	if result.Outcome != "needs_human" {
+		t.Errorf("Outcome = %q, want needs_human (the hold itself)", result.Outcome)
+	}
+}
+
+// TestRemoteGitCmdHooksOffWithTheOptionEmpty: with the option empty a
+// reference-transaction hook of the repository runs for none of the remote
+// commands (the probes and the fetch of the count, which moves origin/main).
+// mutation pin: remoteGitCmd adds secretpatterns.HooksOffArgs only for an agent workspace -> this test fails
+func TestRemoteGitCmdHooksOffWithTheOptionEmpty(t *testing.T) {
+	setRunAsStateForTest(t, nil, "")
+	repo, remote := setupTestRepoWithRemote(t)
+	t.Cleanup(func() { _ = os.RemoveAll(repo); _ = os.RemoveAll(remote) })
+	g := newGitOperationsForWorkspace(repo, repo)
+	if g.daemonRepo != "" {
+		t.Fatalf("option empty: daemonRepo = %q, want empty", g.daemonRepo)
+	}
+	ctx := context.Background()
+	base := wsGit(t, repo, "rev-parse", "HEAD")
+	moved := wsGit(t, remote, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "-p", base, "-m", "moved", base+"^{tree}")
+	wsGit(t, remote, "update-ref", "refs/heads/main", moved)
+	marker := filepath.Join(t.TempDir(), "marker")
+	writeGitHook(t, filepath.Join(repo, ".git"), "reference-transaction", marker)
+
+	if sha, ok := g.RemoteBranchHead(ctx, "main"); !ok || sha != moved {
+		t.Errorf("RemoteBranchHead = %q, %v; want %q", sha, ok, moved)
+	}
+	if ok, err := g.ProbeRemoteBranch(ctx, "main"); err != nil || !ok {
+		t.Errorf("ProbeRemoteBranch = %v, %v; want true", ok, err)
+	}
+	if _, err := g.CountNewCommitsAgainstOrigin(ctx, "main"); err != nil {
+		t.Errorf("CountNewCommitsAgainstOrigin: %v", err)
+	}
+	if got := wsGit(t, repo, "rev-parse", "refs/remotes/origin/main"); got != moved {
+		t.Fatalf("origin/main = %s after the count, want the fetched %s", got, moved)
+	}
+	if raw, err := os.ReadFile(marker); err == nil {
+		t.Errorf("a hook of the repository ran with the option empty: %q", raw)
+	}
+	hooksOff := strings.Join(secretpatterns.HooksOffArgs(), " ")
+	if args := strings.Join(g.remoteGitCmd(ctx, "fetch", "origin").Args, " "); !strings.Contains(args, hooksOff) {
+		t.Errorf("remote command with the option empty without the hooks-off arguments: %s", args)
+	}
+}
+
+// TestHandOverPushLeaseRecordsTheHandOverSHA: the branch is rewritten after
+// this run's own push and HEAD of the workspace is left on the old head; the
+// lease push publishes the hand-over SHA, and that SHA, not the HEAD of the
+// workspace, is what the run records as its push.
+// mutation pin: the lease push records task.pushedWIPSHA = LocalHead for an agent workspace -> this test fails
+func TestHandOverPushLeaseRecordsTheHandOverSHA(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	ctx := context.Background()
+	first := commitFile(t, e.ws, "a.txt", "one")
+	if err := e.git.Push(ctx, e.branch, handOverTestTask); err != nil {
+		t.Fatalf("first Push: %v", err)
+	}
+	rewritten := wsGit(t, e.ws, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "-p", e.base, "-m", "rewritten", first+"^{tree}")
+	wsGit(t, e.ws, "checkout", "-q", "--detach")
+	wsGit(t, e.ws, "update-ref", "refs/heads/"+e.branch, rewritten)
+	if got, err := e.git.LocalHead(ctx); err != nil || got != first {
+		t.Fatalf("setup: LocalHead = %q, %v; want %q", got, err, first)
+	}
+
+	r := newSilentRunnerTask359()
+	task := &Task{ID: handOverTestTask, Branch: e.branch, pushedWIPSHA: first}
+	var pushes int
+	if err := r.pushBranchCounting(ctx, e.git, task, r.log, &pushes); err != nil {
+		t.Fatalf("push loop: %v", err)
+	}
+	if pushes != 2 {
+		t.Errorf("%d pushes, want the rejected push and the lease push", pushes)
+	}
+	if got := e.remoteHead(t, e.branch); got != rewritten {
+		t.Fatalf("remote head = %q, want the hand-over SHA %q", got, rewritten)
+	}
+	if task.pushedWIPSHA != rewritten {
+		t.Errorf("pushedWIPSHA = %q, want the hand-over SHA %q, not the HEAD of the workspace %q", task.pushedWIPSHA, rewritten, first)
+	}
+}
+
+// TestHandOverPushNothingNewEpic: the epic push with nothing new ends as the
+// epic's no-commits guard ends (no_op when every child no-op'd), not as a
+// failed epic push.
+// mutation pin: the epic push sends IsPushNothingNew to pushFailureForgiven and fails as "epic branch push failed" -> this test fails
+func TestHandOverPushNothingNewEpic(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	e.detachedWork(t)
+	r := newSilentRunnerTask359()
+	task := &Task{ID: handOverTestTask, Title: "add feature", Branch: e.branch, BaseBranch: "main", CreatePR: true}
+	result := &ExecutionResult{TaskID: handOverTestTask, Success: true, IsEpic: true}
+
+	r.finalizeEpicBranchPR(context.Background(), task, e.git, result, []string{"no_op"})
+
+	want := &ExecutionResult{}
+	evaluateEmptyBranchPRGuard(true, []string{"no_op"}, want)
+	if result.Outcome != "no_op" || result.Error != want.Error {
+		t.Errorf("result: outcome=%q error=%q, want the epic no-commits guard %q", result.Outcome, result.Error, want.Error)
+	}
+	if got := TerminalStatus(result); got != "no_op" {
+		t.Errorf("TerminalStatus = %q, want no_op", got)
+	}
+}
+
+// TestHandOverPushNothingNewTimeoutSalvage: the timeout-salvage push with
+// nothing new ends as the PR guard's no-commit path, not on hold.
+// mutation pin: the timeout-salvage push sends IsPushNothingNew to pushFailureForgiven and holds the branch -> this test fails
+func TestHandOverPushNothingNewTimeoutSalvage(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	r := newSilentRunnerTask359()
+	task := &Task{ID: handOverTestTask, Title: "add feature", Branch: e.branch, BaseBranch: "main", CreatePR: true, SourceAdapter: "linear"}
+	result := &ExecutionResult{TaskID: handOverTestTask}
+	var preserve bool
+
+	r.pushAndCreatePRAfterTimeout(context.Background(), task, e.git, result, nil, r.log, e.ws, &preserve)
+
+	want := &ExecutionResult{}
+	evaluateEmptyBranchPRGuard(false, nil, want)
+	if result.Success || result.Error != want.Error {
+		t.Errorf("result: success=%v error=%q, want the no-commit guard %q", result.Success, result.Error, want.Error)
+	}
+	if result.Outcome == "needs_human" || preserve {
+		t.Errorf("outcome=%q preserve=%v: the salvage held the branch for nothing new", result.Outcome, preserve)
 	}
 }

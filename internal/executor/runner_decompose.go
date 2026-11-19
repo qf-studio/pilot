@@ -436,6 +436,10 @@ func (r *Runner) escalateDecomposedNoOp(ctx context.Context, parentTask *Task, s
 	return false
 }
 
+// decomposedParentNoCommitsError is the error of a decomposed parent whose
+// branch has no commit relative to base.
+const decomposedParentNoCommitsError = "decomposed-parent branch has no commits vs base branch"
+
 // finalizeDecomposedParentPR runs the decomposed-parent's push → PR-create →
 // record pr_created sequence with the SAME error contract as the direct path
 // (runner.go executeWithOptions ~line 3782) and finalizeEpicBranchPR
@@ -497,7 +501,7 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 	}
 	if guardCount == 0 {
 		result.Success = false
-		result.Error = "decomposed-parent branch has no commits vs base branch"
+		result.Error = decomposedParentNoCommitsError
 		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 		return
 	}
@@ -557,8 +561,9 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 		if pushErr == nil {
 			break
 		}
-		if IsPushRefused(pushErr) {
-			// GH-6272: terminal; no retry, no sleep, no forgiving.
+		if IsPushRefused(pushErr) || IsPushNothingNew(pushErr) {
+			// GH-6272: terminal; no retry, no sleep, no forgiving. TASK-651:
+			// nothing new is not a failure, and a retry finds nothing either.
 			break
 		}
 		// GH-1389: a worktree push may report a chdir error even though the
@@ -584,6 +589,14 @@ func (r *Runner) finalizeDecomposedParentPR(ctx context.Context, task *Task, git
 	}
 	if IsPushRefused(pushErr) {
 		r.failPushRefused(ctx, task, git, result, log, pushErr)
+		return
+	}
+	if IsPushNothingNew(pushErr) {
+		// TASK-651: the hand-over found no commit above the base; the run ends
+		// as the no-commits guard above ends it.
+		result.Success = false
+		result.Error = decomposedParentNoCommitsError
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 		return
 	}
 	if pushErr != nil {

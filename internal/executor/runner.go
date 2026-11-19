@@ -2509,6 +2509,27 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	return r.executeWithOptions(ctx, task, true)
 }
 
+// finishEmptyEpicBranch ends an epic whose branch has no commit relative to
+// base (GH-2743/GH-3779): evaluateEmptyBranchPRGuard on the children's
+// terminal states, no PR.
+func (r *Runner) finishEmptyEpicBranch(task *Task, result *ExecutionResult, baseBranch string, childTerminalStates []string) {
+	evaluateEmptyBranchPRGuard(true, childTerminalStates, result)
+	if result.Outcome == "no_op" {
+		r.log.Warn("Epic branch has no commits vs base and all children no-op'd, recording epic as no_op",
+			slog.String("task_id", task.ID),
+			slog.String("base_branch", baseBranch),
+			slog.String("summary", result.Error),
+		)
+		r.reportProgress(task.ID, "No-Op", 100, result.Error)
+		return
+	}
+	r.log.Warn("Epic branch has no commits vs base, skipping PR creation",
+		slog.String("task_id", task.ID),
+		slog.String("base_branch", baseBranch),
+	)
+	r.reportProgress(task.ID, "PR Skipped", 97, "epic branch has no commits relative to base")
+}
+
 // finalizeEpicBranchPR runs the epic parent's push → PR-create finalization with
 // the SAME error contract as the direct path (executeWithOptions ~runner.go:3336):
 // any non-recoverable failure sets result.Success=false (Shape A), and an
@@ -2576,21 +2597,7 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 		return
 	}
 	if guardCount == 0 {
-		evaluateEmptyBranchPRGuard(true, childTerminalStates, result)
-		if result.Outcome == "no_op" {
-			r.log.Warn("Epic branch has no commits vs base and all children no-op'd, recording epic as no_op",
-				slog.String("task_id", task.ID),
-				slog.String("base_branch", baseBranch),
-				slog.String("summary", result.Error),
-			)
-			r.reportProgress(task.ID, "No-Op", 100, result.Error)
-		} else {
-			r.log.Warn("Epic branch has no commits vs base, skipping PR creation",
-				slog.String("task_id", task.ID),
-				slog.String("base_branch", baseBranch),
-			)
-			r.reportProgress(task.ID, "PR Skipped", 97, "epic branch has no commits relative to base")
-		}
+		r.finishEmptyEpicBranch(task, result, baseBranch, childTerminalStates)
 		return
 	}
 
@@ -2652,6 +2659,12 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 			// does not make this push a success.
 			r.failPushRefused(ctx, task, git, result, r.log, err)
 			r.sweepEpicChildrenOnAbort(task, result.Error)
+			return
+		}
+		if IsPushNothingNew(err) {
+			// TASK-651: the hand-over found no commit above the base; the epic
+			// ends as the no-commits guard above ends it.
+			r.finishEmptyEpicBranch(task, result, baseBranch, childTerminalStates)
 			return
 		}
 		if pushFailureForgiven(ctx, git, task.Branch, err) {
@@ -3315,6 +3328,7 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 
 	pushed := false
 	pushFailed := false
+	nothingNew := false
 	result.BranchPushed = nil
 	if git != nil && task.Branch != "" {
 		if pushErr := git.Push(pushCtx, task.Branch, task.ID); pushErr != nil {
@@ -3334,7 +3348,16 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 				r.failPushRefused(ctx, task, git, result, log, pushErr)
 				return
 			}
-			if pushFailureForgiven(pushCtx, git, task.Branch, pushErr) {
+			if IsPushNothingNew(pushErr) {
+				// TASK-651: the hand-over found no commit above the base. Not a
+				// push failure: there is nothing to hold on the remote, and the
+				// worktree is not kept for it.
+				nothingNew = true
+				log.Warn("timeout salvage: hand-over found no commit above the base, nothing to push for the hold",
+					slog.String("task_id", task.ID),
+					slog.String("branch", task.Branch),
+				)
+			} else if pushFailureForgiven(pushCtx, git, task.Branch, pushErr) {
 				pushed = true
 			} else {
 				pushFailed = true
@@ -3372,6 +3395,8 @@ func (r *Runner) holdPushedBranch(ctx context.Context, task *Task, git *GitOpera
 			switch {
 			case pushed:
 				outcomeNote = fmt.Sprintf("Branch `%s` was pushed with the commits Pilot completed before this happened — review and finish it manually, or clear the label to let Pilot retry.", task.Branch)
+			case nothingNew:
+				outcomeNote = fmt.Sprintf("Branch `%s` has no commit above the base, so there was nothing to push — clear the label to let Pilot retry.", task.Branch)
 			case executionPath != "":
 				// GH-5399: the push failed and the worktree cleanup defer has
 				// been told to preserve it — name both so a human can recover
@@ -3453,8 +3478,10 @@ func (r *Runner) pushDirectCommit(ctx context.Context, task *Task, git *GitOpera
 
 // pushTaskBranch pushes task.Branch for the PR path, retrying transient
 // failures, and keeps the push-retry dead-man tracker (GH-4866). It returns
-// false when the run ended here, with result set.
-func (r *Runner) pushTaskBranch(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger) bool {
+// false when the run ended here, with result set. A hand-over with no commit
+// above the base ends as the no-commit path of the PR guard: the guard error
+// and, when backendResult is not nil, ErrorTypeNoChanges.
+func (r *Runner) pushTaskBranch(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, backendResult *BackendResult, log *slog.Logger) bool {
 	pushes := 0
 	pushErr := r.pushBranchCounting(ctx, git, task, log, &pushes)
 	if IsPushNothingNew(pushErr) {
@@ -3472,6 +3499,9 @@ func (r *Runner) pushTaskBranch(ctx context.Context, task *Task, git *GitOperati
 			slog.String("branch", task.Branch),
 		)
 		evaluateEmptyBranchPRGuard(false, nil, result)
+		if backendResult != nil {
+			backendResult.ErrorType = string(ErrorTypeNoChanges)
+		}
 		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 		return false
 	}
@@ -3589,7 +3619,7 @@ func (r *Runner) pushBranchCounting(ctx context.Context, git *GitOperations, tas
 				if leaseErr := git.PushForceWithLease(ctx, task.Branch, task.pushedWIPSHA, task.ID); leaseErr != nil {
 					return leaseErr
 				}
-				task.pushedWIPSHA = localHead
+				task.pushedWIPSHA = pushedHead(git, localHead)
 				return nil
 			}
 			// GH-5864: origin sits on the head a previous run of this task left
@@ -3641,6 +3671,16 @@ func (r *Runner) pushBranchCounting(ctx context.Context, git *GitOperations, tas
 		}
 	}
 	return pushErr
+}
+
+// pushedHead is the head a successful Push of git published: the hand-over
+// SHA of that push for an agent workspace (TASK-651), never the HEAD of the
+// workspace, which the agent chose; localHead (from LocalHead) otherwise.
+func pushedHead(git *GitOperations, localHead string) string {
+	if git.daemonRepo != "" {
+		return git.lastHandOverSHA()
+	}
+	return localHead
 }
 
 // inheritedHeadOpenPRCheck reports the URL of an open PR whose head is branch.
@@ -3793,6 +3833,15 @@ func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, gi
 	if err := git.Push(ctx, task.Branch, task.ID); err != nil {
 		if IsPushRefused(err) {
 			r.failPushRefused(ctx, task, git, result, log, err)
+			return
+		}
+		if IsPushNothingNew(err) {
+			// TASK-651: the hand-over found no commit above the base; the run
+			// ends as a run with no new commit (the PR guard), not on hold.
+			log.Warn("timeout salvage: hand-over found no commit above the base, skipping PR creation",
+				slog.String("task_id", task.ID), slog.String("branch", task.Branch))
+			evaluateEmptyBranchPRGuard(false, nil, result)
+			r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 			return
 		}
 		if !pushFailureForgiven(ctx, git, task.Branch, err) {
@@ -7277,7 +7326,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
 				Timestamp: time.Now(),
 			})
-			if !r.pushTaskBranch(ctx, task, git, result, log) {
+			if !r.pushTaskBranch(ctx, task, git, result, backendResult, log) {
 				return result, nil
 			}
 

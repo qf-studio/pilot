@@ -21,7 +21,7 @@ func TestPushTaskBranch_GateUnavailableReportsTheRealAttemptCount(t *testing.T) 
 	r := newSilentRunnerTask359()
 	result := &ExecutionResult{TaskID: "GH-9", Success: true}
 
-	if r.pushTaskBranch(context.Background(), &Task{ID: "GH-9", Branch: "pilot/GH-9"}, f.git, result, r.log) {
+	if r.pushTaskBranch(context.Background(), &Task{ID: "GH-9", Branch: "pilot/GH-9"}, f.git, result, nil, r.log) {
 		t.Fatal("pushTaskBranch continued although the gate could not run")
 	}
 	if want := "push failed after 1 attempt(s):"; !strings.HasPrefix(result.Error, want) {
@@ -56,7 +56,7 @@ func TestPushTaskBranch_AttemptCountIncludesTheLeasePush(t *testing.T) {
 	result := &ExecutionResult{TaskID: "GH-9", Success: true}
 	task := &Task{ID: "GH-9", Branch: "pilot/GH-9", pushedWIPSHA: wip}
 
-	if r.pushTaskBranch(context.Background(), task, f.git, result, r.log) {
+	if r.pushTaskBranch(context.Background(), task, f.git, result, nil, r.log) {
 		t.Fatal("pushTaskBranch continued although the lease push could not clear the gate")
 	}
 	if got := gateCalls.Load(); got != 2 {
