@@ -713,18 +713,28 @@ const (
 	// agentDialConnected: the probe ran and its connection was made.
 	agentDialConnected
 	// agentDialNoAnswer: the connection ended by the time limit or by the
-	// context, with no answer.
+	// context, with no answer, after the start line of the probe
+	// (runAsProbeStart).
 	agentDialNoAnswer
 	// agentDialNotRun: the probe ended before the time limit without its
-	// marker line (runAsProbeMarker): it never reported a connection try,
-	// as when sudo fails for the agent user, bash is missing or the probe is
-	// killed (GH-6480).
+	// marker line (runAsProbeMarker), or by the time limit without its start
+	// line, or wrote more than runAsProbeOutputLimit bytes: it never reported
+	// a connection try, as when sudo fails or hangs for the agent user, bash
+	// is missing or the probe is killed (GH-6480, GH-6516).
 	agentDialNotRun
 )
 
 // runAsProbeMarker starts the one line the probe prints after its connection
 // try, followed by the exit status of the redirect.
 const runAsProbeMarker = "pilot-probe="
+
+// runAsProbeStart is the line the probe prints before its connection try. It
+// is not a status line of probeMarkerResult.
+const runAsProbeStart = runAsProbeMarker + "start"
+
+// runAsProbeOutputLimit bounds the output of one probe in bytes; a probe that
+// writes more did not run (GH-6516).
+const runAsProbeOutputLimit = 4096
 
 // runAsAgentDial opens one TCP connection to addr as the agent user, bounded
 // by timeout, and reports how it ended; tests replace it to stand for a
@@ -772,6 +782,11 @@ var runAsLocalIPv4s = localIPv4s
 // proves no rule (a slow sudo) and is a refusal. The metadata address is
 // rejected without a reset, and a timeout there is a block.
 func checkRunAsFirewall(s *runAsSettings) string {
+	// A port above 65535 cannot be listened on; refuse it before the control
+	// connection, which would make the refusal wait (GH-6516).
+	if s.gatewayPort > 65535 {
+		return fmt.Sprintf("firewall probe: the gateway port %d is above 65535, not a TCP port", s.gatewayPort)
+	}
 	control, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "firewall probe: the daemon cannot open a control listener on 127.0.0.1"
@@ -898,11 +913,19 @@ func localIPv4sOf(addrs []net.Addr) []string {
 	return out
 }
 
-// agentDialAs runs `bash -c ': 2>/dev/null </dev/tcp/HOST/PORT; echo
-// pilot-probe=$?'` as the agent user with the agent environment, bounded by
-// timeout, and reports how it ended: the marker with 0 is a connection, the
-// marker with another status a failed connection, an end by the time limit
-// no answer, and any other end a probe that did not run (agentDialNotRun).
+// agentDialAs runs `bash --norc --noprofile -c 'echo pilot-probe=start; :
+// 2>/dev/null </dev/tcp/HOST/PORT; echo pilot-probe=$?'` as the agent user
+// with the agent environment, bounded by timeout, and reports how it ended:
+// the marker with 0 is a connection, the marker with 1 a failed connection,
+// an end by the time limit after the start line no answer, and any other end
+// a probe that did not run (agentDialNotRun). The output is read up to
+// runAsProbeOutputLimit bytes, and what the probe wrote before a kill is
+// kept.
+//
+// Decision: no answer by the time limit is the normal end of a blocked
+// metadata connection, and a sudo that hangs ends the same way without a
+// connection try; the start line tells them apart (GH-6516). --norc and
+// --noprofile keep a file of the agent user from printing the marker.
 func agentDialAs(s *runAsSettings, addr string, timeout time.Duration) agentDialResult {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -910,40 +933,85 @@ func agentDialAs(s *runAsSettings, addr string, timeout time.Duration) agentDial
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd, err := agentCommandAs(ctx, s, "bash", "-c", ": 2>/dev/null </dev/tcp/"+host+"/"+port+"; echo "+runAsProbeMarker+"$?")
+	script := "echo " + runAsProbeStart + "; : 2>/dev/null </dev/tcp/" + host + "/" + port + "; echo " + runAsProbeMarker + "$?"
+	cmd, err := agentCommandAs(ctx, s, "bash", "--norc", "--noprofile", "-c", script)
 	if err != nil {
 		return agentDialNotRun
 	}
 	setAgentEnv(cmd, gitAgentBaseEnv())
-	out, err := cmd.Output()
-	if ctx.Err() != nil {
-		return agentDialNoAnswer
-	}
-	if err != nil {
+	var out probeOutput
+	cmd.Stdout = &out
+	err = cmd.Run()
+	switch {
+	case out.over:
+		return agentDialNotRun
+	case ctx.Err() != nil:
+		if probeStarted(string(out.buf)) {
+			return agentDialNoAnswer
+		}
+		return agentDialNotRun
+	case err != nil:
 		return agentDialNotRun
 	}
-	return probeMarkerResult(string(out))
+	return probeMarkerResult(string(out.buf))
+}
+
+// errProbeOutputLimit ends the read of a probe that wrote more than
+// runAsProbeOutputLimit bytes.
+var errProbeOutputLimit = errors.New("firewall probe: output above the limit")
+
+// probeOutput keeps the output of a probe up to runAsProbeOutputLimit bytes.
+// A write past the limit sets over and fails, which ends the read.
+type probeOutput struct {
+	buf  []byte
+	over bool
+}
+
+func (o *probeOutput) Write(p []byte) (int, error) {
+	if len(o.buf)+len(p) > runAsProbeOutputLimit {
+		o.over = true
+		return 0, errProbeOutputLimit
+	}
+	o.buf = append(o.buf, p...)
+	return len(p), nil
+}
+
+// probeStarted reports whether out has the start line of the probe
+// (runAsProbeStart).
+func probeStarted(out string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == runAsProbeStart {
+			return true
+		}
+	}
+	return false
 }
 
 // probeMarkerResult reads the output of a probe that exited 0: exactly one
-// marker line with an exit status, else the probe did not run.
+// marker line with the status 0 (connected) or 1 (failed), as bash prints
+// it, else the probe did not run. The start line is not a marker line.
 func probeMarkerResult(out string) agentDialResult {
 	var status string
 	var markers int
 	for _, line := range strings.Split(out, "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), runAsProbeMarker); ok {
+		line = strings.TrimSpace(line)
+		if line == runAsProbeStart {
+			continue
+		}
+		if v, ok := strings.CutPrefix(line, runAsProbeMarker); ok {
 			status = v
 			markers++
 		}
 	}
-	code, err := strconv.Atoi(status)
 	switch {
-	case markers != 1 || err != nil || code < 0:
+	case markers != 1:
 		return agentDialNotRun
-	case code == 0:
+	case status == "0":
 		return agentDialConnected
+	case status == "1":
+		return agentDialFailed
 	}
-	return agentDialFailed
+	return agentDialNotRun
 }
 
 // sudoProbeOK runs `sudo -n -u <user> [-g <group>] true` with the 5 second
