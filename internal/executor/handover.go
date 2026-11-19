@@ -572,13 +572,15 @@ func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, 
 		msg := string(out)
 		if strings.Contains(msg, "reference already exists") || (strings.Contains(msg, "Unable to create") && strings.Contains(msg, ".lock")) {
 			// Decision: another hand-over of the task set the ref after the
-			// removal above, or holds its lock; its ref stays. The files this
-			// call moved go, also when the holder of the lock has not
-			// written the ref yet, unless the ref names the tip of this
-			// call: a pack of the same name (the same objects, so the same
-			// tip) was moved by this call alone and the other hand-over
-			// relies on it.
-			if handOverRefValue(ctx, daemonRepo, ref) != tip {
+			// removal above, or holds its lock; its ref stays. A pack of the
+			// same name (the same objects, so the same tip) was moved by this
+			// call alone and the other hand-over relies on it, also while it
+			// holds the lock and has not written the ref yet. So the files
+			// this call moved go only when the value of the other hand-over
+			// is known and is not the tip of this call: the value in the
+			// lock, else the ref when no lock is left. An empty lock or no
+			// value at all keeps them; a pack no ref names is harmless.
+			if winner := handOverWinnerValue(ctx, daemonRepo, ref); winner != "" && winner != tip {
 				removeHandOverFiles(moved)
 			}
 			return "", fmt.Errorf("%w: set %s to %s: %v: %s", errHandOverInProgress, ref, tip, err, strings.TrimSpace(msg))
@@ -598,6 +600,35 @@ func handOverRefValue(ctx context.Context, daemonRepo, ref string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// handOverWinnerValue is the object name the other hand-over sets ref of
+// daemonRepo to: the contents of the lock of ref while the lock exists (git
+// writes the new value into the lock before it renames the lock to the ref),
+// else the ref. "" when the value is not known: an empty lock (its holder
+// has not written the value yet, or deletes the ref), a lock that cannot be
+// read, or no ref.
+func handOverWinnerValue(ctx context.Context, daemonRepo, ref string) string {
+	out, err := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("rev-parse", "--git-path", ref+".lock")...).Output()
+	if err != nil {
+		return ""
+	}
+	lock := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(lock) {
+		lock = filepath.Join(daemonRepo, lock)
+	}
+	data, err := os.ReadFile(lock) //nolint:gosec // the lock of a ref of the daemon repository
+	switch {
+	case err == nil:
+		if v := strings.TrimSpace(string(data)); isLowerHex(v) && (len(v) == 40 || len(v) == 64) {
+			return v
+		}
+		return ""
+	case errors.Is(err, os.ErrNotExist):
+		return handOverRefValue(ctx, daemonRepo, ref)
+	default:
+		return ""
+	}
 }
 
 // keepHandOverRefAsRecovery reads the commit of an old refs/pilot/handover/TASK
