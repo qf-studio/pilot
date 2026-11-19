@@ -1,6 +1,6 @@
 # TASK-651: Agent isolation — agent sessions under a separate Unix user, read-only GitHub token per run, secrets from SSM
 
-**Status**: 🚀 **State 2026-11-19 17:55Z. With Pilot (all `pilot` + `no-decompose`): H16 → [pilot#6536](https://github.com/qf-studio/pilot/issues/6536) (workspace sweep), H20 → [pilot#6537](https://github.com/qf-studio/pilot/issues/6537) (hand-over: recovery ref, loser of two hand-overs, promisor values, locale names), H12 → [pilot#6546](https://github.com/qf-studio/pilot/issues/6546) (gh commands). Daemon-filed: [pilot#6541](https://github.com/qf-studio/pilot/issues/6541) (a test row of PR#6540).** **Written, wait:** H22 (secret gate: a binary file that a merge commit adds is not read; a real bypass in older code, runs for each user; waits for [pilot#6541](https://github.com/qf-studio/pilot/issues/6541)), H21 (no program of the repository config under the token commands; after H12). The run-it review of H18 (PR#6545) is in progress. **All host script legs are merged and reviewed (B12 was the last); the operator notes for the O4 run are in the checklist.** Product gap of the box incident: TASK-656 (planned, founder go). **Founder decisions 11-19 (mem-327):** one option for all projects, no `run_as_env`, the Go proxy variables pass and a GOPROXY with credentials refuses the start, the one PR that removes the preflight refusal is held as a draft. **Box, 11-19 (mem-326):** the quality gates failed for 16 hours because 133 orphan process trees of old agent runs loaded the box (load average 17 to 21 on 4 CPUs); the test gate then needed more than its limit of 10 minutes and was killed (`make test-changed exited with code -1`; no test fails). Founder go 10:04Z: the orphan trees are stopped, the gate limit is 20 minutes (backup of the config next to the file), the daemon restarted 10:30Z. The gate now passes in about 4 minutes. Open product gap: a run does not stop its background processes at its end. Merged on 11-17 to 11-19 (the checklist has each PR): H1 to H5, H8 (the hand-over transport is a plain pack since PR#6497; founder call 11-18, way A), H9 (environment filter of the daemon-side git, PR#6511, 20:12Z; run-it review 11-19: no `GIT_` name reaches git, but each other name does, tokens too → H15), H7 (push fixes, PR#6520, 11-19 11:14Z, first run on the quiet box; run-it review 11-19: no way for the agent to a false "pushed", two major gaps → H17), H17 (push: each inherited `GIT_` name dropped, `core.fsmonitor` off, PR#6533, 15:25Z), H18 (push records, PR#6545, 17:43Z), B12 (host script notes, PR#6539, 17:17Z), H19 (secret gate: submodule path, PR#6540), P8 (firewall probe: status line at the time limit, PR#6542), H13 (secret gate: quoted file paths, PR#6523), H15 (the hand-over git gets only named variables, PR#6527), P7 (firewall probe: start line, strict marker, PR#6526), H10, H14 (no lazy fetch, object size limit, PR#6518, 11-19 10:46Z; run-it review 11-19: no blocker, seven minor notes), H11 (workspace clean-up rule, PR#6506; run-it review 11-19: no blocker, the notes go to H12), P2, P4, P5, P6, B8 to B11 (all host script legs), N7. Earlier: U0, U1, F1, F2, F3, B1 to B7, G1, U2, N2 to N6, P1, P3. Then: U4 in three parts (the last one removes the preflight refusal) and U5 in two parts; both need a new specification, see the spec check line of 11-17. **Must merge before the refusal is removed:** H12, H21, H16, H20, U4. `run_as_user` is refused by the preflight on every host until then. **O4 (host script on the box):** all host script legs are merged and reviewed, no blocker. The run does not go through SSM by hand: by the rule of the infrastructure owner (11-17) it goes into the infra repository as a PR (the script under `scripts/founder-box/`, the removal of the daemon user from the group wheel as its first step, a workflow on demand, dry run first, then the run in a window with no active task); answer of the infrastructure owner 11-18: nothing uses sudo as the daemon user, a reboot does not restore the group, a new image does (override planned in the box image). **Merge rule (founder, 11-17, mem-319):** no draft hold. The review of Pilot and green CI are sufficient for the merge; the daemon merges. The run-it review runs after the merge and its findings become follow-up legs. The founder is asked only for work that leaves the plan and for a step on the box. Legs stay small: the task limit of Pilot is one hour. Work rules from 11-18: after a retry of a parked ticket, compare the commit of the PR with the commit of the hold comment; before a dispatch, wait for an open daemon-filed ticket on the same files. **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM), the infra repository PR for the host script, the decision round of TASK-656. Design: `.agent/system/agent-isolation-design.md`.
+**Status**: 🚀 **State 2026-11-19 18:40Z. With Pilot (all `pilot` + `no-decompose`): H16 → [pilot#6536](https://github.com/qf-studio/pilot/issues/6536) (workspace sweep), H20 → [pilot#6537](https://github.com/qf-studio/pilot/issues/6537) (hand-over: recovery ref, loser of two hand-overs, promisor values, locale names), H12 → [pilot#6546](https://github.com/qf-studio/pilot/issues/6546) (gh commands), U41 → [pilot#6549](https://github.com/qf-studio/pilot/issues/6549) (gates: command builder seam in the quality package), U51 → [pilot#6550](https://github.com/qf-studio/pilot/issues/6550) (read-only token: scoped mint). Daemon-filed: [pilot#6541](https://github.com/qf-studio/pilot/issues/6541) (a test row of PR#6540).** **U4 and U5 are written again (11-19): U41 to U47 and U51 to U53, in the order of their probes; U47 removes the preflight refusal and is a founder hold (a draft).** **Written, wait:** H22 (secret gate: a binary file that a merge commit adds is not read; a real bypass in older code, runs for each user; waits for [pilot#6541](https://github.com/qf-studio/pilot/issues/6541)), H21 (no program of the repository config under the token commands; after H12). The run-it review of H18 (PR#6545) is in progress. **All host script legs are merged and reviewed (B12 was the last); the operator notes for the O4 run are in the checklist.** Product gap of the box incident: TASK-656 (planned, founder go). **Founder decisions 11-19 (mem-327):** one option for all projects, no `run_as_env`, the Go proxy variables pass and a GOPROXY with credentials refuses the start, the one PR that removes the preflight refusal is held as a draft. **Box, 11-19 (mem-326):** the quality gates failed for 16 hours because 133 orphan process trees of old agent runs loaded the box (load average 17 to 21 on 4 CPUs); the test gate then needed more than its limit of 10 minutes and was killed (`make test-changed exited with code -1`; no test fails). Founder go 10:04Z: the orphan trees are stopped, the gate limit is 20 minutes (backup of the config next to the file), the daemon restarted 10:30Z. The gate now passes in about 4 minutes. Open product gap: a run does not stop its background processes at its end. Merged on 11-17 to 11-19 (the checklist has each PR): H1 to H5, H8 (the hand-over transport is a plain pack since PR#6497; founder call 11-18, way A), H9 (environment filter of the daemon-side git, PR#6511, 20:12Z; run-it review 11-19: no `GIT_` name reaches git, but each other name does, tokens too → H15), H7 (push fixes, PR#6520, 11-19 11:14Z, first run on the quiet box; run-it review 11-19: no way for the agent to a false "pushed", two major gaps → H17), H17 (push: each inherited `GIT_` name dropped, `core.fsmonitor` off, PR#6533, 15:25Z), H18 (push records, PR#6545, 17:43Z), B12 (host script notes, PR#6539, 17:17Z), H19 (secret gate: submodule path, PR#6540), P8 (firewall probe: status line at the time limit, PR#6542), H13 (secret gate: quoted file paths, PR#6523), H15 (the hand-over git gets only named variables, PR#6527), P7 (firewall probe: start line, strict marker, PR#6526), H10, H14 (no lazy fetch, object size limit, PR#6518, 11-19 10:46Z; run-it review 11-19: no blocker, seven minor notes), H11 (workspace clean-up rule, PR#6506; run-it review 11-19: no blocker, the notes go to H12), P2, P4, P5, P6, B8 to B11 (all host script legs), N7. Earlier: U0, U1, F1, F2, F3, B1 to B7, G1, U2, N2 to N6, P1, P3. **Must merge before the refusal is removed:** H12, H21, H16, H20, U41 to U46. `run_as_user` is refused by the preflight on every host until then. **O4 (host script on the box):** all host script legs are merged and reviewed, no blocker. The run does not go through SSM by hand: by the rule of the infrastructure owner (11-17) it goes into the infra repository as a PR (the script under `scripts/founder-box/`, the removal of the daemon user from the group wheel as its first step, a workflow on demand, dry run first, then the run in a window with no active task); answer of the infrastructure owner 11-18: nothing uses sudo as the daemon user, a reboot does not restore the group, a new image does (override planned in the box image). **Merge rule (founder, 11-17, mem-319):** no draft hold. The review of Pilot and green CI are sufficient for the merge; the daemon merges. The run-it review runs after the merge and its findings become follow-up legs. The founder is asked only for work that leaves the plan and for a step on the box. Legs stay small: the task limit of Pilot is one hour. Work rules from 11-18: after a retry of a parked ticket, compare the commit of the PR with the commit of the hold comment; before a dispatch, wait for an open daemon-filed ticket on the same files. **O1 done 2026-11-12.** Waiting for the founder: O2 (GitHub App), O3 (secrets to SSM), the infra repository PR for the host script, the decision round of TASK-656. Design: `.agent/system/agent-isolation-design.md`.
 **Created**: 2026-11-12
 **Assignee**: Pilot (one leg at a time) + operator steps by a Navigator session with founder consent
 **Parent**: TASK-650 leg H1
@@ -140,10 +140,20 @@
 - [x] **H10** (PR#6499 merged 11-18 15:18Z; run-it review done, see H13; released in v2.324.0; the run-it review reports after the merge) ([#6490](https://github.com/qf-studio/pilot/issues/6490), dispatched 11-18 ~11:15Z) from the run-it review of PR#6484 (comment on the PR): the refusal text of the secret gate prints up to 40 characters of a secret in three cases — the name of an extra header line (a registered value of 41 or more characters, or a shape value longer than 40), the value of an `encoding` header longer than 40 (older code, GH-6343), and a value with a space written as one header line. The text goes to the error, the log line, the alert and the issue comment. **This code runs for each user of the product, with the option empty too.** PR#6484 merged the commit cc24cf2fe that the hold comment named: the retry of 11-18 did not run the agent again, so neither point of the retry comment landed (the label removal alone made the daemon open the PR for the pushed branch).
 - **Notes from the review of PR#6484 that H10 does not cover:** the header scan refuses each place tried (author, committer, a second encoding line, an invented header, continuation lines, a header after gpgsig, mergetag, CRLF, a NUL byte, the root commit, a merge commit, the first and last commit of 2000); no false refusal for 150 signed commits (GPG ed25519, GPG rsa4096, SSH ed25519), tree and parent lines, token-like emails, a long non-ASCII name; 2000 commits cost 0.10 s and 6 git processes; the identity of the agent works with no identity in the workspace, and a newline or `<>` in user.name of the daemon's repository injects no header; **not refused:** a value split over a header line and its continuation, the base64 form of a value in gpgsig, the message of an annotated tag (tag objects are not scanned; read: no push sends a tag); a `user.name` of only `<>` in the daemon's repository makes each commit of the agent user fail. Not run: Linux, real sudo.
 - [x] **H4** (PR#6484 merged 11-18 06:03Z; run-it review done, see H10) ([#6463](https://github.com/qf-studio/pilot/issues/6463), dispatched 11-17 ~22:55Z; parked by Pilot 11-18 02:23Z: the pre-PR review found one blocking defect (a part of a secret in the name of an extra header line can show in the refusal) and the fix round had no time left; branch `pilot/GH-6463` at cc24cf2fe; started again 11-18 ~03:55Z with a comment that narrows the retry to that defect and one comment fix) a git identity for the commits of the agent user; the secret gate also scans the header lines of a commit.
-- **Spec check 11-17 for U4 and U5 (their blocks below are from 11-12 and are stale; write them again before a dispatch):** U4 becomes three parts: (a) a command builder with configure and kill hooks in `internal/quality` (the quality runner replaces the process attributes of an agent command, so a constructor alone is not sufficient), wired at the gate command and both scope commands; (b) workflow hooks, evidence commands, both lint commands, the env context file read and the settings restore failure; (c) the removal of the preflight refusal, alone, as the last PR. U4 changes `agent_command.go`, so it follows P2 and P4. `run_as_env` is stale: the Go paths are set since P1. U5 becomes two parts: (a) a scoped token (repositories and permissions in the mint request; the mint of today sends no body), a token file with refresh, `GH_TOKEN` set in the gh-guard subcommand, the credential helper entries also for the gates; (b) the override for each project, which is a refactor (the run-as state is one value for the process: 21 reads, 16 spawn callers, none with a project).
+- **Spec check 11-17 for U4 and U5 (history; the blocks were written again on 11-19, see the line above the U41 line):** U4 becomes three parts: (a) a command builder with configure and kill hooks in `internal/quality` (the quality runner replaces the process attributes of an agent command, so a constructor alone is not sufficient), wired at the gate command and both scope commands; (b) workflow hooks, evidence commands, both lint commands, the env context file read and the settings restore failure; (c) the removal of the preflight refusal, alone, as the last PR. U4 changes `agent_command.go`, so it follows P2 and P4. `run_as_env` is stale: the Go paths are set since P1. U5 becomes two parts: (a) a scoped token (repositories and permissions in the mint request; the mint of today sends no body), a token file with refresh, `GH_TOKEN` set in the gh-guard subcommand, the credential helper entries also for the gates; (b) the override for each project, which is a refactor (the run-as state is one value for the process: 21 reads, 16 spawn callers, none with a project).
 - **Founder decisions 11-19 ~14:55Z ("ok" to the four recommendations of the spec check 11-17):** (1) one `run_as_user` option for the daemon, for all projects; no override for each project. (2) `run_as_env` is dropped. (3) The Go proxy variables of the daemon (GOPROXY, GOFLAGS, GONOSUMDB, GOPRIVATE) pass to the agent; the start is refused when the value of GOPROXY holds credentials. (4) The one PR that removes the preflight refusal is held as a draft for the founder; each other PR keeps the merge rule (no draft hold). U4 and U5 are written from these. Defaults taken without a question: the gate scans commit headers and the agent gets a git identity from the environment (H4); after a failed hand-over the workspace stays (H3).
-- [ ] **U4** (NOT dispatch-ready: stale block, see the spec check line above; needs H1 to H3, P2, P4) quality gates, workflow hooks, evidence commands and the lint fix as the agent user with the allowlist environment; `run_as_env` for values such as the Go caches.
-- [ ] **U5** (NOT dispatch-ready: stale block, see the spec check line above; needs H1 and, on the box, O2) read-only installation token per run in a file for the `gh` shim and a git credential helper (also serves the fetch of a private module); per-project override of the option.
+- **U4 and U5 written again 11-19 from the code of that day and the founder decisions (mem-327); the blocks of 11-12 are gone. Order by probes:** U41 (seam in `internal/quality`) → U42 (gates as the agent user) → U43 (workflow hooks), U44 (evidence commands), U46 (GOPROXY check) → U45 (lint fix; after U43, same file) → U47 (removes the preflight refusal; **founder hold: a draft, dispatch only on the founder's word**; its probes need H12, H21, H16, H20 and U42 to U46). U51 (scoped token mint; no host precondition) → U52 (token file and gh shim) → U53 (git credential helper; after U42). The check of U5 on the box needs O2 (GitHub App).
+- [ ] **U41** ([#6549](https://github.com/qf-studio/pilot/issues/6549), dispatched 11-19 ~18:40Z) a command builder seam in `internal/quality`: build, configure, kill and file read through one interface; no change of behaviour.
+- [ ] **U42** (dispatch-ready, below; after U41) the quality gates and their scope commands run as the agent user with the allow list environment; the scope variables and `PILOT_TASK_ID` pass.
+- [ ] **U43** (dispatch-ready, below; after U42) workflow hooks run as the agent user; a kill of the process group for each hook.
+- [ ] **U44** (dispatch-ready, below; after U42) evidence commands run as the agent user; the evidence file writes and the env context read go through the agent side.
+- [ ] **U45** (dispatch-ready, below; after U43) the lint run and the lint fix run as the agent user; a failed restore of the hook settings fails the run.
+- [ ] **U46** (dispatch-ready, below; after U42) the start is refused when GOPROXY of the daemon holds credentials.
+- [ ] **U47** (FOUNDER HOLD; below; after each other leg of the must-merge list) the preflight no longer refuses the option; the pull request stays a draft until the founder releases it.
+- [ ] **U51** ([#6550](https://github.com/qf-studio/pilot/issues/6550), dispatched 11-19 ~18:40Z) an installation token with read permissions for one repository; a provider for it in the executor.
+- [ ] **U52** (dispatch-ready, below; after U51) a read-only token file for each run, with a refresh; the gh shim of the agent reads it.
+- [ ] **U53** (dispatch-ready, below; after U52 and U42) git of the agent side and the gates read the token file through a credential helper; no token in the environment.
+- **Open points of the U4 and U5 research (11-19), for the founder with the release of U47:** the removal of the refusal does not need U5 (the option stays off in each config until a host sets it), but a host that turns the option on before U5 and O2 gives the agent no `gh` and no fetch of a private repository; the gates as the agent user need `make`, the Go tools and the lint program on the PATH of the agent user (not checked on the box), and the first gate run has a cold build cache; `internal/executor/gate.go` has no caller (left as it is).
 - **Merge rule (founder call 11-16, mem-319):** on the stage environment the daemon merges a ready PR with green CI by itself; a security PR of this task stays in draft after the verdict until the founder writes "merge".
 - **Order (founder call 11-12; U2 split into G1 → U2 → N1 on 11-15):** U1 → F1 → F2 → G1 → U2 → N2 → N5 → N3 → N4 → U3 → U4 → U5, one at a time. `run_as_user` stays empty on every host until U3 **and** U4 merge: until then the gate, the quality gates and the hooks run as the daemon inside the agent-owned clone. The poller holds legs that touch the same directory, so a parallel dispatch gains nothing. Check for an open post-merge-review issue on the same files before each dispatch (mem-301).
 
@@ -2267,86 +2277,349 @@ The list of charset names for the encoding print. A scan of ref names. The stder
 
 - Navigator TASK-651 in this repo · review comment of PR#6499
 
-### LEG U4 — repo: qf-studio/pilot — title: feat(executor): run_as_user gates — quality gates, workflow hooks, evidence commands and the lint fix run as the agent user with an allowlist environment
+### LEG U41 — repo: qf-studio/pilot — title: refactor(quality): a command builder seam for the quality gates — build, configure, kill and file read go through one interface, with no change of behaviour
 
-probe: present qf-studio/pilot \)[[:space:]]createAgentWorkspace\(
+probe: present qf-studio/pilot \)[[:space:]]executeCommand\(
+probe: present qf-studio/pilot func[[:space:]]listPackages\(
+probe: absent  qf-studio/pilot func[[:space:]]SetCommandBuilder\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-651. The package `internal/quality` runs the quality gates of a task (build, test, lint) in the directory of the task: executeCommand in `internal/quality/runner.go` starts `sh -c COMMAND` with the environment of the daemon, and `internal/quality/scope.go` runs `git` and `go list` and reads test files there. With the option run_as_user the code in that directory is written by the agent user, and these commands must run as the agent user. The package `internal/executor` holds the code for that (agentCommand), and `internal/quality` cannot import it. This leg adds the seam; a later leg plugs the agent side in. Keep the change small: only the items below, only in `internal/quality`. No behaviour changes.
+
+## Scope
+
+1. A new file `command.go` in `internal/quality` with an interface CommandBuilder: Build(ctx, dir string, env []string, name string, args ...string) (*exec.Cmd, error); Configure(cmd *exec.Cmd, waitDelay time.Duration); Kill(cmd *exec.Cmd, sig syscall.Signal) error; ReadFile(path string) ([]byte, error). A default builder does what the code does today: exec.CommandContext with the directory and the environment, procgroup.Configure, procgroup.Kill, os.ReadFile.
+2. A function SetCommandBuilder(b CommandBuilder) that sets the builder of the package (nil sets the default), safe for use from more than one goroutine, and a function that returns the current one.
+3. executeCommand, the gitOutput and listPackages of `scope.go`, and the test file read of `scope.go` use the current builder. The environment that executeCommand passes is the one of today (the process environment plus the scope variables); the builder gets it as an argument.
+4. The kill on a time limit and the wait delay of a gate go through Configure and Kill of the builder; executeCommand does not call procgroup or set `cmd.Cancel` itself.
+5. Tests: a function TestExecuteCommandUsesTheBuilder with a fake builder that records each call: a gate run calls Build with `sh`, the directory and an environment that holds the scope variables; a gate that sleeps past its time limit is ended through Kill of the builder and returns the time limit error of today; the scope code calls Build for `git` and for `go` and ReadFile for a test file; after SetCommandBuilder(nil) the default is back. Each test of the package that exists today passes with no change.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/quality/` passes; paste the output into the PR body.
+- [ ] Call procgroup.Kill directly in executeCommand again -> TestExecuteCommandUsesTheBuilder fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+Any code in `internal/executor`. The lookup of the `make` program. The scope rules. Any change of behaviour.
+
+## Refs
+
+- Navigator TASK-651 in this repo · founder decisions of 11-19 (memory mem-327)
+
+### LEG U42 — repo: qf-studio/pilot — title: feat(executor): run_as_user gates, part 1 — the quality gates run as the agent user with the allow list environment
+
+probe: present qf-studio/pilot func[[:space:]]SetCommandBuilder\(
+probe: present qf-studio/pilot func[[:space:]]setAgentEnvIn\(
+probe: present qf-studio/pilot func[[:space:]]agentCommand\(
+probe: absent  qf-studio/pilot func[[:space:]]TestRunAsUserGateEnvHasNoDaemonSecret\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-651. With run_as_user set, the agent works as a second Linux user in a workspace of its own. The quality gates (`make build`, `make test`, `make lint` and the scope commands) still run as the daemon user with the environment of the daemon, on code that the agent wrote: a test of that code can read each secret of the daemon. The package `internal/quality` has a command builder seam (SetCommandBuilder). The executor has the pieces for the agent side: agentCommand (a sudo command in a session of its own, with a kill through sudo), setAgentEnvIn (the allow list environment), killProcessGroup, agentReadFile. The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below. With the option empty nothing changes.
+
+## Scope
+
+1. A new file `gate_command.go` in `internal/executor` with a type that implements quality.CommandBuilder. With the option empty (runAsSettingsNow gives nil) each method does what the default builder of the quality package does. With the option set: Build uses agentCommand, sets the directory, and sets the environment with setAgentEnvIn from the environment it got; Configure does nothing more than set the wait delay (agentCommand made the session and the cancel); Kill uses killProcessGroup; ReadFile uses agentReadFile.
+2. The builder is registered once with quality.SetCommandBuilder where the executor package is set up for the daemon (the place that sets the run_as_user state at start); a test helper registers and restores it.
+3. The allow list of the agent environment (`internal/executor/agent_command.go`) also passes each name that starts with `PILOT_CHANGED_` (the scope variables of the gates) and the name `PILOT_TASK_ID`.
+4. Tests with the mock sudo of the package (mockSudoAgent, setRunAsStateForTest): a function TestRunAsUserGateEnvHasNoDaemonSecret — with a variable `DAEMON_ONLY_SECRET` and a fake `GITHUB_TOKEN` in the test process, a gate command that prints its environment runs through sudo as the agent user and prints neither name, and prints the `PILOT_CHANGED_` values; the scope commands (`git`, `go list`) go through sudo too; a gate that sleeps past its time limit is ended through the sudo kill route and the result is the time limit error; with the option empty the first argument of the gate command is `sh` and no sudo call is logged.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ ./internal/quality/ -run 'RunAsUserGate|ExecuteCommand'` passes; paste the output into the PR body.
+- [ ] Let Build pass the environment with no allow list -> TestRunAsUserGateEnvHasNoDaemonSecret fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+Workflow hooks, evidence commands, the lint fix (other legs). The lookup of the `make` program. The Go proxy check. The preflight refusal. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · founder decisions of 11-19 (memory mem-327)
+
+### LEG U43 — repo: qf-studio/pilot — title: feat(executor): run_as_user gates, part 2 — workflow hooks run as the agent user, with a kill of the process group
+
+probe: present qf-studio/pilot func[[:space:]]runWorkflowHook\(
+probe: present qf-studio/pilot func[[:space:]]RunHook\(
+probe: present qf-studio/pilot func[[:space:]]TestRunAsUserGateEnvHasNoDaemonSecret\(
+probe: absent  qf-studio/pilot func[[:space:]]TestRunWorkflowHookRunsAsAgent\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-651. A repository can name hook scripts in its workflow file; RunHook (`internal/executor/workflow/hooks.go`) runs each one with `bash -lc` in the directory of the task. runWorkflowHook (`internal/executor/runner.go`) calls it with an environment made of the full environment of the daemon plus `PILOT_TASK_ID`. With run_as_user set these scripts are text of the repository, and the agent can change them: they must run as the agent user with the allow list environment. A cancel of the context stops only the bash process today, not its children. The package `workflow` cannot import the executor. The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below. With the option empty the commands and their environment stay as today, except the kill of the group.
+
+## Scope
+
+1. `internal/executor/workflow/hooks.go`: a function RunHookWith that takes one more argument, a function that builds the command (ctx, dir, env, script) and returns the `*exec.Cmd`. RunHook stays and calls RunHookWith with a builder that does what the code does today, plus a process group and a kill of that group on cancel (procgroup).
+2. runWorkflowHook: with the option set it calls RunHookWith with a builder that uses agentCommand for `bash -lc SCRIPT`, the directory, and setAgentEnvIn with the environment of gitAgentBaseEnv plus `PILOT_TASK_ID`; the kill is the one of agentCommand. With the option empty it calls RunHook with the environment of today.
+3. Each call site of runWorkflowHook keeps its order and its context; the hook before the removal of the worktree still runs before the workspace of the agent is removed.
+4. Tests with the mock sudo of the package: a function TestRunWorkflowHookRunsAsAgent — a hook that prints its environment runs through sudo as the agent user, with `PILOT_TASK_ID` and with no `DAEMON_ONLY_SECRET` of the test process; a hook that starts a background child and sleeps: after a cancel, the child is not alive (option empty) and the sudo kill route is called (option set); with the option empty no sudo call is logged and the environment holds a variable of the test process as today.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/... -run 'WorkflowHook|RunHook'` passes; paste the output into the PR body.
+- [ ] Build the hook command with exec.CommandContext when the option is set -> TestRunWorkflowHookRunsAsAgent fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The Claude Code hooks in the settings file. The load of the workflow file (it already reads as the agent user). The quality gates, the evidence commands, the lint fix. The preflight refusal.
+
+## Refs
+
+- Navigator TASK-651 in this repo · founder decisions of 11-19 (memory mem-327)
+
+### LEG U44 — repo: qf-studio/pilot — title: feat(executor): run_as_user gates, part 3 — evidence commands run as the agent user; the evidence file writes and the env context read go through the agent side
+
 probe: present qf-studio/pilot func[[:space:]]sanitizedAcceptanceEnv\(
-probe: present qf-studio/pilot func[[:space:]]runScript\(
-probe: absent  qf-studio/pilot RunAsEn[v][[:space:]]+map
+probe: present qf-studio/pilot func[[:space:]]evidenceWriteFile\(
+probe: present qf-studio/pilot func[[:space:]]TestRunAsUserGateEnvHasNoDaemonSecret\(
+probe: absent  qf-studio/pilot func[[:space:]]TestEvidenceCommandRunsAsAgent\(
 
 ## Context
 
-Navigator TASK-651 (design in `.agent/system/agent-isolation-design.md`, section 4.2 item 3). With run_as_user set, the model process and git in the workspace run as the agent user (earlier legs). Four groups of commands still run repository content as the daemon user, with the full daemon environment:
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
 
-- Quality gates: executeCommand in `internal/quality/runner.go` runs `sh -c` with os.Environ() plus the scope variables; `internal/quality/scope.go` runs `go list` and git in the workspace.
-- Workflow hooks: runScript in `internal/executor/workflow/hooks.go` runs `bash -lc` for after_create, before_run, after_run and before_remove; the callers in `internal/executor/runner.go` pass an environment built from os.Environ().
-- Evidence commands: `internal/executor/acceptance_evidence_run.go` runs allowlisted commands with sanitizedAcceptanceEnv.
-- Lint fix: autoFixLint in `internal/executor/lint.go` runs golangci-lint with --fix, then stages and amends.
-
-A test file or a Makefile target that the agent wrote can read every secret of the daemon from that environment. This leg moves the four groups to the agent user. With the option empty nothing changes.
+Navigator TASK-651. After a run the daemon checks the acceptance lines of the issue: it runs their commands in the directory of the task (RunCommand of shellAcceptanceCommandRunner in `internal/executor/acceptance_evidence_run.go`) and, for a mutation line, reads a file, writes a changed copy, runs the test and restores the file. With run_as_user set the command is built with no sudo and runs as the daemon user on code of the agent; the read of the file is a plain os.ReadFile as the daemon; the write (evidenceWriteFile in `internal/executor/agent_files.go`) refuses with errEvidenceWriteRunAsUser. readEnvContext (`internal/executor/prompt_builder.go`) reads a file of the workspace as the daemon and follows links. The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below. With the option empty nothing changes.
 
 ## Scope
 
-1. A command builder that the quality and workflow packages can use without an import of the executor package: each package gets an exported builder variable or a field with the signature func(ctx, dir, name string, args ...string) *exec.Cmd and an environment function. The default is the present behaviour. The executor sets both at start when the option is set, from agentCommand and the allowlist environment.
-2. Quality gates: executeCommand and the two commands of `internal/quality/scope.go` use the builder. With the option set the environment is the allowlist plus the scope variables; os.Environ() is not used. The kill of the gate process group on a timeout uses the sudo kill of the earlier leg when the option is set.
-3. Workflow hooks: runScript uses the builder. With the option set the environment is the allowlist plus the hook variables that the callers add today. All four hooks run as the agent user; before_remove runs before the workspace cleanup.
-4. Evidence commands use agentCommand; the environment is the intersection of sanitizedAcceptanceEnv and the allowlist.
-5. Lint fix: both golangci-lint commands use agentCommand; confirm that the stage and amend commands go through the git constructor.
-6. Config: a map field run_as_env (name to value) next to run_as_user in `internal/executor/backend.go`, for values that are not secret and that agent processes need, added last to the allowlist environment. Document it in `configs/pilot.example.yaml` with GOCACHE and GOMODCACHE as the example. A name that holds TOKEN, SECRET, KEY or PASSWORD (any case) fails the preflight with one Error line.
-7. Tests with the mock sudo script: for each of the four groups, with the option set the first argv element is sudo, and a variable DAEMON_ONLY_SECRET set in the test process is absent from the environment of the command (the command prints its environment into a file); with the option empty the argv and the environment equal the present ones. A gate that sleeps past its timeout is killed through the sudo kill. The preflight rejects a run_as_env name with TOKEN.
+1. RunCommand: with the option set the command is built by agentCommand (`sh -c COMMAND` as today), with the directory and with setAgentEnvIn from the environment of sanitizedAcceptanceEnv; the time limit and the kill stay (killProcessGroup knows the agent route). With the option empty the code of today runs.
+2. The read of a file for a mutation line uses agentReadFile when the path is on the agent side (agentFileRoute), else os.ReadFile as today.
+3. evidenceWriteFile writes through agentWriteFile when the path is on the agent side; errEvidenceWriteRunAsUser and its refusal go away. The restore of the file after the mutation run uses the same route and still runs after a failed or cancelled command.
+4. readEnvContext reads through agentReadFile when the path is on the agent side; a read error is the empty text of today.
+5. Tests with the mock sudo of the package: a function TestEvidenceCommandRunsAsAgent — an evidence command that prints its environment runs through sudo with no `DAEMON_ONLY_SECRET`; a mutation line changes the file through the agent write route, runs the command and restores the first content, also when the command fails; a link in place of the env context file that points to a file of the daemon gives the empty text; with the option empty no sudo call is logged.
 
 ## Acceptance
 
-- [ ] `go test -race -count=1 ./internal/quality/ ./internal/executor/... -run 'RunAsUser|GateEnv|HookEnv|EvidenceEnv|LintFix'` passes; paste the output into the PR body.
-- [ ] Use os.Environ() for a gate with the option set -> the gate environment test fails.
-- [ ] Build one hook with exec.CommandContext directly -> the hook test fails.
-- [ ] With the option empty, the gate and hook tests that exist today pass without a change to their assertions.
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'Evidence|EnvContext'` passes; paste the output into the PR body.
+- [ ] Put the refusal back into evidenceWriteFile -> the mutation case of TestEvidenceCommandRunsAsAgent fails.
 - [ ] Do not re-run make build, make test or make lint as evidence.
 
 ## Out of scope
 
-The GitHub token for the agent (a gate that fetches a private module has no credential until the next leg). The push and the hand-over. The post-merge reviewer. Any change of behaviour with the option empty.
+The rules that choose which acceptance lines run. The quality gates, the workflow hooks, the lint fix. The preflight refusal.
 
 ## Refs
 
-- Navigator TASK-651 in this repo · design section 4.2
+- Navigator TASK-651 in this repo · founder decisions of 11-19 (memory mem-327)
 
-### LEG U5 — repo: qf-studio/pilot — title: feat(executor): run_as_user GitHub access — a read-only installation token per run in a file for the gh shim and git, and a per-project override of the option
+### LEG U45 — repo: qf-studio/pilot — title: feat(executor): run_as_user gates, part 4 — the lint run and the lint fix run as the agent user; a failed restore of the hook settings fails the run
 
-probe: present qf-studio/pilot \)[[:space:]]createAgentWorkspace\(
-probe: present qf-studio/pilot func[[:space:]]handOverBranch\(
+probe: present qf-studio/pilot \)[[:space:]]runGoLint\(
+probe: present qf-studio/pilot \)[[:space:]]autoFixLint\(
+probe: present qf-studio/pilot func[[:space:]]TestRunWorkflowHookRunsAsAgent\(
+probe: absent  qf-studio/pilot func[[:space:]]TestAutoFixLintRunsAsAgent\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-651. runGoLint and autoFixLint of GitOperations (`internal/executor/lint.go`) start the lint program in the directory of the task with the environment of the daemon; the lint fix changes files there. With run_as_user set the directory is the workspace of the agent user: the program must run as that user (its config file is text of the repository, and the fix must write files that the agent user owns). The stage and amend steps after the fix already use the git route of the agent side. After a session the daemon restores the hook settings file of the workspace (RestoreHookSettings in `internal/executor/hooks.go`); when the restore fails the run only logs a warning. The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below. With the option empty nothing changes.
+
+## Scope
+
+1. runGoLint and autoFixLint: with the option set (an agent workspace) the lint command is built by agentCommand with the directory and with setAgentEnvIn from gitAgentBaseEnv; with the option empty the command of today.
+2. The lookup of the lint program: with the option set, a missing program is reported from the result of the run as the agent user (exit status and output), not from a lookup in the PATH of the daemon.
+3. With the option set, a failed restore of the hook settings file after a session is an error of the run: the result of the run is a failure with a text that names the file. With the option empty the warning of today stays.
+4. Tests with the mock sudo of the package: a function TestAutoFixLintRunsAsAgent — the lint command and the fix command go through sudo as the agent user with no `DAEMON_ONLY_SECRET` of the test process in their environment; a missing lint program gives the result of today for "no linter"; with the option empty no sudo call is logged. One test: with the option set a restore function that fails makes the run fail.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'Lint|RestoreHookSettings'` passes; paste the output into the PR body.
+- [ ] Build the fix command with exec.CommandContext when the option is set -> TestAutoFixLintRunsAsAgent fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The gate script code in `internal/executor/gate.go` (it has no caller). The quality gates, the workflow hooks, the evidence commands. The preflight refusal.
+
+## Refs
+
+- Navigator TASK-651 in this repo · founder decisions of 11-19 (memory mem-327)
+
+### LEG U46 — repo: qf-studio/pilot — title: feat(executor): run_as_user preflight — the start is refused when GOPROXY of the daemon holds credentials
+
+probe: present qf-studio/pilot func[[:space:]]PreflightRunAsUser\(
+probe: present qf-studio/pilot func[[:space:]]TestRunAsUserGateEnvHasNoDaemonSecret\(
+probe: absent  qf-studio/pilot func[[:space:]]TestRunAsUserPreflightRefusesGoProxyCredentials\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-651. With run_as_user set, the agent user gets an allow list environment. Founder decision 2026-11-19: the Go proxy variables of the daemon (GOPROXY, GOFLAGS, GONOSUMDB, GOPRIVATE) pass to the agent user, and the daemon start is refused when the value of GOPROXY holds credentials. The four names are in the allow list today; no check of the value exists. PreflightRunAsUser (`internal/executor/agent_command.go`) holds the start checks of the option. Keep the change small: only the items below, only in `agent_command.go` and its test files. With the option empty nothing changes.
+
+## Scope
+
+1. A function goProxyHasCredentials(value string) bool: the value is a list with the separators comma and pipe; it is true when one element parses as a URL with a user part (a name, or a name and a password). The elements `direct` and `off` and an element that does not parse are not credentials.
+2. PreflightRunAsUser: with the option set, a check that reads GOPROXY through a variable that a test can replace, placed with the other config checks before the check of the host; on true the start is refused with a message that names GOPROXY and says that a proxy with credentials cannot pass to the agent user. The message never prints the value.
+3. A GOFLAGS value that holds the text `GOPROXY=` is checked with the same function for the text after `GOPROXY=` up to the next space.
+4. Tests: a function TestRunAsUserPreflightRefusesGoProxyCredentials — a table: empty, `https://proxy.golang.org,direct`, `off`, a URL with a name and a password (refused), a list whose second element has a name only (refused), the pipe separator with a credential element (refused), an element that is not a URL; the refusal text holds no part of the value; with the option empty the check does not run.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'RunAsUserPreflight'` passes; paste the output into the PR body.
+- [ ] Remove the check from PreflightRunAsUser -> TestRunAsUserPreflightRefusesGoProxyCredentials fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+GONOSUMDB and GOPRIVATE (they hold no credentials). A netrc file of the daemon user. An option for more environment names (dropped by the founder decision). The preflight refusal of the option as a whole.
+
+## Refs
+
+- Navigator TASK-651 in this repo · founder decisions of 11-19 (memory mem-327)
+
+### LEG U47 — repo: qf-studio/pilot — title: feat(executor): run_as_user — the preflight no longer refuses the option as incomplete (FOUNDER HOLD: this PR stays a draft)
+
+probe: present qf-studio/pilot func[[:space:]]TestRunAsUserPreflightRefusal\(
+probe: present qf-studio/pilot func[[:space:]]TestAutoFixLintRunsAsAgent\(
+probe: present qf-studio/pilot func[[:space:]]TestEvidenceCommandRunsAsAgent\(
+probe: present qf-studio/pilot func[[:space:]]TestRunAsUserPreflightRefusesGoProxyCredentials\(
+probe: present qf-studio/pilot func[[:space:]]TestTokenCommandsRunNoConfigProgram\(
+probe: present qf-studio/pilot func[[:space:]]TestHandOverBranchKeepsTheOldRefAsRecovery\(
+probe: present qf-studio/pilot func[[:space:]]TestAgentWorkspaceSweepReadsEveryRef\(
+probe: absent  qf-studio/pilot func[[:space:]]TestRunAsUserPreflightPassesWhenAllChecksPass\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-651. PreflightRunAsUser (`internal/executor/agent_command.go`) refuses the option run_as_user on every host with the message of runAsIncompleteCheck, because the delivery and the gates did not yet run on the agent side. Each leg of that work is merged now (the probes of this issue name their tests). This leg removes the refusal and nothing else. Founder decision 2026-11-19: this pull request is held as a draft; the founder releases it. Do not merge it. Keep the change small: only the items below, only in `agent_command.go` and the test files named below.
+
+## Scope
+
+1. Remove runAsIncompleteRefusal, runAsIncompleteCheck and the case of PreflightRunAsUser that uses them. Each other check stays in its order.
+2. Tests: the tests that pin the refusal (TestRunAsUserPreflightRefusal and the test of its default) are replaced by a function TestRunAsUserPreflightPassesWhenAllChecksPass — with each check of the option met in the test fixture the preflight passes; with one check not met at a time (a table: no group, a root user, a missing home, the firewall probe refused) the preflight still refuses with the message of that check. The switch in the test main file that turned the refusal off for each test goes away.
+3. The example config (`configs/pilot.example.yaml`): the comment of the option no longer says that the daemon refuses it; it names the host set-up script as the precondition.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'RunAsUser'` passes; paste the output into the PR body.
+- [ ] `git grep -n 'runAsIncomplete' internal/` finds nothing.
+- [ ] The pull request is a draft, and its body starts with the line "FOUNDER HOLD: do not merge; the founder releases this change."
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+Each other check of the preflight. The read-only token. The host set-up. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · founder decisions of 11-19 (memory mem-327)
+
+### LEG U51 — repo: qf-studio/pilot — title: feat(github): an installation token with read permissions for one repository — a scoped mint next to the full one
+
+probe: present qf-studio/pilot \)[[:space:]]mint\(
+probe: present qf-studio/pilot func[[:space:]]mintGitHubAppToken\(
+probe: absent  qf-studio/pilot func[[:space:]]TestMintScopedBodyHasReposAndReadPermissions\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-651. With run_as_user set, the agent user has no GitHub credential: its `gh` and its `git fetch` of a private repository do not work. The plan gives each run a token that can only read one repository. The daemon can mint installation tokens of a GitHub App: mint of TokenSource (`internal/adapters/github/apptoken.go`) posts an empty body, so the token carries each permission of the installation for each repository. GitHub accepts a body with `repositories` and `permissions` that narrows the token. Keep the change small: only the items below. The full token and each caller of today stay as they are.
+
+## Scope
+
+1. A method of TokenSource, ScopedToken(ctx, repo string, perms map[string]string) (token string, expires time.Time, err error): it posts the body with `repositories` (the one repository name with no owner) and `permissions` to the access token endpoint of the installation and returns the token with its expiry. It keeps no token in the cache of the full token.
+2. A function ReadOnlyPermissions() that gives `contents`, `issues`, `pull_requests` and `metadata`, each `read`. ScopedToken refuses each permission value other than `read` with an error and no request.
+3. `cmd/pilot/main.go`, next to the wiring of the git and gh credential providers: when the GitHub App is configured, a provider function for a read token of a repository is set in the executor through a new setter SetAgentReadTokenProvider (a new file `agent_token.go` in `internal/executor`, with the provider type, the setter and a getter). With no App configured the provider is nil. The token of the daemon is never a substitute.
+4. Tests with a test HTTP server (the constructor with a base URL): a function TestMintScopedBodyHasReposAndReadPermissions — the request body holds the one repository and the four read permissions; a permission `write` gives an error and no request; an HTTP error of the endpoint gives an error with no token text; the full token cache is not changed by a scoped call; with no App the getter gives nil.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/adapters/github/ ./internal/executor/ -run 'Scoped|AgentReadToken'` passes; paste the output into the PR body.
+- [ ] Let ScopedToken accept `contents: write` -> the test fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+A token file. The gh shim. A git credential helper. A personal access token. The GitHub App set-up on a host.
+
+## Refs
+
+- Navigator TASK-651 in this repo · founder decisions of 11-19 (memory mem-327)
+
+### LEG U52 — repo: qf-studio/pilot — title: feat(executor): run_as_user GitHub access, part 1 — a read-only token file for each run, and the gh shim of the agent reads it
+
+probe: present qf-studio/pilot func[[:space:]]SetAgentReadTokenProvider\(
 probe: present qf-studio/pilot func[[:space:]]setupGhGuardShim\(
-probe: absent  qf-studio/pilot func[[:space:]]mintAgentReadToke[n]\(
+probe: present qf-studio/pilot func[[:space:]]runGhGuard\(
+probe: absent  qf-studio/pilot func[[:space:]]TestAgentTokenFileModeAndRefresh\(
 
 ## Context
 
-Navigator TASK-651 (design in `.agent/system/agent-isolation-design.md`, section 4.4). With run_as_user set, the agent environment holds no GitHub name (allowlist of the earlier leg), so the agent cannot read issues, fetch from origin or fetch a private module. The daemon's token has write rights and must never reach the agent. The GitHub App token source is TokenSource in `internal/adapters/github/apptoken.go`; the gh shim directory comes from setupGhGuardShim in `internal/executor/ghguard_spawn.go`; the per-run guard directory comes from setupRunGuards in `internal/executor/read_guard.go`. Projects are ProjectConfig in `internal/config/config.go`.
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-651. With run_as_user set, the agent user gets no GitHub name in its environment, so the `gh` of the agent has no credential. The executor has a provider for a read-only token of one repository (SetAgentReadTokenProvider). The agent calls `gh` through a shim that runs `pilot gh-guard` (runGhGuard in `cmd/pilot/ghguard.go`), which checks the command and runs the real `gh`. The shim directory (setupGhGuardShim in `internal/executor/ghguard_spawn.go`) lives only for one backend process. This leg gives each run a token file and lets the shim use it. The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below. With the option empty, or with no provider, nothing changes.
 
 ## Scope
 
-1. Token: a function mintAgentReadToken(ctx, owner, repo) asks GitHub for an installation token limited to the one repository with the permissions contents read, issues read, pull_requests read and metadata read. Add the request with a repository list and a permission map to `internal/adapters/github/apptoken.go` when it does not exist. Without a configured App the function returns an empty token; log one Warn line per daemon start, and the run goes on without a token. The daemon's own token is never used as a substitute.
-2. Token file: with the option set and a token present, write it to a file with the name github-token in the per-run guard directory: owner the daemon user, group the agent group, mode 0640, written through a temporary file and a rename. Refresh it 15 minutes before it expires while the run is alive. Remove it at the end of the run. The token value is registered for redaction as the other secret values are.
-3. gh: the shim script reads the file at each call and sets GH_TOKEN for the real gh. With no file it sets nothing.
-4. git and module fetch: a credential helper script in the guard directory prints the user name x-access-token and the token from the file. The agent environment gets the git config entries through GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n and GIT_CONFIG_VALUE_n, so that the helper applies to github.com over https only. Add these three name patterns to the allowlist. No token value is in an environment variable or in argv.
-5. Per-project override: an optional field run_as_user in ProjectConfig. Absent means the global value. A value sets the user for runs of that project. The literal value "off" switches the option off for that project. The preflight checks every distinct user. Every decision "option set or not" that the earlier legs made from the global value now takes the project of the run. Document the field in `configs/pilot.example.yaml`.
-6. Tests: the permission map and the repository list of the request (HTTP test server); no configured App gives an empty token and the daemon's token is absent from the agent environment and from the guard directory; file mode and rename; the refresh replaces the content; the shim sets GH_TOKEN from the file (run the script with a mock gh that prints its environment); the helper output; the config entries carry no token value; the override table (absent, a user, "off") for a spawn, a git command and a gate.
+1. In `internal/executor/agent_token.go`: a type for the token of a run. At the start of a run with the option set and a provider present, it makes a directory for the run (owner the daemon, group the shared group of the agent, mode 0750, through the helper that sets these for the shim directory) and writes the token into a file `github-token` in it (mode 0640, written to a temporary file and renamed). A provider error is logged as a warning and the run goes on with no file.
+2. A refresh: 15 minutes before the expiry of the token the file gets a new token, until the run ends. At the end of the run, on each path, the refresh stops and the directory is removed.
+3. The environment of the agent process holds the name `PILOT_GH_TOKEN_FILE` with the path of the file (add the name to the gh guard names that pass to the agent user). No token value is ever in an environment or in a log line.
+4. runGhGuard: when `PILOT_GH_TOKEN_FILE` is set and the file can be read, the real `gh` gets `GH_TOKEN` with the content of the file (cut of white space); a missing or empty file means no `GH_TOKEN`, as today.
+5. Tests: a function TestAgentTokenFileModeAndRefresh with a fake provider and a short expiry — the directory and the file have the modes and the group above; the file content changes before the expiry; after the end of the run the directory is gone and the provider is not called again; a provider error leaves no file and does not fail the run. A test of runGhGuard with a fake `gh` that prints its environment: the token of the file arrives as `GH_TOKEN`; with no file no `GH_TOKEN`. With the option empty no directory is made.
 
 ## Acceptance
 
-- [ ] `go test -race -count=1 ./internal/adapters/github/ ./internal/executor/... ./internal/config/ -run 'AgentReadToken|GhGuard|CredentialHelper|RunAsUser'` passes; paste the output into the PR body.
-- [ ] Ask for contents write -> the permission test fails.
-- [ ] Fall back to the daemon's token without an App -> its test fails.
-- [ ] Put the token into the agent environment -> the config entries test fails.
-- [ ] Ignore the project value "off" -> the override test fails.
+- [ ] `go test -race -count=1 ./internal/executor/ ./cmd/pilot/ -run 'AgentTokenFile|GhGuard'` passes; paste the output into the PR body.
+- [ ] Write the file with mode 0644 -> TestAgentTokenFileModeAndRefresh fails.
 - [ ] Do not re-run make build, make test or make lint as evidence.
 
 ## Out of scope
 
-The creation of the GitHub App and its key (operator step). A token for other hosts (GitLab, Azure DevOps). A module proxy. Any change of behaviour with the option empty and no project override.
+git of the agent side (other leg). The rules of the gh guard. The GitHub App set-up on a host. A token for the quality gates.
 
 ## Refs
 
-- Navigator TASK-651 in this repo · TASK-461 · design section 4.4
+- Navigator TASK-651 in this repo · founder decisions of 11-19 (memory mem-327)
+
+### LEG U53 — repo: qf-studio/pilot — title: feat(executor): run_as_user GitHub access, part 2 — git of the agent side reads the token file through a credential helper, with no token in the environment
+
+probe: present qf-studio/pilot func[[:space:]]TestAgentTokenFileModeAndRefresh\(
+probe: present qf-studio/pilot func[[:space:]]TestRunAsUserGateEnvHasNoDaemonSecret\(
+probe: present qf-studio/pilot func[[:space:]]setAgentEnvIn\(
+probe: absent  qf-studio/pilot func[[:space:]]TestAgentGitConfigEntriesCarryNoToken\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-651. With run_as_user set, each run has a read-only GitHub token in a file that the agent user can read (`PILOT_GH_TOKEN_FILE`). The `gh` shim uses it. git of the agent side has no credential: a fetch of a private repository, and a download of a private module by a quality gate, do not work. The origin of the agent workspace is the GitHub URL with no credentials. This leg lets git read the token file through a credential helper. The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below. With the option empty, or with no token file, nothing changes.
+
+## Scope
+
+1. The directory of the run token also gets a helper script `git-credential-pilot` (mode 0750, same owner and group): for the operation `get` it prints `username=x-access-token` and `password=` with the content of the token file; for each other operation it prints nothing. The script holds the path of the file, not the token.
+2. The environment of each command of the agent side (setAgentEnvIn) gets, when the run has a token file, the config entries `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0` and `GIT_CONFIG_VALUE_0` that set the credential helper of git for the host github.com over https (the key `credential.URL.helper` with the URL of that host) to the path of the script. When the environment already has config entries from the code, the new entry is added with the next index. The entries are set by the code after the allow list; an inherited value of these names never passes.
+3. The quality gates of the agent side (the gate command builder) get the same entries.
+4. Tests: a function TestAgentGitConfigEntriesCarryNoToken — with a token file of a fake value, the environment of an agent command holds the helper entry and no part of the token value; the helper script prints the name and the token for `get` with a host of github.com and nothing for `store` and `erase`; a git command with these entries against a local test server that asks for basic authentication sends the token of the file; with no token file no entry is set; with the option empty no entry is set.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'AgentGitConfig|AgentTokenFile'` passes; paste the output into the PR body.
+- [ ] Put the token value into `GIT_CONFIG_VALUE_0` -> TestAgentGitConfigEntriesCarryNoToken fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+Hosts other than github.com. A push by the agent (the token can only read). The daemon-side git. The GitHub App set-up on a host.
+
+## Refs
+
+- Navigator TASK-651 in this repo · founder decisions of 11-19 (memory mem-327)
 
 ### LEG F1 — repo: qf-studio/pilot — title: fix(executor): run_as_user — a context timeout stops the agent process at every spawn site, the anthropic-api backend is refused, run_as_group is required, the gh shim fails closed
 
@@ -2653,3 +2926,5 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - H16 → https://github.com/qf-studio/pilot/issues/6536
 - H20 → https://github.com/qf-studio/pilot/issues/6537
 - H12 → https://github.com/qf-studio/pilot/issues/6546
+- U41 → https://github.com/qf-studio/pilot/issues/6549
+- U51 → https://github.com/qf-studio/pilot/issues/6550
