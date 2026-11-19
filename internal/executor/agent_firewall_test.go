@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -90,10 +92,10 @@ func rejectPort(port int) string {
 }
 
 // rejectAddr is mock sudo code that fails the connection of the probe of
-// port on ip: the probe runs and prints the marker with status 1, as bash
-// does for a refused connection.
+// port on ip: the probe runs and prints the start line and the marker with
+// status 1, as bash does for a refused connection.
 func rejectAddr(ip string, port int) string {
-	return fmt.Sprintf(`case "$*" in *"/dev/tcp/%s/%d;"*) echo %s1; exit 0 ;; esac`, ip, port, runAsProbeMarker)
+	return fmt.Sprintf(`case "$*" in *"/dev/tcp/%s/%d;"*) echo %s; echo %s1; exit 0 ;; esac`, ip, port, runAsProbeStart, runAsProbeMarker)
 }
 
 // gatewayProbesOn returns, sorted, the addresses on which a probe of the
@@ -200,7 +202,7 @@ func TestRunAsFirewallGatewayPortBlockedPasses(t *testing.T) {
 	}
 	var probes int
 	for _, c := range sudoCalls(t, sudoLog) {
-		if strings.Contains(c, "-u pilot-agent") && strings.Contains(c, "-- bash --norc --noprofile -c echo "+runAsProbeStart+"; : 2>/dev/null </dev/tcp/127.0.0.1/") {
+		if strings.Contains(c, "-u pilot-agent") && strings.Contains(c, "-- bash --norc --noprofile -p -c echo "+runAsProbeStart+"; : 2>/dev/null </dev/tcp/127.0.0.1/") {
 			probes++
 		}
 	}
@@ -336,19 +338,26 @@ func TestRunAsFirewallMetadataTimeoutPasses(t *testing.T) {
 // nothing never tried a connection.
 // mutation pin: drop the start line condition of agentDialAs -> the hung
 // case passes and this test fails.
+// GH-6530: the first run of a new mock script takes up to a second on a
+// loaded host, before its start line; the start_line case runs the mock once
+// before the measured call and has a limit of 2 seconds.
 func TestRunAsFirewallMetadataNoStartRefuses(t *testing.T) {
-	prev := runAsDialTimeout
-	runAsDialTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { runAsDialTimeout = prev })
 	for name, started := range map[string]bool{"no_start_line": false, "start_line": true} {
 		t.Run(name, func(t *testing.T) {
+			prev := runAsDialTimeout
+			runAsDialTimeout = 300 * time.Millisecond
+			t.Cleanup(func() { runAsDialTimeout = prev })
 			gw, md := loopbackPort(t, false), loopbackPort(t, true)
 			slow := hungPort(md)
 			if started {
 				slow = slowPort(md)
+				runAsDialTimeout = 2 * time.Second
 			}
 			s := &runAsSettings{user: "pilot-agent", group: "pilot-agents", gid: -1, home: t.TempDir()}
 			_ = mockSudoAgent(t, "", slow)
+			if started {
+				warmMockSudo(t)
+			}
 			want := agentDialNotRun
 			if started {
 				want = agentDialNoAnswer
@@ -382,8 +391,8 @@ func TestRunAsFirewallProbeShellReadsNoStartFile(t *testing.T) {
 			continue
 		}
 		probes++
-		if !strings.Contains(c, "-- bash --norc --noprofile -c ") {
-			t.Errorf("probe %q: want bash with --norc and --noprofile", c)
+		if !strings.Contains(c, "-- bash --norc --noprofile -p -c ") {
+			t.Errorf("probe %q: want bash with --norc, --noprofile and -p", c)
 		}
 	}
 	if probes != 3 {
@@ -395,7 +404,7 @@ func TestRunAsFirewallProbeShellReadsNoStartFile(t *testing.T) {
 // run, a valid marker after the output too.
 func TestRunAsFirewallProbeOutputLimit(t *testing.T) {
 	gw, md := loopbackPort(t, false), loopbackPort(t, false)
-	big := fmt.Sprintf(`head -c 1048576 /dev/zero | tr '\0' x; echo; echo %s1; exit 0`, runAsProbeMarker)
+	big := fmt.Sprintf(`echo %s; head -c 1048576 /dev/zero | tr '\0' x; echo; echo %s1; exit 0`, runAsProbeStart, runAsProbeMarker)
 	start := time.Now()
 	log, _, err := runFirewallPreflight(t, rejectPort(gw)+"\n"+onAddr(md, big), gw, md)
 	requireFirewallRefusal(t, log, err, fmt.Sprintf("the probe of the metadata address 127.0.0.1:%d did not run", md))
@@ -434,7 +443,7 @@ func TestRunAsFirewallControlDialKeepsItsLimit(t *testing.T) {
 	// Every connection but the gateway and metadata ones (the control one)
 	// answers after more than runAsDialTimeout.
 	slowControl := fmt.Sprintf(`case "$1" in -[0-9]*) kill -s KILL -- "$1"; exit $? ;; esac
-case "$*" in *"/dev/tcp/127.0.0.1/%d;"*) echo %s1; exit 0 ;; *"/dev/tcp/127.0.0.1/%d;"*) ;; *"/dev/tcp/"*) sleep 1 ;; esac`, gw, runAsProbeMarker, md)
+case "$*" in *"/dev/tcp/127.0.0.1/%d;"*) echo %s; echo %s1; exit 0 ;; *"/dev/tcp/127.0.0.1/%d;"*) ;; *"/dev/tcp/"*) sleep 1 ;; esac`, gw, runAsProbeStart, runAsProbeMarker, md)
 	log, sudoLog, err := runFirewallPreflight(t, slowControl, gw, md)
 	if err != nil {
 		t.Fatalf("preflight error %v, want a pass:\n%s", err, log.String())
@@ -695,29 +704,62 @@ func TestRunAsFirewallControlWithoutMarkerRefuses(t *testing.T) {
 }
 
 // GH-6516: the status is exactly 0 or 1, as bash prints it; the start line
-// is not a status line.
+// is not a status line. GH-6530: exactly one start line, the whole line,
+// comes before exactly one status line.
 // mutation pin: read the status with strconv.Atoi -> the case 01 fails.
 func TestRunAsFirewallProbeMarkerResult(t *testing.T) {
 	start := runAsProbeStart + "\n"
 	for out, want := range map[string]agentDialResult{
-		runAsProbeMarker + "0\n":            agentDialConnected,
-		runAsProbeMarker + "1\n":            agentDialFailed,
-		start + runAsProbeMarker + "0\n":    agentDialConnected,
-		start + runAsProbeMarker + "1\n":    agentDialFailed,
-		"motd\n" + runAsProbeMarker + "1\n": agentDialFailed,
-		"":                                  agentDialNotRun,
-		start:                               agentDialNotRun,
-		runAsProbeMarker + "\n":             agentDialNotRun,
-		runAsProbeMarker + "x\n":            agentDialNotRun,
-		runAsProbeMarker + "01\n":           agentDialNotRun,
-		runAsProbeMarker + "+1\n":           agentDialNotRun,
-		runAsProbeMarker + "10\n":           agentDialNotRun,
-		runAsProbeMarker + "-1\n":           agentDialNotRun,
-		runAsProbeMarker + "0\n" + runAsProbeMarker + "1\n":         agentDialNotRun,
+		start + runAsProbeMarker + "0\n":            agentDialConnected,
+		start + runAsProbeMarker + "1\n":            agentDialFailed,
+		"motd\n" + start + runAsProbeMarker + "1\n": agentDialFailed,
+		start + "motd\n" + runAsProbeMarker + "0\n": agentDialConnected,
+		"":                                     agentDialNotRun,
+		start:                                  agentDialNotRun,
+		runAsProbeMarker + "0\n":               agentDialNotRun,
+		runAsProbeMarker + "1\n":               agentDialNotRun,
+		"motd\n" + runAsProbeMarker + "1\n":    agentDialNotRun,
+		runAsProbeMarker + "1\n" + start:       agentDialNotRun,
+		runAsProbeMarker + "0\n" + start:       agentDialNotRun,
+		"x" + start + runAsProbeMarker + "0\n": agentDialNotRun,
+		runAsProbeStart + "x\n" + runAsProbeMarker + "1\n":          agentDialNotRun,
+		start + start + runAsProbeMarker + "1\n":                    agentDialNotRun,
+		start + runAsProbeMarker + "\n":                             agentDialNotRun,
+		start + runAsProbeMarker + "x\n":                            agentDialNotRun,
+		start + runAsProbeMarker + "01\n":                           agentDialNotRun,
+		start + runAsProbeMarker + "+1\n":                           agentDialNotRun,
+		start + runAsProbeMarker + "10\n":                           agentDialNotRun,
+		start + runAsProbeMarker + "-1\n":                           agentDialNotRun,
+		start + runAsProbeMarker + "0\n" + runAsProbeMarker + "1\n": agentDialNotRun,
 		start + runAsProbeMarker + "1\n" + runAsProbeMarker + "1\n": agentDialNotRun,
 	} {
 		if got := probeMarkerResult(out); got != want {
 			t.Errorf("probeMarkerResult(%q) = %d, want %d", out, got, want)
+		}
+	}
+}
+
+// GH-6530: at the time limit one start line with no status line is no
+// answer, a status 0 after it a connection, anything else did not run.
+// mutation pin: read only the start line at the time limit -> this test
+// fails.
+func TestRunAsFirewallProbeMarkerTimeLimit(t *testing.T) {
+	start := runAsProbeStart + "\n"
+	for out, want := range map[string]agentDialResult{
+		start:                            agentDialNoAnswer,
+		"motd\n" + start:                 agentDialNoAnswer,
+		start + runAsProbeMarker + "0\n": agentDialConnected,
+		start + runAsProbeMarker + "1\n": agentDialNotRun,
+		start + runAsProbeMarker + "x\n": agentDialNotRun,
+		start + runAsProbeMarker + "0\n" + runAsProbeMarker + "0\n": agentDialNotRun,
+		runAsProbeMarker + "0\n" + start:                            agentDialNotRun,
+		runAsProbeMarker + "0\n":                                    agentDialNotRun,
+		start + start:                                               agentDialNotRun,
+		"x" + start:                                                 agentDialNotRun,
+		"":                                                          agentDialNotRun,
+	} {
+		if got := probeTimeLimitResult(out); got != want {
+			t.Errorf("probeTimeLimitResult(%q) = %d, want %d", out, got, want)
 		}
 	}
 }
@@ -859,6 +901,145 @@ func TestRunAsUserDaemonStartWithoutGatewayPortRefuses(t *testing.T) {
 			PreflightRunAsUser(&ClaudeCodeConfig{RunAsGatewayRequired: true, RunAsGatewayPort: port}, "", true, 0)
 			if err := RunAsUserPreflightError(); err != nil {
 				t.Errorf("option empty: preflight error %v, want none", err)
+			}
+		})
+	}
+}
+
+// warmMockSudo runs the mock sudo once (no "--": it exits 0 at once), so the
+// first run of a new script, which takes up to a second on a loaded host, is
+// not inside a measured time limit (GH-6530).
+func warmMockSudo(t *testing.T) {
+	t.Helper()
+	if out, err := exec.Command("sudo", "true").CombinedOutput(); err != nil {
+		t.Fatalf("mock sudo: %v: %s", err, out)
+	}
+}
+
+// statusAtLimitPort is slowPort with the status 0 after the start line: the
+// probe connected, and its sudo ends after the time limit.
+func statusAtLimitPort(port int) string {
+	return fmt.Sprintf(`case "$1" in -[0-9]*) kill -s KILL -- "$1"; exit $? ;; esac
+case "$*" in *"/dev/tcp/127.0.0.1/%d;"*) echo %s; echo %s0; sleep 10; exit 1 ;; esac`, port, runAsProbeStart, runAsProbeMarker)
+}
+
+// probeSettings are the settings of a direct agentDialAs call.
+func probeSettings(t *testing.T) *runAsSettings {
+	return &runAsSettings{user: "pilot-agent", group: "pilot-agents", gid: -1, home: t.TempDir()}
+}
+
+// GH-6530: a status 0 read at the time limit is a connection that was made;
+// for the metadata address that is a refusal, not no answer.
+// mutation pin: read only the start line at the time limit -> this test
+// fails.
+func TestRunAsFirewallStatusAtTimeLimit(t *testing.T) {
+	prev := runAsDialTimeout
+	runAsDialTimeout = 2 * time.Second
+	t.Cleanup(func() { runAsDialTimeout = prev })
+	gw, md := loopbackPort(t, false), loopbackPort(t, true)
+	mock := statusAtLimitPort(md)
+	_ = mockSudoAgent(t, "", mock)
+	warmMockSudo(t)
+	if got := agentDialAs(probeSettings(t), fmt.Sprintf("127.0.0.1:%d", md), runAsDialTimeout); got != agentDialConnected {
+		t.Errorf("agentDialAs of the metadata address = %d, want %d (connected)", got, agentDialConnected)
+	}
+	log, _, err := runFirewallPreflight(t, rejectPort(gw)+"\n"+mock, gw, md)
+	requireFirewallRefusal(t, log, err, fmt.Sprintf("reached the metadata address 127.0.0.1:%d", md))
+}
+
+// GH-6530: a non-interactive bash reads BASH_ENV and imports an exported
+// function, which --norc and --noprofile do not stop; -p stops both. The
+// mock sudo sets them, as a sudo rule that keeps them would; the probe runs
+// a real bash on a closed port and fails.
+// mutation pin: remove -p from the probe command -> this test fails.
+func TestRunAsFirewallProbeShellIgnoresBashEnv(t *testing.T) {
+	envFile := filepath.Join(t.TempDir(), "bash_env")
+	if err := os.WriteFile(envFile, []byte("echo "+runAsProbeStart+"; echo "+runAsProbeMarker+"0; exit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, extra := range map[string]string{
+		"BASH_ENV": `case "$*" in *"/dev/tcp/"*) export BASH_ENV='` + envFile + `' ;; esac`,
+		"exported_echo": `case "$*" in *"/dev/tcp/"*) exec env 'BASH_FUNC_echo%%=() { case "$1" in *=start) builtin echo "$1" ;; *) builtin echo ` +
+			runAsProbeMarker + `0 ;; esac; }' "$@" ;; esac`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			port := loopbackPort(t, false)
+			_ = mockSudoAgent(t, "", extra)
+			if got := agentDialAs(probeSettings(t), fmt.Sprintf("127.0.0.1:%d", port), runAsControlDialTimeout); got != agentDialFailed {
+				t.Errorf("agentDialAs of a closed port = %d, want %d (failed)", got, agentDialFailed)
+			}
+		})
+	}
+}
+
+// GH-6530: a probe that ends at once and leaves a child that holds its
+// output open ends by the wait delay of the probe, not by the context, and
+// did not run.
+func TestRunAsFirewallProbeOutputHeldOpen(t *testing.T) {
+	port := loopbackPort(t, false)
+	_ = mockSudoAgent(t, "", onAddr(port, fmt.Sprintf("echo %s; echo %s1; sleep 10 & exit 0", runAsProbeStart, runAsProbeMarker)))
+	warmMockSudo(t)
+	start := time.Now()
+	got := agentDialAs(probeSettings(t), fmt.Sprintf("127.0.0.1:%d", port), 500*time.Millisecond)
+	if d := time.Since(start); d >= 5*time.Second {
+		t.Errorf("agentDialAs took %s, want under 5s", d)
+	}
+	if got != agentDialNotRun {
+		t.Errorf("agentDialAs = %d, want %d (did not run)", got, agentDialNotRun)
+	}
+}
+
+// GH-6530: the output of a real probe through mock sudo. A status needs one
+// start line, the whole line, before it; the output limit is 4096 bytes, at
+// the time limit too; a host that is not an IP address or a port outside 1
+// to 65535 runs no command.
+func TestRunAsFirewallAgentDialAsOutput(t *testing.T) {
+	fill := func(n int) string {
+		return fmt.Sprintf(`echo %s; head -c %d /dev/zero | tr '\0' x; echo; echo %s1; exit 0`, runAsProbeStart, n, runAsProbeMarker)
+	}
+	// start line (18 bytes) + n + newline + status line (14 bytes)
+	pad := runAsProbeOutputLimit - len(runAsProbeStart+"\n") - 1 - len(runAsProbeMarker+"1\n")
+	for _, tc := range []struct {
+		name, host, port, body string
+		timeout                time.Duration
+		want                   agentDialResult
+	}{
+		{"start_and_status", "127.0.0.1", "", fmt.Sprintf("echo %s; echo %s1; exit 0", runAsProbeStart, runAsProbeMarker), 0, agentDialFailed},
+		{"status_no_start", "127.0.0.1", "", fmt.Sprintf("echo %s0; exit 0", runAsProbeMarker), 0, agentDialNotRun},
+		{"status_before_start", "127.0.0.1", "", fmt.Sprintf("echo %s0; echo %s; exit 0", runAsProbeMarker, runAsProbeStart), 0, agentDialNotRun},
+		{"start_in_longer_line", "127.0.0.1", "", fmt.Sprintf("echo x%s; echo %s0; exit 0", runAsProbeStart, runAsProbeMarker), 0, agentDialNotRun},
+		{"output_4096", "127.0.0.1", "", fill(pad), 0, agentDialFailed},
+		{"output_4097", "127.0.0.1", "", fill(pad + 1), 0, agentDialNotRun},
+		{"output_over_limit_at_time_limit", "127.0.0.1", "",
+			fmt.Sprintf(`echo %s; sleep 0.2; head -c 5000 /dev/zero | tr '\0' x; echo; sleep 10`, runAsProbeStart), 2 * time.Second, agentDialNotRun},
+		{"port_65536", "127.0.0.1", "65536", "", 0, agentDialNotRun},
+		{"port_0", "127.0.0.1", "0", "", 0, agentDialNotRun},
+		{"port_text", "127.0.0.1", "80;echo x", "", 0, agentDialNotRun},
+		{"host_text", "127.0.0.1;echo x", "", "", 0, agentDialNotRun},
+		{"host_name", "pilot.example", "", "", 0, agentDialNotRun},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			port := loopbackPort(t, false)
+			extra := `case "$1" in -[0-9]*) kill -s KILL -- "$1"; exit $? ;; esac` + "\n" + onAddr(port, tc.body)
+			sudoLog := mockSudoAgent(t, "", extra)
+			if tc.body != "" {
+				warmMockSudo(t)
+			}
+			portText := tc.port
+			if portText == "" {
+				portText = fmt.Sprint(port)
+			}
+			timeout := tc.timeout
+			if timeout == 0 {
+				timeout = runAsControlDialTimeout
+			}
+			if got := agentDialAs(probeSettings(t), tc.host+":"+portText, timeout); got != tc.want {
+				t.Errorf("agentDialAs(%s:%s) = %d, want %d", tc.host, portText, got, tc.want)
+			}
+			if tc.body == "" {
+				if calls := sudoCalls(t, sudoLog); len(calls) != 0 {
+					t.Errorf("want no command, got %q", calls)
+				}
 			}
 		})
 	}
