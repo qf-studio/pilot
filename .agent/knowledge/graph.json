@@ -9408,6 +9408,19 @@
         ],
         "created": "2026-11-19",
         "last_validated": "2026-11-19"
+      },
+      "mem-327": {
+        "type": "decision",
+        "summary": "run_as_user, founder decisions 2026-11-19: one option for the daemon and all its projects, no override for each project; the option run_as_env is dropped; the Go proxy variables of the daemon (GOPROXY, GOFLAGS, GONOSUMDB, GOPRIVATE) pass to the agent user, and the start is refused when GOPROXY holds credentials; the one PR that removes the preflight refusal of run_as_user is held as a draft for the founder, each other PR keeps the rule of no draft hold (mem-319).",
+        "path": "memories/decisions/mem-327.md",
+        "confidence": 0.95,
+        "concepts": [
+          "security",
+          "architecture",
+          "workflow-discipline"
+        ],
+        "created": "2026-11-19",
+        "last_validated": "2026-11-19"
       }
     }
   },
@@ -13751,6 +13764,11 @@
       "from": "mem-326",
       "to": "TASK-651",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-327",
+      "to": "TASK-651",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -13959,7 +13977,8 @@
     ],
     "architecture": [
       "mem-148",
-      "mem-324"
+      "mem-324",
+      "mem-327"
     ],
     "authentication": [
       "TASK-368",
@@ -15522,7 +15541,8 @@
       "mem-306",
       "mem-308",
       "mem-314",
-      "mem-324"
+      "mem-324",
+      "mem-327"
     ],
     "ship-test": [],
     "shipped-check": [
@@ -15998,7 +16018,8 @@
       "mem-321",
       "mem-322",
       "mem-323",
-      "mem-325"
+      "mem-325",
+      "mem-327"
     ],
     "worktree": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -16475,11 +16496,11 @@
       "mem-326"
     ]
   },
-  "last_updated": "2026-11-19T08:31:02.150380+00:00",
+  "last_updated": "2026-11-19T14:47:03.104779+00:00",
   "stats": {
-    "total_nodes": 809,
-    "total_edges": 868,
-    "memory_count": 451
+    "total_nodes": 810,
+    "total_edges": 869,
+    "memory_count": 452
   },
   "metadata": {
     "last_updated": null
