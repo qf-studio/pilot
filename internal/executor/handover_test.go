@@ -900,6 +900,7 @@ func TestHandOverDaemonGitEnvAllowList(t *testing.T) {
 				wsGit(t, e.repo, "config", "extensions.partialClone", "promisor")
 				wsGit(t, e.repo, "config", "remote.promisor.promisor", "true")
 				wsGit(t, e.repo, "config", "remote.promisor.url", filepath.Join(t.TempDir(), "none"))
+				allowHandOverPartialClone(t)
 				inDaemonEnv(t, vars, func() {
 					_ = runForgedHandOver(t, e, stream, tip, "did not come from the workspace")
 				})
@@ -1083,5 +1084,460 @@ func TestHandOverDaemonGitWaitDelay(t *testing.T) {
 		}
 	case <-time.After(procgroup.DefaultWaitDelay + 10*time.Second):
 		t.Fatalf("the wait did not end %v after the cancel", procgroup.DefaultWaitDelay+10*time.Second)
+	}
+}
+
+// allowHandOverPartialClone switches the refusal of a daemon's repository
+// that is a partial clone off for one test, so the checks behind it run.
+func allowHandOverPartialClone(t *testing.T) {
+	t.Helper()
+	prev := handOverCheckPartialClone
+	handOverCheckPartialClone = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { handOverCheckPartialClone = prev })
+}
+
+// gitArgsSeen wraps execCommandContext for one test and returns the argument
+// lists of the git commands of the daemon side it built.
+func gitArgsSeen(t *testing.T) *[][]string {
+	t.Helper()
+	var seen [][]string
+	prev := execCommandContext
+	execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" {
+			seen = append(seen, slices.Clone(args))
+		}
+		return prev(c, name, args...)
+	}
+	t.Cleanup(func() { execCommandContext = prev })
+	return &seen
+}
+
+// makePartialClone turns the daemon's repository into a partial clone of its
+// bare remote origin: the config `git clone --filter=blob:none` writes.
+func (e *handOverEnv) makePartialClone(t *testing.T) {
+	t.Helper()
+	wsGit(t, e.repo, "config", "core.repositoryformatversion", "1")
+	wsGit(t, e.repo, "config", "remote.origin.promisor", "true")
+	wsGit(t, e.repo, "config", "remote.origin.partialclonefilter", "blob:none")
+	wsGit(t, e.repo, "config", "extensions.partialClone", "origin")
+}
+
+// mutation pin: remove GIT_NO_LAZY_FETCH=1 from handOverDaemonEnv -> the row
+// "no lazy fetch" of this test fails
+func TestHandOverBranchPartialCloneNoLazyFetch(t *testing.T) {
+	t.Run("refused before any stream command", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			config [][2]string
+		}{
+			{"clone --filter", nil},
+			{"extensions.partialClone", [][2]string{{"extensions.partialClone", "origin"}}},
+			{"promisor remote", [][2]string{{"remote.origin.promisor", "true"}}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				e := newHandOverEnv(t)
+				commitFile(t, e.ws, "a.txt", "one")
+				if tc.config == nil {
+					e.makePartialClone(t)
+				}
+				for _, kv := range tc.config {
+					wsGit(t, e.repo, "config", kv[0], kv[1])
+				}
+				e.sudoLog = mockSudoAgent(t, e.repo, "")
+				tmp := handOverTmpDir(t)
+				packsBefore := e.packFiles(t)
+				seen := gitArgsSeen(t)
+
+				sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+				if !errors.Is(err, errHandOverPartialClone) {
+					t.Fatalf("handOverBranch = %s, %v, want %v", sha, err, errHandOverPartialClone)
+				}
+				if calls := sudoCalls(t, e.sudoLog); len(calls) != 0 {
+					t.Errorf("commands of the agent user ran: %q", calls)
+				}
+				if len(*seen) != 1 || !slices.Contains((*seen)[0], "config") {
+					t.Errorf("git commands of the daemon: %q, want the config read alone", *seen)
+				}
+				assertEmptyDir(t, tmp)
+				e.assertNothingLeft(t, packsBefore)
+			})
+		}
+	})
+
+	t.Run("a promisor remote set to false is no partial clone", func(t *testing.T) {
+		e := newHandOverEnv(t)
+		head := commitFile(t, e.ws, "a.txt", "one")
+		wsGit(t, e.repo, "config", "remote.origin.promisor", "false")
+		e.sudoLog = mockSudoAgent(t, e.repo, "")
+		handOverTmpDir(t)
+		sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+		if err != nil || sha != head {
+			t.Fatalf("handOverBranch = %s, %v, want %s", sha, err, head)
+		}
+	})
+
+	t.Run("no lazy fetch", func(t *testing.T) {
+		e := newHandOverEnv(t)
+		private := e.daemonOnlyCommit(t, "private.txt", "private")
+		wsGit(t, e.repo, "push", "-q", "origin", private+":refs/heads/private")
+		// The agent commits on top of the private commit and sends a pack
+		// that does not hold it.
+		clone := e.cloneOfDaemon(t)
+		wsGit(t, clone, "checkout", "-q", "-b", "forged", private)
+		tip := commitFile(t, clone, "agent.txt", "agent")
+		stream := forgedHandOverPack(t, clone, tip, "^"+private)
+		e.makePartialClone(t)
+		allowHandOverPartialClone(t)
+		// The wrapper of git traces each git process the daemon side starts,
+		// the fetch a git command starts by itself included. GIT_TRACE is set
+		// after the environment filter.
+		realGit, err := exec.LookPath("git")
+		if err != nil {
+			t.Fatal(err)
+		}
+		trace := filepath.Join(t.TempDir(), "trace")
+		wrapper := filepath.Join(t.TempDir(), "git")
+		body := fmt.Sprintf("#!/bin/sh\nGIT_TRACE='%s' exec '%s' \"$@\"\n", trace, realGit)
+		if err := os.WriteFile(wrapper, []byte(body), 0o755); err != nil { //nolint:gosec // the wrapper must be executable
+			t.Fatal(err)
+		}
+		prev := execCommandContext
+		execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
+			if name == "git" {
+				return prev(c, wrapper, args...)
+			}
+			return prev(c, name, args...)
+		}
+		t.Cleanup(func() { execCommandContext = prev })
+
+		err = runForgedHandOver(t, e, stream, tip, "did not come from the workspace")
+		if err != nil && !strings.Contains(err.Error(), private) {
+			t.Errorf("error = %v, want the private commit %s named", err, private)
+		}
+		raw, err := os.ReadFile(trace)
+		if err != nil {
+			t.Fatalf("the wrapper of git did not run: %v", err)
+		}
+		if strings.Contains(string(raw), "fetch") {
+			t.Errorf("a git command of the daemon started a fetch:\n%s", raw)
+		}
+	})
+}
+
+// mutation pin: remove --objects from verifyHandOverObjects -> this test fails
+func TestHandOverBranchRefusesPrivateTreeAndBlob(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// forge returns, in clone, the objects the pack holds, the tip and
+		// the private object the error must name.
+		forge func(t *testing.T, e *handOverEnv, clone, private string) (objects []string, tip, missing string)
+	}{
+		{"the tree of a private commit", func(t *testing.T, e *handOverEnv, clone, private string) ([]string, string, string) {
+			tree := wsGit(t, clone, "rev-parse", private+"^{tree}")
+			tip := wsGit(t, clone, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "-p", e.base, "-m", "forged", tree)
+			return []string{tip}, tip, tree
+		}},
+		{"a tree that names a private blob", func(t *testing.T, e *handOverEnv, clone, private string) ([]string, string, string) {
+			blob := wsGit(t, clone, "rev-parse", private+":private.txt")
+			mktree := exec.Command("git", "-C", clone, "mktree")
+			mktree.Stdin = strings.NewReader("100644 blob " + blob + "\tstolen.txt\n")
+			out, err := mktree.Output()
+			if err != nil {
+				t.Fatalf("mktree: %v", err)
+			}
+			tree := strings.TrimSpace(string(out))
+			tip := wsGit(t, clone, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "-p", e.base, "-m", "forged", tree)
+			return []string{tip, tree}, tip, blob
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newHandOverEnv(t)
+			private := e.daemonOnlyCommit(t, "private.txt", "private")
+			clone := e.cloneOfDaemon(t)
+			objects, tip, missing := tc.forge(t, e, clone, private)
+			stream := writeHandOverStream(t, handOverPackBytes(t, clone, nil, objects...))
+
+			err := runForgedHandOver(t, e, stream, tip, "did not come from the workspace")
+			if err != nil && !strings.Contains(err.Error(), missing) {
+				t.Errorf("error = %v, want the private object %s named", err, missing)
+			}
+		})
+	}
+}
+
+// mutation pin: remove the format check of the tip in handOverTip -> this
+// test fails
+func TestHandOverBranchRefusesTipText(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text func(head string) string
+	}{
+		{"upper case", strings.ToUpper},
+		{"a ref name", func(string) string { return "refs/heads/main" }},
+		{"an option", func(string) string { return "--upload-pack=x" }},
+		{"two lines", func(head string) string { return head + "\n" + head }},
+		{"12 characters", func(head string) string { return head[:12] }},
+		{"empty", func(string) string { return "" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newHandOverEnv(t)
+			head := commitFile(t, e.ws, "a.txt", "one")
+			text := tc.text(head)
+			answer := writeHandOverStream(t, []byte(text+"\n"))
+			e.sudoLog = mockSudoAgent(t, e.repo, fmt.Sprintf(`case "$*" in
+*" rev-parse --verify "*) exec cat '%s' ;;
+esac`, answer))
+			tmp := handOverTmpDir(t)
+			packsBefore := e.packFiles(t)
+			seen := gitArgsSeen(t)
+
+			sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+			if err == nil {
+				t.Fatalf("handOverBranch = %s for the tip text %q, want an error", sha, text)
+			}
+			if !strings.Contains(err.Error(), "not a full object name") {
+				t.Errorf("error = %v, want the format of the tip refused", err)
+			}
+			for _, args := range *seen {
+				for _, arg := range args {
+					if arg == text || (text != "" && strings.Contains(arg, text)) {
+						t.Errorf("the git command %q of the daemon got the tip text %q", args, text)
+					}
+				}
+			}
+			for _, c := range sudoCalls(t, e.sudoLog) {
+				if strings.Contains(c, "pack-objects") {
+					t.Errorf("pack-objects ran for the tip text %q: %q", text, c)
+				}
+			}
+			assertEmptyDir(t, tmp)
+			e.assertNothingLeft(t, packsBefore)
+		})
+	}
+}
+
+// mutation pin: remove the size checks of verifyHandOverObjects -> this test
+// fails
+func TestHandOverBranchObjectSizeLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		object, total  int64
+		want           string
+		files, content int
+	}{
+		{"one object over the limit", 1024, handOverMaxTotalBytes, "1024 bytes for one object", 1, 4096},
+		{"the sum over the limit", handOverMaxObjectBytes, 6000, "over 6000 bytes", 2, 4096},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newHandOverEnv(t)
+			for i := 0; i < tc.files; i++ {
+				// Zeros: the pack holds them in a few bytes.
+				commitFile(t, e.ws, fmt.Sprintf("zeros%d.bin", i), strings.Repeat("\x00", tc.content-i))
+			}
+			e.sudoLog = mockSudoAgent(t, e.repo, "")
+			prevObject, prevTotal := handOverMaxObjectBytes, handOverMaxTotalBytes
+			handOverMaxObjectBytes, handOverMaxTotalBytes = tc.object, tc.total
+			t.Cleanup(func() { handOverMaxObjectBytes, handOverMaxTotalBytes = prevObject, prevTotal })
+			tmp := handOverTmpDir(t)
+			packsBefore := e.packFiles(t)
+
+			sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+			if err == nil {
+				t.Fatalf("handOverBranch = %s over the limit, want an error", sha)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want %q", err, tc.want)
+			}
+			assertEmptyDir(t, tmp)
+			e.assertNothingLeft(t, packsBefore)
+		})
+	}
+}
+
+// packFilesUnder lists the files with the suffix .pack below dir.
+func packFilesUnder(t *testing.T, dir string) []string {
+	t.Helper()
+	var found []string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(path, ".pack") {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return found
+}
+
+func TestHandOverBranchKilledStreamLeavesNoPackFile(t *testing.T) {
+	e := newHandOverEnv(t)
+	commitFile(t, e.ws, "a.txt", handOverSecretText())
+	// The agent command writes the start of the pack and dies by a kill.
+	e.sudoLog = mockSudoAgent(t, e.repo, `case "$*" in *" pack-objects "*) "$@" | head -c 100; kill -s KILL $$ ;; esac`)
+	tmp := handOverTmpDir(t)
+	packDir := filepath.Join(e.repo, ".git", "objects", "pack")
+	before := packFilesUnder(t, filepath.Join(e.repo, ".git", "objects"))
+	packsBefore := e.packFiles(t)
+
+	sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+	if err == nil {
+		t.Fatalf("handOverBranch = %s after a kill of the stream, want an error", sha)
+	}
+	if !strings.Contains(err.Error(), "pack-objects") {
+		t.Errorf("error = %v, want the failed pack-objects", err)
+	}
+	assertEmptyDir(t, tmp)
+	e.assertNothingLeft(t, packsBefore)
+	for _, path := range packFilesUnder(t, filepath.Join(e.repo, ".git", "objects")) {
+		if filepath.Dir(path) != packDir || !slices.Contains(before, path) {
+			t.Errorf("pack file left after the hand-over: %s", path)
+		}
+	}
+}
+
+// mutation pin: create the temporary pack file in the temporary directory of
+// the daemon -> this test fails
+func TestHandOverBranchPackFileInTheQuarantine(t *testing.T) {
+	e := newHandOverEnv(t)
+	head := commitFile(t, e.ws, "a.txt", "one")
+	e.sudoLog = mockSudoAgent(t, e.repo, "")
+	tmp := handOverTmpDir(t)
+	objects := filepath.Join(e.repo, ".git", "objects")
+	// Left-overs of the layout of before: the old one goes, the fresh one
+	// and a directory of the name stay.
+	old := filepath.Join(tmp, "pilot-handover-old.pack")
+	fresh := filepath.Join(tmp, "pilot-handover-fresh.pack")
+	dir := filepath.Join(tmp, "pilot-handover-dir.pack")
+	for _, path := range []string{old, fresh} {
+		if err := os.WriteFile(path, []byte("PACK"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	twoHours := time.Now().Add(-2 * time.Hour)
+	for _, path := range []string{old, dir} {
+		if err := os.Chtimes(path, twoHours, twoHours); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// At the index-pack, the pack file is in the quarantine and not in the
+	// temporary directory.
+	var inQuarantine []string
+	var tmpAtIndex []string
+	prev := execCommandContext
+	execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" && slices.Contains(args, "index-pack") {
+			inQuarantine, _ = filepath.Glob(filepath.Join(objects, handOverQuarantinePrefix+"*", handOverPackPattern))
+			tmpAtIndex, _ = filepath.Glob(filepath.Join(tmp, "*"))
+		}
+		return prev(c, name, args...)
+	}
+	t.Cleanup(func() { execCommandContext = prev })
+
+	sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+	if err != nil || sha != head {
+		t.Fatalf("handOverBranch = %s, %v, want %s", sha, err, head)
+	}
+	if len(inQuarantine) != 1 {
+		t.Errorf("pack files in the quarantine at the index-pack: %q, want one", inQuarantine)
+	}
+	if want := []string{dir, fresh}; !slices.Equal(tmpAtIndex, want) {
+		t.Errorf("the temporary directory at the index-pack: %q, want %q", tmpAtIndex, want)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("the pack file of over an hour %s is still there: %v", old, err)
+	}
+	for _, path := range []string{fresh, dir} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("%s was removed: %v", path, err)
+		}
+	}
+	if quarantines, _ := filepath.Glob(filepath.Join(objects, handOverQuarantinePrefix+"*")); len(quarantines) != 0 {
+		t.Errorf("quarantine directories left: %q", quarantines)
+	}
+}
+
+// mutation pin: drop the check of "reference already exists" after the
+// failed update-ref -> this test fails
+func TestHandOverBranchUpdateRefFindsTheRef(t *testing.T) {
+	e := newHandOverEnv(t)
+	head := commitFile(t, e.ws, "a.txt", handOverSecretText())
+	e.sudoLog = mockSudoAgent(t, e.repo, "")
+	handOverTmpDir(t)
+	ref := handOverRef(handOverTestTask)
+	// The seam: another hand-over of the task sets the ref (to the same tip,
+	// with no pack of its own) right before the update-ref.
+	prev := execCommandContext
+	execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" && slices.Contains(args, "update-ref") && !slices.Contains(args, "-d") {
+			return prev(c, "sh", append([]string{"-c", `git update-ref "$0" "$1" && shift && exec git "$@"`, ref, head}, args...)...)
+		}
+		return prev(c, name, args...)
+	}
+	t.Cleanup(func() { execCommandContext = prev })
+
+	sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+	if !errors.Is(err, errHandOverInProgress) {
+		t.Fatalf("handOverBranch = %s, %v, want %v", sha, err, errHandOverInProgress)
+	}
+	if got := wsGit(t, e.repo, "rev-parse", ref); got != head {
+		t.Errorf("%s = %s, want the ref of the other hand-over %s", ref, got, head)
+	}
+	if out, err := exec.Command("git", "-C", e.repo, "fsck", "--connectivity-only", "--no-dangling").CombinedOutput(); err != nil {
+		t.Errorf("git fsck of the daemon repository: %v: %s", err, out)
+	}
+}
+
+func TestHandOverBranchConcurrentSameTask(t *testing.T) {
+	e := newHandOverEnv(t)
+	head := commitFile(t, e.ws, "a.txt", handOverSecretText())
+	e.sudoLog = mockSudoAgent(t, e.repo, "")
+	handOverTmpDir(t)
+	ref := handOverRef(handOverTestTask)
+	for round := 0; round < 10; round++ {
+		type result struct {
+			sha string
+			err error
+		}
+		results := make(chan result, 2)
+		start := make(chan struct{})
+		for i := 0; i < 2; i++ {
+			go func() {
+				<-start
+				sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+				results <- result{sha, err}
+			}()
+		}
+		close(start)
+		var shas []string
+		for i := 0; i < 2; i++ {
+			r := <-results
+			if r.err != nil {
+				t.Logf("round %d: %v", round, r.err)
+				continue
+			}
+			shas = append(shas, r.sha)
+		}
+		if len(shas) == 0 {
+			t.Fatalf("round %d: no hand-over returned a SHA", round)
+		}
+		for _, sha := range shas {
+			if sha != head {
+				t.Errorf("round %d: handOverBranch = %s, want %s", round, sha, head)
+			}
+		}
+		out, err := exec.Command("git", "-C", e.repo, "rev-parse", "--verify", "-q", ref).Output()
+		if got := strings.TrimSpace(string(out)); err != nil || got != head {
+			t.Fatalf("round %d: %s = %q (%v) after both returned, want %s", round, ref, got, err, head)
+		}
+		if out, err := exec.Command("git", "-C", e.repo, "rev-list", "--objects", ref).CombinedOutput(); err != nil {
+			t.Fatalf("round %d: the objects of %s: %v: %s", round, ref, err, out)
+		}
 	}
 }

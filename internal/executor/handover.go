@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -63,6 +64,33 @@ const handOverQuarantinePrefix = "pilot-handover-incoming-"
 // left-over of a daemon that was killed and the next hand-over removes it.
 const handOverQuarantineMaxAge = time.Hour
 
+// handOverPackPattern names the temporary pack file of a hand-over. The file is
+// created inside the quarantine directory; a plain file of this name in the
+// temporary directory of the daemon is a left-over of the layout of before.
+const handOverPackPattern = "pilot-handover-*.pack"
+
+// handOverMaxObjectBytes bounds the size of one object of the range and
+// handOverMaxTotalBytes the sum of the sizes of the objects of the range:
+// the pack stream is compressed, a pack of 1 MB can hold a blob of 1 GiB of
+// zeros. Vars for the tests.
+var (
+	handOverMaxObjectBytes int64 = 512 << 20 // 512 MB
+	handOverMaxTotalBytes  int64 = 4 << 30   // 4 GB
+)
+
+// errHandOverPartialClone is the error of a daemon's repository that is a
+// partial clone: a git command there that misses an object fetches it from
+// the promisor remote with the access of the daemon.
+var errHandOverPartialClone = errors.New("hand-over: the daemon's repository is a partial clone")
+
+// errHandOverInProgress is the error of an update-ref that finds the
+// hand-over ref of the task set: another hand-over of the task set it.
+var errHandOverInProgress = errors.New("hand-over: another hand-over of the task is in progress")
+
+// handOverCheckPartialClone is the refusal of a daemon's repository that is a
+// partial clone (checkHandOverPartialClone). A var for the tests.
+var handOverCheckPartialClone = checkHandOverPartialClone
+
 // handOverRef is the hand-over ref of a task in the daemon's repository.
 func handOverRef(taskID string) string {
 	return handOverRefPrefix + sanitizeBranchName(taskID)
@@ -85,13 +113,48 @@ func handOverEnvAllowed(name string) bool {
 }
 
 // handOverDaemonEnv is env without the names handOverEnvAllowed refuses, plus
-// GIT_TERMINAL_PROMPT=0.
+// GIT_TERMINAL_PROMPT=0 and GIT_NO_LAZY_FETCH=1. Decision: with lazy fetch
+// off, a git command that misses an object of a partial clone fails; it does
+// not fetch the object from the promisor remote into the quarantine, where
+// the check of verifyHandOverObjects would take it for an object of the
+// workspace.
 func handOverDaemonEnv(env []string) []string {
 	kept := slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
 		return !handOverEnvAllowed(name)
 	})
-	return append(kept, "GIT_TERMINAL_PROMPT=0")
+	return append(kept, "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1")
+}
+
+// checkHandOverPartialClone fails with errHandOverPartialClone when the
+// config of daemonRepo has extensions.partialClone or a remote with
+// promisor=true: the settings with which git fetches a missing object from a
+// remote by itself.
+func checkHandOverPartialClone(ctx context.Context, daemonRepo string) error {
+	cmd := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("config", "--get-regexp", `^(extensions\.partialclone|remote\..*\.promisor)$`)...)
+	stderr := &cappedBuffer{max: handOverStderrMax}
+	cmd.Stderr = stderr
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 && len(out) == 0 {
+		// No key matches.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("hand-over: read the config of %s: %w: %s", daemonRepo, err, strings.TrimSpace(stderr.String()))
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		key, value, _ := strings.Cut(line, " ")
+		if strings.EqualFold(key, "extensions.partialclone") {
+			return errHandOverPartialClone
+		}
+		// A key without a value is true.
+		switch strings.ToLower(value) {
+		case "", "true", "yes", "on", "1":
+			return errHandOverPartialClone
+		}
+	}
+	return nil
 }
 
 // handOverDaemonGit builds a git command of the daemon in daemonRepo during a
@@ -190,7 +253,9 @@ func checkHandOverTip(ctx context.Context, daemonRepo string, q handOverQuaranti
 // directory. An object that exists only through the alternate is an object of
 // the daemon's repository, not of the workspace. Decision: the push publishes
 // the range with the credentials of the daemon, so "index-pack accepted the
-// pack" is no proof; the range must be what the agent sent.
+// pack" is no proof; the range must be what the agent sent. The same cat-file
+// reads the size of each object: one over handOverMaxObjectBytes, or a sum
+// over handOverMaxTotalBytes, is an error.
 func verifyHandOverObjects(ctx context.Context, daemonRepo string, q handOverQuarantine, tip, baseSHA string) error {
 	list := q.git(ctx, daemonRepo, true, "rev-list", "--objects", tip, "--not", baseSHA)
 	stderr := &cappedBuffer{max: handOverStderrMax}
@@ -207,7 +272,7 @@ func verifyHandOverObjects(ctx context.Context, daemonRepo string, q handOverQua
 			n++
 		}
 	}
-	check := q.git(ctx, daemonRepo, false, "cat-file", "--batch-check=%(objectname)")
+	check := q.git(ctx, daemonRepo, false, "cat-file", "--batch-check=%(objectname) %(objectsize)")
 	check.Stdin = strings.NewReader(names.String())
 	stderr = &cappedBuffer{max: handOverStderrMax}
 	check.Stderr = stderr
@@ -219,9 +284,21 @@ func verifyHandOverObjects(ctx context.Context, daemonRepo string, q handOverQua
 	if n == 0 {
 		lines = nil
 	}
+	var total int64
 	for _, line := range lines {
 		if sha, ok := strings.CutSuffix(line, " missing"); ok {
 			return fmt.Errorf("hand-over: object %s of the branch did not come from the workspace", sha)
+		}
+		sha, size, _ := strings.Cut(line, " ")
+		n, err := strconv.ParseInt(size, 10, 64)
+		if err != nil || n < 0 {
+			return fmt.Errorf("hand-over: the quarantine check answered %q, not an object name and a size", line)
+		}
+		if n > handOverMaxObjectBytes {
+			return fmt.Errorf("hand-over: object %s of the branch has %d bytes, over the limit of %d bytes for one object", sha, n, handOverMaxObjectBytes)
+		}
+		if total += n; total > handOverMaxTotalBytes {
+			return fmt.Errorf("hand-over: the objects of the branch have over %d bytes, the limit of the sum", handOverMaxTotalBytes)
 		}
 	}
 	if len(lines) != n {
@@ -246,18 +323,27 @@ func handOverObjectDir(ctx context.Context, daemonRepo string) (string, error) {
 
 // sweepHandOverQuarantines removes the quarantine directories in objects
 // older than handOverQuarantineMaxAge: the left-overs of a daemon that was
-// killed during a hand-over.
+// killed during a hand-over (the temporary pack file is inside). It also
+// removes the plain files handOverPackPattern of that age in the temporary
+// directory of the daemon, where the temporary pack file was before.
 func sweepHandOverQuarantines(objects string) {
-	entries, err := os.ReadDir(objects)
-	if err != nil {
-		return
+	old := func(en os.DirEntry) bool {
+		info, err := en.Info()
+		return err == nil && time.Since(info.ModTime()) > handOverQuarantineMaxAge
 	}
-	for _, en := range entries {
-		if !en.IsDir() || !strings.HasPrefix(en.Name(), handOverQuarantinePrefix) {
-			continue
+	if entries, err := os.ReadDir(objects); err == nil {
+		for _, en := range entries {
+			if en.IsDir() && strings.HasPrefix(en.Name(), handOverQuarantinePrefix) && old(en) {
+				_ = os.RemoveAll(filepath.Join(objects, en.Name()))
+			}
 		}
-		if info, err := en.Info(); err == nil && time.Since(info.ModTime()) > handOverQuarantineMaxAge {
-			_ = os.RemoveAll(filepath.Join(objects, en.Name()))
+	}
+	tmp := os.TempDir()
+	if entries, err := os.ReadDir(tmp); err == nil {
+		for _, en := range entries {
+			if match, _ := filepath.Match(handOverPackPattern, en.Name()); match && en.Type().IsRegular() && old(en) {
+				_ = os.Remove(filepath.Join(tmp, en.Name()))
+			}
 		}
 	}
 }
@@ -331,8 +417,8 @@ func removeHandOverFiles(paths []string) {
 // errHandOverNothingNew), `git rev-parse --verify refs/heads/BRANCH^{commit}`
 // for the tip, and `git pack-objects --stdout --revs` (TIP and ^BASE on its
 // standard input, not thin), whose standard output is copied into a temporary
-// file of the daemon outside the workspace root; the daemon reads and writes
-// no file of the workspace. The stream is bounded by handOverMaxPackBytes and
+// file of the daemon inside the quarantine directory (outside the workspace
+// root); the daemon reads and writes no file of the workspace. The stream is bounded by handOverMaxPackBytes and
 // by ctx: past the limit the context of the agent command is cancelled, which
 // kills it through sudo (the Cancel of agentCommand).
 //
@@ -342,9 +428,12 @@ func removeHandOverFiles(paths []string) {
 // delta whose base is not in the pack fails; then checkHandOverTip and
 // verifyHandOverObjects through the quarantine. Only then the pack moves into
 // objects/pack and update-ref sets the hand-over ref; a failed update-ref
-// removes the moved files. Every git command of this step runs through
+// removes the moved files, unless the ref exists already: then another
+// hand-over of the task set it, and errHandOverInProgress leaves its ref and
+// files alone. Before any of it, a daemon's repository that is a partial clone
+// is refused (handOverCheckPartialClone). Every git command of this step runs through
 // handOverDaemonGit (no GIT_ name of the daemon environment, a group kill on
-// a cancel of ctx). The temporary file and the quarantine are removed on every path; a
+// a cancel of ctx). The quarantine, with the temporary file, is removed on every path; a
 // failed hand-over leaves objects/pack as it was and no hand-over ref.
 func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, baseSHA string) (string, error) {
 	if sanitizeBranchName(taskID) == "" {
@@ -364,6 +453,9 @@ func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, 
 		if agent, err := gitRoutesToAgent(s.workspaceRoot, daemonRepo); err != nil || agent {
 			return "", fmt.Errorf("hand-over: the daemon's repository %q is inside the workspace root %q (%v)", daemonRepo, s.workspaceRoot, err)
 		}
+	}
+	if err := handOverCheckPartialClone(ctx, daemonRepo); err != nil {
+		return "", err
 	}
 	// A ref name holds no ':', '*', space or '^': the revision arguments below
 	// cannot be widened through the branch name.
@@ -387,7 +479,19 @@ func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, 
 		return "", err
 	}
 
-	tmp, err := os.CreateTemp("", "pilot-handover-*.pack")
+	qdir, err := os.MkdirTemp(objects, handOverQuarantinePrefix+"*")
+	if err != nil {
+		return "", fmt.Errorf("hand-over: the quarantine directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(qdir) }()
+	q := handOverQuarantine{dir: qdir, objects: objects}
+	if err := os.Mkdir(filepath.Join(qdir, "pack"), 0o755); err != nil { //nolint:gosec // the pack directory of a git object directory
+		return "", fmt.Errorf("hand-over: the quarantine pack directory: %w", err)
+	}
+
+	// Inside the quarantine: its removal, and the sweep after a kill of the
+	// daemon, remove the file too.
+	tmp, err := os.CreateTemp(qdir, handOverPackPattern)
 	if err != nil {
 		return "", fmt.Errorf("hand-over: temporary pack file: %w", err)
 	}
@@ -410,16 +514,6 @@ func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, 
 	if err := checkHandOverPackHeader(packPath); err != nil {
 		_ = os.Remove(packPath)
 		return "", err
-	}
-
-	qdir, err := os.MkdirTemp(objects, handOverQuarantinePrefix+"*")
-	if err != nil {
-		return "", fmt.Errorf("hand-over: the quarantine directory: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(qdir) }()
-	q := handOverQuarantine{dir: qdir, objects: objects}
-	if err := os.Mkdir(filepath.Join(qdir, "pack"), 0o755); err != nil { //nolint:gosec // the pack directory of a git object directory
-		return "", fmt.Errorf("hand-over: the quarantine pack directory: %w", err)
 	}
 
 	pack, err := os.Open(packPath) //nolint:gosec // the temporary file of the daemon
@@ -446,9 +540,15 @@ func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, 
 		return "", err
 	}
 	// The empty old value: the ref must not exist, it was removed above.
+	// LC_ALL=C: the message of the ref that exists is matched below.
 	update := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("update-ref", ref, tip, "")...)
-	appendGitEnv(update, "GIT_NO_REPLACE_OBJECTS=1")
+	appendGitEnv(update, "GIT_NO_REPLACE_OBJECTS=1", "LC_ALL=C")
 	if out, err := update.CombinedOutput(); err != nil {
+		if strings.Contains(string(out), "reference already exists") {
+			// Decision: another hand-over of the task set the ref after the
+			// removal above; its ref and the pack files it relies on stay.
+			return "", fmt.Errorf("%w: set %s to %s: %v: %s", errHandOverInProgress, ref, tip, err, strings.TrimSpace(string(out)))
+		}
 		_ = removeHandOverRef(daemonRepo, taskID)
 		removeHandOverFiles(moved)
 		return "", fmt.Errorf("hand-over: set %s to %s: %w: %s", ref, tip, err, strings.TrimSpace(string(out)))
