@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -139,9 +140,12 @@ func TestAgentReadTokenProviderNeverReturnsTheFullToken(t *testing.T) {
 			_, _ = w.Write([]byte(`{"message":"server error"}`))
 			return
 		}
+		// The installation of this server holds qf-studio/pilot and
+		// acme/widget.
+		owners := map[string]string{"pilot": "qf-studio", "widget": "acme"}
 		repos := make([]map[string]string, 0, len(body.Repositories))
 		for _, name := range body.Repositories {
-			repos = append(repos, map[string]string{"name": name})
+			repos = append(repos, map[string]string{"name": name, "full_name": owners[name] + "/" + name})
 		}
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -192,7 +196,7 @@ func TestAgentReadTokenProviderNeverReturnsTheFullToken(t *testing.T) {
 
 	for _, tc := range []struct{ repo, name string }{
 		{"qf-studio/pilot", "pilot"},
-		{"QF-Studio/Pilot", "Pilot"},
+		{"QF-Studio/Pilot", "pilot"}, // the name of the config entry, not of the argument
 		{"acme/widget", "widget"},
 	} {
 		before := scopedCount()
@@ -264,5 +268,80 @@ func TestAgentReadTokenProviderNeverReturnsTheFullToken(t *testing.T) {
 	}
 	if n := atomic.LoadInt64(&fullMints); n != 1 {
 		t.Errorf("full mints = %d, want 1 (only the one made by the test)", n)
+	}
+}
+
+// TestScopedTokenChecksTheOwnerOfTheAnswer: the request to GitHub names the
+// repository with no owner, so only the full_name of the answer shows that
+// the token is for the repository of the owner asked for.
+func TestScopedTokenChecksTheOwnerOfTheAnswer(t *testing.T) {
+	resetGitHubTokenTestState(t)
+
+	// answerFor is the full_name the server puts in its answer.
+	var answerFor atomic.Value
+	var requests int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&requests, 1)
+		fullName, _ := answerFor.Load().(string)
+		_, name, _ := strings.Cut(fullName, "/")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":                "test-scoped-read-token",
+			"expires_at":           time.Now().Add(time.Hour),
+			"repository_selection": "selected",
+			"repositories":         []map[string]string{{"name": name, "full_name": fullName}},
+			"permissions":          github.ReadOnlyPermissions(),
+		})
+	}))
+	defer server.Close()
+
+	appCfg := testAgentAppConfig(t)
+	source, err := github.NewTokenSourceWithBaseURL(appCfg, server.URL)
+	if err != nil {
+		t.Fatalf("NewTokenSourceWithBaseURL() error = %v", err)
+	}
+	ctx := context.Background()
+	read := github.ReadOnlyPermissions()
+
+	// The right name, the full_name of another owner.
+	answerFor.Store("owner-a/name")
+	token, expires, err := source.ScopedToken(ctx, "owner-b", "name", read)
+	if err == nil {
+		t.Error("ScopedToken(owner-b, name) with an answer for owner-a/name = nil error, want a refusal")
+	}
+	if token != "" || !expires.IsZero() {
+		t.Errorf("ScopedToken(owner-b, name) = (%q, %v), want no token", token, expires)
+	}
+
+	// The right full_name in another letter case.
+	answerFor.Store("Owner-B/Name")
+	if token, _, err := source.ScopedToken(ctx, "owner-b", "name", read); err != nil || token != "test-scoped-read-token" {
+		t.Errorf("ScopedToken(owner-b, name) with an answer for Owner-B/Name = (%q, %v), want the token", token, err)
+	}
+
+	// The provider for the config entry OWNER-B/NAME with an answer for
+	// OWNER-A/NAME.
+	ghAppTokenCache.once.Do(func() { ghAppTokenCache.source = source })
+	cfg := &config.Config{Adapters: &config.AdaptersConfig{GitHub: &github.Config{
+		Enabled: true,
+		Repo:    "OWNER-B/NAME",
+		App:     appCfg,
+	}}}
+	provider := agentReadTokenProvider(cfg)
+	if provider == nil {
+		t.Fatal("agentReadTokenProvider() = nil, want a provider with a GitHub App configured")
+	}
+	answerFor.Store("OWNER-A/NAME")
+	before := atomic.LoadInt64(&requests)
+	token, _, err = provider(ctx, "OWNER-B/NAME")
+	if err == nil {
+		t.Error("provider(OWNER-B/NAME) with an answer for OWNER-A/NAME = nil error, want a refusal")
+	}
+	if token != "" {
+		t.Errorf("provider(OWNER-B/NAME) token = %q, want empty", token)
+	}
+	if n := atomic.LoadInt64(&requests) - before; n != 1 {
+		t.Errorf("provider(OWNER-B/NAME) made %d requests, want 1 (the refusal is of the answer)", n)
 	}
 }
