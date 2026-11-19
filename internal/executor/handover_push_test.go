@@ -2,11 +2,13 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
@@ -435,8 +437,9 @@ func TestHandOverPushDeletedBranchRefIsNotForgiven(t *testing.T) {
 }
 
 // TestHandOverPushRefusedGateKeepsThePublishedCount: a refused gate after a
-// published push leaves the hand-over SHA of the push empty, and the count of
-// new commits is the count on the remote, not the refused commit.
+// published push keeps the published SHA of the first push, the workspace
+// record says "not pushed", and the count of new commits is the count on the
+// remote, not the refused commit.
 func TestHandOverPushRefusedGateKeepsThePublishedCount(t *testing.T) {
 	e := newHandOverPushEnv(t)
 	ctx := context.Background()
@@ -444,8 +447,8 @@ func TestHandOverPushRefusedGateKeepsThePublishedCount(t *testing.T) {
 	if err := e.git.Push(ctx, e.branch, handOverTestTask); err != nil {
 		t.Fatalf("first Push: %v", err)
 	}
-	if sha := e.git.lastHandOverSHA(); sha != head {
-		t.Fatalf("lastHandOverSHA after the push = %q, want %q", sha, head)
+	if sha := e.git.publishedHandOverSHA(); sha != head {
+		t.Fatalf("publishedHandOverSHA after the push = %q, want %q", sha, head)
 	}
 	secretpatterns.RegisterSecretValues(secretGateValue)
 	commitFile(t, e.ws, "notes.md", "token = "+secretGateValue+"\n")
@@ -453,8 +456,11 @@ func TestHandOverPushRefusedGateKeepsThePublishedCount(t *testing.T) {
 	if err := e.git.Push(ctx, e.branch, handOverTestTask); !IsPushRefused(err) {
 		t.Fatalf("Push of a registered secret: %v, want a refusal", err)
 	}
-	if sha := e.git.lastHandOverSHA(); sha != "" {
-		t.Errorf("lastHandOverSHA after a refused gate = %q, want empty", sha)
+	if sha := e.git.publishedHandOverSHA(); sha != head {
+		t.Errorf("publishedHandOverSHA after a refused gate = %q, want the first push %q", sha, head)
+	}
+	if _, pushed, _ := e.git.workspace.state(); pushed {
+		t.Error("the workspace record says pushed after a refused gate")
 	}
 	if got := e.remoteHead(t, e.branch); got != head {
 		t.Fatalf("remote head = %q, want %q", got, head)
@@ -877,5 +883,231 @@ func TestHandOverPushNothingNewTimeoutSalvage(t *testing.T) {
 	}
 	if result.Outcome == "needs_human" || preserve {
 		t.Errorf("outcome=%q preserve=%v: the salvage held the branch for nothing new", result.Outcome, preserve)
+	}
+}
+
+// failPushAfterRemote puts a git wrapper first on PATH: a push command of the
+// daemon user runs (the remote takes the commit) and then exits 1, the
+// GH-1389 shape of a push that reports an error after the data landed.
+func (e *handOverPushEnv) failPushAfterRemote(t *testing.T) {
+	t.Helper()
+	next, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	wrapper := fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do
+  if [ "$a" = push ] && [ -z "$%[1]s" ]; then
+    '%[2]s' "$@"
+    echo "fatal: cannot chdir after the push" >&2
+    exit 1
+  fi
+done
+exec '%[2]s' "$@"
+`, handOverPushAgentMark, next)
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(wrapper), 0o755); err != nil { //nolint:gosec // wrapper must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// assertPublished checks that g recorded sha as published: the published SHA,
+// the workspace record as pushed, and the count of new commits equal to the
+// count on the remote.
+func (e *handOverPushEnv) assertPublished(t *testing.T, sha string) {
+	t.Helper()
+	if got := e.git.publishedHandOverSHA(); got != sha {
+		t.Errorf("publishedHandOverSHA = %q, want %q", got, sha)
+	}
+	if e.git.workspace == nil {
+		t.Fatal("no workspace record")
+	}
+	if got, pushed, _ := e.git.workspace.state(); got != sha || !pushed {
+		t.Errorf("workspace record = %q pushed=%v, want %q pushed", got, pushed, sha)
+	}
+	want := e.remoteCount(t, e.branch)
+	if n, err := e.git.CountNewCommitsAgainstOrigin(context.Background(), "main"); err != nil || n != want {
+		t.Errorf("CountNewCommitsAgainstOrigin = %d, %v; want the count on the remote %d", n, err, want)
+	}
+}
+
+// TestHandOverPushForgivenIsRecorded: the push command takes the commit to the
+// remote and then exits 1. The forgiveness of the push loop and the one of
+// pushFailureForgiven accept it, and each records the push as published, as a
+// push that succeeded is.
+// mutation pin: acceptForgivenPush without the recordPublishedHandOver call -> this test fails
+func TestHandOverPushForgivenIsRecorded(t *testing.T) {
+	t.Run("push loop", func(t *testing.T) {
+		e := newHandOverPushEnv(t)
+		ctx := context.Background()
+		commitFile(t, e.ws, "a.txt", "one")
+		head := commitFile(t, e.ws, "b.txt", "two")
+		e.failPushAfterRemote(t)
+
+		r := newSilentRunnerTask359()
+		task := &Task{ID: handOverTestTask, Branch: e.branch}
+		var pushes int
+		if err := r.pushBranchCounting(ctx, e.git, task, r.log, &pushes); err != nil {
+			t.Fatalf("push loop: %v, want the failure forgiven", err)
+		}
+		if pushes != 1 {
+			t.Errorf("%d pushes, want 1", pushes)
+		}
+		if got := e.remoteHead(t, e.branch); got != head {
+			t.Fatalf("remote head = %q, want %q", got, head)
+		}
+		e.assertPublished(t, head)
+	})
+	t.Run("pushFailureForgiven", func(t *testing.T) {
+		e := newHandOverPushEnv(t)
+		ctx := context.Background()
+		head := commitFile(t, e.ws, "a.txt", "one")
+		e.failPushAfterRemote(t)
+
+		err := e.git.Push(ctx, e.branch, handOverTestTask)
+		if err == nil {
+			t.Fatal("Push: nil, want the error of the wrapper")
+		}
+		if got := e.git.publishedHandOverSHA(); got != "" {
+			t.Fatalf("publishedHandOverSHA after a failed push = %q, want empty", got)
+		}
+		if !pushFailureForgiven(ctx, e.git, e.branch, err) {
+			t.Fatalf("pushFailureForgiven = false; the remote holds the hand-over SHA %s", head)
+		}
+		e.assertPublished(t, head)
+	})
+}
+
+// TestHandOverPushRefusedFirstAttemptCountsZero: the gate refuses the first
+// push; the workspace holds one commit, the remote none, and the count is 0.
+func TestHandOverPushRefusedFirstAttemptCountsZero(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	ctx := context.Background()
+	secretpatterns.RegisterSecretValues(secretGateValue)
+	commitFile(t, e.ws, "notes.md", "token = "+secretGateValue+"\n")
+
+	if err := e.git.Push(ctx, e.branch, handOverTestTask); !IsPushRefused(err) {
+		t.Fatalf("Push of a registered secret: %v, want a refusal", err)
+	}
+	if got := e.remoteHead(t, e.branch); got != "" {
+		t.Fatalf("the branch reached the remote at %s", got)
+	}
+	if n, err := e.git.CountNewCommitsAgainstOrigin(ctx, "main"); err != nil || n != 0 {
+		t.Errorf("CountNewCommitsAgainstOrigin after a refused first push = %d, %v; want 0", n, err)
+	}
+}
+
+// TestHandOverPushOtherBranchPublishedCountsZero: branch X is published, the
+// gate refuses the push of branch Y; the published SHA of X is not counted for
+// Y.
+func TestHandOverPushOtherBranchPublishedCountsZero(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	ctx := context.Background()
+	commitFile(t, e.ws, "a.txt", "one")
+	if err := e.git.Push(ctx, e.branch, handOverTestTask); err != nil {
+		t.Fatalf("Push of %s: %v", e.branch, err)
+	}
+	other := "pilot/GH-2"
+	wsGit(t, e.ws, "checkout", "-q", "-b", other)
+	secretpatterns.RegisterSecretValues(secretGateValue)
+	commitFile(t, e.ws, "notes.md", "token = "+secretGateValue+"\n")
+
+	if err := e.git.Push(ctx, other, handOverTestTask); !IsPushRefused(err) {
+		t.Fatalf("Push of %s with a registered secret: %v, want a refusal", other, err)
+	}
+	if n, err := e.git.CountNewCommitsAgainstOrigin(ctx, "main"); err != nil || n != 0 {
+		t.Errorf("CountNewCommitsAgainstOrigin for %s = %d, %v; want 0, not the count of %s", other, n, err, e.branch)
+	}
+}
+
+// TestHandOverPushConcurrentLoserIsNotForgiven: two Push calls of one
+// GitOperations at once. Both reach the hand-over together (a barrier at its
+// first step); one sets the hand-over ref and pushes, the other fails with
+// "another hand-over of the task is in progress". The attempt SHA of the value
+// is the winner's, and the remote holds it, but the loser's error is a
+// hand-over error and never forgiven.
+// mutation pin: pushNeverForgiven without IsHandOverError -> this test fails
+func TestHandOverPushConcurrentLoserIsNotForgiven(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	ctx := context.Background()
+	prev := handOverCheckPartialClone
+	t.Cleanup(func() { handOverCheckPartialClone = prev })
+	var barrier sync.WaitGroup
+	handOverCheckPartialClone = func(ctx context.Context, repo string) error {
+		barrier.Done()
+		barrier.Wait()
+		return prev(ctx, repo)
+	}
+
+	losers := 0
+	for round := 0; round < 10; round++ {
+		head := commitFile(t, e.ws, fmt.Sprintf("r%d.txt", round), "round")
+		barrier.Add(2)
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		for i := range errs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				errs[i] = e.git.Push(ctx, e.branch, handOverTestTask)
+			}(i)
+		}
+		wg.Wait()
+		if errs[0] != nil && errs[1] != nil {
+			t.Fatalf("round %d: both pushes failed: %v; %v", round, errs[0], errs[1])
+		}
+		if got := e.remoteHead(t, e.branch); got != head {
+			t.Fatalf("round %d: remote head = %q, want %q", round, got, head)
+		}
+		for _, err := range errs {
+			if err == nil {
+				continue
+			}
+			losers++
+			if !IsHandOverError(err) || !errors.Is(err, errHandOverInProgress) {
+				t.Errorf("round %d: loser error %v, want the hand-over error %v", round, err, errHandOverInProgress)
+			}
+			if pushFailureForgiven(ctx, e.git, e.branch, err) {
+				t.Errorf("round %d: the loser was forgiven with the head of the winner", round)
+			}
+		}
+	}
+	if losers == 0 {
+		t.Fatal("no round had a loser: the two hand-overs did not overlap")
+	}
+}
+
+// TestHandOverPushInheritedLeaseRecordsTheHandOverSHA: origin holds the head a
+// previous run left behind; the agent rewrote its branch and moved its HEAD
+// elsewhere. The lease push over the inherited head publishes the hand-over
+// SHA, and that SHA, not the HEAD of the workspace, is what the run records.
+// mutation pin: leasePushInheritedHead records task.pushedWIPSHA = localHead for an agent workspace -> this test fails
+func TestHandOverPushInheritedLeaseRecordsTheHandOverSHA(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	ctx := context.Background()
+	first := commitFile(t, e.ws, "a.txt", "one")
+	if err := e.git.Push(ctx, e.branch, handOverTestTask); err != nil {
+		t.Fatalf("first Push: %v", err)
+	}
+	moved := commitFile(t, e.ws, "b.txt", "two")
+	rewritten := wsGit(t, e.ws, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "-p", e.base, "-m", "rewritten", first+"^{tree}")
+	wsGit(t, e.ws, "checkout", "-q", "--detach")
+	wsGit(t, e.ws, "update-ref", "refs/heads/"+e.branch, rewritten)
+	if got, err := e.git.LocalHead(ctx); err != nil || got != moved {
+		t.Fatalf("setup: LocalHead = %q, %v; want %q", got, err, moved)
+	}
+
+	r := newSilentRunnerTask359()
+	task := &Task{ID: handOverTestTask, Branch: e.branch, SourceAdapter: "linear", inheritedHeadSHA: first}
+	var pushes int
+	if err := r.pushBranchCounting(ctx, e.git, task, r.log, &pushes); err != nil {
+		t.Fatalf("push loop: %v", err)
+	}
+	if got := e.remoteHead(t, e.branch); got != rewritten {
+		t.Fatalf("remote head = %q, want the hand-over SHA %q", got, rewritten)
+	}
+	if task.pushedWIPSHA != rewritten || task.pushedWIPSHA != e.git.publishedHandOverSHA() {
+		t.Errorf("pushedWIPSHA = %q, want the published SHA %q, not the HEAD of the workspace %q", task.pushedWIPSHA, rewritten, moved)
 	}
 }
