@@ -102,7 +102,9 @@
 - **Notes from the review of PR#6443 that H5 does not cover (not written as a leg):** a forged bundle with an empty pack can name a commit that only the daemon's repository has and that is built on the base (full fix: index the pack into a quarantine object directory and require each new object there; the gate must not assume that `BASE..sha` holds only objects of the agent); each failed or removed hand-over leaves packs or `tmp_pack_*` files in the daemon's repository (up to 2 GB each; the quarantine directory or the recovery-ref part); no test fails without `fetch.fsckObjects`, without `GIT_NO_REPLACE_OBJECTS`, without the hooks-off arguments on the agent side, without `check-ref-format`, without the three path checks, or without the ref removal after a failure; the task IDs `GH/1` and `GH.1` give the same ref; no lock per task; fsck accepts a symlink entry and a 1 MB commit header (for the gate and H4); check the git version of the box (an older git may not apply `fetch.fsckObjects` to a bundle; not verified). Not run: real sudo, Linux, a stream over 2 GB.
 - [x] **H1** (PR#6443 merged 11-17 18:15Z; run-it review done, see H5) ([#6434](https://github.com/qf-studio/pilot/issues/6434), dispatched 11-17 ~12:00Z) hand-over, part 1: handOverBranch takes the branch of the workspace as a bundle stream into `refs/pilot/handover/TASK` of the daemon's repository; no caller yet. The old leg U3 was eight items and about fifteen call sites; a spec check against `origin/main` 1310e68d1 on 11-17 split it into H1 to H4.
 - **Founder call 11-18 ~10:30Z: way A — the hand-over transport becomes a plain pack that is not thin, read by `git index-pack` with no `--fix-thin`; no bundle and no `git fetch` on the daemon side.** It replaces H6 (issue 6470 closed, branch `pilot/GH-6470` kept for reference). Reasons, all from reviews of 11-18: the thin-bundle bypass (pre-PR review of H6); a stream with the bundle signature and a broken header still starts `git-upload-pack` on the temporary file; a v3 bundle with a `@filter` capability is accepted, and in a partial-clone daemon repository git then fetches objects that the agent names from the remote (run-it review of PR#6469).
-- [ ] **H14** (dispatch-ready, below; after H9, same file; must merge before the removal of the preflight refusal) from the run-it review of PR#6497 (comment on the PR): in a daemon repository that is a partial clone, the object check itself makes git fetch a missing object from the promisor remote into the quarantine, and the check then passes: an object that the agent only named reaches the hand-over ref (reproduced; with `GIT_NO_LAZY_FETCH=1` the same case is refused and no fetch starts). Also: no test for the check of trees and blobs and for the format check of the tip; the temporary pack file of a killed daemon is never removed; the loser of two hand-overs of one task deletes the ref of the winner; the size limit covers the stream and not what it inflates to.
+- [ ] **B12** ([#6515](https://github.com/qf-studio/pilot/issues/6515), dispatched 11-19 ~09:00Z) from the open notes of the run-it reviews of PR#6442, PR#6449, PR#6472 and PR#6479: the dry run runs the read-only check of the sudo rule list; a failed stop of the agent processes in the undo keeps the firewall; a dangling link or a link loop in the data directory is flagged as the Go preflight does; a summary line when the daemon user is left with no sudo rule; a test name with a byte of 0xa0 to 0xff for the quote function.
+- [ ] **P7** ([#6516](https://github.com/qf-studio/pilot/issues/6516), dispatched 11-19 ~09:00Z; must merge before the removal of the preflight refusal) from the partial run-it review of PR#6494: a metadata probe with no answer counts as blocked only when the probe printed its start line; `bash --norc --noprofile`; the marker status is exactly `0` or `1`; an output limit; a port above 65535 is refused at once.
+- [ ] **H14** ([#6514](https://github.com/qf-studio/pilot/issues/6514), dispatched 11-19 ~08:35Z, after the merge of H9; must merge before the removal of the preflight refusal) from the run-it review of PR#6497 (comment on the PR): in a daemon repository that is a partial clone, the object check itself makes git fetch a missing object from the promisor remote into the quarantine, and the check then passes: an object that the agent only named reaches the hand-over ref (reproduced; with `GIT_NO_LAZY_FETCH=1` the same case is refused and no fetch starts). Also: no test for the check of trees and blobs and for the format check of the tip; the temporary pack file of a killed daemon is never removed; the loser of two hand-overs of one task deletes the ref of the winner; the size limit covers the stream and not what it inflates to.
 - **Notes from the review of PR#6497 that H14 does not cover:** in a normal daemon repository about 60 forged streams found no way for an object of the daemon's repository to the hand-over ref (thin packs and deltas against a private object fail at index-pack; a named private parent, tree or blob fails at verifyHandOverObjects, which is the line of defence: `--strict` accepts links into the alternate); each failure leaves no file and no ref; no false refusal for a merge commit, 2000 files, a second hand-over, re-created content; a gitlink that names a private commit is accepted (a push does not send it); the sweep uses the mtime of the quarantine directory, so a hand-over that runs for more than one hour can lose its quarantine (fails closed); with GIT_COMMON_DIR in the daemon environment the quarantine is made in the other repository (H9). Not run: a real second user, Linux, SHA-256 repositories, a shallow daemon repository.
 - [x] **H8** (PR#6497 merged 11-18 13:49Z; run-it review done, see H14; the run-it review reports after the merge) ([#6488](https://github.com/qf-studio/pilot/issues/6488), dispatched 11-18 ~10:40Z; replaces H6; must merge before the removal of the preflight refusal) hand-over by a pack stream: the agent user sends `git pack-objects --stdout --revs` (not thin); the daemon checks the pack signature, runs `git index-pack --strict` with no `--fix-thin` into a quarantine object directory, requires each object of the range in the quarantine alone, then moves the pack and sets the ref; a failure leaves nothing; a branch with nothing above the base gives errHandOverNothingNew.
 - [ ] **H9** ([#6500](https://github.com/qf-studio/pilot/issues/6500), dispatched 11-18 ~15:25Z) the daemon-side git of the hand-over gets an environment by allow list (run-it review of PR#6469: `GIT_COMMON_DIR` moves the object store to another repository with a success result, `GIT_EXEC_PATH` runs programs of a named directory, `GIT_GRAFT_FILE` makes the ancestor check accept an orphan history); tests for the guards that no test pins.
@@ -1569,6 +1571,93 @@ A lock per task. The mtime rule of the quarantine sweep. The callers in `git.go`
 
 - Navigator TASK-651 in this repo · review comment of PR#6497
 
+### LEG B12 — repo: qf-studio/pilot — title: fix(box): agent user setup script — the dry run reads the sudo rule list, a failed process stop keeps the firewall, a dangling link is flagged, a line when the daemon user has no sudo, a test for the high bytes of the quote function
+
+probe: present qf-studio/pilot ^precheck_sudo_rules\(\)
+probe: present qf-studio/pilot ^undo_firewall_allowed\(\)
+probe: present qf-studio/pilot ^step_daemon_private\(\)
+probe: present qf-studio/pilot shq_c1_case\([)]
+probe: absent  qf-studio/pilot dangling_link_case\([)]
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-651. `scripts/box/setup-agent-user.sh` prepares a host for the option run_as_user: a second Linux user for the agent, a sudo rule, a firewall for that user. Root runs it by hand, with `--dry-run` first; `--undo` removes the set-up. Run-it reviews of the merged script found the points below. No one is a blocker; each one makes the output of the script say less than the state of the host. Keep the change small: only the items below, only in `scripts/box/setup-agent-user.sh` and `scripts/box/setup-agent-user_test.sh` (and its mock file when a test needs it).
+
+- With `--dry-run`, precheck_sudo_rules prints the command `sudo -n -ll -U` and returns. On a host where the daemon user has a rule from a group, the dry run ends with exit 0 and each step "done (dry-run)", and the apply then stops at this check. The command only reads.
+- In the undo, a failed step `agent-processes` (the process list command fails, the stop command fails, or a process survives KILL) does not hold the firewall steps. End state seen: exit 1, the firewall of the agent user gone, two processes of the agent user alive. No line says that these processes now reach the gateway port and the metadata address.
+- step_daemon_private skips a top-level entry of the data directory that is a dangling link or a link loop (`[ -e "$e" ] || continue`). The Go preflight (`internal/executor/agent_command.go`) resolves each top-level link and refuses both. So the apply passes and the daemon start then refuses.
+- The undo can end with the sudo rule gone and the root line of the cloud-init file still commented (no backup, or a failed restore). The daemon user then has no sudo at all, and no line says so.
+- The function shq_c1_case in the test file has two names, and both hold the byte 0x9b. A quote function that prints the bytes 0xa0 to 0xff raw passes the whole suite.
+
+## Scope
+
+1. precheck_sudo_rules with `--dry-run`: after the printed command, run the same read-only check (check_rule_list). On a refusal print the entries and a line "dry run: the apply would stop here, nothing would be changed", and let the dry run end with exit 1 after the summary. When the rule list command itself fails, print "dry run: the rule list could not be read" and exit 1 the same way. No other dry-run step changes.
+2. Undo: when the step `agent-processes` failed, the three firewall steps do not run; each gets the summary line "not run: processes of the agent user still run", and one line on standard error says that the firewall stays and tells the operator to stop the processes and run `--undo` again. The rule of today for a failed `sudoers-rule` step stays; when both failed, the sudo rule line wins. The exit status is 1.
+3. step_daemon_private: an entry that is a link (`-L`) and does not resolve (dangling, or a loop) is not skipped. It gets a line "the entry NAME is a link that does not resolve: remove it or correct it, look at it by hand" with the name through shq, and the step fails as for the other hand-look entries. An unmatched glob is still skipped.
+4. Undo: after the last step, when the rule file is gone and the cloud-init file still has a line that this script commented out, print in the summary "the daemon user DAEMON has no sudo rule now: restore CLOUD_INIT_FILE by hand". The check reads the file; it does not use the step result.
+5. Tests in `setup-agent-user_test.sh`: a dry run on a mock host with a group rule ends with exit 1 and the new line, and changes no file; a dry run on a clean mock host still ends with exit 0; an undo with a failed process list (the helper pgrep_fails_after) keeps both firewall chains and the unit, and prints the new lines; a function dangling_link_case — a dangling link and a link loop in the data directory each fail the step with the new line, and an empty directory does not; an undo with the backups removed prints the "no sudo rule now" line; a third name in shq_c1_case that has a byte of 0xa0 to 0xff and no byte of 0x80 to 0x9f.
+
+## Acceptance
+
+- [ ] `bash scripts/box/setup-agent-user_test.sh` passes; paste its summary line into the PR body.
+- [ ] Change shq so that it prints the bytes 0xa0 to 0xff raw -> the suite fails.
+- [ ] Restore `[ -e "$e" ] || continue` as the only guard -> the dangling link test fails.
+- [ ] Let the firewall steps run after a failed `agent-processes` step -> the new undo test fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The Go preflight. The match of sudo entries with lines of the cloud-init file (hosts, last match). The rule for names with a space. A nested agent root. `setup-agent-user_real_test.sh`. A signal during the undo.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comments of PR#6442, PR#6449, PR#6472, PR#6479
+
+### LEG P7 — repo: qf-studio/pilot — title: fix(executor): run_as_user firewall probe — a metadata probe with no answer must show that it started, the probe shell reads no start file, a strict read of the marker, a port range check
+
+probe: present qf-studio/pilot func[[:space:]]agentDialAs\(
+probe: present qf-studio/pilot func[[:space:]]probeMarkerResult\(
+probe: present qf-studio/pilot func[[:space:]]gatewayProbeAddrs\(
+probe: absent  qf-studio/pilot func[[:space:]]TestRunAsFirewallMetadataNoStartRefuses\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-651. With run_as_user set, the preflight checks the host firewall (checkRunAsFirewall in `internal/executor/agent_command.go`): as the agent user it opens a connection to the gateway port and to the metadata address, and each one must be blocked. agentDialAs runs `bash -c` through sudo with a `/dev/tcp` redirect and reads a marker line with the exit status. A run-it review found the points below. The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below, only in `agent_command.go` and its test files. With the option empty nothing changes.
+
+- For the metadata address a probe that ends by the time limit with no output counts as "blocked" (the firewall drops the packets with no reset, so no answer is the normal case). A sudo that hangs for the time limit gives the same result with no connection attempt. A probe that printed nothing proves nothing.
+- The probe shell is `bash -c` with no `--norc --noprofile`. Today no file of the agent user is read only because the environment allow list drops `BASH_ENV`. One more name in that list would let a file of the agent user print the marker.
+- probeMarkerResult reads the status with strconv.Atoi: `01`, `+1` and `10` are accepted, and each positive number is "failed connection". bash prints `0` or `1` here.
+- A gateway port above 65535 is refused late, with "cannot listen", after a wait.
+- The output of the probe process has no size limit.
+
+## Scope
+
+1. agentDialAs: the probe script prints a start line (a second marker constant, for example the marker with the suffix `start`) before the redirect. The result "no answer" needs that start line in the output read so far; a time limit with no start line is agentDialNotRun. Read the output through a pipe or a buffer that keeps what the process wrote before the kill.
+2. The probe command is `bash --norc --noprofile -c SCRIPT`.
+3. probeMarkerResult: the status text must be exactly `0` (connected) or `1` (failed); each other text is agentDialNotRun. The start line does not count as a second status marker.
+4. The output of the probe is read with a limit of 4096 bytes; more output is agentDialNotRun.
+5. The gateway port is checked before the probe: a port above 65535 fails the preflight at once with a message that names the port. The rule of today for the port 0 stays.
+6. Tests: a function TestRunAsFirewallMetadataNoStartRefuses — with the mock sudo of the test fixture that sleeps past the time limit and prints nothing, the metadata probe gives "did not run" and the preflight refuses; with a mock that prints the start line and then sleeps, the result is "blocked" as today; a table for probeMarkerResult (`0`, `1`, `01`, `+1`, `10`, `-1`, empty, two status lines, a start line alone); a test that the probe arguments hold `--norc` and `--noprofile`; an output of 1 MB gives "did not run"; the port 70000 is refused with no listener and no wait. The test TestRunAsFirewallMetadataTimeoutPasses of today keeps its meaning: its mock prints the start line before it sleeps.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'RunAsFirewall|ProbeMarker'` passes; paste the output into the PR body.
+- [ ] Remove the start line condition -> TestRunAsFirewallMetadataNoStartRefuses fails.
+- [ ] Put strconv.Atoi back -> the table test fails for `01`.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The host names `localhost` and `[::1]` in gatewayProbeAddrs. The tests that skip where 127.0.0.2 cannot be bound. The script under `scripts/box/`. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comment of PR#6494
+
 ### LEG H7 — repo: qf-studio/pilot — title: fix(executor): run_as_user push — a failed hand-over is never forgiven as "already published", the hand-over SHA is recorded after the push, nothing above the base is not a failure, hooks off for the remote reads
 
 probe: present qf-studio/pilot func[[:space:]]newGitOperationsForWorkspace\(
@@ -2116,3 +2205,6 @@ sudo -n -u pilot-agent curl -s -m 2 http://127.0.0.1:9091/health   # must fail
 - H9 → https://github.com/qf-studio/pilot/issues/6500
 - H7 → https://github.com/qf-studio/pilot/issues/6501
 - H13 → https://github.com/qf-studio/pilot/issues/6503
+- H14 → https://github.com/qf-studio/pilot/issues/6514
+- B12 → https://github.com/qf-studio/pilot/issues/6515
+- P7 → https://github.com/qf-studio/pilot/issues/6516
