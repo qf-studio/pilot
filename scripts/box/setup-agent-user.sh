@@ -26,8 +26,10 @@
 #                     resolved path is not a plain path in the data dir ([A-Za-z0-9
 #                     ._/-], a link out of the data dir included), or that resolves
 #                     to the data dir or to the agent root or a path in it, or that
-#                     is open and does not belong to the daemon user, gets no
-#                     chmod and no record: the step fails with one line that names it.
+#                     is open and does not belong to the daemon user, or that is a
+#                     link that does not resolve (dangling, a loop: the daemon start
+#                     refuses it), gets no chmod and no record: the step fails with
+#                     one line that names it.
 #   group             system group (default: pilot)
 #   agent-user        system user, no login shell, home AGENT_ROOT/home
 #   daemon-membership daemon user joins the group
@@ -74,7 +76,9 @@
 # `sudo -ll -U DAEMON` as the proof does and passes over only the cloud-init
 # entries the apply comments out; any other entry the proof would refuse fails
 # the apply there, with nothing changed. The output names the entry; the
-# operator removes the rule or the group membership first.
+# operator removes the rule or the group membership first. A dry run reads the
+# list too: on a refusal (or a list it cannot read) it says so, runs the rest
+# of the plan and ends with exit 1 after the summary.
 #
 # A daemon user in a system group with privileges (wheel, adm, docker, ...) gets
 # a WARNING before the steps and in the summary: a path to root; not a failure
@@ -114,8 +118,15 @@
 #                        while the sudo rule file is still in place (its removal
 #                        failed; a dangling link counts): they are listed as not
 #                        run, and one line says to remove the file by hand and run
-#                        --undo again. The failed ones are named at the end and the
-#                        exit status is 1. The user, the group and the
+#                        --undo again. So do they while a process of the agent user
+#                        may still run (the agent-processes step failed): one line
+#                        says to stop the processes and run --undo again (when both
+#                        failed, the line of the sudo rule). The failed ones are
+#                        named at the end and the exit status is 1. When the rule
+#                        file is gone and the cloud-init file still has the root
+#                        line commented out (no backup, a failed restore), the
+#                        summary says that the daemon user has no sudo rule now.
+#                        The user, the group and the
 #                        directories stay (the commands to delete them are
 #                        printed, not run), and so
 #                        do the modes of the daemon's entries (the chmods that put
@@ -142,8 +153,9 @@
 # Exit status: 0 when every step is done or skipped, 1 when the check of the sudo
 # rules or a step failed (an apply stops at the first failed step, the steps
 # after it are listed in the summary as skipped; an undo runs every step, the
-# firewall steps not while the sudo rule file is in place), 2 on bad arguments
-# (nothing is changed).
+# firewall steps not while the sudo rule file is in place or a process of the
+# agent user may still run; a dry run that the check of the sudo rules refuses
+# ends so after the summary), 2 on bad arguments (nothing is changed).
 
 set -euo pipefail
 
@@ -194,6 +206,7 @@ RESULT=""
 NOTE=""
 DAEMON_GROUP_WARNING=""
 SUDO_RULE_REMOVAL=""
+NO_SUDO_LEFT=""
 
 die() {
     echo "setup-agent-user: $*" >&2
@@ -566,8 +579,15 @@ step_daemon_private() {
     fi
     for e in "$DATA_DIR"/* "$DATA_DIR"/.[!.]* "$DATA_DIR"/..?*; do
         [ "$e" != "$AGENT_ROOT" ] || continue
-        # an unmatched glob, or a dangling link: nothing to reach
-        [ -e "$e" ] || continue
+        if [ ! -e "$e" ]; then
+            # an unmatched glob: nothing to reach
+            [ -L "$e" ] || continue
+            # a dangling link or a link loop: the preflight of the daemon
+            # refuses it at the start, so the apply does not pass it
+            lines+=("$(printf 'the entry %s is a link that does not resolve: remove it or correct it, look at it by hand' \
+                "$(shq "$e")")")
+            continue
+        fi
         real="$(realpath "$e" 2>/dev/null)" || real=""
         if ! plain_data_path "$e" || ! plain_data_path "$real"; then
             lines+=("$(printf 'the entry %s is not a plain path in the data dir (a name or a link target outside [A-Za-z0-9._/-], or a link out of the data dir): no chmod is printed, look at it by hand' \
@@ -888,12 +908,13 @@ END {
 # daemon user is the agent user. A rule that `sudo -n true` does not show (one
 # command as root, a rule that needs a password, a rule through a group) fails
 # here. SKIPFILE and SKIPMAX: the entries RULES_AWK passes over (the precheck).
+# Exit 1 on a refused entry, 2 when the rule list cannot be read.
 check_rule_list() {
     local list rc=0 report
     list="$(sudo -n -ll -U "$DAEMON_USER")" || rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "sudo -ll -U ${DAEMON_USER} failed (exit ${rc}); the sudo removal is not proven" >&2
-        return 1
+        return 2
     fi
     if report="$(printf '%s\n' "$list" | awk -v agent="$AGENT_USER" -v group="$GROUP" \
         -v skipfile="${1:-}" -v skipmax="${2:-0}" "$RULES_AWK")"; then
@@ -948,9 +969,12 @@ prove_sudo_removed() {
 # was; after the edit the proof would fail with the cloud-init file changed. Not
 # run with --keep-daemon-sudo (no proof follows) or when no sudoers file would
 # change (the agent rule is in place, no line to comment out): then the proof
-# alone decides.
+# alone decides. A dry run reads the rule list too (the command only reads): on
+# a refusal, or a rule list that cannot be read, DRY_RUN_STOP says so, the dry
+# run goes on and ends with exit 1 after the summary.
+DRY_RUN_STOP=""
 precheck_sudo_rules() {
-    local ndis=0
+    local ndis=0 rc=0
     [ "$KEEP_DAEMON_SUDO" = 0 ] || return 0
     if [ -f "$CLOUD_INIT_SUDOERS" ]; then
         ndis="$(cloud_init_plan | grep -c '^DISABLE' || true)"
@@ -962,12 +986,20 @@ precheck_sudo_rules() {
     if [ "$DRY_RUN" = 1 ]; then
         printf '+ sudo -n -ll -U %q  (each entry but %s of %q: run-as user %q only, run-as group %q at most)\n' \
             "$DAEMON_USER" "$ndis" "$CLOUD_INIT_SUDOERS" "$AGENT_USER" "$GROUP"
+    fi
+    check_rule_list "$CLOUD_INIT_SUDOERS" "$ndis" || rc=$?
+    [ "$rc" -ne 0 ] || return 0
+    if [ "$DRY_RUN" = 1 ]; then
+        if [ "$rc" = 2 ]; then
+            DRY_RUN_STOP="dry run: the rule list could not be read"
+        else
+            DRY_RUN_STOP="dry run: the apply would stop here, nothing would be changed"
+        fi
+        echo "$DRY_RUN_STOP" >&2
         return 0
     fi
-    if ! check_rule_list "$CLOUD_INIT_SUDOERS" "$ndis"; then
-        echo "nothing is changed: the proof after the edit of ${CLOUD_INIT_SUDOERS} would refuse the entries above; remove each rule, or the membership of ${DAEMON_USER} in the group it names, first, then run again" >&2
-        return 1
-    fi
+    echo "nothing is changed: the proof after the edit of ${CLOUD_INIT_SUDOERS} would refuse the entries above; remove each rule, or the membership of ${DAEMON_USER} in the group it names, first, then run again" >&2
+    return 1
 }
 
 step_cloud_init_sudoers() {
@@ -1513,6 +1545,27 @@ undo_firewall_allowed() {
     [ ! -e "$SUDOERS_FILE" ] && [ ! -L "$SUDOERS_FILE" ]
 }
 
+# undo_procs_left — true when the agent-processes step of the undo failed: a
+# process of the agent user may still run (the list failed, or one outlived
+# KILL), and without the firewall it reaches the gateway port and the metadata
+# address, so the firewall stays.
+undo_procs_left() {
+    case " ${FAILED_STEPS} " in *" agent-processes "*) return 0 ;; esac
+    return 1
+}
+
+# no_sudo_left — after the undo: the rule file is gone and the cloud-init file
+# still has a root line of the daemon user that the apply commented out (no
+# active one): the daemon user has no sudo at all. Reads the file, not the
+# result of the step (no backup, a failed restore).
+no_sudo_left() {
+    if [ -e "$SUDOERS_FILE" ] || [ -L "$SUDOERS_FILE" ] || [ -L "$CLOUD_INIT_SUDOERS" ] || [ ! -f "$CLOUD_INIT_SUDOERS" ]; then
+        return 1
+    fi
+    grep -qE "^# disabled by setup-agent-user:.*$(daemon_line_re)" "$CLOUD_INIT_SUDOERS" || return 1
+    ! has_active_root_line "$CLOUD_INIT_SUDOERS"
+}
+
 # ------------------------------------------------------------------- driver
 
 print_summary() {
@@ -1523,6 +1576,8 @@ print_summary() {
         echo "step ${line}"
     done
     [ -z "$SUDO_RULE_REMOVAL" ] || echo "$SUDO_RULE_REMOVAL"
+    [ -z "$NO_SUDO_LEFT" ] || echo "$NO_SUDO_LEFT"
+    [ -z "$DRY_RUN_STOP" ] || echo "sudo-rules: ${DRY_RUN_STOP}"
     [ -z "$DAEMON_GROUP_WARNING" ] || echo "$DAEMON_GROUP_WARNING"
 }
 
@@ -1666,7 +1721,8 @@ fi
 # Undo first: nothing above reads a path that the agent user or the daemon user
 # can write, so neither of them can stop the restore of root's files. A failed
 # step does not stop the undo: each later step runs, but the firewall steps do
-# not run while the rule file is still there (undo_firewall_allowed). The
+# not run while the rule file is still there (undo_firewall_allowed) or a
+# process of the agent user may still run (undo_procs_left). The
 # sudoers rule goes first, so that the daemon cannot start an agent process
 # after the stop of the agent processes; those stop before the firewall goes.
 # The cloud-init file comes back last, after the firewall steps: its root line
@@ -1676,18 +1732,27 @@ if [ "$UNDO" = 1 ]; then
     NOT_RUN_STEPS=""
     run_every sudoers-rule:undo_sudoers_rule \
         agent-processes:undo_agent_processes
-    if undo_firewall_allowed; then
-        run_every firewall-unit:undo_firewall_unit \
-            firewall-ipv4:undo_firewall_ipv4 \
-            firewall-ipv6:undo_firewall_ipv6
-    else
+    if ! undo_firewall_allowed; then
         for step in firewall-unit firewall-ipv4 firewall-ipv6; do
             SUMMARY+=("${step}: not run: the sudo rule is still in place")
             NOT_RUN_STEPS="${NOT_RUN_STEPS:+${NOT_RUN_STEPS} }${step}"
         done
         echo "the sudo rule ${SUDOERS_FILE} is still in place, so the firewall of ${AGENT_USER} stays: remove the rule file by hand (rm -f $(shq "$SUDOERS_FILE")) and run --undo again" >&2
+    elif undo_procs_left; then
+        for step in firewall-unit firewall-ipv4 firewall-ipv6; do
+            SUMMARY+=("${step}: not run: processes of the agent user still run")
+            NOT_RUN_STEPS="${NOT_RUN_STEPS:+${NOT_RUN_STEPS} }${step}"
+        done
+        echo "processes of ${AGENT_USER} may still run, so the firewall of ${AGENT_USER} stays: stop them by hand (pkill -KILL -u ${AGENT_USER}, then pgrep -u ${AGENT_USER} lists none) and run --undo again" >&2
+    else
+        run_every firewall-unit:undo_firewall_unit \
+            firewall-ipv4:undo_firewall_ipv4 \
+            firewall-ipv6:undo_firewall_ipv6
     fi
     run_every cloud-init-sudoers:undo_cloud_init_sudoers
+    if no_sudo_left; then
+        NO_SUDO_LEFT="the daemon user ${DAEMON_USER} has no sudo rule now: restore ${CLOUD_INIT_SUDOERS} by hand"
+    fi
     print_summary
     print_mode_restore
     print_manual_cleanup
@@ -1752,4 +1817,5 @@ run_plan daemon-private:step_daemon_private \
     cloud-init-sudoers:step_cloud_init_sudoers \
     agent-proof:step_agent_proof
 print_summary
+[ -z "$DRY_RUN_STOP" ] || exit 1
 print_config
