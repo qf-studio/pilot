@@ -840,7 +840,7 @@ func contains(args []string, want string) bool {
 // GH-6353: the hooks path is one no process can create, not a directory the
 // session could write a hook into.
 func TestCheckPushRange_HooksPathCannotExist(t *testing.T) {
-	if got := strings.Join(HooksOffArgs(), " "); got != "-c core.hooksPath="+NoHooksPath {
+	if got := strings.Join(HooksOffArgs(), " "); got != "-c core.hooksPath="+NoHooksPath+" -c core.fsmonitor=false" {
 		t.Errorf("HooksOffArgs = %q", got)
 	}
 	if _, err := os.Stat(NoHooksPath); err == nil {

@@ -47,14 +47,16 @@ func newHandOverPushEnv(t *testing.T) *handOverPushEnv {
 	wsGit(t, e.ws, "config", "user.name", "Agent")
 	wsGit(t, e.ws, "config", "user.email", "agent@example.com")
 
+	// The paths are in the script, not in a variable: the gate commands get
+	// no variable of the test (daemonGateEnv).
 	dir := t.TempDir()
 	gitLog := filepath.Join(t.TempDir(), "daemon-git")
 	wrapper := fmt.Sprintf(`#!/bin/sh
-if [ -n "$PILOT_TEST_GIT_LOG" ] && [ -z "$%s" ]; then
-  echo "$(pwd -P)| $*" >> "$PILOT_TEST_GIT_LOG"
+if [ -e '%[1]s.on' ] && [ -z "$%[2]s" ]; then
+  echo "$(pwd -P)| $*" >> '%[1]s'
 fi
-exec '%s' "$@"
-`, handOverPushAgentMark, realGit)
+exec '%[3]s' "$@"
+`, gitLog, handOverPushAgentMark, realGit)
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(wrapper), 0o755); err != nil { //nolint:gosec // wrapper must be executable
 		t.Fatal(err)
 	}
@@ -71,9 +73,11 @@ exec '%s' "$@"
 // user; the git commands of the test outside fn are not logged.
 func (e *handOverPushEnv) logDaemonGit(t *testing.T, fn func()) {
 	t.Helper()
-	t.Setenv("PILOT_TEST_GIT_LOG", e.gitLog)
+	if err := os.WriteFile(e.gitLog+".on", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	fn()
-	if err := os.Unsetenv("PILOT_TEST_GIT_LOG"); err != nil {
+	if err := os.Remove(e.gitLog + ".on"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -604,17 +608,24 @@ func TestHandOverPushIgnoresGitDirOfTheDaemonEnvironment(t *testing.T) {
 	}
 }
 
-// TestDaemonGitEnv: the names of another repository leave the environment,
-// the rest stays.
+// TestDaemonGitEnv: each inherited GIT_ name leaves the environment, the GIT_
+// values the code set stay when daemonGitEnvSet names them, the rest stays.
 func TestDaemonGitEnv(t *testing.T) {
 	got := daemonGitEnv([]string{
-		"PATH=/bin", "GIT_DIR=/x", "GIT_WORK_TREE=/x", "GIT_INDEX_FILE=/x/i", "GIT_OBJECT_DIRECTORY=/x/o",
-		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/x/a", "GIT_NAMESPACE=n", "GIT_CONFIG=/x/c", "GIT_CONFIG_GLOBAL=/x/g",
-		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=k", "GIT_CONFIG_VALUE_0=v", "GIT_ASKPASS=/a", "GIT_TERMINAL_PROMPT=0", "HOME=/h",
+		"PATH=/bin", "GIT_DIR=/x", "GIT_COMMON_DIR=/x", "GIT_GRAFT_FILE=/x/g", "GIT_SHALLOW_FILE=/x/s",
+		"GIT_CONFIG_COUNT=1", "GIT_ASKPASS=/inherited", "GIT_TERMINAL_PROMPT=1", "HOME=/h",
+	}, []string{
+		"GIT_ASKPASS=/a", "PILOT_GIT_TOKEN=" + testutil.FakeGitHubToken, "GIT_TERMINAL_PROMPT=0",
+		"GIT_NO_REPLACE_OBJECTS=1", "GIT_AUTHOR_NAME=A", "GIT_EXEC_PATH=/x",
 	})
-	want := []string{"PATH=/bin", "GIT_ASKPASS=/a", "GIT_TERMINAL_PROMPT=0", "HOME=/h"}
+	want := []string{"PATH=/bin", "HOME=/h", "GIT_ASKPASS=/a", "PILOT_GIT_TOKEN=" + testutil.FakeGitHubToken,
+		"GIT_TERMINAL_PROMPT=0", "GIT_NO_REPLACE_OBJECTS=1", "GIT_AUTHOR_NAME=A"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("daemonGitEnv = %q, want %q", got, want)
+	}
+	gate := daemonGateEnv([]string{"PATH=/bin", "GITHUB_TOKEN=" + testutil.FakeGitHubToken, "GIT_DIR=/x", "LC_ALL=C", "SSH_AUTH_SOCK=/s", "HOME=/h"})
+	if want := []string{"PATH=/bin", "LC_ALL=C", "HOME=/h"}; strings.Join(gate, "\n") != strings.Join(want, "\n") {
+		t.Errorf("daemonGateEnv = %q, want %q", gate, want)
 	}
 }
 

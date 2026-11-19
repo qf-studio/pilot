@@ -1078,9 +1078,13 @@ func GitScanConfig() []string {
 // pre-push script written into it ran inside the daemon's push (GH-6353).
 const NoHooksPath = "/dev/null/pilot-empty-hooks"
 
-// HooksOffArgs is the git -c arguments that turn every hook off.
+// HooksOffArgs is the git -c arguments that turn every hook off, and the
+// fsmonitor program with them. Decision: core.fsmonitor names a program that
+// git runs when it reads the index (a fetch does), the same as a hook: from
+// the config of a repository the session can write, it would run with the
+// token of a remote command in its environment (TASK-651).
 func HooksOffArgs() []string {
-	return []string{"-c", "core.hooksPath=" + NoHooksPath}
+	return []string{"-c", "core.hooksPath=" + NoHooksPath, "-c", "core.fsmonitor=false"}
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {
