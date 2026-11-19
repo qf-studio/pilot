@@ -325,6 +325,14 @@ EOF
     chmod 755 "${STUB_BIN}/pgrep"
 }
 
+# only_rule_list_read — true when the call log has a sudo or runuser call other
+# than the read of the rule list (the one sudo call a dry run makes). Called
+# through check_not only.
+# shellcheck disable=SC2317,SC2329
+only_rule_list_read() {
+    grep -E '^(sudo|runuser) ' "$CALL_LOG" | grep -qvx 'sudo -n -ll -U ec2-user'
+}
+
 echo "=== test: dry run — prints every command, changes nothing ==="
 setup_sandbox
 build_repos
@@ -367,7 +375,9 @@ if has_line "$OUT" "+ visudo -c"; then
 else
     fail_test "dry run output lacks the line: + visudo -c"
 fi
-check_not "the dry run ran no sudo" grep -qE '^(sudo|runuser) ' "$CALL_LOG"
+check "the dry run read the rule list" has_line "$CALL_LOG" "sudo -n -ll -U ec2-user"
+check_not "a clean host: no line says the apply would stop" grep -qF "dry run: the" "$OUT"
+check_not "the dry run ran no sudo but the read of the rule list" only_rule_list_read
 teardown_sandbox
 
 # mutation pin: has_line goes back to a substring match, so "+ visudo -cf" counts as "+ visudo -c" -> this test fails
@@ -540,6 +550,7 @@ if grep -qF "restoring ${SUDOERS_DIR}/90-cloud-init-users from ${BAK}, the newes
 else
     fail_test "undo does not name the backup"
 fi
+check_not "a restored cloud-init file: no line about a missing sudo rule" grep -qF "has no sudo rule now" "$OUT"
 if ! grep -qE '^(userdel|groupdel|gpasswd|rm -rf)' "$CALL_LOG" && [ -d "${AHOME}/go/mod" ] && [ -e "${STATE_DIR}/users/pilot-agent" ]; then
     pass "user, group and directories are left in place"
 else
@@ -700,6 +711,25 @@ fi
 expect_step cloud-init-sudoers failed
 check "the message says so" grep -qF "no backup of ${SUDOERS_DIR}/90-cloud-init-users has an active root line of ec2-user" "$OUT"
 check "the cloud-init file is unchanged" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_APPLIED"
+check "the summary says the daemon user has no sudo rule now" has_line "$OUT" "the daemon user ec2-user has no sudo rule now: restore ${SUDOERS_DIR}/90-cloud-init-users by hand"
+teardown_sandbox
+
+# mutation pin: check_sudo_left is not called -> this test fails
+echo "=== test: undo with the backups removed — the summary says the daemon user has no sudo rule now ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+rm -f "$BAK" "${BAK}".*
+if run_setup -- --undo; then
+    pass "undo exits 0"
+else
+    cat "$OUT"
+    fail_test "undo exited non-zero"
+fi
+expect_step cloud-init-sudoers skipped
+check "the sudo rule file is removed" test ! -e "${SUDOERS_DIR}/${RULE_FILE_NAME}"
+check "the cloud-init file keeps the commented line" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_APPLIED"
+check "the summary says the daemon user has no sudo rule now" has_line "$OUT" "the daemon user ec2-user has no sudo rule now: restore ${SUDOERS_DIR}/90-cloud-init-users by hand"
+check "the line comes after the summary header" test "$(first_line_of "$OUT" '^== summary$')" -lt "$(first_line_of "$OUT" '^the daemon user ec2-user has no sudo rule now')"
 teardown_sandbox
 
 # ------------------------------------- undo goes on, the agent processes stop
@@ -776,18 +806,19 @@ check_not "no process of the agent user is left" test -s "${STATE_DIR}/procs/pil
 expect_step agent-processes "done"
 teardown_sandbox
 
-echo "=== test: a process that outlives KILL fails the step; the firewall still goes, exit non-zero ==="
+echo "=== test: a process that outlives KILL fails the step; the firewall stays, exit non-zero ==="
 setup_sandbox
 run_setup -- >/dev/null || true
 mkdir -p "${STATE_DIR}/procs"
 printf '4101\n' >"${STATE_DIR}/procs/pilot-agent"
 rc=0
 run_setup MOCK_PROC_UNKILLABLE=1 -- --undo || rc=$?
-check "undo exits non-zero" test "$rc" != 0
+check "undo exits 1" test "$rc" = 1
 expect_step agent-processes failed
-expect_step firewall-ipv4 "done"
+expect_step firewall-ipv4 "not"
 expect_step sudoers-rule "done"
-check "the failed step is named at the end" has_line "$OUT" "undo: failed steps: agent-processes (every other step ran; see the summary)"
+check "the chain is still in place (v4 and v6)" grep -q PILOT_AGENT_EGRESS "${STATE_DIR}/iptables.rules" "${STATE_DIR}/ip6tables.rules"
+check "the end line names the failed and the not run steps" has_line "$OUT" "undo: failed steps: agent-processes; not run: firewall-unit firewall-ipv4 firewall-ipv6 (see the summary)"
 teardown_sandbox
 
 # mutation pin: the sudoers-rule step runs last in undo -> this test fails
@@ -814,7 +845,7 @@ teardown_sandbox
 
 # mutation pin: a failed pgrep reads as "no process" again -> this test fails
 for pgrep_rc in 127 2; do
-    echo "=== test: undo with a pgrep that exits ${pgrep_rc} — the step fails, the firewall still goes, exit non-zero ==="
+    echo "=== test: undo with a pgrep that exits ${pgrep_rc} — the step fails, the firewall stays, exit non-zero ==="
     setup_sandbox
     run_setup -- >/dev/null || true
     mkdir -p "${STATE_DIR}/procs"
@@ -833,10 +864,10 @@ for pgrep_rc in 127 2; do
     check "the reason is the note of the summary line" has_line "$OUT" "step agent-processes: failed - ${reason}"
     check_not "no pkill ran" grep -q '^pkill ' "$CALL_LOG"
     for s in firewall-unit firewall-ipv4 firewall-ipv6; do
-        expect_step "$s" "done"
+        check "summary: ${s} not run" has_line "$OUT" "step ${s}: not run: processes of the agent user still run"
     done
-    check_not "the firewall chains are removed" grep -q PILOT_AGENT_EGRESS "${STATE_DIR}/iptables.rules" "${STATE_DIR}/ip6tables.rules"
-    check "the failed step is named at the end" has_line "$OUT" "undo: failed steps: agent-processes (every other step ran; see the summary)"
+    check "the firewall chains stay (v4 and v6)" grep -q PILOT_AGENT_EGRESS "${STATE_DIR}/iptables.rules" "${STATE_DIR}/ip6tables.rules"
+    check "the end line names the failed and the not run steps" has_line "$OUT" "undo: failed steps: agent-processes; not run: firewall-unit firewall-ipv4 firewall-ipv6 (see the summary)"
     teardown_sandbox
 done
 
@@ -866,13 +897,15 @@ reason="pgrep -u pilot-agent exited 0 with no process id: the processes of pilot
 check "one line gives the reason" has_line "$OUT" "$reason"
 check "the reason is the note of the summary line" has_line "$OUT" "step agent-processes: failed - ${reason}"
 check_not "no pkill ran" grep -q '^pkill ' "$CALL_LOG"
-expect_step firewall-ipv4 "done"
+expect_step firewall-ipv4 "not"
 teardown_sandbox
 
 # The process list fails on the second count (after the TERM) and on the third
-# (after the KILL, with a TERM that ends no process).
+# (after the KILL, with a TERM that ends no process): the process left may run,
+# so the firewall and its unit stay.
+# mutation pin: the firewall steps run after a failed agent-processes step -> this test fails
 for when in TERM KILL; do
-    echo "=== test: undo with a pgrep that fails after the ${when} — the step fails with the reason as its note ==="
+    echo "=== test: undo with a pgrep that fails after the ${when} — the step fails with the reason as its note, the firewall stays ==="
     setup_sandbox
     run_setup -- >/dev/null || true
     mkdir -p "${STATE_DIR}/procs"
@@ -889,8 +922,18 @@ for when in TERM KILL; do
     reason="pgrep -u pilot-agent failed (exit 2): the processes of pilot-agent are not known; after the ${when}"
     check "one line gives the reason" has_line "$OUT" "$reason"
     check "the reason is the note of the summary line" has_line "$OUT" "step agent-processes: failed - ${reason}"
-    expect_step firewall-ipv4 "done"
-    check "the failed step is named at the end" has_line "$OUT" "undo: failed steps: agent-processes (every other step ran; see the summary)"
+    check "the IPv4 chain stays" grep -q PILOT_AGENT_EGRESS "${STATE_DIR}/iptables.rules"
+    check "the IPv6 chain stays" grep -q PILOT_AGENT_EGRESS "${STATE_DIR}/ip6tables.rules"
+    check "the unit file stays" test -e "${SYSTEMD_DIR}/pilot-agent-firewall.service"
+    check "the unit stays enabled" test -e "${STATE_DIR}/enabled/pilot-agent-firewall.service"
+    check_not "no iptables or ip6tables call deletes or flushes" grep -qE '^ip6?tables -w -[DFX] ' "$CALL_LOG"
+    for s in firewall-unit firewall-ipv4 firewall-ipv6; do
+        check "summary: ${s} not run" has_line "$OUT" "step ${s}: not run: processes of the agent user still run"
+    done
+    check "one line says the firewall stays and to stop the processes and run --undo again" has_line "$OUT" "processes of pilot-agent may still run (the agent-processes step failed), so the firewall of pilot-agent stays: stop them by hand (pkill -KILL -u 'pilot-agent') and run --undo again"
+    check "the end line names the failed and the not run steps" has_line "$OUT" "undo: failed steps: agent-processes; not run: firewall-unit firewall-ipv4 firewall-ipv6 (see the summary)"
+    check "the sudo rule file is removed" test ! -e "${SUDOERS_DIR}/${RULE_FILE_NAME}"
+    check "the cloud-init file is restored" test "$(cat "${SUDOERS_DIR}/90-cloud-init-users")" = "$CLOUD_INIT_ORIGINAL"
     teardown_sandbox
 done
 
@@ -1373,11 +1416,12 @@ done
 check "the pilot home at 0711 is reported (traverse is enough)" grep -qF "can reach '${DATA_DIR}/pilot-home' " "$OUT"
 check "a hidden file is reported" grep -qF "can reach '${DATA_DIR}/.hidden' " "$OUT"
 check "a link is followed and its target named" grep -qF "can reach '${DATA_DIR}/linked' (group $(stat -c %G "$R" 2>/dev/null || stat -f %Sg "$R"), mode 755): runuser -u ec2-user -- chmod o-rwx '${DATA_DIR}/target'" "$OUT"
-check_not "a dangling link is not reported" grep -qF "${DATA_DIR}/dangling" "$OUT"
+check "a dangling link is reported as a link that does not resolve" has_line "$OUT" "the entry '${DATA_DIR}/dangling' is a link that does not resolve: remove it or correct it, look at it by hand"
 check "six lines, one per open entry" test "$(grep -c 'can reach ' "$OUT" | tr -d ' ')" = 6
 check "every chmod line of the apply runs chmod as the daemon user" chmods_as_daemon "$OUT"
 check "the text before the lines says to run them as root, as they are" grep -qF "run each chmod line below as root, as it is: runuser runs chmod as ec2-user" "$OUT"
 chmod o-rwx "$R" "${DATA_DIR}/bin" "${DATA_DIR}/pilot-home" "${DATA_DIR}/.hidden" "${DATA_DIR}/target"
+rm "${DATA_DIR}/dangling"
 if run_setup -- ; then
     pass "apply passes once each entry is closed"
 else
@@ -1496,13 +1540,15 @@ teardown_sandbox
 
 # shq_c1_case — shq as the script defines it, in the C locale the script sets: a
 # name with U+009B (0xC2 0x9B) and a name with the byte 0x9B alone, a C1 control
-# for a terminal, come out in printable ASCII only, and a shell reads each back
+# for a terminal, and a name with U+00E9 (0xC3 0xA9: bytes of 0xa0 to 0xff, none
+# of 0x80 to 0x9f) come out in printable ASCII only, and a shell reads each back
 # as it was. Called once, below.
 # mutation pin: shq takes [[:cntrl:]] for the escaped form again -> this test fails
+# mutation pin: shq prints the bytes 0xa0 to 0xff raw -> this test fails
 shq_c1_case() {
     local def name out back
     def="$(sed -n '/^shq() {$/,/^}$/p' "$SETUP_SCRIPT")"
-    for name in "a"$'\xc2\x9b'"b" "a"$'\x9b'"b"; do
+    for name in "a"$'\xc2\x9b'"b" "a"$'\x9b'"b" "a"$'\xc3\xa9'"b"; do
         out="$(LC_ALL=C /bin/bash -c "${def}"$'\n''shq "$1"' _ "$name")"
         back=""
         eval "back=${out}"
@@ -1516,6 +1562,42 @@ shq_c1_case() {
 
 echo "=== test: shq escapes a name with a C1 control byte ==="
 shq_c1_case
+
+# dangling_link_case — a top-level entry of the data dir that is a link and does
+# not resolve (a dangling link, a link loop) fails daemon-private with one line
+# that names it, as the daemon refuses it at its start; a data dir with no entry
+# (each glob of the step unmatched) passes the step. Called once, below.
+# mutation pin: [ -e "$e" ] || continue is the only guard again -> this test fails
+dangling_link_case() {
+    local kind entry rc
+    for kind in dangling loop; do
+        setup_sandbox
+        entry="${DATA_DIR}/${kind}"
+        if [ "$kind" = dangling ]; then
+            ln -s "${SANDBOX}/gone" "$entry"
+        else
+            ln -s "$entry" "$entry"
+        fi
+        : >"$MUT_LOG"
+        rc=0
+        run_setup -- || rc=$?
+        check "a ${kind} link: the apply exits 1" test "$rc" = 1
+        expect_step daemon-private failed
+        check "a ${kind} link: one line names it" has_line "$OUT" "the entry '${entry}' is a link that does not resolve: remove it or correct it, look at it by hand"
+        check "a ${kind} link: the step says to look by hand" has_line "$OUT" "no mode was changed; look at each entry above by hand and run again"
+        check "a ${kind} link: nothing mutated" test ! -s "$MUT_LOG"
+        teardown_sandbox
+    done
+    setup_sandbox
+    rm -rf "$R" "${DATA_DIR}/bin"
+    run_setup -- || true
+    expect_step daemon-private skipped
+    check_not "an empty data dir: no line about a link" grep -qF "is a link that does not resolve" "$OUT"
+    teardown_sandbox
+}
+
+echo "=== test: a dangling link or a link loop in the data dir fails daemon-private; an empty data dir does not ==="
+dangling_link_case
 
 # mutation pin: the line export LC_ALL=C is removed -> this test fails
 echo "=== test: the commands of the script run in the C locale, whatever locale it starts in ==="
@@ -1890,6 +1972,31 @@ check "the entry is named" has_line "$OUT" "  entry 1 (run-as user ALL, not pilo
 check "the file of the entry is printed" has_line "$OUT" "      | Sudoers entry: ${SUDOERS_DIR}/10-wheel"
 check_not "the cloud-init entry is not named" grep -qF "| Sudoers entry: ${SUDOERS_DIR}/90-cloud-init-users" "$OUT"
 check "the operator is told to remove the rule or the membership first" grep -qF "nothing is changed: the proof after the edit of ${SUDOERS_DIR}/90-cloud-init-users would refuse the entries above; remove each rule, or the membership of ec2-user in the group it names, first, then run again" "$OUT"
+teardown_sandbox
+
+# mutation pin: the dry run prints the check of the sudo rules and does not run it -> this test fails
+echo "=== test: a dry run on a host with a sudo rule through a group ends with exit 1, says the apply would stop, changes nothing ==="
+setup_sandbox
+mock_run usermod -aG wheel ec2-user
+printf '%%wheel ALL=(ALL) ALL\n' >"${SUDOERS_DIR}/10-wheel"
+before="$(tree_listing)"
+: >"$MUT_LOG"
+rc=0
+run_setup -- --dry-run || rc=$?
+if [ "$rc" = 1 ]; then pass "dry run exits 1"; else cat "$OUT"; fail_test "dry run: exit ${rc}, want 1"; fi
+check "the entry is named" has_line "$OUT" "  entry 1 (run-as user ALL, not pilot-agent alone):"
+check "one line says the apply would stop there" has_line "$OUT" "dry run: the apply would stop here, nothing would be changed"
+check "the line comes before the first step" test "$(first_line_of "$OUT" '^dry run: the apply would stop here')" -lt "$(first_line_of "$OUT" '^== daemon-private$')"
+check "the summary is printed" has_line "$OUT" "== summary"
+check "the line ends the summary" test "$(tail -1 "$OUT")" = "dry run: the apply would stop here, nothing would be changed (the check of the sudo rules, see above)"
+check_not "no config values" grep -qF "run_as_user:" "$OUT"
+check "no mutating command" test ! -s "$MUT_LOG"
+check "files, modes and the cloud-init file are unchanged" test "$before" = "$(tree_listing)"
+rm -f "${SUDOERS_DIR}/10-wheel"
+rc=0
+run_setup -- --dry-run || rc=$?
+if [ "$rc" = 0 ]; then pass "without the group rule the dry run exits 0"; else cat "$OUT"; fail_test "dry run without the group rule: exit ${rc}"; fi
+check_not "no line says the apply would stop" grep -qF "dry run: the apply would stop" "$OUT"
 teardown_sandbox
 
 echo "=== test: the check before the first change — only the cloud-init rule and the agent rule: the apply goes on ==="
@@ -2365,8 +2472,8 @@ check "firewall rules unchanged" test "$before_rules" = "$(cat "${STATE_DIR}/ipt
 check "the rotation of the old backup is printed, not done" grep -qF "+ mv ${BAK} ${BAK}.1" "$OUT"
 check "the lines to comment out are printed" grep -qF "to comment out: ${SUDOERS_DIR}/90-cloud-init-users:3:" "$OUT"
 check "the proof is printed, not run" grep -qF "+ runuser -u ec2-user -- sudo -n true" "$OUT"
-check "the check of the sudo rules is printed, not run" grep -qF "+ sudo -n -ll -U ec2-user  (each entry but " "$OUT"
-check_not "the proof did not run" grep -qE '^(runuser|sudo) ' "$CALL_LOG"
+check "the check of the sudo rules is printed" grep -qF "+ sudo -n -ll -U ec2-user  (each entry but " "$OUT"
+check_not "the proof did not run (the read of the rule list did)" only_rule_list_read
 run_setup -- >/dev/null || true
 : >"$MUT_LOG"
 before="$(tree_listing)"
