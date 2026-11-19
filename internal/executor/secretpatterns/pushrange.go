@@ -852,6 +852,13 @@ func scanCommits(ctx context.Context, dir string, logArgs []string, opts PushOpt
 		if len(patch) > maxCommitScanBytes {
 			return &PushScanError{Reason: fmt.Sprintf("commit %s has more than %d bytes of diff, too large to scan", shortSHA(sha), maxCommitScanBytes)}
 		}
+		if bin := binaryPaths(patch, true); len(bin) > 0 {
+			fp, err := firstParentPatch(ctx, dir, string(sha), bin)
+			if err != nil {
+				return err
+			}
+			patch = fp
+		}
 		if file, kind, hit := scanPatch(patch, opts); hit {
 			return newPushRangeError(shortSHA(sha), file, kind)
 		}
@@ -861,6 +868,70 @@ func scanCommits(ctx context.Context, dir string, logArgs []string, opts PushOpt
 		return fmt.Errorf("secret gate: git log -p: %w: %s", werr, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// errMergeBinaryUnread is the refusal for a merge commit whose binary file the
+// first-parent scan could not read either.
+var errMergeBinaryUnread = &PushScanError{Reason: "a binary file of a merge commit could not be read"}
+
+// firstParentPatch is the patch of the merge commit sha against its first
+// parent, read with the arguments of the per-commit scan. bin is the set of
+// paths the combined diff printed as "Binary files differ".
+//
+// Decision: git does not apply --text to a combined diff. A file of a merge
+// commit with a NUL byte, or with the attribute binary or -diff, prints as
+// "Binary files differ" under --cc and no added line of it is read. The net
+// diff does not cover it when a later commit deletes the file, or when it is
+// skipped (no base and a merge in the range). With --diff-merges=first-parent
+// git honours --text, so the commit is read again that way and that patch
+// counts for the commit. It fails closed: a failed read, or a path still
+// printed as binary, is a refusal (GH-6561).
+func firstParentPatch(ctx context.Context, dir, sha string, bin map[string]bool) ([]byte, error) {
+	if !isFullCommitID(sha) {
+		return nil, errMergeBinaryUnread
+	}
+	out, err := gitOutputMax(ctx, dir, int64(maxCommitScanBytes), "log", "--no-show-signature", "-1", "-p", "--diff-merges=first-parent", "--text", "--no-textconv", "--no-ext-diff", "--submodule=short", "--ignore-submodules=none", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "--format=", sha)
+	if cerr := ctxError(ctx); cerr != nil {
+		return nil, cerr
+	}
+	if errors.Is(err, errScanTooLarge) {
+		return nil, &PushScanError{Reason: fmt.Sprintf("commit %s has more than %d bytes of diff, too large to scan", shortSHA([]byte(sha)), maxCommitScanBytes)}
+	}
+	if err != nil {
+		return nil, errMergeBinaryUnread
+	}
+	for p := range binaryPaths(out, false) {
+		if bin[p] {
+			return nil, errMergeBinaryUnread
+		}
+	}
+	return out, nil
+}
+
+// binaryPaths returns the paths of the file blocks of patch that hold a
+// "Binary files" line before their first hunk. combinedOnly limits it to the
+// blocks of a combined diff (diff --cc, diff --combined).
+func binaryPaths(patch []byte, combinedOnly bool) map[string]bool {
+	paths := map[string]bool{}
+	var (
+		cur      string
+		inHeader bool
+	)
+	for _, line := range bytes.Split(patch, []byte{'\n'}) {
+		switch {
+		case bytes.HasPrefix(line, []byte("diff --cc ")):
+			cur, inHeader = unquoteGitPath(string(line[len("diff --cc "):])), true
+		case bytes.HasPrefix(line, []byte("diff --combined ")):
+			cur, inHeader = unquoteGitPath(string(line[len("diff --combined "):])), true
+		case bytes.HasPrefix(line, []byte("diff --git ")):
+			cur, inHeader = diffGitNewPath(string(line[len("diff --git "):])), !combinedOnly
+		case inHeader && bytes.HasPrefix(line, []byte("@@")):
+			inHeader = false
+		case inHeader && bytes.HasPrefix(line, []byte("Binary files ")):
+			paths[cur] = true
+		}
+	}
+	return paths
 }
 
 func shortSHA(sha []byte) string {
