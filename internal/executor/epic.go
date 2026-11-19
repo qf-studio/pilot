@@ -2016,9 +2016,16 @@ func (r *Runner) getSubIssuePRState(ctx context.Context, projectPath string, prN
 		return &SubIssuePRState{State: "MERGED", Merged: true}, nil
 	}
 
-	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "pr", "view", strconv.Itoa(prNumber), "--json", "state", "--jq", ".state"))
-	if projectPath != "" {
-		cmd.Dir = projectPath
+	// TASK-651: projectPath is resolved through ghDirForExecutionPath, so the
+	// command never runs in an agent workspace.
+	ghDir, repoArgs, err := ghDirForExecutionPath(ctx, projectPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query PR #%d state: %w", prNumber, err)
+	}
+	args := append([]string{"pr", "view", strconv.Itoa(prNumber), "--json", "state", "--jq", ".state"}, repoArgs...)
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
+	if ghDir != "" {
+		cmd.Dir = ghDir
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

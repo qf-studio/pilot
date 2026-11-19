@@ -290,7 +290,7 @@ func TestHandOverMemoryGraphReadsAsTheAgentUser(t *testing.T) {
 	}
 	var graphRead, docRead bool
 	for _, c := range sudoCalls(t, e.sudoLog) {
-		if strings.Contains(c, "cat --") {
+		if strings.Contains(c, "cat <&3") {
 			graphRead = graphRead || strings.Contains(c, graphJSONRelPath)
 			docRead = docRead || strings.Contains(c, "memories/x.md")
 		}
