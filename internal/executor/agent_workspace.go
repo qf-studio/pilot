@@ -341,14 +341,16 @@ func agentWorkspaceKeepReason(ctx context.Context, wsPath string, rec *agentWork
 	return ""
 }
 
-// agentWorkspaceTipSafe reports whether the commits of HEAD and of each local
-// branch of the workspace at wsPath are safe in the daemon's repository
-// daemonRepo: each exists there and a ref of refs/remotes/,
-// refs/pilot-recovery/ or refs/pilot/handover/ contains it, or it is the base
-// of the workspace (agentWorkspaceBase) or an ancestor of the base. The
-// commits are read as the agent user in the workspace (hooks off, replace
-// refs off). A read error, a value that is not a full hex object name, or a
-// commit the daemon's repository does not have gives false.
+// agentWorkspaceTipSafe reports whether the commits of HEAD and of every ref
+// of the workspace at wsPath (refs/heads/, refs/stash, tags and any other ref)
+// are safe in the daemon's repository daemonRepo: each exists there and a ref
+// of refs/remotes/, refs/pilot-recovery/ or refs/pilot/handover/ contains it,
+// or it is the base of the workspace (agentWorkspaceBase) or an ancestor of
+// the base. With no base on record (the sweep after a daemon start), a local
+// branch of the daemon's repository counts as well: the base of the run may be
+// only there. The commits are read as the agent user in the workspace (hooks
+// off, replace refs off). A read error, a value that is not a full hex object
+// name, or a commit the daemon's repository does not have gives false.
 //
 // Decision: one rev-list in the daemon's repository, as the daemon user
 // (handOverDaemonGit), checks all commits at once: a commit is contained in a
@@ -356,12 +358,16 @@ func agentWorkspaceKeepReason(ctx context.Context, wsPath string, rec *agentWork
 // it with those refs and the base excluded lists nothing; a commit it does not
 // have fails the walk. That is for-each-ref --contains of each commit in one
 // process. The base is the daemon's record; the sweep has none.
+//
+// Decision: refs/heads/ of the daemon's repository is excluded only with no
+// record. With a record the base is known, and a local branch of the daemon
+// is no place the commits of the run were taken to.
 func agentWorkspaceTipSafe(ctx context.Context, wsPath, daemonRepo string) bool {
 	// git would search the parents of a workspace with no .git directory.
 	if fi, err := os.Lstat(filepath.Join(wsPath, ".git")); err != nil || !fi.IsDir() {
 		return false
 	}
-	read := gitCommandIn(ctx, wsPath, append(secretpatterns.HooksOffArgs(), "rev-parse", "HEAD", "--branches")...)
+	read := gitCommandIn(ctx, wsPath, append(secretpatterns.HooksOffArgs(), "rev-parse", "HEAD", "--all")...)
 	appendGitEnv(read, "GIT_NO_REPLACE_OBJECTS=1")
 	out, err := read.Output()
 	if err != nil {
@@ -380,6 +386,8 @@ func agentWorkspaceTipSafe(ctx context.Context, wsPath, daemonRepo string) bool 
 		"--not", "--glob=refs/remotes/", "--glob=refs/pilot-recovery/", "--glob=refs/pilot/handover/")
 	if base := agentWorkspaceBase(wsPath); base != "" {
 		args = append(args, base)
+	} else {
+		args = append(args, "--glob=refs/heads/")
 	}
 	walk := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs(args...)...)
 	appendGitEnv(walk, "GIT_NO_REPLACE_OBJECTS=1")
@@ -769,16 +777,24 @@ func agentWorkspaceOrphans(repoPath, taskID string) (*runAsSettings, []string, e
 	return s, found, nil
 }
 
+// agentWorkspaceSweeping holds the path of each workspace (or bundle file) a
+// sweep of this process handles at the moment: two sweeps at once handle a
+// path once.
+var agentWorkspaceSweeping sync.Map
+
 // sweepAgentWorkspaces removes the orphan workspaces of the project of
 // repoPath (of one task when taskID is set) through removeAgentWorkspace and
-// logs one Info line per removed workspace. A workspace that is not safe
-// (agentWorkspaceTipSafe in repoPath) stays with one Error line that names
-// the task, the path and the age; one older than agentWorkspaceLostAge is
-// removed with one Error line that says its commits are lost. A bundle file is
-// removed as it is. It returns the count and the
-// bytes freed. Nothing happens with the option empty. While the preflight
-// flag is set it removes nothing, starts no process and logs one Warn line
-// with the count of the workspaces it found.
+// logs one Info line per removed workspace. A workspace with a record of a
+// live run (agentWorkspaceBases) is skipped with one Debug line: its cleanup
+// decides. A workspace that is not safe (agentWorkspaceTipSafe in repoPath)
+// stays with one Error line that names the task, the path and the age (from
+// the name, else the modification time of the directory; no age when neither
+// is known); one older than agentWorkspaceLostAge is removed with one Error
+// line that says its commits are lost. A bundle file is removed as it is. A
+// path that is gone right before the removal is skipped. It returns the count
+// of the removals it made and the bytes freed. Nothing happens with the option
+// empty. While the preflight flag is set it removes nothing, starts no process
+// and logs one Warn line with the count of the workspaces it found.
 func sweepAgentWorkspaces(repoPath, taskID string) (int, int64) {
 	s, orphans, err := agentWorkspaceOrphans(repoPath, taskID)
 	if err != nil {
@@ -796,34 +812,65 @@ func sweepAgentWorkspaces(repoPath, taskID string) (int, int64) {
 	removed := 0
 	var freed int64
 	for _, p := range orphans {
-		_, task, _ := parseAgentWorkspaceName(filepath.Base(p))
-		var lost []any
-		if !strings.HasSuffix(p, agentWorkspaceBundleSuffix) && !agentWorkspaceSweepSafe(p, repoPath) {
-			age, known := agentWorkspaceAge(p)
-			attrs := []any{slog.String("task_id", task), slog.String("path", p), slog.Duration("age", age)}
-			if !known || age <= agentWorkspaceLostAge {
-				slog.Error("agent workspace kept: "+agentWorkspaceTipUnsafe, attrs...)
-				continue
-			}
-			lost = attrs
+		if size, ok := sweepAgentWorkspace(s, repoPath, p); ok {
+			removed++
+			freed += size
 		}
-		size := dirSizeBytes(p)
-		if removeAgentWorkspace(s, p) != nil {
-			continue
-		}
-		removed++
-		freed += size
-		if lost != nil {
-			slog.Error("Removed orphaned agent workspace older than 7 days: its commits are lost", lost...)
-			continue
-		}
-		slog.Info("Removed orphaned agent workspace",
-			slog.String("task_id", task),
-			slog.String("path", p),
-			slog.String("size_mb", fmt.Sprintf("%.1f", float64(size)/(1024*1024))),
-		)
 	}
 	return removed, freed
+}
+
+// sweepAgentWorkspace is the sweep of one orphan path p: true with the bytes
+// freed when it removed p.
+func sweepAgentWorkspace(s *runAsSettings, repoPath, p string) (int64, bool) {
+	_, task, _ := parseAgentWorkspaceName(filepath.Base(p))
+	if agentWorkspaceRecordOf(p) != nil {
+		slog.Debug("agent workspace sweep: skipped the workspace of a live run",
+			slog.String("task_id", task), slog.String("path", p))
+		return 0, false
+	}
+	if _, busy := agentWorkspaceSweeping.LoadOrStore(p, struct{}{}); busy {
+		return 0, false
+	}
+	defer agentWorkspaceSweeping.Delete(p)
+
+	unsafe := !strings.HasSuffix(p, agentWorkspaceBundleSuffix) && !agentWorkspaceSweepSafe(p, repoPath)
+	// Right before the removal: a path another sweep removed is not counted
+	// and not logged again.
+	fi, err := os.Lstat(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, false
+	}
+	var lost []any
+	if unsafe {
+		age, known := agentWorkspaceAge(p)
+		if !known && err == nil {
+			age, known = time.Since(fi.ModTime()), true
+		}
+		attrs := []any{slog.String("task_id", task), slog.String("path", p)}
+		if known {
+			attrs = append(attrs, slog.Duration("age", age))
+		}
+		if !known || age <= agentWorkspaceLostAge {
+			slog.Error("agent workspace kept: "+agentWorkspaceTipUnsafe, attrs...)
+			return 0, false
+		}
+		lost = attrs
+	}
+	size := dirSizeBytes(p)
+	if removeAgentWorkspace(s, p) != nil {
+		return 0, false
+	}
+	if lost != nil {
+		slog.Error("Removed orphaned agent workspace older than 7 days: its commits are lost", lost...)
+		return size, true
+	}
+	slog.Info("Removed orphaned agent workspace",
+		slog.String("task_id", task),
+		slog.String("path", p),
+		slog.String("size_mb", fmt.Sprintf("%.1f", float64(size)/(1024*1024))),
+	)
+	return size, true
 }
 
 // agentWorkspaceSweepSafe is agentWorkspaceTipSafe of an orphan workspace,

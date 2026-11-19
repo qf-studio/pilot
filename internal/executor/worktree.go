@@ -1469,8 +1469,9 @@ func cleanupOrphanedWorktrees(ctx context.Context, repoPath string, sweepWorkspa
 //
 // TASK-651: with run_as_user set it also removes the agent workspaces of the
 // task under the workspace root (pilot-ws-PROJECT-TASK-*, the project of
-// repoPath only) through sweepAgentWorkspaces, which keeps a workspace whose
-// commits are in no ref of repoPath (agentWorkspaceTipSafe).
+// repoPath only) through sweepAgentWorkspaces, which skips a workspace with a
+// record of a live run and keeps a workspace whose commits are in no ref of
+// repoPath (agentWorkspaceTipSafe).
 func PruneOrphanedWorktreeForTask(ctx context.Context, repoPath, taskID string) (int, error) {
 	tmpDir := os.TempDir()
 	entries, err := os.ReadDir(tmpDir)
