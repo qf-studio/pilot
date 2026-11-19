@@ -156,18 +156,58 @@ func mintGitHubAppToken(ctx context.Context, appCfg *github.AppConfig) (string, 
 // github.ReadOnlyPermissions. It returns nil when adapters.github.app is not
 // configured — the config token, GITHUB_TOKEN and the gh CLI login of the
 // daemon can write, so none of them is a substitute.
+//
+// The repo argument must come from the config of the project, never from the
+// workspace, since the agent controls the workspace. The provider accepts
+// only "OWNER/NAME" equal (letter case ignored) to adapters.github.repo or to
+// the owner/repo of a project of the config; any other value is an error and
+// no request to GitHub.
 func agentReadTokenProvider(cfg *config.Config) executor.AgentReadTokenProvider {
 	if cfg == nil || cfg.Adapters == nil || cfg.Adapters.GitHub == nil || cfg.Adapters.GitHub.App == nil {
 		return nil
 	}
 	appCfg := cfg.Adapters.GitHub.App
+	configured := configuredGitHubRepos(cfg)
 	return func(ctx context.Context, repo string) (string, time.Time, error) {
+		owner, name, ok := strings.Cut(repo, "/")
+		if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+			return "", time.Time{}, fmt.Errorf("agent read token: repository %q is not \"OWNER/NAME\"", repo)
+		}
+		if !containsFold(configured, repo) {
+			return "", time.Time{}, fmt.Errorf("agent read token: repository %q is not a repository of the GitHub config", repo)
+		}
 		source, err := ghAppTokenCache.get(appCfg)
 		if err != nil {
 			return "", time.Time{}, err
 		}
-		return source.ScopedToken(ctx, repo, github.ReadOnlyPermissions())
+		return source.ScopedToken(ctx, name, github.ReadOnlyPermissions())
 	}
+}
+
+// configuredGitHubRepos lists the "OWNER/NAME" repositories of the GitHub
+// config of the daemon: adapters.github.repo and the owner/repo of each
+// project.
+func configuredGitHubRepos(cfg *config.Config) []string {
+	var repos []string
+	if cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
+		repos = append(repos, cfg.Adapters.GitHub.Repo)
+	}
+	for _, p := range cfg.Projects {
+		if p != nil && p.GitHub != nil && p.GitHub.Owner != "" && p.GitHub.Repo != "" {
+			repos = append(repos, p.GitHub.Owner+"/"+p.GitHub.Repo)
+		}
+	}
+	return repos
+}
+
+// containsFold reports whether list holds s, letter case ignored.
+func containsFold(list []string, s string) bool {
+	for _, v := range list {
+		if strings.EqualFold(v, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // ghCLITokenCache memoizes the `gh auth token` fallback lookup for the process
