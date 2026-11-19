@@ -14,11 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/logging"
-	"github.com/qf-studio/pilot/internal/procgroup"
 )
 
 // gateWaitDelay bounds how long executeCommand waits on the stdout/stderr
@@ -539,24 +537,23 @@ func (r *Runner) executeCommand(ctx context.Context, gate *Gate, command string,
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	builder := CurrentCommandBuilder()
 	// Use shell to execute command (supports pipes, redirects, etc.)
-	cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
-	cmd.Dir = r.projectDir
 	// Later entries win over inherited duplicates (os/exec dedups keeping the last).
-	cmd.Env = append(os.Environ(), scope.env()...)
+	cmd, err := builder.Build(cmdCtx, r.projectDir, append(os.Environ(), scope.env()...), "sh", "-c", command)
+	if err != nil {
+		return -1, "", err
+	}
 	// Kill the gate's whole process group on timeout, not just sh: npm test →
 	// node workers (or `sleep 600 &`) otherwise keep the pipes open and
 	// cmd.Run blocks until they exit (GH-6081).
-	procgroup.Configure(cmd, gateWaitDelay)
-	cmd.Cancel = func() error {
-		return procgroup.Kill(cmd, syscall.SIGKILL)
-	}
+	builder.Configure(cmd, gateWaitDelay)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 
 	// Combine stdout and stderr
 	output := stdout.String()

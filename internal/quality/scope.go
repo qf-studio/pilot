@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -241,7 +240,7 @@ func relativeReads(root string, p *goListPackage, byDir map[string]*goListPackag
 	var out []string
 	seen := map[string]bool{}
 	for _, tf := range p.testFiles {
-		src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(p.dir), filepath.FromSlash(tf)))
+		src, err := CurrentCommandBuilder().ReadFile(filepath.Join(root, filepath.FromSlash(p.dir), filepath.FromSlash(tf)))
 		if err != nil {
 			continue
 		}
@@ -334,8 +333,10 @@ func changedFiles(ctx context.Context, dir, baseBranch string) ([]string, error)
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
+	cmd, err := CurrentCommandBuilder().Build(ctx, dir, nil, "git", args...)
+	if err != nil {
+		return nil, err
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -360,8 +361,10 @@ func samePath(a, b string) bool {
 // listPackages reads the module's package graph with go list.
 func listPackages(ctx context.Context, dir string) ([]*goListPackage, error) {
 	const format = `{{.ImportPath}}{{"\t"}}{{.Dir}}{{"\t"}}{{join .Imports " "}}{{"\t"}}{{join .TestImports " "}} {{join .XTestImports " "}}{{"\t"}}{{join .TestGoFiles " "}} {{join .XTestGoFiles " "}}`
-	cmd := exec.CommandContext(ctx, "go", "list", "-f", format, "./...")
-	cmd.Dir = dir
+	cmd, err := CurrentCommandBuilder().Build(ctx, dir, nil, "go", "list", "-f", format, "./...")
+	if err != nil {
+		return nil, fmt.Errorf("go list: %w", err)
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
