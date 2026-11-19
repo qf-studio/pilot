@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -104,10 +105,9 @@ func handOverGitArgs(args ...string) []string {
 }
 
 // handOverEnvNames are the names of the daemon environment that reach a git
-// command of the daemon during a hand-over, besides the names that start with
-// LC_ (handOverEnvAllowed).
+// command of the daemon during a hand-over (handOverEnvAllowed).
 var handOverEnvNames = map[string]bool{
-	"PATH": true, "HOME": true, "TMPDIR": true, "LANG": true, "USER": true, "LOGNAME": true,
+	"PATH": true, "HOME": true, "TMPDIR": true, "USER": true, "LOGNAME": true,
 }
 
 // handOverEnvAllowed reports whether the variable name of the daemon
@@ -115,14 +115,17 @@ var handOverEnvNames = map[string]bool{
 // a list of allowed names, no rule by prefix: the commands are local and need
 // no token, so GITHUB_TOKEN and every other name of the daemon (GIT_COMMON_DIR,
 // GIT_EXEC_PATH, LD_PRELOAD, SSH_AUTH_SOCK, XDG_CONFIG_HOME) is removed. The
+// names LC_ and LANG are free-form (a value under LC_SECRET would reach each
+// git process), so none of them passes; handOverDaemonEnv sets LC_ALL=C. The
 // GIT_ values a hand-over needs are set after the filter.
 func handOverEnvAllowed(name string) bool {
-	return handOverEnvNames[name] || strings.HasPrefix(name, "LC_")
+	return handOverEnvNames[name]
 }
 
 // handOverDaemonEnv is env without the names handOverEnvAllowed refuses, plus
-// GIT_TERMINAL_PROMPT=0, GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1
-// and GIT_NO_LAZY_FETCH=1. Decision: HOME passes, so without the two config
+// GIT_TERMINAL_PROMPT=0, GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1,
+// GIT_NO_LAZY_FETCH=1 and LC_ALL=C (the messages of git are matched, such as
+// that of a ref that exists). Decision: HOME passes, so without the two config
 // names the global and the system git config of the daemon user (a trace2
 // target, a hooks path) would act on the commands. With lazy fetch off, a git
 // command that misses an object of a partial clone fails; it does not fetch
@@ -133,20 +136,23 @@ func handOverDaemonEnv(env []string) []string {
 		name, _, _ := strings.Cut(kv, "=")
 		return !handOverEnvAllowed(name)
 	})
-	return append(kept, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_NO_LAZY_FETCH=1")
+	return append(kept, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_NO_LAZY_FETCH=1", "LC_ALL=C")
 }
 
-// checkHandOverPartialClone fails with errHandOverPartialClone when the
-// config of daemonRepo has extensions.partialClone or a remote with
-// promisor=true: the settings with which git fetches a missing object from a
-// remote by itself.
+// checkHandOverPartialClone fails with errHandOverPartialClone when the local
+// config of daemonRepo has extensions.partialClone or a remote with a promisor
+// value that is not false: the settings with which git fetches a missing
+// object from a remote by itself. Decision: --local, so a repository that git
+// does not accept (another owner) is an exit status 128 and an error, not the
+// exit status 1 of "no key"; git reads each integer other than 0 as true, so
+// each value other than false, no, off and 0 (any letter case) is refused.
 func checkHandOverPartialClone(ctx context.Context, daemonRepo string) error {
-	cmd := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("config", "--get-regexp", `^(extensions\.partialclone|remote\..*\.promisor)$`)...)
+	cmd := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("config", "--local", "--get-regexp", `^(extensions\.partialclone|remote\..*\.promisor)$`)...)
 	stderr := &cappedBuffer{max: handOverStderrMax}
 	cmd.Stderr = stderr
 	out, err := cmd.Output()
 	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 && len(out) == 0 {
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
 		// No key matches.
 		return nil
 	}
@@ -160,7 +166,8 @@ func checkHandOverPartialClone(ctx context.Context, daemonRepo string) error {
 		}
 		// A key without a value is true.
 		switch strings.ToLower(value) {
-		case "", "true", "yes", "on", "1":
+		case "false", "no", "off", "0":
+		default:
 			return errHandOverPartialClone
 		}
 	}
@@ -438,10 +445,13 @@ func removeHandOverFiles(paths []string) {
 // delta whose base is not in the pack fails; then checkHandOverTip and
 // verifyHandOverObjects through the quarantine. Only then the pack moves into
 // objects/pack and update-ref sets the hand-over ref; a failed update-ref
-// removes the moved files, unless the ref exists already: then another
-// hand-over of the task set it, and errHandOverInProgress leaves its ref and
-// files alone. Before any of it, a daemon's repository that is a partial clone
-// is refused (handOverCheckPartialClone). Every git command of this step runs through
+// removes the moved files and the ref, unless the ref exists already or its
+// lock is held: then another hand-over of the task set it, and
+// errHandOverInProgress leaves its ref alone (and the moved files when the ref
+// names the same tip). Before any of it, a daemon's repository that is a
+// partial clone is refused (handOverCheckPartialClone), and the commit of an
+// old hand-over ref of the task that no remote ref holds is kept in a
+// recovery ref (keepHandOverRefAsRecovery). Every git command of this step runs through
 // handOverDaemonGit (only the allowed names of the daemon environment, a group kill on
 // a cancel of ctx). The quarantine, with the temporary file, is removed on every path; a
 // failed hand-over leaves objects/pack as it was and no hand-over ref.
@@ -474,6 +484,11 @@ func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, 
 	}
 
 	ref := handOverRef(taskID)
+	// The commit of an earlier hand-over may be in no other ref (a push that
+	// failed, a workspace that the sweep removed since): it is kept first.
+	if err := keepHandOverRefAsRecovery(ctx, daemonRepo, taskID); err != nil {
+		return "", err
+	}
 	// A ref of an earlier hand-over of the task is never mistaken for this one.
 	if err := removeHandOverRef(daemonRepo, taskID); err != nil {
 		return "", err
@@ -550,20 +565,94 @@ func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, 
 		return "", err
 	}
 	// The empty old value: the ref must not exist, it was removed above.
-	// LC_ALL=C: the message of the ref that exists is matched below.
+	// The messages are matched below: handOverDaemonEnv sets LC_ALL=C.
 	update := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("update-ref", ref, tip, "")...)
-	appendGitEnv(update, "GIT_NO_REPLACE_OBJECTS=1", "LC_ALL=C")
+	appendGitEnv(update, "GIT_NO_REPLACE_OBJECTS=1")
 	if out, err := update.CombinedOutput(); err != nil {
-		if strings.Contains(string(out), "reference already exists") {
+		msg := string(out)
+		if strings.Contains(msg, "reference already exists") || (strings.Contains(msg, "Unable to create") && strings.Contains(msg, ".lock")) {
 			// Decision: another hand-over of the task set the ref after the
-			// removal above; its ref and the pack files it relies on stay.
-			return "", fmt.Errorf("%w: set %s to %s: %v: %s", errHandOverInProgress, ref, tip, err, strings.TrimSpace(string(out)))
+			// removal above, or holds its lock; its ref stays. The files this
+			// call moved go, unless the ref names the tip of this call or
+			// cannot be read: a pack of the same name (the same objects, so
+			// the same tip) was moved by this call alone and the other
+			// hand-over relies on it.
+			if winner := handOverRefValue(ctx, daemonRepo, ref); winner != "" && winner != tip {
+				removeHandOverFiles(moved)
+			}
+			return "", fmt.Errorf("%w: set %s to %s: %v: %s", errHandOverInProgress, ref, tip, err, strings.TrimSpace(msg))
 		}
 		_ = removeHandOverRef(daemonRepo, taskID)
 		removeHandOverFiles(moved)
 		return "", fmt.Errorf("hand-over: set %s to %s: %w: %s", ref, tip, err, strings.TrimSpace(string(out)))
 	}
 	return tip, nil
+}
+
+// handOverRefValue is the object name of ref in daemonRepo, "" when the ref
+// is missing or cannot be read.
+func handOverRefValue(ctx context.Context, daemonRepo, ref string) string {
+	out, err := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("rev-parse", "--verify", "-q", ref)...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// keepHandOverRefAsRecovery reads the commit of an old refs/pilot/handover/TASK
+// of daemonRepo. When no ref below refs/remotes/ and no ref below
+// refs/pilot-recovery/ contains it, it sets refs/pilot-recovery/TASK-SHORT
+// (SHORT: the first 12 characters of the commit) to it and logs one Info line
+// that names the ref. A failure is an error, and the hand-over stops before
+// the removal of the old ref. Decision: the workspace sweep counts a commit of
+// a hand-over ref as safe, so after a failed push and a sweep the old ref can
+// be the only ref of the commit; the removal of a retry would leave it to the
+// pruning of git.
+func keepHandOverRefAsRecovery(ctx context.Context, daemonRepo, taskID string) error {
+	ref := handOverRef(taskID)
+	read := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("for-each-ref", "--format=%(objectname)", ref)...)
+	stderr := &cappedBuffer{max: handOverStderrMax}
+	read.Stderr = stderr
+	out, err := read.Output()
+	if err != nil {
+		return fmt.Errorf("hand-over: read %s: %w: %s", ref, err, strings.TrimSpace(stderr.String()))
+	}
+	old := strings.TrimSpace(string(out))
+	if old == "" {
+		return nil
+	}
+	if !isLowerHex(old) || len(old) < 12 {
+		return fmt.Errorf("hand-over: %s names %q, not an object name", ref, old)
+	}
+	contains := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("for-each-ref", "--count=1", "--format=%(refname)", "--contains", old, "refs/remotes/", "refs/pilot-recovery/")...)
+	appendGitEnv(contains, "GIT_NO_REPLACE_OBJECTS=1")
+	stderr = &cappedBuffer{max: handOverStderrMax}
+	contains.Stderr = stderr
+	out, err = contains.Output()
+	if err != nil {
+		return fmt.Errorf("hand-over: the refs that contain %s of %s: %w: %s", old, ref, err, strings.TrimSpace(stderr.String()))
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		return nil
+	}
+	recovery := recoveryRefName(taskID) + "-" + old[:12]
+	// The empty old value: a ref of that name with another commit stays.
+	update := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("update-ref", recovery, old, "")...)
+	appendGitEnv(update, "GIT_NO_REPLACE_OBJECTS=1")
+	if out, err := update.CombinedOutput(); err != nil {
+		// Another hand-over of the task set the same ref to the same commit.
+		if handOverRefValue(ctx, daemonRepo, recovery) != old {
+			return fmt.Errorf("hand-over: keep %s of %s as %s: %w: %s", old, ref, recovery, err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+	slog.Info("hand-over: the commit of the old hand-over ref is in no remote ref, kept as a recovery ref",
+		slog.String("task_id", taskID),
+		slog.String("handover_ref", ref),
+		slog.String("recovery_ref", recovery),
+		slog.String("sha", old),
+	)
+	return nil
 }
 
 // handOverTip runs, as the agent user in the workspace, `git rev-list --count

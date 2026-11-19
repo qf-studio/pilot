@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -1093,7 +1094,81 @@ func TestHandOverDaemonGitEnvNoToken(t *testing.T) {
 		if !slices.Contains(update.Env, "GIT_NO_REPLACE_OBJECTS=1") {
 			t.Errorf("the environment of the update-ref lacks GIT_NO_REPLACE_OBJECTS=1: %q", update.Env)
 		}
+		if got := envValues(update.Env, "LC_ALL"); !slices.Equal(got, []string{"C"}) {
+			t.Errorf("LC_ALL in the environment of the update-ref: %q, want C exactly once", got)
+		}
 	})
+}
+
+// envValues lists the values of name in env, in order.
+func envValues(env []string, name string) []string {
+	var values []string
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && k == name {
+			values = append(values, v)
+		}
+	}
+	return values
+}
+
+// mutation pin: put the rule by the prefix LC_ back into handOverEnvAllowed
+// -> this test fails
+func TestHandOverDaemonGitEnvNoLocaleNames(t *testing.T) {
+	e := newHandOverEnv(t)
+	head := commitFile(t, e.ws, "a.txt", "one")
+	logDir := handOverGitEnvLog(t, e)
+	handOverTmpDir(t)
+	// The commands of the daemon side, kept to read their environment.
+	var cmds []*exec.Cmd
+	prev := execCommandContext
+	execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
+		cmd := prev(c, name, args...)
+		if name == "git" {
+			cmds = append(cmds, cmd)
+		}
+		return cmd
+	}
+	t.Cleanup(func() { execCommandContext = prev })
+	vars := map[string]string{"LC_SECRET": "fake-locale-secret", "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8"}
+	var sha string
+	var err error
+	inDaemonEnv(t, vars, func() {
+		sha, err = handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+	})
+	if err != nil || sha != head {
+		t.Fatalf("handOverBranch = %s, %v, want %s", sha, err, head)
+	}
+	if len(cmds) == 0 {
+		t.Fatal("no git command of the daemon side was built")
+	}
+	for _, cmd := range cmds {
+		if got := envValues(cmd.Env, "LC_SECRET"); len(got) != 0 {
+			t.Errorf("%q: the environment holds LC_SECRET=%q", cmd.Args, got)
+		}
+		if got := envValues(cmd.Env, "LC_ALL"); !slices.Equal(got, []string{"C"}) {
+			t.Errorf("%q: LC_ALL in the environment: %q, want C exactly once", cmd.Args, got)
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(logDir, "git-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("the wrapper git logged no process")
+	}
+	for _, f := range files {
+		raw, err := os.ReadFile(f) //nolint:gosec // a file of the wrapper git
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(string(raw), "\n")
+		if got := envValues(lines[1:], "LC_SECRET"); len(got) != 0 {
+			t.Errorf("%s: the git process has LC_SECRET=%q", lines[0], got)
+		}
+		if got := envValues(lines[1:], "LC_ALL"); !slices.Equal(got, []string{"C"}) {
+			t.Errorf("%s: LC_ALL of the git process: %q, want C exactly once", lines[0], got)
+		}
+	}
 }
 
 // mutation pin: remove the removeHandOverRef of the failed update-ref -> this
@@ -1654,7 +1729,32 @@ func TestHandOverBranchConcurrentSameTask(t *testing.T) {
 	e.sudoLog = mockSudoAgent(t, e.repo, "")
 	handOverTmpDir(t)
 	ref := handOverRef(handOverTestTask)
+	// The seam: each hand-over waits at its last update-ref for the other, so
+	// both removed the old ref before either sets it and one of them wins.
+	var mu sync.Mutex
+	var arrived int
+	var release chan struct{}
+	prev := execCommandContext
+	execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" && slices.Contains(args, "update-ref") && slices.Contains(args, ref) && !slices.Contains(args, "-d") {
+			mu.Lock()
+			ch := release
+			if arrived++; arrived == 2 {
+				close(release)
+			}
+			mu.Unlock()
+			select {
+			case <-ch:
+			case <-time.After(30 * time.Second):
+			}
+		}
+		return prev(c, name, args...)
+	}
+	t.Cleanup(func() { execCommandContext = prev })
 	for round := 0; round < 10; round++ {
+		mu.Lock()
+		arrived, release = 0, make(chan struct{})
+		mu.Unlock()
 		type result struct {
 			sha string
 			err error
@@ -1673,13 +1773,15 @@ func TestHandOverBranchConcurrentSameTask(t *testing.T) {
 		for i := 0; i < 2; i++ {
 			r := <-results
 			if r.err != nil {
-				t.Logf("round %d: %v", round, r.err)
+				if !errors.Is(r.err, errHandOverInProgress) {
+					t.Errorf("round %d: %v, want %v", round, r.err, errHandOverInProgress)
+				}
 				continue
 			}
 			shas = append(shas, r.sha)
 		}
-		if len(shas) == 0 {
-			t.Fatalf("round %d: no hand-over returned a SHA", round)
+		if len(shas) != 1 {
+			t.Fatalf("round %d: the hand-overs returned %d SHAs %q, want exactly one", round, len(shas), shas)
 		}
 		for _, sha := range shas {
 			if sha != head {
@@ -1694,4 +1796,154 @@ func TestHandOverBranchConcurrentSameTask(t *testing.T) {
 			t.Fatalf("round %d: the objects of %s: %v: %s", round, ref, err, out)
 		}
 	}
+}
+
+// mutation pin: remove the call of keepHandOverRefAsRecovery -> this test
+// fails
+func TestHandOverBranchKeepsTheOldRefAsRecovery(t *testing.T) {
+	ref := handOverRef(handOverTestTask)
+	t.Run("a commit that no remote ref holds", func(t *testing.T) {
+		e := newHandOverEnv(t)
+		head := commitFile(t, e.ws, "a.txt", "one")
+		old := e.daemonOnlyCommit(t, "old.txt", "old")
+		wsGit(t, e.repo, "update-ref", ref, old)
+		wsGit(t, e.repo, "branch", "-q", "-D", "private")
+		e.sudoLog = mockSudoAgent(t, e.repo, "")
+		handOverTmpDir(t)
+		sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+		if err != nil || sha != head {
+			t.Fatalf("handOverBranch = %s, %v, want %s", sha, err, head)
+		}
+		want := "refs/pilot-recovery/" + handOverTestTask + "-" + old[:12]
+		if got := wsGit(t, e.repo, "for-each-ref", "--format=%(refname)", "--contains", old, "refs/pilot-recovery/"); got != want {
+			t.Errorf("the refs below refs/pilot-recovery/ that contain %s: %q, want %q", old, got, want)
+		}
+		if got := wsGit(t, e.repo, "rev-parse", ref); got != head {
+			t.Errorf("%s = %s, want %s", ref, got, head)
+		}
+	})
+
+	t.Run("a commit in refs/remotes/origin/ makes no recovery ref", func(t *testing.T) {
+		e := newHandOverEnv(t)
+		head := commitFile(t, e.ws, "a.txt", "one")
+		old := e.daemonOnlyCommit(t, "old.txt", "old")
+		wsGit(t, e.repo, "push", "-q", "origin", "private")
+		wsGit(t, e.repo, "branch", "-q", "-D", "private")
+		if got := wsGit(t, e.repo, "for-each-ref", "--format=%(refname)", "--contains", old, "refs/remotes/origin/"); got == "" {
+			t.Fatalf("no ref below refs/remotes/origin/ contains %s", old)
+		}
+		wsGit(t, e.repo, "update-ref", ref, old)
+		e.sudoLog = mockSudoAgent(t, e.repo, "")
+		handOverTmpDir(t)
+		sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+		if err != nil || sha != head {
+			t.Fatalf("handOverBranch = %s, %v, want %s", sha, err, head)
+		}
+		if got := wsGit(t, e.repo, "for-each-ref", "refs/pilot-recovery/"); got != "" {
+			t.Errorf("recovery refs: %s, want none", got)
+		}
+	})
+
+	t.Run("a failure to set the recovery ref keeps the old ref", func(t *testing.T) {
+		e := newHandOverEnv(t)
+		commitFile(t, e.ws, "a.txt", "one")
+		old := e.daemonOnlyCommit(t, "old.txt", "old")
+		wsGit(t, e.repo, "update-ref", ref, old)
+		e.sudoLog = mockSudoAgent(t, e.repo, "")
+		handOverTmpDir(t)
+		recovery := "refs/pilot-recovery/" + handOverTestTask + "-" + old[:12]
+		prev := execCommandContext
+		execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
+			if name == "git" && slices.Contains(args, "update-ref") && slices.Contains(args, recovery) {
+				return prev(c, "false")
+			}
+			return prev(c, name, args...)
+		}
+		t.Cleanup(func() { execCommandContext = prev })
+		sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+		if err == nil || !strings.Contains(err.Error(), recovery) {
+			t.Fatalf("handOverBranch = %s, %v, want an error that names %s", sha, err, recovery)
+		}
+		if got := wsGit(t, e.repo, "rev-parse", ref); got != old {
+			t.Errorf("%s = %s, want the old %s", ref, got, old)
+		}
+	})
+
+	// The other hand-over of the task wins with another commit right before
+	// the last update-ref: by a lock of the ref, or by the ref itself.
+	for _, tc := range []struct {
+		name string
+		lock bool
+	}{
+		{"a lock of the ref of the task", true},
+		{"the ref of the task exists", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newHandOverEnv(t)
+			commitFile(t, e.ws, "a.txt", "one")
+			e.sudoLog = mockSudoAgent(t, e.repo, "")
+			tmp := handOverTmpDir(t)
+			packsBefore := e.packFiles(t)
+			winner := e.base
+			lock := filepath.Join(e.repo, ".git", filepath.FromSlash(ref)+".lock")
+			t.Cleanup(func() { _ = os.Remove(lock) })
+			prev := execCommandContext
+			execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
+				if name == "git" && slices.Contains(args, "update-ref") && slices.Contains(args, ref) && !slices.Contains(args, "-d") {
+					wsGit(t, e.repo, "update-ref", ref, winner)
+					if tc.lock {
+						if err := os.WriteFile(lock, nil, 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				return prev(c, name, args...)
+			}
+			t.Cleanup(func() { execCommandContext = prev })
+
+			sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+			if !errors.Is(err, errHandOverInProgress) {
+				t.Fatalf("handOverBranch = %s, %v, want %v", sha, err, errHandOverInProgress)
+			}
+			if got := wsGit(t, e.repo, "rev-parse", ref); got != winner {
+				t.Errorf("%s = %s, want the ref of the winner %s", ref, got, winner)
+			}
+			if got := e.packFiles(t); !slices.Equal(got, packsBefore) {
+				t.Errorf("objects/pack after the hand-over: %q, want %q", got, packsBefore)
+			}
+			if quarantines, _ := filepath.Glob(filepath.Join(e.repo, ".git", "objects", handOverQuarantinePrefix+"*")); len(quarantines) != 0 {
+				t.Errorf("quarantine directories left: %q", quarantines)
+			}
+			assertEmptyDir(t, tmp)
+		})
+	}
+}
+
+func TestCheckHandOverPartialCloneValues(t *testing.T) {
+	for _, tc := range []struct {
+		value   string
+		refused bool
+	}{
+		{"2", true},
+		{"-1", true},
+		{"TRUE", true},
+		{"false", false},
+		{"0", false},
+		{"off", false},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			repo, _ := setupTestRepoWithRemote(t)
+			wsGit(t, repo, "config", "remote.origin.promisor", tc.value)
+			err := checkHandOverPartialClone(context.Background(), repo)
+			if refused := errors.Is(err, errHandOverPartialClone); refused != tc.refused || (!tc.refused && err != nil) {
+				t.Errorf("promisor=%s: checkHandOverPartialClone = %v, want refused %v", tc.value, err, tc.refused)
+			}
+		})
+	}
+	t.Run("no repository is an error", func(t *testing.T) {
+		err := checkHandOverPartialClone(context.Background(), t.TempDir())
+		if err == nil || errors.Is(err, errHandOverPartialClone) {
+			t.Errorf("checkHandOverPartialClone outside a repository = %v, want an error of the config read", err)
+		}
+	})
 }
