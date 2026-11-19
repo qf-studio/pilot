@@ -161,7 +161,7 @@ func TestPushRefused_MainPRPathParksTheTask(t *testing.T) {
 	r.prCreator = f.creator
 	result := &ExecutionResult{TaskID: "GH-9", Success: true}
 
-	if r.pushTaskBranch(context.Background(), f.task(), f.git, result, r.log) {
+	if r.pushTaskBranch(context.Background(), f.task(), f.git, result, nil, r.log) {
 		t.Fatal("pushTaskBranch continued after a refusal")
 	}
 
@@ -182,7 +182,7 @@ func TestPushRefused_MainPRPathCleanPushContinues(t *testing.T) {
 	r := newSilentRunnerTask359()
 	result := &ExecutionResult{TaskID: "GH-9", Success: true}
 
-	if !r.pushTaskBranch(context.Background(), &Task{ID: "GH-9", Branch: "pilot/GH-9"}, f.git, result, r.log) {
+	if !r.pushTaskBranch(context.Background(), &Task{ID: "GH-9", Branch: "pilot/GH-9"}, f.git, result, nil, r.log) {
 		t.Fatalf("clean push ended the run: %q", result.Error)
 	}
 	if !strings.Contains(f.remoteBranches(), "pilot/GH-9") {
@@ -303,7 +303,7 @@ func TestSecretGate_AutoPreserveThenFinalPushAlertsOnce(t *testing.T) {
 		t.Fatal("dirty worktree was not preserved")
 	}
 	result := &ExecutionResult{TaskID: "GH-9", Success: true}
-	if r.pushTaskBranch(context.Background(), task, f.git, result, r.log) {
+	if r.pushTaskBranch(context.Background(), task, f.git, result, nil, r.log) {
 		t.Fatal("the final push of a refused commit went through")
 	}
 
