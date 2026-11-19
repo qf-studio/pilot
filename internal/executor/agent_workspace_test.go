@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1242,7 +1243,7 @@ func TestAgentWorkspaceSweepWaitsForThePreflight(t *testing.T) {
 				t.Fatalf("sudo calls = %q, want %d", calls, tc.wantCalls)
 			}
 			if !tc.refusal {
-				if !strings.Contains(calls[0], " rev-parse HEAD --branches") || !strings.HasSuffix(calls[1], "-- rm -rf -- "+ws) {
+				if !strings.Contains(calls[0], " rev-parse HEAD --all") || !strings.HasSuffix(calls[1], "-- rm -rf -- "+ws) {
 					t.Errorf("sudo calls = %q, want the read of the tips, then rm -rf of the workspace", calls)
 				}
 				assertPresence(t, []string{ws}, nil)
@@ -1345,8 +1346,19 @@ func TestAgentWorkspaceFinishChecksTheTip(t *testing.T) {
 	}
 }
 
+// forgetAgentWorkspaceRecord deletes the record of the workspace at ws, as a
+// daemon start finds it: the sweep skips a workspace with a live record.
+func forgetAgentWorkspaceRecord(t *testing.T, ws string) {
+	t.Helper()
+	if agentWorkspaceRecordOf(ws) == nil {
+		t.Fatalf("no record of %s", ws)
+	}
+	agentWorkspaceBases.Delete(ws)
+}
+
 func TestAgentWorkspaceSweepChecksTheTip(t *testing.T) {
 	e := newHandOverEnv(t)
+	forgetAgentWorkspaceRecord(t, e.ws)
 	logs := captureLog(t)
 	head := commitFile(t, e.ws, "a.txt", "one")
 
@@ -1382,6 +1394,7 @@ func TestAgentWorkspaceSweepChecksTheTip(t *testing.T) {
 
 func TestAgentWorkspaceSweepKeepsABrokenHead(t *testing.T) {
 	e := newHandOverEnv(t)
+	forgetAgentWorkspaceRecord(t, e.ws)
 	logs := captureLog(t)
 	wsGit(t, e.ws, "symbolic-ref", "HEAD", "refs/heads/missing")
 	if removed, _ := sweepAgentWorkspaces(e.repo, ""); removed != 0 {
@@ -1392,6 +1405,7 @@ func TestAgentWorkspaceSweepKeepsABrokenHead(t *testing.T) {
 
 func TestAgentWorkspaceSweepRemovesALostWorkspaceAfterSevenDays(t *testing.T) {
 	e := newHandOverEnv(t)
+	forgetAgentWorkspaceRecord(t, e.ws)
 	logs := captureLog(t)
 	commitFile(t, e.ws, "a.txt", "one")
 	prev := agentWorkspaceAge
@@ -1408,5 +1422,248 @@ func TestAgentWorkspaceSweepRemovesALostWorkspaceAfterSevenDays(t *testing.T) {
 	}
 	if n := len(logLines(logs.String(), "", "")); n != 1 {
 		t.Errorf("want one log line, got:\n%s", logs.String())
+	}
+}
+
+// GH-6536: the sweep reads every ref of a workspace, skips a workspace with a
+// live record, counts a local branch of the daemon as safe with no record,
+// falls back to the directory time for the age, and counts a removal once.
+
+// newSafeSweepWorkspace is a repository and, in a workspace root of the
+// option, one workspace of its project (task GH-1) named with stamp: a clone
+// whose tip is in refs/remotes/origin/main of the repository, so safe.
+func newSafeSweepWorkspace(t *testing.T, stamp string) (repo, ws string) {
+	t.Helper()
+	stubRunAsGOOS(t)
+	_ = mockSudoAgent(t, "", "")
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	setRunAsStateForTest(t, gitRouteSettings(t, root), "")
+	repo = setupTestRepo(t)
+	t.Cleanup(func() { _ = os.RemoveAll(repo) })
+	project, err := workspaceProjectID(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsGit(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	ws = filepath.Join(root, "pilot-ws-"+project+"-GH-1-"+stamp)
+	wsGit(t, root, "clone", "-q", "--shared", repo, ws)
+	return repo, ws
+}
+
+func TestAgentWorkspaceSweepReadsEveryRef(t *testing.T) {
+	tests := []struct {
+		name string
+		// extra leaves a commit of the workspace in one ref outside
+		// refs/heads/ and returns that ref.
+		extra func(t *testing.T, ws string) string
+	}{
+		{"refs/stash", func(t *testing.T, ws string) string {
+			if err := os.WriteFile(filepath.Join(ws, "a.txt"), []byte("changed"), 0o644); err != nil { //nolint:gosec // test file
+				t.Fatal(err)
+			}
+			wsGit(t, ws, "stash", "-q")
+			return "refs/stash"
+		}},
+		{"tag", func(t *testing.T, ws string) string {
+			c := wsGit(t, ws, "commit-tree", "-p", "HEAD", "-m", "only in a tag", "HEAD^{tree}")
+			wsGit(t, ws, "tag", "only-tag", c)
+			return "refs/tags/only-tag"
+		}},
+		{"refs/agent/x", func(t *testing.T, ws string) string {
+			c := wsGit(t, ws, "commit-tree", "-p", "HEAD", "-m", "only in refs/agent/x", "HEAD^{tree}")
+			wsGit(t, ws, "update-ref", "refs/agent/x", c)
+			return "refs/agent/x"
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newHandOverPushEnv(t)
+			logs := captureLog(t)
+			commitFile(t, e.ws, "a.txt", "one")
+			if err := e.git.Push(context.Background(), e.branch, handOverTestTask); err != nil {
+				t.Fatalf("Push: %v", err)
+			}
+			ref := tc.extra(t, e.ws)
+			sha := wsGit(t, e.ws, "rev-parse", ref)
+			if out, err := exec.Command("git", "-C", e.repo, "cat-file", "-e", sha).CombinedOutput(); err == nil {
+				t.Fatalf("the daemon's repository has the commit of %s: %s", ref, out)
+			}
+
+			// The end of the run: the push succeeded, the commit of ref is
+			// only in the workspace.
+			e.cleanup()
+			assertWorkspaceKept(t, logs.String(), e.ws, agentWorkspaceTipUnsafe)
+
+			// The sweep after a daemon start: no record.
+			logs.Reset()
+			if removed, _ := sweepAgentWorkspaces(e.repo, ""); removed != 0 {
+				t.Errorf("sweep removed %d, want 0", removed)
+			}
+			assertWorkspaceKept(t, logs.String(), e.ws, agentWorkspaceTipUnsafe)
+		})
+	}
+}
+
+func TestAgentWorkspacePruneSkipsALiveRun(t *testing.T) {
+	e := newHandOverEnv(t)
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	// No commit above the base: safe, so only the live record keeps it.
+	if removed, err := PruneOrphanedWorktreeForTask(context.Background(), e.repo, handOverTestTask); err != nil || removed != 0 {
+		t.Fatalf("PruneOrphanedWorktreeForTask = %d, %v; want 0, nil", removed, err)
+	}
+	assertPresence(t, nil, []string{e.ws})
+	if skipped := logLines(logs.String(), "DEBUG", "skipped the workspace of a live run"); len(skipped) != 1 || !strings.Contains(skipped[0], "path="+e.ws) {
+		t.Errorf("Debug lines %q: want one that names %s", skipped, e.ws)
+	}
+
+	forgetAgentWorkspaceRecord(t, e.ws)
+	if removed, err := PruneOrphanedWorktreeForTask(context.Background(), e.repo, handOverTestTask); err != nil || removed != 1 {
+		t.Fatalf("PruneOrphanedWorktreeForTask with no record = %d, %v; want 1, nil", removed, err)
+	}
+	assertPresence(t, []string{e.ws}, nil)
+}
+
+func TestAgentWorkspaceSweepNoRecordLocalBranchBase(t *testing.T) {
+	e := newAgentWorkspaceEnv(t)
+	logs := captureLog(t)
+	base := wsGit(t, e.repo, "commit-tree", "-p", "HEAD", "-m", "only on a local branch", "HEAD^{tree}")
+	wsGit(t, e.repo, "update-ref", "refs/heads/feature", base)
+	if out := wsGit(t, e.repo, "rev-list", base, "--not", "--glob=refs/remotes/"); out == "" {
+		t.Fatal("the base is in refs/remotes/ of the daemon's repository")
+	}
+	m := NewWorktreeManager(e.repo)
+	m.SetBaseBranch("main")
+	ws, cleanup, err := m.createAgentWorkspace(context.Background(), "GH-1", "pilot/GH-1", "feature")
+	if err != nil {
+		t.Fatalf("createAgentWorkspace: %v", err)
+	}
+	t.Cleanup(cleanup)
+	forgetAgentWorkspaceRecord(t, ws)
+
+	if removed, _ := sweepAgentWorkspaces(e.repo, ""); removed != 1 {
+		t.Errorf("sweep removed %d, want 1", removed)
+	}
+	assertPresence(t, []string{ws}, nil)
+	if lines := logLines(logs.String(), "ERROR", ""); len(lines) != 0 {
+		t.Errorf("Error lines for a safe workspace: %q", lines)
+	}
+}
+
+func TestAgentWorkspaceSweepUnknownAgeUsesTheDirectoryTime(t *testing.T) {
+	tests := []struct {
+		name    string
+		mtime   time.Duration // before now
+		removed int
+		line    string
+	}{
+		{"older than seven days", agentWorkspaceLostAge + time.Hour, 1, "its commits are lost"},
+		{"newer", 0, 0, "agent workspace kept"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// NANOSECONDS that do not fit an int64: a workspace name, no age.
+			repo, ws := newSafeSweepWorkspace(t, "99999999999999999999999")
+			if _, known := agentWorkspaceAge(ws); known {
+				t.Fatal("the age of the name is known")
+			}
+			gitTestCommit(t, ws, "only in the workspace")
+			when := time.Now().Add(-tc.mtime)
+			if err := os.Chtimes(ws, when, when); err != nil {
+				t.Fatal(err)
+			}
+			logs := captureLog(t)
+
+			if removed, _ := sweepAgentWorkspaces(repo, ""); removed != tc.removed {
+				t.Errorf("sweep removed %d, want %d", removed, tc.removed)
+			}
+			lines := logLines(logs.String(), "ERROR", tc.line)
+			if len(lines) != 1 || !strings.Contains(lines[0], "path="+ws) || !strings.Contains(lines[0], " age=") || strings.Contains(lines[0], " age=0s") {
+				t.Errorf("Error lines %q: want one with the path and the age of the directory", lines)
+			}
+			if tc.removed == 1 {
+				assertPresence(t, []string{ws}, nil)
+			} else {
+				assertPresence(t, nil, []string{ws})
+			}
+		})
+	}
+}
+
+func TestAgentWorkspaceSweepTwoAtOnceCountOneRemoval(t *testing.T) {
+	repo, ws := newSafeSweepWorkspace(t, "100")
+	logs := captureLog(t)
+	var wg sync.WaitGroup
+	counts := make([]int, 2)
+	start := make(chan struct{})
+	for i := range counts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			counts[i], _ = sweepAgentWorkspaces(repo, "")
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if sum := counts[0] + counts[1]; sum != 1 {
+		t.Errorf("sweeps removed %v, want a sum of 1", counts)
+	}
+	assertPresence(t, []string{ws}, nil)
+	if n := len(logLines(logs.String(), "INFO", "Removed orphaned agent workspace")); n != 1 {
+		t.Errorf("%d Info lines for the removal, want 1:\n%s", n, logs.String())
+	}
+}
+
+func TestAgentWorkspaceTipSafeRefusesOddWorkspaces(t *testing.T) {
+	repo, ws := newSafeSweepWorkspace(t, "100")
+	ctx := context.Background()
+	if !agentWorkspaceTipSafe(ctx, ws, repo) {
+		t.Fatal("the clone is not safe")
+	}
+	root := filepath.Dir(ws)
+
+	t.Run(".git is a link", func(t *testing.T) {
+		p := filepath.Join(root, "pilot-ws-link")
+		if err := os.Mkdir(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(ws, ".git"), filepath.Join(p, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		if agentWorkspaceTipSafe(ctx, p, repo) {
+			t.Error("safe with .git as a symbolic link")
+		}
+	})
+	t.Run(".git is a file", func(t *testing.T) {
+		p := filepath.Join(root, "pilot-ws-file")
+		if err := os.Mkdir(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p, ".git"), []byte("gitdir: "+filepath.Join(ws, ".git")+"\n"), 0o644); err != nil { //nolint:gosec // test file
+			t.Fatal(err)
+		}
+		if wsGit(t, p, "rev-parse", "HEAD") == "" {
+			t.Fatal("git does not read the .git file")
+		}
+		if agentWorkspaceTipSafe(ctx, p, repo) {
+			t.Error("safe with .git as a file")
+		}
+	})
+	// The tips are the agent's text: an option would reach the walk in the
+	// daemon's repository (--max-count=0 lists nothing).
+	for _, tip := range []string{strings.Repeat("g", 40), "--max-count=0"} {
+		t.Run("tip not hex "+tip, func(t *testing.T) {
+			_ = mockSudoAgent(t, "", `case "$*" in *"rev-parse HEAD --all"*) printf '%s\n' '`+tip+`'; exit 0 ;; esac`)
+			if agentWorkspaceTipSafe(ctx, ws, repo) {
+				t.Errorf("safe with the tip %q", tip)
+			}
+		})
 	}
 }
