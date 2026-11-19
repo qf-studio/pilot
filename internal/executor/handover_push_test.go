@@ -630,7 +630,7 @@ func TestDaemonGitEnv(t *testing.T) {
 		t.Errorf("daemonGitEnv = %q, want %q", got, want)
 	}
 	gate := daemonGateEnv([]string{"PATH=/bin", "GITHUB_TOKEN=" + testutil.FakeGitHubToken, "GIT_DIR=/x", "LC_ALL=C", "SSH_AUTH_SOCK=/s", "HOME=/h"})
-	if want := []string{"PATH=/bin", "LC_ALL=C", "HOME=/h"}; strings.Join(gate, "\n") != strings.Join(want, "\n") {
+	if want := []string{"PATH=/bin", "HOME=/h"}; strings.Join(gate, "\n") != strings.Join(want, "\n") {
 		t.Errorf("daemonGateEnv = %q, want %q", gate, want)
 	}
 }

@@ -259,8 +259,8 @@ func daemonGitEnv(inherited, set []string) []string {
 
 // daemonGateEnv is the environment of the git commands of the secret gate for
 // an agent workspace: daemonGitEnv of the daemon environment without each
-// name handOverEnvAllowed refuses (PATH, HOME, TMPDIR, LANG, USER, LOGNAME
-// and the LC_ names pass). The gate adds GIT_NO_REPLACE_OBJECTS itself.
+// name handOverEnvAllowed refuses (only PATH, HOME, TMPDIR, USER and LOGNAME
+// pass). The gate adds GIT_NO_REPLACE_OBJECTS itself.
 // Decision: the gate commands are local, so no token of the daemon
 // (GITHUB_TOKEN, PILOT_GIT_TOKEN) reaches them.
 func daemonGateEnv(env []string) []string {
