@@ -1320,6 +1320,11 @@
         "name": "Documentation",
         "aliases": [],
         "domain": "general"
+      },
+      "founder-box": {
+        "name": "Founder-Box",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -3255,7 +3260,10 @@
           "https://github.com/qf-studio/pilot/issues/6492",
           "https://github.com/qf-studio/pilot/issues/6500",
           "https://github.com/qf-studio/pilot/issues/6501",
-          "https://github.com/qf-studio/pilot/issues/6503"
+          "https://github.com/qf-studio/pilot/issues/6503",
+          "https://github.com/qf-studio/pilot/issues/6514",
+          "https://github.com/qf-studio/pilot/issues/6515",
+          "https://github.com/qf-studio/pilot/issues/6516"
         ]
       },
       "TASK-652": {
@@ -9385,6 +9393,19 @@
         ],
         "created": "2026-11-18",
         "last_validated": "2026-11-18"
+      },
+      "mem-326": {
+        "type": "pitfall",
+        "summary": "A quality gate that reports 'make test-changed exited with code -1' was killed by its time limit; no test failed (the output tail shows only ok lines). On the founder box (4 CPUs) the test gate has a limit of 10 minutes and runs almost the full Go suite for a change in internal/executor; the suite needs about 10 minutes there, so a ticket passes only on a lucky run (issue 6500: third gate run; issues 6501 and 6503: three failed runs each on 2026-11-18 and 11-19, one ticket parked). The box also held 133 orphan process trees of old agent sessions (wait loops of background tasks that poll with pgrep or sleep, and vite dev servers of removed worktrees, up to 54 days old): 271 processes, load average 17 to 21. An agent run does not stop its background shells and dev servers at its end. Before a retry of a ticket with exit -1: read the gate duration in the daemon log (about 2 x the limit means a time limit), then the load of the box (uptime, ps by ppid 1 and age).",
+        "path": "memories/pitfalls/mem-326.md",
+        "confidence": 0.9,
+        "concepts": [
+          "ci",
+          "executor",
+          "founder-box"
+        ],
+        "created": "2026-11-19",
+        "last_validated": "2026-11-19"
       }
     }
   },
@@ -13723,6 +13744,11 @@
       "from": "mem-325",
       "to": "TASK-651",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-326",
+      "to": "TASK-651",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -14142,7 +14168,8 @@
       "post-merge-fix-blames-merged-pr-for-preexisting-flake",
       "github-stuck-merge-ref-blocks-pr-ci-close-reopen-fixes-autopilot-ci-timeout-is-terminal",
       "mem-282",
-      "mem-299"
+      "mem-299",
+      "mem-326"
     ],
     "ci-gates": [
       "hand-file-the-ci-fix-issue-in-autopilot-fix-shape-when-the-size-guard-declines"
@@ -14845,7 +14872,8 @@
       "mem-293",
       "mem-294",
       "mem-300",
-      "TASK-650"
+      "TASK-650",
+      "mem-326"
     ],
     "external-contributor": [
       "external-fork-pr-sweeps-stale-agent-state"
@@ -16440,13 +16468,16 @@
     ],
     "documentation": [
       "mem-325"
+    ],
+    "founder-box": [
+      "mem-326"
     ]
   },
-  "last_updated": "2026-11-18T17:32:59.180753+00:00",
+  "last_updated": "2026-11-19T08:31:02.150380+00:00",
   "stats": {
-    "total_nodes": 807,
-    "total_edges": 867,
-    "memory_count": 450
+    "total_nodes": 809,
+    "total_edges": 868,
+    "memory_count": 451
   },
   "metadata": {
     "last_updated": null
