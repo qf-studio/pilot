@@ -109,6 +109,12 @@ func SecretGateOptionsFor(ctx context.Context, dir string) secretpatterns.PushOp
 func gateRepoKey(ctx context.Context, dir string) string {
 	cmd := gitCommandIn(ctx, dir, append(secretpatterns.GitScanConfig(), "rev-parse", "--git-common-dir")...)
 	appendGitEnv(cmd, "GIT_NO_REPLACE_OBJECTS=1") // like every git call of the gate
+	if env, ok := secretpatterns.GitEnv(ctx); ok && !gitRouteFailed(cmd) {
+		if _, agent := agentCmdUser(cmd); !agent {
+			// The environment the gate runs with (the hand-over push, TASK-651).
+			cmd.Env = append(env, "GIT_NO_REPLACE_OBJECTS=1")
+		}
+	}
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -315,11 +321,41 @@ func pushNeverForgiven(err error) bool {
 // A gate stop is never forgiven (GH-6272): an earlier push of the same branch
 // only means the remote holds a stale head, not this one. Every Push call site
 // that tolerates an existing remote branch goes through here.
+//
+// For an agent workspace (TASK-651) the remote head must be the hand-over SHA
+// of this attempt, as in pushFailureForgivenHead; an existing branch is not
+// enough, and a failed hand-over (no hand-over SHA) is never forgiven.
 func pushFailureForgiven(ctx context.Context, git *GitOperations, branch string, err error) bool {
 	if pushNeverForgiven(err) {
 		return false
 	}
-	return git.RemoteBranchExists(ctx, branch)
+	if git.daemonRepo == "" {
+		return git.RemoteBranchExists(ctx, branch)
+	}
+	want := git.attemptHandOverSHA()
+	if want == "" {
+		return false
+	}
+	remote, remoteOK := git.RemoteBranchHead(ctx, branch)
+	return remoteOK && remote == want
+}
+
+// pushFailureForgivenHead is the head the remote branch must hold for a failed
+// Push of git to be forgiven (the GH-1389 chdir false positive); ok is false
+// when no head qualifies. With the option empty it is the local HEAD
+// (localHead, localErr from LocalHead). For an agent workspace (TASK-651) it
+// is the hand-over SHA of this attempt. Decision: never the HEAD of the
+// workspace: the agent can make the hand-over fail (it deletes its branch
+// ref) and leave HEAD on the remote head, and the run would go on to the PR
+// for a head this attempt never handed over. A failed hand-over leaves the
+// attempt without a hand-over SHA (pushHandOver clears it first), so a
+// hand-over error is never forgiven.
+func pushFailureForgivenHead(git *GitOperations, localHead string, localErr error) (string, bool) {
+	if git.daemonRepo == "" {
+		return localHead, localErr == nil && localHead != ""
+	}
+	sha := git.attemptHandOverSHA()
+	return sha, sha != ""
 }
 
 // refusalComment is the issue comment of a refused push. The text follows the

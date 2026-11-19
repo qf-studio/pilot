@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,8 +81,17 @@ type GitOperations struct {
 	workspace *agentWorkspaceRecord
 
 	handOverMu sync.Mutex
-	// handOverSHA is the head of the last hand-over of a push.
+	// handOverSHA is the head that the last push attempt published: cleared
+	// at the start of each attempt, set only after its push succeeded, so a
+	// refused gate or a failed hand-over or push leaves it empty.
 	handOverSHA string
+	// attemptSHA is the hand-over SHA of the current push attempt: cleared at
+	// its start, set after its hand-over. A failed push is compared with it,
+	// never with the HEAD of the workspace (pushFailureForgivenHead).
+	attemptSHA string
+	// publishedSHA is the head that the last successful push published; a
+	// failed attempt keeps it. The count of new commits reads it.
+	publishedSHA string
 }
 
 // NewGitOperations creates new git operations for a project
@@ -154,6 +164,84 @@ func (g *GitOperations) lastHandOverSHA() string {
 	g.handOverMu.Lock()
 	defer g.handOverMu.Unlock()
 	return g.handOverSHA
+}
+
+// attemptHandOverSHA is the hand-over SHA of the current (or last) push
+// attempt, "" when its hand-over did not succeed.
+func (g *GitOperations) attemptHandOverSHA() string {
+	g.handOverMu.Lock()
+	defer g.handOverMu.Unlock()
+	return g.attemptSHA
+}
+
+// publishedHandOverSHA is the head that the last successful hand-over push
+// published, "" when none succeeded.
+func (g *GitOperations) publishedHandOverSHA() string {
+	g.handOverMu.Lock()
+	defer g.handOverMu.Unlock()
+	return g.publishedSHA
+}
+
+// daemonGitEnvDenied reports whether the variable name of the daemon
+// environment points a git command at another repository, work tree, index,
+// object store, ref namespace or config: GIT_DIR, GIT_WORK_TREE,
+// GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES,
+// GIT_NAMESPACE and every name that starts with GIT_CONFIG.
+func daemonGitEnvDenied(name string) bool {
+	switch name {
+	case "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE":
+		return true
+	}
+	return strings.HasPrefix(name, "GIT_CONFIG")
+}
+
+// daemonGitEnv is env without the names daemonGitEnvDenied refuses: the
+// environment of the daemon-side git commands of the delivery of an agent
+// workspace (TASK-651: the gate, the push, the remote probes, the fetch and
+// the count, the co-author read), so each works in the daemon's repository
+// and not in one that a variable of the daemon names. Decision: a short deny
+// list, not the allow rule of handOverDaemonEnv: the push needs the GIT_
+// names of withGitCredentials (GIT_ASKPASS, GIT_TERMINAL_PROMPT).
+func daemonGitEnv(env []string) []string {
+	return slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return daemonGitEnvDenied(name)
+	})
+}
+
+// withDaemonGitEnv sets the environment of cmd (os.Environ() when unset) to
+// its daemonGitEnv. It runs after withGitCredentials and appendGitEnv, which
+// build cmd.Env. A command the constructor failed closed, or one of the agent
+// route, is left as it is.
+func withDaemonGitEnv(cmd *exec.Cmd) *exec.Cmd {
+	if gitRouteFailed(cmd) {
+		return cmd
+	}
+	if _, agent := agentCmdUser(cmd); agent {
+		return cmd
+	}
+	env := cmd.Env
+	if env == nil {
+		env = os.Environ()
+	}
+	cmd.Env = daemonGitEnv(env)
+	return cmd
+}
+
+// remoteGitCmd builds a remote command of the delivery (a fetch, an
+// ls-remote) in remoteDir: hooks off (secretpatterns.HooksOffArgs), the
+// credentials of withGitCredentials and, for an agent workspace, the
+// environment of daemonGitEnv. Decision: hooks off with the option empty too:
+// a reference-transaction hook of the repository would run with the token in
+// its environment.
+func (g *GitOperations) remoteGitCmd(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := gitCommandIn(ctx, g.remoteDir(), append(secretpatterns.HooksOffArgs(), args...)...)
+	withGitCredentials(ctx, cmd)
+	if g.daemonRepo != "" {
+		withDaemonGitEnv(cmd)
+	}
+	return cmd
 }
 
 // ProjectPath returns the working-tree directory these operations act on
@@ -1347,6 +1435,18 @@ func (g *GitOperations) PushForceWithLease(ctx context.Context, branchName, expe
 	return nil
 }
 
+// IsPushNothingNew reports whether err is the result of a hand-over push of a
+// branch with no commit above the base (TASK-651): nothing to push, not a
+// failure. The push retry loop does not retry it, and the run takes the path
+// of a run with no new commit.
+func IsPushNothingNew(err error) bool {
+	return errors.Is(err, errHandOverNothingNew)
+}
+
+// handOverBeforeGate runs between the hand-over and the secret gate of a
+// hand-over push. A test seam: a test moves the hand-over ref there.
+var handOverBeforeGate = func(daemonRepo, taskID string) {}
+
 // pushHandOver is Push (lease "") and PushForceWithLease for an agent
 // workspace (TASK-651). The branch is taken out of the workspace into
 // refs/pilot/handover/TASK of the daemon's repository (handOverBranch); the
@@ -1355,10 +1455,18 @@ func (g *GitOperations) PushForceWithLease(ctx context.Context, branchName, expe
 // HANDOVER_SHA:refs/heads/BRANCH, the arguments of pushArgs, the explicit lease
 // and the credentials of today, without -u (no local branch to track). No git
 // command of the daemon runs with the workspace as its directory, so its
-// config, hooks and remotes have no effect. A failed hand-over or a gate stop
-// returns before the push.
+// config, hooks and remotes have no effect; the gate, the push and the
+// co-author read get the environment of daemonGitEnv. A failed hand-over (a
+// branch with no commit above the base satisfies IsPushNothingNew) or a gate
+// stop returns before the push.
+//
+// The attempt clears the hand-over SHAs of g first; attemptSHA is set after
+// the hand-over, handOverSHA and publishedSHA only after the push succeeded.
 func (g *GitOperations) pushHandOver(ctx context.Context, branchName, expectedRemoteSHA, taskID string) error {
 	branch := strings.TrimPrefix(branchName, "refs/heads/")
+	g.handOverMu.Lock()
+	g.handOverSHA, g.attemptSHA = "", ""
+	g.handOverMu.Unlock()
 	if g.workspace != nil {
 		g.workspace.setHandOver("", false)
 	}
@@ -1367,12 +1475,14 @@ func (g *GitOperations) pushHandOver(ctx context.Context, branchName, expectedRe
 		return err
 	}
 	g.handOverMu.Lock()
-	g.handOverSHA = sha
+	g.attemptSHA = sha
 	g.handOverMu.Unlock()
 	if g.workspace != nil {
 		g.workspace.setHandOver(sha, false)
 	}
-	if err := checkSecretGateTip(ctx, g.daemonRepo, sha, branchName, taskID); err != nil {
+	handOverBeforeGate(g.daemonRepo, taskID)
+	gateCtx := secretpatterns.WithGitEnv(ctx, daemonGitEnv(os.Environ()))
+	if err := checkSecretGateTip(gateCtx, g.daemonRepo, sha, branchName, taskID); err != nil {
 		return err
 	}
 	var opts []string
@@ -1384,10 +1494,14 @@ func (g *GitOperations) pushHandOver(ctx context.Context, branchName, expectedRe
 	opts = append(opts, "origin", sha+":refs/heads/"+branch)
 	cmd := gitCommandIn(ctx, g.daemonRepo, pushArgs(opts...)...)
 	withGitCredentials(ctx, cmd)
+	withDaemonGitEnv(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w: %s", what, err, output)
 	}
+	g.handOverMu.Lock()
+	g.handOverSHA, g.publishedSHA = sha, sha
+	g.handOverMu.Unlock()
 	if g.workspace != nil {
 		g.workspace.setHandOver(sha, true)
 	}
@@ -1406,6 +1520,7 @@ func (g *GitOperations) warnPushedCoAuthor(ctx context.Context, branch, sha, tas
 	}
 	cmd := gitCommandIn(ctx, g.daemonRepo, handOverGitArgs("log", "--no-show-signature", "--format=%H%x00%B%x00", rng)...)
 	appendGitEnv(cmd, "GIT_NO_REPLACE_OBJECTS=1")
+	withDaemonGitEnv(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		slog.Warn("Could not read the pushed commits for the co-author check",
@@ -1738,7 +1853,19 @@ func (g *GitOperations) CountNewCommits(ctx context.Context, baseBranch string) 
 
 // countNewCommits is CountNewCommits for the commits of head.
 func (g *GitOperations) countNewCommits(ctx context.Context, baseBranch, head string) (int, error) {
-	cmd := g.gitCmd(ctx, "rev-list", "--count", baseBranch+".."+head)
+	return parseNewCommitCount(g.gitCmd(ctx, "rev-list", "--count", baseBranch+".."+head))
+}
+
+// daemonCountNewCommits is countNewCommits in the daemon's repository of an
+// agent workspace: hooks off and the environment of daemonGitEnv.
+func (g *GitOperations) daemonCountNewCommits(ctx context.Context, baseBranch, head string) (int, error) {
+	cmd := gitCommandIn(ctx, g.daemonRepo, append(secretpatterns.HooksOffArgs(), "rev-list", "--count", baseBranch+".."+head)...)
+	return parseNewCommitCount(withDaemonGitEnv(cmd))
+}
+
+// parseNewCommitCount runs a `git rev-list --count` command and parses its
+// output.
+func parseNewCommitCount(cmd *exec.Cmd) (int, error) {
 	output, err := cmd.Output()
 	if err != nil {
 		return 0, fmt.Errorf("failed to count new commits: %w", err)
@@ -1771,19 +1898,21 @@ func (g *GitOperations) countNewCommits(ctx context.Context, baseBranch, head st
 // behavior in that environment.
 //
 // TASK-651: for an agent workspace the fetch runs in the daemon's repository,
-// and after a hand-over the count is of the hand-over SHA there. Before one,
-// it counts in the workspace, whose origin/<baseBranch> is the base commit.
+// and after a successful hand-over push the count is of the head that push
+// published (publishedHandOverSHA) there, so a refused or failed later attempt
+// counts no commit that never left the machine. Before one, it counts in the
+// workspace, whose origin/<baseBranch> is the base commit. The fetch runs
+// with hooks off (remoteGitCmd); the fetch and the count in the daemon's
+// repository get the environment of daemonGitEnv.
 func (g *GitOperations) CountNewCommitsAgainstOrigin(ctx context.Context, baseBranch string) (int, error) {
-	fetchCmd := gitCommandIn(ctx, g.remoteDir(), "fetch", "origin", baseBranch)
-	withGitCredentials(ctx, fetchCmd)
+	fetchCmd := g.remoteGitCmd(ctx, "fetch", "origin", baseBranch)
 	_ = fetchCmd.Run() // best-effort; fall back to the existing tracking ref on failure
 
-	if sha := g.lastHandOverSHA(); g.daemonRepo != "" && sha != "" {
-		daemon := NewGitOperations(g.daemonRepo)
-		if count, err := daemon.countNewCommits(ctx, "origin/"+baseBranch, sha); err == nil {
+	if sha := g.publishedHandOverSHA(); g.daemonRepo != "" && sha != "" {
+		if count, err := g.daemonCountNewCommits(ctx, "origin/"+baseBranch, sha); err == nil {
 			return count, nil
 		}
-		return daemon.countNewCommits(ctx, baseBranch, sha)
+		return g.daemonCountNewCommits(ctx, baseBranch, sha)
 	}
 
 	if count, err := g.CountNewCommits(ctx, "origin/"+baseBranch); err == nil {
@@ -2193,8 +2322,7 @@ func (g *GitOperations) RemoteBranchExists(ctx context.Context, branchName strin
 // (network, auth), so that failure is never mistaken for an absent branch
 // (GH-6191).
 func (g *GitOperations) ProbeRemoteBranch(ctx context.Context, branchName string) (bool, error) {
-	cmd := gitCommandIn(ctx, g.remoteDir(), "ls-remote", "--heads", "origin", branchName)
-	withGitCredentials(ctx, cmd)
+	cmd := g.remoteGitCmd(ctx, "ls-remote", "--heads", "origin", branchName)
 	output, err := cmd.Output()
 	if err != nil {
 		return false, err
@@ -2208,8 +2336,7 @@ func (g *GitOperations) ProbeRemoteBranch(ctx context.Context, branchName string
 // Unlike RemoteBranchExists it distinguishes "pushed my commit" from "a branch
 // by that name exists", which is what a rejected push must be checked against.
 func (g *GitOperations) RemoteBranchHead(ctx context.Context, branchName string) (sha string, ok bool) {
-	cmd := gitCommandIn(ctx, g.remoteDir(), "ls-remote", "--heads", "origin", "refs/heads/"+branchName)
-	withGitCredentials(ctx, cmd)
+	cmd := g.remoteGitCmd(ctx, "ls-remote", "--heads", "origin", "refs/heads/"+branchName)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", false
