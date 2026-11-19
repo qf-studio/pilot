@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 )
@@ -131,8 +132,8 @@ func (g *GitOperations) taskBranch() string {
 
 // ghDirForDaemonRepo is the directory of a gh command of g and the arguments
 // that name its repository. With an agent workspace (TASK-651) it is the
-// daemon's repository and `--repo OWNER/NAME` from the origin remote of that
-// repository: gh reads the repository from the git config of its directory,
+// daemon's repository and `--repo` from the origin remote of that repository
+// (ghRepoArg): gh reads the repository from the git config of its directory,
 // and the git config of the workspace is the agent's, so the agent would
 // choose the repository the daemon token acts on. Otherwise it is projectPath
 // and no argument, the call of today.
@@ -140,16 +141,112 @@ func (g *GitOperations) ghDirForDaemonRepo(ctx context.Context) (string, []strin
 	if g.daemonRepo == "" {
 		return g.projectPath, nil, nil
 	}
-	cmd := handOverDaemonGit(ctx, g.daemonRepo, handOverGitArgs("remote", "get-url", "origin")...)
+	repoArgs, err := ghRepoArgsOfDaemonRepo(ctx, g.daemonRepo)
+	if err != nil {
+		return "", nil, err
+	}
+	return g.daemonRepo, repoArgs, nil
+}
+
+// ghDirForExecutionPath is ghDirForDaemonRepo for a gh command that takes an
+// execution path as its directory (the gh calls of epic.go). For an agent
+// workspace on record it is the daemon's repository of the record and the
+// `--repo` argument of its origin remote; a path inside the workspace root
+// with no record (or one that the route rule refuses) is an error, and no gh
+// command runs in it. Each other path, and every path with the option
+// empty, is the path and no argument, the call of today.
+func ghDirForExecutionPath(ctx context.Context, path string) (string, []string, error) {
+	s := runAsSettingsNow()
+	if s == nil || path == "" {
+		return path, nil, nil
+	}
+	agent, err := gitRoutesToAgent(s.workspaceRoot, path)
+	if err != nil {
+		return "", nil, fmt.Errorf("gh: %w", err)
+	}
+	if !agent {
+		return path, nil, nil
+	}
+	rec := agentWorkspaceRecordOf(path)
+	if rec == nil || rec.daemonRepo == "" {
+		return "", nil, fmt.Errorf("gh: no record of the agent workspace %s: no gh command runs in it", path)
+	}
+	repoArgs, err := ghRepoArgsOfDaemonRepo(ctx, rec.daemonRepo)
+	if err != nil {
+		return "", nil, err
+	}
+	return rec.daemonRepo, repoArgs, nil
+}
+
+// ghRepoArgsOfDaemonRepo is `--repo ARG` for the origin remote of the
+// daemon's repository daemonRepo, read by the daemon (ghRepoArg).
+func ghRepoArgsOfDaemonRepo(ctx context.Context, daemonRepo string) ([]string, error) {
+	cmd := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs("remote", "get-url", "origin")...)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", nil, fmt.Errorf("gh: read the origin remote of the daemon's repository %s: %w", g.daemonRepo, err)
+		return nil, fmt.Errorf("gh: read the origin remote of the daemon's repository %s: %w", daemonRepo, err)
 	}
-	owner, name, err := parseGitHubRemoteURL(strings.TrimSpace(string(out)))
+	repo, err := ghRepoArg(strings.TrimSpace(string(out)))
 	if err != nil {
-		return "", nil, fmt.Errorf("gh: the origin remote of the daemon's repository %s: %w", g.daemonRepo, err)
+		return nil, fmt.Errorf("gh: the origin remote of the daemon's repository %s: %w", daemonRepo, err)
 	}
-	return g.daemonRepo, []string{"--repo", owner + "/" + name}, nil
+	return []string{"--repo", repo}, nil
+}
+
+// ghRepoArg is the value of the --repo argument of gh for the remote URL
+// remote: OWNER/NAME for the host github.com, HOST/OWNER/NAME for each other
+// host (GitHub Enterprise), so gh never resolves the repository of another
+// host against github.com. It takes the https and ssh URL forms (a port is
+// dropped) and the scp-like form; a final `/` and then the suffix `.git` are
+// removed. The user part of the URL is never in the result, and its error
+// holds the URL only through redactRemoteURL.
+func ghRepoArg(remote string) (string, error) {
+	s := strings.TrimSuffix(strings.TrimRight(strings.TrimSpace(remote), "/"), ".git")
+	var authority, path string
+	if i := strings.Index(s, "://"); i >= 0 {
+		var ok bool
+		if authority, path, ok = strings.Cut(s[i+3:], "/"); !ok {
+			return "", fmt.Errorf("remote %q: no path", redactRemoteURL(remote))
+		}
+	} else if colon := strings.Index(s, ":"); colon > 0 && !strings.Contains(s[:colon], "/") {
+		authority, path = s[:colon], s[colon+1:]
+	} else {
+		return "", fmt.Errorf("remote %q: no host", redactRemoteURL(remote))
+	}
+	if at := strings.LastIndex(authority, "@"); at >= 0 {
+		authority = authority[at+1:]
+	}
+	host := authority
+	if strings.HasPrefix(host, "[") {
+		if end := strings.Index(host, "]"); end >= 0 {
+			host = host[:end+1]
+		}
+	} else if h, _, ok := strings.Cut(host, ":"); ok {
+		host = h
+	}
+	host = strings.ToLower(host)
+	parts := strings.Split(strings.TrimLeft(path, "/"), "/")
+	if host == "" || len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", fmt.Errorf("remote %q: want HOST and OWNER/NAME", redactRemoteURL(remote))
+	}
+	if host == "github.com" {
+		return parts[0] + "/" + parts[1], nil
+	}
+	return host + "/" + parts[0] + "/" + parts[1], nil
+}
+
+// redactRemoteURL is remote with the part before its last `@` (the user and
+// a password or token) replaced by REDACTED; the scheme stays.
+func redactRemoteURL(remote string) string {
+	at := strings.LastIndex(remote, "@")
+	if at < 0 {
+		return remote
+	}
+	prefix := ""
+	if i := strings.Index(remote, "://"); i >= 0 && i < at {
+		prefix = remote[:i+3]
+	}
+	return prefix + "REDACTED" + remote[at:]
 }
 
 // remoteDir is the directory of the remote commands: the daemon's repository
@@ -581,8 +678,8 @@ type memoryGraphDoc struct {
 // loadMemoryGraph reads and parses .agent/knowledge/graph.json once for all
 // of the memory-doc guards below. Returns (nil, nil) when the file is
 // absent — a project without one has no drift gate to protect.
-func (g *GitOperations) loadMemoryGraph() (*memoryGraphDoc, error) {
-	raw, err := readMemoryGraphFile(filepath.Join(g.projectPath, graphJSONRelPath))
+func (g *GitOperations) loadMemoryGraph(ctx context.Context) (*memoryGraphDoc, error) {
+	raw, err := readMemoryGraphFile(ctx, filepath.Join(g.projectPath, graphJSONRelPath))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -597,20 +694,28 @@ func (g *GitOperations) loadMemoryGraph() (*memoryGraphDoc, error) {
 	return &graph, nil
 }
 
+// memoryGraphReadTimeout bounds one read of readMemoryGraphFile as the agent
+// user.
+const memoryGraphReadTimeout = 10 * time.Second
+
 // readMemoryGraphFile is os.ReadFile for the reads of the memory-doc guards.
 // TASK-651: with the option set and a path inside the workspace root the file
-// is read through agentReadFile, so a link the agent put at the path is
-// followed as the agent user, never as the daemon user. A read error there
-// gives the result of today for a missing file (an error that wraps
-// fs.ErrNotExist) and one Warn line.
-func readMemoryGraphFile(path string) ([]byte, error) {
+// is read through agentReadRegularFile, so a link the agent put at the path is
+// followed as the agent user, never as the daemon user; a path that is not a
+// regular file (a FIFO the agent put there) is refused, and the read has a
+// time limit of memoryGraphReadTimeout. A read error, a refusal or the time
+// limit there gives the result of today for a missing file (an error that
+// wraps fs.ErrNotExist) and one Warn line.
+func readMemoryGraphFile(ctx context.Context, path string) ([]byte, error) {
 	if runAsSettingsNow() == nil {
 		return os.ReadFile(path) // #nosec G304 -- the os call of today
 	}
 	if agent, err := agentFileRoute(path); err == nil && !agent {
 		return os.ReadFile(path) // #nosec G304 -- a path outside the workspace root
 	}
-	raw, err := agentReadFile(context.Background(), path)
+	readCtx, cancel := context.WithTimeout(ctx, memoryGraphReadTimeout)
+	defer cancel()
+	raw, err := agentReadRegularFile(readCtx, path)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			slog.Warn("memory-doc guard: read as the agent user failed, taken as a missing file",
@@ -624,7 +729,7 @@ func readMemoryGraphFile(path string) ([]byte, error) {
 // memoryGraphFileExists is the existence check of a memory doc that a
 // graph.json node names: os.Stat with the option empty or a path outside the
 // workspace root, readMemoryGraphFile otherwise.
-func memoryGraphFileExists(path string) bool {
+func memoryGraphFileExists(ctx context.Context, path string) bool {
 	if runAsSettingsNow() == nil {
 		_, err := os.Stat(path)
 		return err == nil
@@ -633,7 +738,7 @@ func memoryGraphFileExists(path string) bool {
 		_, err := os.Stat(path)
 		return err == nil
 	}
-	_, err := readMemoryGraphFile(path)
+	_, err := readMemoryGraphFile(ctx, path)
 	return err == nil
 }
 
@@ -736,8 +841,8 @@ func (g *GitOperations) addedMemoryDocs(ctx context.Context, baseBranch string) 
 // tried both as root-relative and as relative to .agent/knowledge/, keeping
 // whichever candidate exists on disk. Returns (nil, nil) when graph.json is
 // absent — a project without the file has no drift gate to protect.
-func (g *GitOperations) indexedMemoryPaths() (map[string]bool, error) {
-	graph, err := g.loadMemoryGraph()
+func (g *GitOperations) indexedMemoryPaths(ctx context.Context) (map[string]bool, error) {
+	graph, err := g.loadMemoryGraph(ctx)
 	if err != nil || graph == nil {
 		return nil, err
 	}
@@ -756,7 +861,7 @@ func (g *GitOperations) indexedMemoryPaths() (map[string]bool, error) {
 				filepath.Join(g.projectPath, rawPath),
 				filepath.Join(g.projectPath, ".agent", "knowledge", rawPath),
 			} {
-				if !memoryGraphFileExists(candidate) {
+				if !memoryGraphFileExists(ctx, candidate) {
 					continue
 				}
 				if rel, relErr := filepath.Rel(g.projectPath, candidate); relErr == nil {
@@ -804,7 +909,7 @@ func (g *GitOperations) StripUnindexedMemoryDocs(ctx context.Context, baseBranch
 		return nil, err
 	}
 
-	graph, err := g.loadMemoryGraph()
+	graph, err := g.loadMemoryGraph(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -813,7 +918,7 @@ func (g *GitOperations) StripUnindexedMemoryDocs(ctx context.Context, baseBranch
 		return nil, nil
 	}
 
-	indexed, err := g.indexedMemoryPaths()
+	indexed, err := g.indexedMemoryPaths(ctx)
 	if err != nil {
 		return nil, err
 	}

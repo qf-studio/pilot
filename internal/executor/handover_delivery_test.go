@@ -281,7 +281,7 @@ func TestHandOverMemoryGraphReadsAsTheAgentUser(t *testing.T) {
 	e := newHandOverPushEnv(t)
 	writeWorkspaceGraph(t, e.ws)
 
-	indexed, err := e.git.indexedMemoryPaths()
+	indexed, err := e.git.indexedMemoryPaths(context.Background())
 	if err != nil {
 		t.Fatalf("indexedMemoryPaths: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestHandOverMemoryGraphReadErrorIsAMissingFile(t *testing.T) {
 	mockSudoAgent(t, "graph.json", "")
 	logs := captureLog(t)
 
-	graph, err := e.git.loadMemoryGraph()
+	graph, err := e.git.loadMemoryGraph(context.Background())
 	if graph != nil || err != nil {
 		t.Fatalf("loadMemoryGraph with a failed read = %v, %v; want nil, nil (a missing file)", graph, err)
 	}

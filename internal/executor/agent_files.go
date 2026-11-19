@@ -51,6 +51,9 @@ const (
 const (
 	// $1 path. Standard output is the content.
 	agentReadScript = `[ -e "$1" ] || exit 3; exec cat -- "$1"`
+	// $1 path. As agentReadScript; a path that is not a regular file (a
+	// FIFO, a device, a directory) is refused with exit 4.
+	agentReadRegularScript = `[ -e "$1" ] || exit 3; [ -f "$1" ] || { echo "not a regular file" >&2; exit 4; }; exec cat -- "$1"`
 	// $1 path, $2 umask, $3 mode. Standard input is the content: create or
 	// truncate, as os.WriteFile (the mode of an existing file stays). A new
 	// file is created under the umask (no bit beyond the mode) and gets the
@@ -224,6 +227,21 @@ func agentReadFile(ctx context.Context, path string) ([]byte, error) {
 		return os.ReadFile(path) // #nosec G304 -- the os call of today; workspace paths take the agent route.
 	}
 	return runAgentFileScript(ctx, "read", path, agentReadScript, nil, path)
+}
+
+// agentReadRegularFile is agentReadFile for a path that must be a regular
+// file: as the agent user the test of the file type and the read are one
+// command, and a FIFO or a device at the path is an error, never a read that
+// waits for a writer. Outside the workspace root it is os.ReadFile.
+func agentReadRegularFile(ctx context.Context, path string) ([]byte, error) {
+	agent, err := agentFileRoute(path)
+	if err != nil {
+		return nil, err
+	}
+	if !agent {
+		return os.ReadFile(path) // #nosec G304 -- the os call of today; workspace paths take the agent route.
+	}
+	return runAgentFileScript(ctx, "read", path, agentReadRegularScript, nil, path)
 }
 
 // agentMkdirAll is os.MkdirAll(path, mode), as the agent user for a path
