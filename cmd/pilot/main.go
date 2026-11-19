@@ -161,7 +161,8 @@ func mintGitHubAppToken(ctx context.Context, appCfg *github.AppConfig) (string, 
 // workspace, since the agent controls the workspace. The provider accepts
 // only "OWNER/NAME" equal (letter case ignored) to adapters.github.repo or to
 // the owner/repo of a project of the config; any other value is an error and
-// no request to GitHub.
+// no request to GitHub. The owner and the name sent on are those of the config
+// entry that matched, not the text of the argument.
 func agentReadTokenProvider(cfg *config.Config) executor.AgentReadTokenProvider {
 	if cfg == nil || cfg.Adapters == nil || cfg.Adapters.GitHub == nil || cfg.Adapters.GitHub.App == nil {
 		return nil
@@ -173,14 +174,19 @@ func agentReadTokenProvider(cfg *config.Config) executor.AgentReadTokenProvider 
 		if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
 			return "", time.Time{}, fmt.Errorf("agent read token: repository %q is not \"OWNER/NAME\"", repo)
 		}
-		if !containsFold(configured, repo) {
+		entry, ok := findFold(configured, repo)
+		if !ok {
 			return "", time.Time{}, fmt.Errorf("agent read token: repository %q is not a repository of the GitHub config", repo)
+		}
+		owner, name, ok = strings.Cut(entry, "/")
+		if !ok || strings.Contains(name, "/") {
+			return "", time.Time{}, fmt.Errorf("agent read token: config repository %q is not \"OWNER/NAME\"", entry)
 		}
 		source, err := ghAppTokenCache.get(appCfg)
 		if err != nil {
 			return "", time.Time{}, err
 		}
-		return source.ScopedToken(ctx, name, github.ReadOnlyPermissions())
+		return source.ScopedToken(ctx, owner, name, github.ReadOnlyPermissions())
 	}
 }
 
@@ -200,14 +206,14 @@ func configuredGitHubRepos(cfg *config.Config) []string {
 	return repos
 }
 
-// containsFold reports whether list holds s, letter case ignored.
-func containsFold(list []string, s string) bool {
+// findFold returns the entry of list equal to s, letter case ignored.
+func findFold(list []string, s string) (string, bool) {
 	for _, v := range list {
 		if strings.EqualFold(v, s) {
-			return true
+			return v, true
 		}
 	}
-	return false
+	return "", false
 }
 
 // ghCLITokenCache memoizes the `gh auth token` fallback lookup for the process
