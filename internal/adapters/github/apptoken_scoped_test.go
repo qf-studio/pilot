@@ -28,11 +28,20 @@ func scopedTokenServer(t *testing.T, calls *int64, bodies chan<- []byte) *httpte
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(mintResponse{
-			Token:     "test-scoped-read-token",
-			ExpiresAt: time.Now().Add(time.Hour).Truncate(time.Second),
-		})
+		_ = json.NewEncoder(w).Encode(scopedAnswer("pilot"))
 	}))
+}
+
+// scopedAnswer is a well-formed answer of GitHub to a scoped mint for the
+// repository name.
+func scopedAnswer(name string) mintResponse {
+	return mintResponse{
+		Token:               "test-scoped-read-token",
+		ExpiresAt:           time.Now().Add(time.Hour).Truncate(time.Second),
+		Permissions:         ReadOnlyPermissions(),
+		RepositorySelection: "selected",
+		Repositories:        []mintRepository{{Name: name}},
+	}
 }
 
 func TestMintScopedBodyHasReposAndReadPermissions(t *testing.T) {
@@ -46,7 +55,7 @@ func TestMintScopedBodyHasReposAndReadPermissions(t *testing.T) {
 		t.Fatalf("NewTokenSourceWithBaseURL() error = %v", err)
 	}
 
-	token, expires, err := ts.ScopedToken(context.Background(), "qf-studio/pilot", ReadOnlyPermissions())
+	token, expires, err := ts.ScopedToken(context.Background(), "pilot", ReadOnlyPermissions())
 	if err != nil {
 		t.Fatalf("ScopedToken() error = %v", err)
 	}
@@ -85,18 +94,28 @@ func TestScopedToken_RefusesNonReadWithoutRequest(t *testing.T) {
 
 	writePerms := ReadOnlyPermissions()
 	writePerms["contents"] = "write"
+	extraKey := ReadOnlyPermissions()
+	extraKey["administration"] = "read"
 	cases := map[string]struct {
 		repo  string
 		perms map[string]string
 	}{
-		"contents write":  {"qf-studio/pilot", writePerms},
-		"admin":           {"qf-studio/pilot", map[string]string{"administration": "admin"}},
-		"empty level":     {"qf-studio/pilot", map[string]string{"issues": ""}},
-		"no permissions":  {"qf-studio/pilot", map[string]string{}},
-		"nil permissions": {"qf-studio/pilot", nil},
-		"empty repo":      {"", ReadOnlyPermissions()},
-		"owner only":      {"qf-studio/", ReadOnlyPermissions()},
-		"nested path":     {"a/b/c", ReadOnlyPermissions()},
+		"contents write":         {"pilot", writePerms},
+		"admin":                  {"pilot", map[string]string{"administration": "admin"}},
+		"key outside the four":   {"pilot", map[string]string{"administration": "read"}},
+		"extra key next to four": {"pilot", extraKey},
+		"empty level":            {"pilot", map[string]string{"issues": ""}},
+		"no permissions":         {"pilot", map[string]string{}},
+		"nil permissions":        {"pilot", nil},
+		"empty repo":             {"", ReadOnlyPermissions()},
+		"owner and name":         {"qf-studio/pilot", ReadOnlyPermissions()},
+		"owner only":             {"qf-studio/", ReadOnlyPermissions()},
+		"leading slash":          {"/pilot", ReadOnlyPermissions()},
+		"nested path":            {"a/b/c", ReadOnlyPermissions()},
+		"space":                  {" pilot", ReadOnlyPermissions()},
+		"query character":        {"pilot?x=1", ReadOnlyPermissions()},
+		"non-ascii letter":       {"pilоt", ReadOnlyPermissions()},
+		"backslash":              {`qf-studio\pilot`, ReadOnlyPermissions()},
 	}
 	for name, tc := range cases {
 		token, _, err := ts.ScopedToken(context.Background(), tc.repo, tc.perms)
@@ -188,5 +207,111 @@ func TestScopedToken_DoesNotTouchFullTokenCache(t *testing.T) {
 	}
 	if n := atomic.LoadInt64(&fullMints); n != 1 {
 		t.Errorf("full mints = %d, want 1 (the scoped call must not re-mint or clear the full token)", n)
+	}
+}
+
+// TestScopedToken_RefusesBadAnswer: an answer of GitHub that is wider or
+// weaker than the read token for one repository is an error and no token.
+func TestScopedToken_RefusesBadAnswer(t *testing.T) {
+	writeAnswer := func(status int, v any) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(v)
+		}
+	}
+	answer := func(edit func(*mintResponse)) http.HandlerFunc {
+		a := scopedAnswer("pilot")
+		edit(&a)
+		return writeAnswer(http.StatusCreated, a)
+	}
+
+	var redirectTargetHits int64
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&redirectTargetHits, 1)
+		writeAnswer(http.StatusCreated, scopedAnswer("pilot"))(w, r)
+	}))
+	defer redirectTarget.Close()
+
+	cases := map[string]http.HandlerFunc{
+		"contents write": answer(func(a *mintResponse) { a.Permissions["contents"] = "write" }),
+		"extra admin permission": answer(func(a *mintResponse) {
+			a.Permissions["administration"] = "admin"
+		}),
+		"no permissions":           answer(func(a *mintResponse) { a.Permissions = nil }),
+		"repository_selection all": answer(func(a *mintResponse) { a.RepositorySelection = "all" }),
+		"no repository_selection":  answer(func(a *mintResponse) { a.RepositorySelection = "" }),
+		"two repositories":         answer(func(a *mintResponse) { a.Repositories = append(a.Repositories, mintRepository{Name: "other"}) }),
+		"no repositories":          answer(func(a *mintResponse) { a.Repositories = nil }),
+		"other repository name":    answer(func(a *mintResponse) { a.Repositories = []mintRepository{{Name: "other"}} }),
+		"expiry in the past":       answer(func(a *mintResponse) { a.ExpiresAt = time.Now().Add(-time.Minute) }),
+		"zero expiry":              answer(func(a *mintResponse) { a.ExpiresAt = time.Time{} }),
+		"token of spaces":          answer(func(a *mintResponse) { a.Token = "   " }),
+		"redirect": func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, redirectTarget.URL+r.URL.Path, http.StatusTemporaryRedirect)
+		},
+	}
+	for name, handler := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(handler)
+			defer server.Close()
+			ts, err := NewTokenSourceWithBaseURL(testAppConfig(t), server.URL)
+			if err != nil {
+				t.Fatalf("NewTokenSourceWithBaseURL() error = %v", err)
+			}
+			token, expires, err := ts.ScopedToken(context.Background(), "pilot", ReadOnlyPermissions())
+			if err == nil {
+				t.Fatal("ScopedToken() = nil error, want a refusal of the answer")
+			}
+			if token != "" || !expires.IsZero() {
+				t.Errorf("ScopedToken() = (%q, %v), want no token and a zero expiry", token, expires)
+			}
+			if strings.Contains(err.Error(), "test-scoped-read-token") {
+				t.Errorf("error %q carries the token", err)
+			}
+		})
+	}
+	if n := atomic.LoadInt64(&redirectTargetHits); n != 0 {
+		t.Errorf("redirect target got %d requests, want 0 (no redirect is followed)", n)
+	}
+}
+
+// TestScopedToken_AnswerNameCaseIgnored: GitHub answers with the canonical
+// case of the name; a request in another case is still the same repository.
+func TestScopedToken_AnswerNameCaseIgnored(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(scopedAnswer("Pilot"))
+	}))
+	defer server.Close()
+	ts, err := NewTokenSourceWithBaseURL(testAppConfig(t), server.URL)
+	if err != nil {
+		t.Fatalf("NewTokenSourceWithBaseURL() error = %v", err)
+	}
+	if _, _, err := ts.ScopedToken(context.Background(), "pilot", ReadOnlyPermissions()); err != nil {
+		t.Errorf("ScopedToken() error = %v, want the token for the same name in another case", err)
+	}
+}
+
+// TestScopedToken_ErrorMessageCut: GitHub's error message is cut to
+// mintErrorMessageMax characters in the error.
+func TestScopedToken_ErrorMessageCut(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": long})
+	}))
+	defer server.Close()
+	ts, err := NewTokenSourceWithBaseURL(testAppConfig(t), server.URL)
+	if err != nil {
+		t.Fatalf("NewTokenSourceWithBaseURL() error = %v", err)
+	}
+	_, _, err = ts.ScopedToken(context.Background(), "pilot", ReadOnlyPermissions())
+	if err == nil {
+		t.Fatal("ScopedToken() = nil error, want the HTTP error")
+	}
+	if !strings.Contains(err.Error(), strings.Repeat("x", mintErrorMessageMax)) || strings.Contains(err.Error(), strings.Repeat("x", mintErrorMessageMax+1)) {
+		t.Errorf("error has %d bytes, want GitHub's message cut to %d characters", len(err.Error()), mintErrorMessageMax)
 	}
 }
