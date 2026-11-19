@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -10,11 +11,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -281,17 +284,43 @@ type mintResponse struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// mint requests a fresh installation access token from GitHub.
+// mint requests a fresh installation access token from GitHub. The request
+// has no body, so the token carries every permission of the installation for
+// every repository of it.
 func (ts *TokenSource) mint(ctx context.Context) (string, time.Time, error) {
+	return ts.postAccessToken(ctx, nil)
+}
+
+// mintStatusError is a non-201 answer of the access token endpoint. body is
+// the response text with the App JWT already masked.
+type mintStatusError struct {
+	status int
+	body   string
+}
+
+func (e *mintStatusError) Error() string {
+	return fmt.Sprintf("minting installation token: status %d: %s", e.status, e.body)
+}
+
+// postAccessToken posts payload (nil for no body) to the access token
+// endpoint of the installation and returns the token GitHub answers with.
+func (ts *TokenSource) postAccessToken(ctx context.Context, payload []byte) (string, time.Time, error) {
 	appJWT, err := ts.signAppJWT()
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("signing github app JWT: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", ts.baseURL, ts.installationID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("building installation token request: %w", err)
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Authorization", "Bearer "+appJWT)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -305,7 +334,7 @@ func (ts *TokenSource) mint(ctx context.Context) (string, time.Time, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("reading installation token response: %w", err)
 	}
@@ -314,17 +343,99 @@ func (ts *TokenSource) mint(ctx context.Context) (string, time.Time, error) {
 		// GitHub's own error bodies are JSON messages ("Bad credentials"
 		// etc.), but a proxy or an intercepting server can echo the request
 		// back, so the JWT is masked rather than assumed absent.
-		return "", time.Time{}, fmt.Errorf("minting installation token: status %d: %s", resp.StatusCode, redact.Text(string(body), appJWT))
+		return "", time.Time{}, &mintStatusError{status: resp.StatusCode, body: redact.Text(string(respBody), appJWT)}
 	}
 
 	var parsed mintResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return "", time.Time{}, fmt.Errorf("parsing installation token response: %w", err)
 	}
 	if parsed.Token == "" {
 		return "", time.Time{}, fmt.Errorf("installation token response had no token field")
 	}
 	return parsed.Token, parsed.ExpiresAt, nil
+}
+
+// permissionRead is the one permission level ScopedToken mints.
+const permissionRead = "read"
+
+// ReadOnlyPermissions is the permission set of a read token for one
+// repository: the agent of a run can read the code, the issues and the pull
+// requests, and nothing else (TASK-651). Each call returns a new map.
+func ReadOnlyPermissions() map[string]string {
+	return map[string]string{
+		"contents":      permissionRead,
+		"issues":        permissionRead,
+		"pull_requests": permissionRead,
+		"metadata":      permissionRead,
+	}
+}
+
+// scopedMintRequest is the body of POST /app/installations/{id}/access_tokens
+// that narrows the token to the named repositories and permissions. See:
+// https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app
+type scopedMintRequest struct {
+	Repositories []string          `json:"repositories"`
+	Permissions  map[string]string `json:"permissions"`
+}
+
+// ScopedToken mints an installation token that can only read repo, with the
+// permissions in perms. repo is "name" or "owner/name"; only the name goes to
+// GitHub, since the installation already fixes the owner. Each value of perms
+// must be "read" and perms must not be empty — an empty set would let GitHub
+// grant every permission of the installation — or ScopedToken returns an
+// error without a request.
+//
+// Decision: the scoped token bypasses the cache, the single-flight mint and
+// the failure backoff of Token. Those exist for the one shared full token;
+// a scoped token belongs to one caller and one repository, and storing it in
+// ts.token would hand a read-only token to each caller of Token.
+func (ts *TokenSource) ScopedToken(ctx context.Context, repo string, perms map[string]string) (string, time.Time, error) {
+	name := strings.TrimSpace(repo)
+	if i := strings.Index(name, "/"); i >= 0 {
+		name = name[i+1:]
+	}
+	if name == "" || strings.Contains(name, "/") {
+		return "", time.Time{}, fmt.Errorf("scoped installation token: repository %q is not \"name\" or \"owner/name\"", repo)
+	}
+	if len(perms) == 0 {
+		return "", time.Time{}, errors.New("scoped installation token: no permissions given")
+	}
+	for perm, level := range perms {
+		if level != permissionRead {
+			return "", time.Time{}, fmt.Errorf("scoped installation token: permission %s=%q refused, only %q is allowed", perm, level, permissionRead)
+		}
+	}
+
+	payload, err := json.Marshal(scopedMintRequest{Repositories: []string{name}, Permissions: perms})
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("encoding scoped installation token request: %w", err)
+	}
+
+	token, expiresAt, err := ts.postAccessToken(ctx, payload)
+	if err != nil {
+		// The error text of the full mint keeps the response body; here only
+		// the status and GitHub's message field are kept, so a body that
+		// carries a token never reaches a caller's log.
+		var statusErr *mintStatusError
+		if errors.As(err, &statusErr) {
+			return "", time.Time{}, fmt.Errorf("minting scoped installation token for %s: status %d%s", name, statusErr.status, mintErrorMessage(statusErr.body))
+		}
+		return "", time.Time{}, fmt.Errorf("minting scoped installation token for %s: %w", name, err)
+	}
+	return token, expiresAt, nil
+}
+
+// mintErrorMessage returns ": <message>" for a JSON error body of GitHub
+// with a message field, or "" for any other body.
+func mintErrorMessage(body string) string {
+	var parsed struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil || parsed.Message == "" {
+		return ""
+	}
+	return ": " + parsed.Message
 }
 
 // signAppJWT builds and RS256-signs the App-level JWT GitHub requires to
