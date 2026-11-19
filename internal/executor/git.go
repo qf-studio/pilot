@@ -81,17 +81,18 @@ type GitOperations struct {
 	workspace *agentWorkspaceRecord
 
 	handOverMu sync.Mutex
-	// handOverSHA is the head that the last push attempt published: cleared
-	// at the start of each attempt, set only after its push succeeded, so a
-	// refused gate or a failed hand-over or push leaves it empty.
-	handOverSHA string
 	// attemptSHA is the hand-over SHA of the current push attempt: cleared at
 	// its start, set after its hand-over. A failed push is compared with it,
 	// never with the HEAD of the workspace (pushFailureForgivenHead).
 	attemptSHA string
-	// publishedSHA is the head that the last successful push published; a
-	// failed attempt keeps it. The count of new commits reads it.
-	publishedSHA string
+	// attemptBranch is the branch of the current (or last) push attempt, set
+	// at its start; "" before the first attempt of g.
+	attemptBranch string
+	// publishedSHA is the head that the last published push (a success or a
+	// forgiven failure, recordPublishedHandOver) put on publishedBranch; a
+	// failed attempt keeps both. The count of new commits reads them.
+	publishedSHA    string
+	publishedBranch string
 }
 
 // NewGitOperations creates new git operations for a project
@@ -160,10 +161,46 @@ func (g *GitOperations) remoteDir() string {
 	return g.projectPath
 }
 
-func (g *GitOperations) lastHandOverSHA() string {
+// beginHandOverAttempt starts a push attempt of branch for an agent
+// workspace: the attempt SHA is cleared before any step that can fail, so a
+// failed attempt is never compared with the SHA of an earlier one, and the
+// workspace record says "not pushed" until this attempt is published.
+func (g *GitOperations) beginHandOverAttempt(branch string) {
+	g.handOverMu.Lock()
+	g.attemptSHA, g.attemptBranch = "", strings.TrimPrefix(branch, "refs/heads/")
+	g.handOverMu.Unlock()
+	if g.workspace != nil {
+		g.workspace.setHandOver("", false)
+	}
+}
+
+// recordPublishedHandOver records that the remote branch holds sha, the
+// hand-over SHA of this attempt: the published SHA and its branch, and the
+// workspace record as pushed. The success path of pushHandOver and the
+// forgiveness of a failed push (acceptForgivenPush) both call it.
+func (g *GitOperations) recordPublishedHandOver(sha, branch string) {
+	g.handOverMu.Lock()
+	g.publishedSHA, g.publishedBranch = sha, strings.TrimPrefix(branch, "refs/heads/")
+	g.handOverMu.Unlock()
+	if g.workspace != nil {
+		g.workspace.setHandOver(sha, true)
+	}
+}
+
+// countHandOverSHA is the head the count of new commits of an agent
+// workspace reads: the published SHA when it was recorded for the branch of
+// the current attempt, "" when nothing is published for that branch.
+// attempted is false before the first push attempt of g.
+func (g *GitOperations) countHandOverSHA() (sha string, attempted bool) {
 	g.handOverMu.Lock()
 	defer g.handOverMu.Unlock()
-	return g.handOverSHA
+	if g.attemptBranch == "" {
+		return "", false
+	}
+	if g.publishedBranch != g.attemptBranch {
+		return "", true
+	}
+	return g.publishedSHA, true
 }
 
 // attemptHandOverSHA is the hand-over SHA of the current (or last) push
@@ -174,8 +211,8 @@ func (g *GitOperations) attemptHandOverSHA() string {
 	return g.attemptSHA
 }
 
-// publishedHandOverSHA is the head that the last successful hand-over push
-// published, "" when none succeeded.
+// publishedHandOverSHA is the head that the last published hand-over push
+// put on the remote (recordPublishedHandOver), "" when none was published.
 func (g *GitOperations) publishedHandOverSHA() string {
 	g.handOverMu.Lock()
 	defer g.handOverMu.Unlock()
@@ -1425,6 +1462,9 @@ func PushArgs(options ...string) []string { return pushArgs(options...) }
 // GH-5719): belt and braces for backends that ignore includeCoAuthoredBy.
 // Covers every push call site. taskID is only used to name the task in logs.
 func (g *GitOperations) Push(ctx context.Context, branchName, taskID string) error {
+	if g.daemonRepo != "" {
+		g.beginHandOverAttempt(branchName)
+	}
 	g.stripCoAuthorBeforePush(ctx, branchName, taskID)
 	if g.daemonRepo != "" {
 		return g.pushHandOver(ctx, branchName, "", taskID)
@@ -1447,6 +1487,9 @@ func (g *GitOperations) Push(ctx context.Context, branchName, taskID string) err
 // without clobbering anything that landed on the branch since the footer SHA
 // was recorded. A plain --force is never used.
 func (g *GitOperations) PushForceWithLease(ctx context.Context, branchName, expectedRemoteSHA, taskID string) error {
+	if g.daemonRepo != "" {
+		g.beginHandOverAttempt(branchName)
+	}
 	g.stripCoAuthorBeforePush(ctx, branchName, taskID)
 	if g.daemonRepo != "" {
 		return g.pushHandOver(ctx, branchName, expectedRemoteSHA, taskID)
@@ -1462,6 +1505,23 @@ func (g *GitOperations) PushForceWithLease(ctx context.Context, branchName, expe
 		return fmt.Errorf("failed to push with lease: %w: %s", err, output)
 	}
 	return nil
+}
+
+// HandOverError is the error of a failed hand-over of a push of an agent
+// workspace (TASK-651): the branch was not taken over into the daemon's
+// repository, so this attempt published nothing. A hand-over error is never
+// forgiven (pushNeverForgiven), whatever the remote holds: another attempt
+// (a concurrent Push of the same GitOperations) may have put its own head
+// there. It wraps the cause; IsPushNothingNew sees through it.
+type HandOverError struct{ Err error }
+
+func (e *HandOverError) Error() string { return e.Err.Error() }
+func (e *HandOverError) Unwrap() error { return e.Err }
+
+// IsHandOverError reports whether err is the error of a failed hand-over.
+func IsHandOverError(err error) bool {
+	var h *HandOverError
+	return errors.As(err, &h)
 }
 
 // IsPushNothingNew reports whether err is the result of a hand-over push of a
@@ -1489,19 +1549,14 @@ var handOverBeforeGate = func(daemonRepo, taskID string) {}
 // failed hand-over (a branch with no commit above the base satisfies
 // IsPushNothingNew) or a gate stop returns before the push.
 //
-// The attempt clears the hand-over SHAs of g first; attemptSHA is set after
-// the hand-over, handOverSHA and publishedSHA only after the push succeeded.
+// The caller started the attempt (beginHandOverAttempt); attemptSHA is set
+// after the hand-over, the published SHA only after the push succeeded
+// (recordPublishedHandOver). A hand-over error is a HandOverError.
 func (g *GitOperations) pushHandOver(ctx context.Context, branchName, expectedRemoteSHA, taskID string) error {
 	branch := strings.TrimPrefix(branchName, "refs/heads/")
-	g.handOverMu.Lock()
-	g.handOverSHA, g.attemptSHA = "", ""
-	g.handOverMu.Unlock()
-	if g.workspace != nil {
-		g.workspace.setHandOver("", false)
-	}
 	sha, err := handOverBranch(ctx, g.projectPath, g.daemonRepo, taskID, branch, g.handOverBase)
 	if err != nil {
-		return err
+		return &HandOverError{Err: err}
 	}
 	g.handOverMu.Lock()
 	g.attemptSHA = sha
@@ -1528,12 +1583,7 @@ func (g *GitOperations) pushHandOver(ctx context.Context, branchName, expectedRe
 	if err != nil {
 		return fmt.Errorf("%s: %w: %s", what, err, output)
 	}
-	g.handOverMu.Lock()
-	g.handOverSHA, g.publishedSHA = sha, sha
-	g.handOverMu.Unlock()
-	if g.workspace != nil {
-		g.workspace.setHandOver(sha, true)
-	}
+	g.recordPublishedHandOver(sha, branch)
 	g.warnPushedCoAuthor(ctx, branch, sha, taskID)
 	return nil
 }
@@ -1927,21 +1977,32 @@ func parseNewCommitCount(cmd *exec.Cmd) (int, error) {
 // behavior in that environment.
 //
 // TASK-651: for an agent workspace the fetch runs in the daemon's repository,
-// and after a successful hand-over push the count is of the head that push
-// published (publishedHandOverSHA) there, so a refused or failed later attempt
-// counts no commit that never left the machine. Before one, it counts in the
-// workspace, whose origin/<baseBranch> is the base commit. The fetch runs
-// with hooks off (remoteGitCmd); the fetch and the count in the daemon's
-// repository get the environment of daemonGitEnv.
+// and once g made a push attempt the count is of the head published for the
+// branch of that attempt (countHandOverSHA) there, and 0 when nothing is
+// published for it: a refused or failed attempt counts no commit that never
+// left the machine, and the head of another branch is not counted. Before
+// the first attempt it counts in the workspace, whose origin/<baseBranch> is
+// the base commit. Decision: the guards before the push (the no-commits guard
+// of the PR path, the epic guard, the timeout salvage) count before any
+// attempt; a 0 there would end every run before its push. That count only
+// lets the push run, and the hand-over decides what it publishes
+// (IsPushNothingNew). The fetch runs with hooks off (remoteGitCmd); the fetch
+// and the count in the daemon's repository get the environment of
+// daemonGitEnv.
 func (g *GitOperations) CountNewCommitsAgainstOrigin(ctx context.Context, baseBranch string) (int, error) {
 	fetchCmd := g.remoteGitCmd(ctx, "fetch", "origin", baseBranch)
 	_ = fetchCmd.Run() // best-effort; fall back to the existing tracking ref on failure
 
-	if sha := g.publishedHandOverSHA(); g.daemonRepo != "" && sha != "" {
-		if count, err := g.daemonCountNewCommits(ctx, "origin/"+baseBranch, sha); err == nil {
-			return count, nil
+	if g.daemonRepo != "" {
+		if sha, attempted := g.countHandOverSHA(); attempted {
+			if sha == "" {
+				return 0, nil
+			}
+			if count, err := g.daemonCountNewCommits(ctx, "origin/"+baseBranch, sha); err == nil {
+				return count, nil
+			}
+			return g.daemonCountNewCommits(ctx, baseBranch, sha)
 		}
-		return g.daemonCountNewCommits(ctx, baseBranch, sha)
 	}
 
 	if count, err := g.CountNewCommits(ctx, "origin/"+baseBranch); err == nil {

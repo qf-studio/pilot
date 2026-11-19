@@ -307,13 +307,31 @@ func checkSecretGateTip(ctx context.Context, dir, tip, head, taskID string) erro
 // outcome, and the error text carries no "push failed" infra signature.
 const pushRefusedMarker = "push refused"
 
-// pushNeverForgiven reports whether a failed Push stopped at the secret gate:
-// the gate refused the commits (GH-6272) or could not run (the caller must not
-// push either). The commits did not leave the machine, so no remote state
-// excuses the failure, and retrying a refusal changes nothing. The one place
-// that classifies a push error as a gate stop; every push site goes through it.
-func pushNeverForgiven(err error) bool {
+// pushGateStop reports whether a failed Push stopped at the secret gate: the
+// gate refused the commits (GH-6272) or could not run (the caller must not
+// push either). The one place that classifies a push error as a gate stop.
+func pushGateStop(err error) bool {
 	return IsPushRefused(err) || IsSecretGateUnavailable(err)
+}
+
+// pushNeverForgiven reports whether a failed Push may never be forgiven: a
+// gate stop (pushGateStop) — the commits did not leave the machine, so no
+// remote state excuses the failure, and retrying a refusal changes nothing —
+// or, TASK-651, a failed hand-over (HandOverError): the attempt handed nothing
+// over, so the remote head is never its own. Every push site goes through it.
+func pushNeverForgiven(err error) bool {
+	return pushGateStop(err) || IsHandOverError(err)
+}
+
+// acceptForgivenPush records a forgiven failed Push of branch whose remote
+// head is head: for an agent workspace (TASK-651) the push is recorded as
+// published (recordPublishedHandOver), as a push that succeeded is, so the
+// count of new commits and the clean-up of the workspace see it. Nothing to
+// record with the option empty. Every forgiveness goes through it.
+func acceptForgivenPush(git *GitOperations, branch, head string) {
+	if git.daemonRepo != "" {
+		git.recordPublishedHandOver(head, branch)
+	}
 }
 
 // pushFailureForgiven reports whether a failed Push of branch may be ignored
@@ -337,7 +355,11 @@ func pushFailureForgiven(ctx context.Context, git *GitOperations, branch string,
 		return false
 	}
 	remote, remoteOK := git.RemoteBranchHead(ctx, branch)
-	return remoteOK && remote == want
+	if !remoteOK || remote != want {
+		return false
+	}
+	acceptForgivenPush(git, branch, want)
+	return true
 }
 
 // pushFailureForgivenHead is the head the remote branch must hold for a failed
@@ -348,8 +370,8 @@ func pushFailureForgiven(ctx context.Context, git *GitOperations, branch string,
 // workspace: the agent can make the hand-over fail (it deletes its branch
 // ref) and leave HEAD on the remote head, and the run would go on to the PR
 // for a head this attempt never handed over. A failed hand-over leaves the
-// attempt without a hand-over SHA (pushHandOver clears it first), so a
-// hand-over error is never forgiven.
+// attempt without a hand-over SHA (beginHandOverAttempt clears it first), and
+// its error is a HandOverError, never forgiven (pushNeverForgiven).
 func pushFailureForgivenHead(git *GitOperations, localHead string, localErr error) (string, bool) {
 	if git.daemonRepo == "" {
 		return localHead, localErr == nil && localHead != ""

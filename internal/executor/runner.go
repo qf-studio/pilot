@@ -3581,6 +3581,8 @@ func (r *Runner) pushBranchCounting(ctx context.Context, git *GitOperations, tas
 		if pushNeverForgiven(pushErr) {
 			// GH-6263: the secret gate refused the commits or could not run;
 			// retrying, or forgiving the failure, would publish them another way.
+			// TASK-651: a failed hand-over published nothing; the remote head
+			// is never its own.
 			return pushErr
 		}
 		if IsPushNothingNew(pushErr) {
@@ -3600,6 +3602,7 @@ func (r *Runner) pushBranchCounting(ctx context.Context, git *GitOperations, tas
 				slog.String("branch", task.Branch),
 				slog.String("head", forgiveHead),
 			)
+			acceptForgivenPush(git, task.Branch, forgiveHead)
 			return nil
 		}
 		if isNonFastForwardPush(pushErr) {
@@ -3629,7 +3632,7 @@ func (r *Runner) pushBranchCounting(ctx context.Context, git *GitOperations, tas
 				if replaced {
 					return nil
 				}
-				if pushNeverForgiven(leaseErr) {
+				if pushGateStop(leaseErr) {
 					// GH-6284: the gate stopped the lease push; escalating as a
 					// non-fast-forward would hide that.
 					return leaseErr
@@ -3673,12 +3676,13 @@ func (r *Runner) pushBranchCounting(ctx context.Context, git *GitOperations, tas
 	return pushErr
 }
 
-// pushedHead is the head a successful Push of git published: the hand-over
-// SHA of that push for an agent workspace (TASK-651), never the HEAD of the
-// workspace, which the agent chose; localHead (from LocalHead) otherwise.
+// pushedHead is the head a successful Push of git published: the published
+// hand-over SHA for an agent workspace (TASK-651, publishedHandOverSHA), never
+// the HEAD of the workspace, which the agent chose; localHead (from LocalHead)
+// otherwise. The two lease pushes of the push loop record it as pushedWIPSHA.
 func pushedHead(git *GitOperations, localHead string) string {
 	if git.daemonRepo != "" {
-		return git.lastHandOverSHA()
+		return git.publishedHandOverSHA()
 	}
 	return localHead
 }
@@ -3755,14 +3759,14 @@ func (r *Runner) leasePushInheritedHead(ctx context.Context, git *GitOperations,
 	if err := git.PushForceWithLease(ctx, task.Branch, task.inheritedHeadSHA, task.ID); err != nil {
 		log.Warn("Lease push over the inherited head failed — escalating",
 			slog.String("task_id", task.ID), slog.Any("error", err))
-		if pushNeverForgiven(err) {
+		if pushGateStop(err) {
 			return false, err
 		}
 		return false, nil
 	}
 	replaced := task.inheritedHeadSHA
 	task.inheritedHeadSHA = ""
-	task.pushedWIPSHA = localHead
+	task.pushedWIPSHA = pushedHead(git, localHead)
 	r.commentInheritedHeadReplaced(ctx, task, replaced, log)
 	return true, nil
 }
