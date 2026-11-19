@@ -356,10 +356,19 @@ func (r *Runner) postTitleRejectionEscalation(ctx context.Context, task *Task) e
 	return nil
 }
 
+// ghIssueComment comments on issueID. dir is resolved through
+// ghDirForExecutionPath (TASK-651): for an agent workspace on record the
+// command runs in the daemon's repository with its `--repo` argument; an
+// error of the resolve is the error here and no gh command runs.
 func ghIssueComment(ctx context.Context, dir, issueID, body string) error {
-	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "issue", "comment", issueID, "--body", secretpatterns.Redact(body)))
-	if dir != "" {
-		cmd.Dir = dir
+	ghDir, repoArgs, err := ghDirForExecutionPath(ctx, dir)
+	if err != nil {
+		return fmt.Errorf("gh issue comment: %w", err)
+	}
+	args := append([]string{"issue", "comment", issueID, "--body", secretpatterns.Redact(body)}, repoArgs...)
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
+	if ghDir != "" {
+		cmd.Dir = ghDir
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -369,8 +378,13 @@ func ghIssueComment(ctx context.Context, dir, issueID, body string) error {
 	return nil
 }
 
+// ghAddLabels adds labels to issueID; dir is resolved as in ghIssueComment.
 func ghAddLabels(ctx context.Context, dir, issueID string, labels []string) error {
-	return ghEditLabels(ctx, dir, issueID, labels, nil)
+	ghDir, repoArgs, err := ghDirForExecutionPath(ctx, dir)
+	if err != nil {
+		return fmt.Errorf("gh issue edit: %w", err)
+	}
+	return ghEditLabelsIn(ctx, ghDir, repoArgs, issueID, labels, nil)
 }
 
 // ghEditLabels adds and removes GitHub issue labels via a single `gh issue
@@ -386,8 +400,20 @@ func ghAddLabels(ctx context.Context, dir, issueID string, labels []string) erro
 // first surfacing call (e.g. stallTaskAfterRepickHardCap) failed outright on
 // every fresh repo. Pre-creating whatever labels this call is about to
 // reference sidesteps that without a separate onboarding step.
+//
+// dir is resolved as in ghIssueComment.
 func ghEditLabels(ctx context.Context, dir, issueID string, addLabels, removeLabels []string) error {
-	ghEnsureLabels(ctx, dir, append(append([]string{}, addLabels...), removeLabels...))
+	ghDir, repoArgs, err := ghDirForExecutionPath(ctx, dir)
+	if err != nil {
+		return fmt.Errorf("gh issue edit: %w", err)
+	}
+	return ghEditLabelsIn(ctx, ghDir, repoArgs, issueID, addLabels, removeLabels)
+}
+
+// ghEditLabelsIn is ghEditLabels with the directory and the repository
+// arguments of ghDirForExecutionPath, for each gh command it starts.
+func ghEditLabelsIn(ctx context.Context, dir string, repoArgs []string, issueID string, addLabels, removeLabels []string) error {
+	ghEnsureLabels(ctx, dir, repoArgs, append(append([]string{}, addLabels...), removeLabels...))
 
 	args := []string{"issue", "edit", issueID}
 	for _, l := range addLabels {
@@ -396,6 +422,7 @@ func ghEditLabels(ctx context.Context, dir, issueID string, addLabels, removeLab
 	for _, l := range removeLabels {
 		args = append(args, "--remove-label", l)
 	}
+	args = append(args, repoArgs...)
 	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 	if dir != "" {
 		cmd.Dir = dir
@@ -418,15 +445,17 @@ const pilotLabelColor = "ededed"
 // erroring when the label is already present, so repeat calls are no-ops.
 // Best-effort: a creation failure (e.g. missing repo permissions) is not
 // fatal here — the caller's own `gh issue edit` is the source of truth for
-// whether the edit itself ultimately succeeded.
-func ghEnsureLabels(ctx context.Context, dir string, labels []string) {
+// whether the edit itself ultimately succeeded. repoArgs (the `--repo`
+// argument of ghDirForExecutionPath, or none) go on each command.
+func ghEnsureLabels(ctx context.Context, dir string, repoArgs []string, labels []string) {
 	seen := make(map[string]bool, len(labels))
 	for _, l := range labels {
 		if l == "" || seen[l] {
 			continue
 		}
 		seen[l] = true
-		cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "label", "create", l, "--color", pilotLabelColor, "--force"))
+		args := append([]string{"label", "create", l, "--color", pilotLabelColor, "--force"}, repoArgs...)
+		cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
 		if dir != "" {
 			cmd.Dir = dir
 		}

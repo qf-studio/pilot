@@ -94,6 +94,10 @@ type GitOperations struct {
 	// failed attempt keeps both. The count of new commits reads them.
 	publishedSHA    string
 	publishedBranch string
+
+	// graphReads is the read budget of the graph reads of this delivery
+	// (readMemoryGraphFile).
+	graphReads memoryGraphReads
 }
 
 // NewGitOperations creates new git operations for a project
@@ -683,7 +687,7 @@ type memoryGraphDoc struct {
 // of the memory-doc guards below. Returns (nil, nil) when the file is
 // absent — a project without one has no drift gate to protect.
 func (g *GitOperations) loadMemoryGraph(ctx context.Context) (*memoryGraphDoc, error) {
-	raw, err := readMemoryGraphFile(ctx, filepath.Join(g.projectPath, graphJSONRelPath))
+	raw, err := readMemoryGraphFile(ctx, &g.graphReads, filepath.Join(g.projectPath, graphJSONRelPath))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -699,51 +703,123 @@ func (g *GitOperations) loadMemoryGraph(ctx context.Context) (*memoryGraphDoc, e
 }
 
 // memoryGraphReadTimeout bounds one read of readMemoryGraphFile as the agent
-// user.
-const memoryGraphReadTimeout = 10 * time.Second
+// user, the open of the path included: a FIFO at the path does not block a
+// read for longer. memoryGraphReadBudget bounds the sum of the reads of one
+// delivery (one GitOperations, memoryGraphReads). Variables for the tests.
+var (
+	memoryGraphReadTimeout = 2 * time.Second
+	memoryGraphReadBudget  = 30 * time.Second
+)
+
+// memoryGraphReadLimit is the most bytes one read as the agent user takes; a
+// larger file is a read error.
+const memoryGraphReadLimit = 8 << 20
+
+// memoryGraphReads is the read budget of the graph reads of one delivery:
+// the time its reads as the agent user took so far.
+type memoryGraphReads struct {
+	mu     sync.Mutex
+	used   time.Duration
+	warned bool
+}
+
+// next is the time limit of the next read: memoryGraphReadTimeout, or what is
+// left of the budget when that is less. ok is false when the budget is used
+// up; warn is true for the first such answer only.
+func (b *memoryGraphReads) next() (limit time.Duration, ok, warn bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	left := memoryGraphReadBudget - b.used
+	if left <= 0 {
+		warn = !b.warned
+		b.warned = true
+		return 0, false, warn
+	}
+	if left < memoryGraphReadTimeout {
+		return left, true, false
+	}
+	return memoryGraphReadTimeout, true, false
+}
+
+// spend adds the time d of one read to the budget.
+func (b *memoryGraphReads) spend(d time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.used += d
+}
 
 // readMemoryGraphFile is os.ReadFile for the reads of the memory-doc guards.
 // TASK-651: with the option set and a path inside the workspace root the file
 // is read through agentReadRegularFile, so a link the agent put at the path is
-// followed as the agent user, never as the daemon user; a path that is not a
-// regular file (a FIFO the agent put there) is refused, and the read has a
-// time limit of memoryGraphReadTimeout. A read error, a refusal or the time
-// limit there gives the result of today for a missing file (an error that
-// wraps fs.ErrNotExist) and one Warn line.
-func readMemoryGraphFile(ctx context.Context, path string) ([]byte, error) {
+// followed as the agent user, never as the daemon user; the test of the type
+// and the read use one open of the path, a path that is not a regular file (a
+// FIFO the agent put there) is refused, at most memoryGraphReadLimit bytes are
+// read, and the read has a time limit of memoryGraphReadTimeout. A read error,
+// a refusal, a file over the size limit or the time limit there gives the
+// result of today for a missing file (an error that wraps fs.ErrNotExist) and
+// one Warn line. The reads share the budget reads (nil: no budget): once it
+// is used up each later read is a missing file, with one Warn line for the
+// delivery. A cancelled ctx of the caller gives the error of ctx.
+func readMemoryGraphFile(ctx context.Context, reads *memoryGraphReads, path string) ([]byte, error) {
 	if runAsSettingsNow() == nil {
 		return os.ReadFile(path) // #nosec G304 -- the os call of today
 	}
 	if agent, err := agentFileRoute(path); err == nil && !agent {
 		return os.ReadFile(path) // #nosec G304 -- a path outside the workspace root
 	}
-	readCtx, cancel := context.WithTimeout(ctx, memoryGraphReadTimeout)
-	defer cancel()
-	raw, err := agentReadRegularFile(readCtx, path)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	missing := &fs.PathError{Op: "read", Path: path, Err: fs.ErrNotExist}
+	limit := memoryGraphReadTimeout
+	if reads != nil {
+		var ok, warn bool
+		if limit, ok, warn = reads.next(); !ok {
+			if warn {
+				slog.Warn("memory-doc guard: the read budget of the delivery is used up, each later read is taken as a missing file",
+					slog.String("path", path), slog.Duration("budget", memoryGraphReadBudget))
+			}
+			return nil, missing
+		}
+	}
+	readCtx, cancel := context.WithTimeout(ctx, limit)
+	start := time.Now()
+	raw, err := agentReadRegularFile(readCtx, path, memoryGraphReadLimit)
+	cancel()
+	if reads != nil {
+		reads.spend(time.Since(start))
+	}
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		if !errors.Is(err, fs.ErrNotExist) {
 			slog.Warn("memory-doc guard: read as the agent user failed, taken as a missing file",
 				slog.String("path", path), slog.Any("error", err))
 		}
-		return nil, &fs.PathError{Op: "read", Path: path, Err: fs.ErrNotExist}
+		return nil, missing
 	}
 	return raw, nil
 }
 
 // memoryGraphFileExists is the existence check of a memory doc that a
 // graph.json node names: os.Stat with the option empty or a path outside the
-// workspace root, readMemoryGraphFile otherwise.
-func memoryGraphFileExists(ctx context.Context, path string) bool {
+// workspace root, readMemoryGraphFile otherwise. Its error is the error of a
+// cancelled ctx of the caller, nil in every other case.
+func memoryGraphFileExists(ctx context.Context, reads *memoryGraphReads, path string) (bool, error) {
 	if runAsSettingsNow() == nil {
 		_, err := os.Stat(path)
-		return err == nil
+		return err == nil, nil
 	}
 	if agent, err := agentFileRoute(path); err == nil && !agent {
 		_, err := os.Stat(path)
-		return err == nil
+		return err == nil, nil
 	}
-	_, err := readMemoryGraphFile(ctx, path)
-	return err == nil
+	_, err := readMemoryGraphFile(ctx, reads, path)
+	if err != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		return false, err
+	}
+	return err == nil, nil
 }
 
 // loadMemoryGraphAtRef reads and parses graph.json as it existed at ref
@@ -865,7 +941,11 @@ func (g *GitOperations) indexedMemoryPaths(ctx context.Context) (map[string]bool
 				filepath.Join(g.projectPath, rawPath),
 				filepath.Join(g.projectPath, ".agent", "knowledge", rawPath),
 			} {
-				if !memoryGraphFileExists(ctx, candidate) {
+				exists, err := memoryGraphFileExists(ctx, &g.graphReads, candidate)
+				if err != nil {
+					return nil, err
+				}
+				if !exists {
 					continue
 				}
 				if rel, relErr := filepath.Rel(g.projectPath, candidate); relErr == nil {

@@ -259,7 +259,7 @@ func TestGhEditLabels_SkipsEmptyLabels(t *testing.T) {
 	}
 	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
 
-	ghEnsureLabels(context.Background(), "", []string{"", "pilot-blocked", ""})
+	ghEnsureLabels(context.Background(), "", nil, []string{"", "pilot-blocked", ""})
 
 	logBytes, err := os.ReadFile(logFile)
 	if err != nil {

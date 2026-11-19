@@ -52,8 +52,12 @@ const (
 	// $1 path. Standard output is the content.
 	agentReadScript = `[ -e "$1" ] || exit 3; exec cat -- "$1"`
 	// $1 path. As agentReadScript; a path that is not a regular file (a
-	// FIFO, a device, a directory) is refused with exit 4.
-	agentReadRegularScript = `[ -e "$1" ] || exit 3; [ -f "$1" ] || { echo "not a regular file" >&2; exit 4; }; exec cat -- "$1"`
+	// FIFO, a device, a directory) is refused with exit 4. The test of the
+	// type and the read use one open of the path (descriptor 3, tested
+	// through /dev/fd/3): a swap of the file after the open has no effect.
+	// The open of a FIFO waits for a writer; the time limit of the caller
+	// bounds it.
+	agentReadRegularScript = `[ -e "$1" ] || exit 3; exec 3< "$1" || exit 1; [ -f /dev/fd/3 ] || { echo "not a regular file" >&2; exit 4; }; exec cat <&3`
 	// $1 path, $2 umask, $3 mode. Standard input is the content: create or
 	// truncate, as os.WriteFile (the mode of an existing file stays). A new
 	// file is created under the umask (no bit beyond the mode) and gets the
@@ -117,6 +121,12 @@ func agentFileRoute(path string) (bool, error) {
 // Its standard output is bounded by agentFileReadLimit and its standard error
 // by agentFileStderrLimit (agentLimitedBuffer).
 func runAgentFileScript(ctx context.Context, op, path, script string, stdin []byte, args ...string) ([]byte, error) {
+	return runAgentFileScriptLimit(ctx, op, path, script, stdin, agentFileReadLimit, args...)
+}
+
+// runAgentFileScriptLimit is runAgentFileScript with readLimit in place of
+// agentFileReadLimit for its standard output.
+func runAgentFileScriptLimit(ctx context.Context, op, path, script string, stdin []byte, readLimit int, args ...string) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -138,7 +148,7 @@ func runAgentFileScript(ctx context.Context, op, path, script string, stdin []by
 			}
 		})
 	}
-	stdout := &agentLimitedBuffer{name: "standard output", limit: agentFileReadLimit, stop: stop}
+	stdout := &agentLimitedBuffer{name: "standard output", limit: readLimit, stop: stop}
 	stderr := &agentLimitedBuffer{name: "standard error", limit: agentFileStderrLimit, stop: stop}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	err = cmd.Run()
@@ -231,9 +241,11 @@ func agentReadFile(ctx context.Context, path string) ([]byte, error) {
 
 // agentReadRegularFile is agentReadFile for a path that must be a regular
 // file: as the agent user the test of the file type and the read are one
-// command, and a FIFO or a device at the path is an error, never a read that
-// waits for a writer. Outside the workspace root it is os.ReadFile.
-func agentReadRegularFile(ctx context.Context, path string) ([]byte, error) {
+// command on one open of the path, and a FIFO or a device at the path is an
+// error, never a read that waits for a writer (the open of a FIFO waits until
+// the time limit of ctx). At most limit bytes are read: a larger file is an
+// error. Outside the workspace root it is os.ReadFile.
+func agentReadRegularFile(ctx context.Context, path string, limit int) ([]byte, error) {
 	agent, err := agentFileRoute(path)
 	if err != nil {
 		return nil, err
@@ -241,7 +253,7 @@ func agentReadRegularFile(ctx context.Context, path string) ([]byte, error) {
 	if !agent {
 		return os.ReadFile(path) // #nosec G304 -- the os call of today; workspace paths take the agent route.
 	}
-	return runAgentFileScript(ctx, "read", path, agentReadRegularScript, nil, path)
+	return runAgentFileScriptLimit(ctx, "read", path, agentReadRegularScript, nil, limit, path)
 }
 
 // agentMkdirAll is os.MkdirAll(path, mode), as the agent user for a path

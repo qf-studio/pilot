@@ -2,7 +2,9 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -75,6 +77,7 @@ case "$1 $2" in
   *--jq*) echo OPEN ;;
   *) echo '{"state":"OPEN","labels":[]}' ;;
   esac ;;
+"pr view") echo MERGED ;;
 esac
 `
 	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(body), 0o755); err != nil { //nolint:gosec // mock must be executable
@@ -183,14 +186,15 @@ func TestEpicGhCallsOptionEmptyKeepTheCallsOfToday(t *testing.T) {
 }
 
 // assertMemoryGraphMissingInTime loads the graph of e and fails unless it
-// returns the result of a missing file with one Warn line in under 15 seconds.
+// returns the result of a missing file with one Warn line within the time
+// limit of one read (and a margin for the kill).
 func assertMemoryGraphMissingInTime(t *testing.T, e *handOverPushEnv) {
 	t.Helper()
 	logs := captureLog(t)
 	start := time.Now()
 	graph, err := e.git.loadMemoryGraph(context.Background())
-	if took := time.Since(start); took >= 15*time.Second {
-		t.Errorf("loadMemoryGraph took %s, want under 15s", took)
+	if took, max := time.Since(start), memoryGraphReadTimeout+4*time.Second; took >= max {
+		t.Errorf("loadMemoryGraph took %s, want under %s", took, max)
 	}
 	if graph != nil || err != nil {
 		t.Fatalf("loadMemoryGraph = %v, %v; want nil, nil (a missing file)", graph, err)
@@ -209,15 +213,45 @@ func TestMemoryGraphFIFOIsAMissingFile(t *testing.T) {
 	if err := syscall.Mkfifo(path, 0o644); err != nil {
 		t.Skipf("mkfifo: %v", err)
 	}
+	// The open of the FIFO waits for a writer until the time limit; the kill
+	// of the process group then ends it, as sudo runs it.
+	mockSudoRunsKill(t)
 	assertMemoryGraphMissingInTime(t, e)
+}
+
+// mockSudoRunsKill puts a mock sudo first on PATH that runs the kill of the
+// process group (`sudo -n -u USER kill -s SIG -- -PGID`) and hands each other
+// call to the sudo that was first on PATH before (mockSudoAgent).
+func mockSudoRunsKill(t *testing.T) {
+	t.Helper()
+	prev, err := exec.LookPath("sudo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	body := `#!/bin/sh
+if [ "$4" = kill ]; then shift 3; exec "$@"; fi
+exec '` + prev + `' "$@"
+`
+	if err := os.WriteFile(filepath.Join(dir, "sudo"), []byte(body), 0o755); err != nil { //nolint:gosec // mock must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func TestMemoryGraphReadTimeLimitIsAMissingFile(t *testing.T) {
 	e := newHandOverPushEnv(t)
 	writeWorkspaceGraph(t, e.ws)
-	// A mock sudo, first on PATH, for which the read of graph.json as the
-	// agent user never ends. Unlike mockSudoAgent it runs the kill of the
-	// process group (`sudo -n -u USER kill -s SIG -- -PGID`), as sudo does.
+	mockSudoBlockingGraphRead(t)
+	assertMemoryGraphMissingInTime(t, e)
+}
+
+// mockSudoBlockingGraphRead puts a mock sudo first on PATH for which the read
+// of graph.json as the agent user never ends. Unlike mockSudoAgent it runs
+// the kill of the process group (`sudo -n -u USER kill -s SIG -- -PGID`), as
+// sudo does.
+func mockSudoBlockingGraphRead(t *testing.T) {
+	t.Helper()
 	dir := t.TempDir()
 	body := `#!/bin/sh
 if [ "$4" = kill ]; then shift 3; exec "$@"; fi
@@ -233,5 +267,164 @@ exec "$@"
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// runGhHelpers runs ghIssueComment, ghAddLabels (whose label is created
+// first) and getSubIssuePRState with dir as their directory argument and
+// returns their errors.
+func runGhHelpers(t *testing.T, dir string) map[string]error {
+	t.Helper()
+	ctx := context.Background()
+	errs := map[string]error{}
+	errs["ghIssueComment"] = ghIssueComment(ctx, dir, "1", "comment")
+	errs["ghAddLabels"] = ghAddLabels(ctx, dir, "1", []string{"pilot-needs-clarification"})
+	_, errs["getSubIssuePRState"] = newSilentRunnerTask359().getSubIssuePRState(ctx, dir, 5)
+	return errs
+}
+
+func TestGhHelpersLeaveTheWorkspace(t *testing.T) {
+	want := []string{"issue comment", "label create", "issue edit", "pr view"}
+
+	t.Run("agent workspace on record", func(t *testing.T) {
+		e := newHandOverPushEnv(t)
+		wsGit(t, e.repo, "remote", "set-url", "origin", epicWorkspaceGhRemote)
+		// The agent plants a remote in the workspace.
+		wsGit(t, e.ws, "remote", "set-url", "origin", "https://github.com/attacker/evil.git")
+		ghLog := mockEpicGh(t)
+
+		for name, err := range runGhHelpers(t, e.ws) {
+			if err != nil {
+				t.Errorf("%s: %v", name, err)
+			}
+		}
+		calls := sudoCalls(t, ghLog)
+		if len(calls) != len(want) {
+			t.Fatalf("gh calls = %d, want %d:\n%s", len(calls), len(want), strings.Join(calls, "\n"))
+		}
+		daemonDir := resolvedTestPath(t, e.repo)
+		for i, c := range calls {
+			dir, args, _ := strings.Cut(c, "| ")
+			if !strings.HasPrefix(args, want[i]+" ") {
+				t.Errorf("gh call %d = %s, want %s", i, args, want[i])
+			}
+			if dir != daemonDir {
+				t.Errorf("gh ran in %s, want the daemon's repository %s: %s", dir, daemonDir, args)
+			}
+			if !strings.Contains(args, "--repo ghe.example.com/daemon-owner/daemon-repo") {
+				t.Errorf("gh without --repo HOST/OWNER/NAME of the daemon's remote: %s", args)
+			}
+			if strings.Contains(args, "attacker") || strings.Contains(args, "evil") {
+				t.Errorf("gh took the remote of the workspace: %s", args)
+			}
+		}
+	})
+
+	t.Run("workspace path with no record", func(t *testing.T) {
+		e := newHandOverPushEnv(t)
+		stray := filepath.Join(e.root, "pilot-ws-no-record")
+		if err := os.MkdirAll(stray, 0o755); err != nil { //nolint:gosec // test directory
+			t.Fatal(err)
+		}
+		ghLog := mockEpicGh(t)
+
+		for name, err := range runGhHelpers(t, stray) {
+			if err == nil {
+				t.Errorf("%s with a workspace path with no record: nil error", name)
+			}
+		}
+		if calls := sudoCalls(t, ghLog); len(calls) != 0 {
+			t.Errorf("gh ran for a workspace path with no record:\n%s", strings.Join(calls, "\n"))
+		}
+	})
+
+	t.Run("option empty", func(t *testing.T) {
+		setRunAsStateForTest(t, nil, "")
+		repo, _ := setupTestRepoWithRemote(t)
+		ghLog := mockEpicGh(t)
+
+		for name, err := range runGhHelpers(t, repo) {
+			if err != nil {
+				t.Errorf("%s: %v", name, err)
+			}
+		}
+		calls := sudoCalls(t, ghLog)
+		if len(calls) != len(want) {
+			t.Fatalf("gh calls = %d, want %d:\n%s", len(calls), len(want), strings.Join(calls, "\n"))
+		}
+		wantDir := resolvedTestPath(t, repo)
+		for _, c := range calls {
+			dir, args, _ := strings.Cut(c, "| ")
+			if dir != wantDir {
+				t.Errorf("gh ran in %s, want %s", dir, wantDir)
+			}
+			if strings.Contains(args, "--repo") {
+				t.Errorf("option empty: gh got --repo: %s", args)
+			}
+		}
+	})
+}
+
+func TestMemoryGraphOverSizeLimitIsAMissingFile(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	writeWorkspaceGraph(t, e.ws)
+	big := `{"nodes":{"memories":{}},"pad":"` + strings.Repeat("x", 9<<20) + `"}`
+	if err := os.WriteFile(filepath.Join(e.ws, graphJSONRelPath), []byte(big), 0o644); err != nil { //nolint:gosec // test file
+		t.Fatal(err)
+	}
 	assertMemoryGraphMissingInTime(t, e)
+}
+
+func TestMemoryGraphReadBudgetBoundsAllReads(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	writeWorkspaceGraph(t, e.ws)
+	mockSudoBlockingGraphRead(t)
+	prev := memoryGraphReadBudget
+	memoryGraphReadBudget = 3 * time.Second
+	t.Cleanup(func() { memoryGraphReadBudget = prev })
+	logs := captureLog(t)
+
+	path := filepath.Join(e.ws, graphJSONRelPath)
+	var reads memoryGraphReads
+	start := time.Now()
+	for i := 0; i < 5; i++ {
+		raw, err := readMemoryGraphFile(context.Background(), &reads, path)
+		if raw != nil || !os.IsNotExist(err) {
+			t.Errorf("read %d = %q, %v; want a missing file", i, raw, err)
+		}
+	}
+	// The kill of a blocked read takes a moment past its time limit.
+	if took := time.Since(start); took > memoryGraphReadBudget+2*time.Second {
+		t.Errorf("five blocked reads took %s, want at most the budget %s (and the kill)", took, memoryGraphReadBudget)
+	}
+	if w := logLines(logs.String(), "WARN", "read budget of the delivery is used up"); len(w) != 1 {
+		t.Errorf("budget Warn lines %q, want one", w)
+	}
+}
+
+func TestMemoryGraphCancelledContextIsTheContextError(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	writeWorkspaceGraph(t, e.ws)
+	path := filepath.Join(e.ws, graphJSONRelPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := readMemoryGraphFile(ctx, &e.git.graphReads, path); !errors.Is(err, context.Canceled) || os.IsNotExist(err) {
+		t.Errorf("read with a cancelled context = %v, want context.Canceled", err)
+	}
+	if _, err := e.git.loadMemoryGraph(ctx); !errors.Is(err, context.Canceled) {
+		t.Errorf("loadMemoryGraph with a cancelled context = %v, want context.Canceled", err)
+	}
+
+	// A cancel during a read that blocks.
+	mockSudoBlockingGraphRead(t)
+	logs := captureLog(t)
+	ctx, cancel = context.WithCancel(context.Background())
+	time.AfterFunc(300*time.Millisecond, cancel)
+	defer cancel()
+	if _, err := readMemoryGraphFile(ctx, &e.git.graphReads, path); !errors.Is(err, context.Canceled) || os.IsNotExist(err) {
+		t.Errorf("read cancelled while it blocks = %v, want context.Canceled", err)
+	}
+	if w := logLines(logs.String(), "WARN", "memory-doc guard"); len(w) != 0 {
+		t.Errorf("Warn lines for a cancelled context %q, want none", w)
+	}
 }
