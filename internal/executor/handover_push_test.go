@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"github.com/qf-studio/pilot/internal/testutil"
@@ -1109,5 +1110,191 @@ func TestHandOverPushInheritedLeaseRecordsTheHandOverSHA(t *testing.T) {
 	}
 	if task.pushedWIPSHA != rewritten || task.pushedWIPSHA != e.git.publishedHandOverSHA() {
 		t.Errorf("pushedWIPSHA = %q, want the published SHA %q, not the HEAD of the workspace %q", task.pushedWIPSHA, rewritten, moved)
+	}
+}
+
+// TestHandOverPushBeginAttemptCannotUndoAPublishedRecord: the begin of a push
+// attempt (the loser of two Push calls of one value) waits at its write of the
+// workspace record, held by the test. It holds handOverMu there, so the
+// winner's recordPublishedHandOver runs after it, and the record ends as the
+// published one; with the write after the unlock, the record of a published
+// head could end "not pushed".
+// mutation pin: beginHandOverAttempt writes the workspace record after it unlocks handOverMu -> this test fails
+func TestHandOverPushBeginAttemptCannotUndoAPublishedRecord(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	head := commitFile(t, e.ws, "a.txt", "one")
+	if err := e.git.Push(context.Background(), e.branch, handOverTestTask); err != nil {
+		t.Fatalf("Push: %v", err)
+	}
+	if e.git.workspace == nil {
+		t.Fatal("no workspace record")
+	}
+
+	e.git.workspace.mu.Lock()
+	begun := make(chan struct{})
+	go func() {
+		defer close(begun)
+		e.git.beginHandOverAttempt(e.branch)
+	}()
+	// The begin waits for the record: handOverMu stays held (20 tries in a
+	// row), or it was released with the attempt SHA already cleared.
+	deadline := time.Now().Add(10 * time.Second)
+	for held := 0; held < 20; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			e.git.workspace.mu.Unlock()
+			<-begun
+			t.Fatal("the begin of the attempt did not reach the workspace record")
+		}
+		if !e.git.handOverMu.TryLock() {
+			held++
+			continue
+		}
+		held = 0
+		cleared := e.git.attemptSHA == ""
+		e.git.handOverMu.Unlock()
+		if cleared {
+			e.git.workspace.mu.Unlock()
+			<-begun
+			t.Fatal("beginHandOverAttempt released handOverMu before its write of the workspace record: a recordPublishedHandOver in between is undone")
+		}
+	}
+	recorded := make(chan struct{})
+	go func() {
+		defer close(recorded)
+		e.git.recordPublishedHandOver(head, e.branch)
+	}()
+	e.git.workspace.mu.Unlock()
+	<-begun
+	<-recorded
+
+	if got, pushed, _ := e.git.workspace.state(); got != head || !pushed {
+		t.Errorf("workspace record = %q pushed=%v, want the published head %q pushed", got, pushed, head)
+	}
+	if got := e.git.publishedHandOverSHA(); got != head {
+		t.Errorf("publishedHandOverSHA = %q, want %q", got, head)
+	}
+}
+
+// TestHandOverPushLoopNothingNewIsNotRetried: a branch at the base. The
+// nothing-new error is a HandOverError too; the push loop returns it after
+// one push, before the retry of a failed hand-over, and no push command of
+// the daemon runs.
+// mutation pin: the push loop checks IsHandOverError before IsPushNothingNew and retries nothing new -> this test fails
+func TestHandOverPushLoopNothingNewIsNotRetried(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	r := newSilentRunnerTask359()
+	task := &Task{ID: handOverTestTask, Branch: e.branch}
+
+	var pushes int
+	var err error
+	e.logDaemonGit(t, func() {
+		err = r.pushBranchCounting(context.Background(), e.git, task, r.log, &pushes)
+	})
+	if !IsPushNothingNew(err) || !IsHandOverError(err) {
+		t.Fatalf("push loop of a branch at the base: %v, want IsPushNothingNew and IsHandOverError", err)
+	}
+	if pushes != 1 {
+		t.Errorf("%d pushes, want 1 (nothing new is not retried)", pushes)
+	}
+	for _, c := range e.daemonGitCalls(t) {
+		if _, args, _ := strings.Cut(c, "| "); strings.Contains(" "+args+" ", " push ") {
+			t.Errorf("a push command of the daemon ran for nothing new: %s", args)
+		}
+	}
+}
+
+// TestHandOverPushAutoPreserveLeaseRecordsThePublishedSHA: this run pushed its
+// auto-preserve commit (pushedWIPSHA); the agent rewrote its branch and moved
+// its HEAD elsewhere. The lease push over the auto-preserve commit publishes
+// the hand-over SHA, and the run records the published SHA, not the HEAD of
+// the workspace.
+// mutation pin: the auto-preserve lease records task.pushedWIPSHA = localHead for an agent workspace -> this test fails
+func TestHandOverPushAutoPreserveLeaseRecordsThePublishedSHA(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	ctx := context.Background()
+	first := commitFile(t, e.ws, "a.txt", "one")
+	if err := e.git.Push(ctx, e.branch, handOverTestTask); err != nil {
+		t.Fatalf("first Push: %v", err)
+	}
+	moved := commitFile(t, e.ws, "b.txt", "two")
+	rewritten := wsGit(t, e.ws, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "-p", e.base, "-m", "rewritten", first+"^{tree}")
+	wsGit(t, e.ws, "checkout", "-q", "--detach")
+	wsGit(t, e.ws, "update-ref", "refs/heads/"+e.branch, rewritten)
+	if got, err := e.git.LocalHead(ctx); err != nil || got != moved {
+		t.Fatalf("setup: LocalHead = %q, %v; want %q", got, err, moved)
+	}
+
+	r := newSilentRunnerTask359()
+	task := &Task{ID: handOverTestTask, Branch: e.branch, pushedWIPSHA: first}
+	var pushes int
+	if err := r.pushBranchCounting(ctx, e.git, task, r.log, &pushes); err != nil {
+		t.Fatalf("push loop: %v", err)
+	}
+	if pushes != 2 {
+		t.Errorf("%d pushes, want the rejected push and the auto-preserve lease push", pushes)
+	}
+	if got := e.remoteHead(t, e.branch); got != rewritten {
+		t.Fatalf("remote head = %q, want the hand-over SHA %q", got, rewritten)
+	}
+	if task.pushedWIPSHA != rewritten || task.pushedWIPSHA != e.git.publishedHandOverSHA() {
+		t.Errorf("pushedWIPSHA = %q, want the published SHA %q, not the HEAD of the workspace %q", task.pushedWIPSHA, rewritten, moved)
+	}
+}
+
+// TestHandOverPushLoopRetriesAFailedHandOver: a failed hand-over is never
+// forgiven, but the push loop retries it as any other failure. Another
+// hand-over of the task in progress on the first attempt passes on the
+// second; a hand-over that keeps failing ends as a HandOverError after every
+// attempt.
+// mutation pin: the push loop returns a hand-over error without a retry -> this test fails
+func TestHandOverPushLoopRetriesAFailedHandOver(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		failures   int
+		wantPushes int
+		wantErr    bool
+	}{
+		{name: "in progress once", failures: 1, wantPushes: 2},
+		{name: "every attempt", failures: gitPushRetryAttempts, wantPushes: gitPushRetryAttempts, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newHandOverPushEnv(t)
+			ctx := context.Background()
+			head := commitFile(t, e.ws, "a.txt", "one")
+			prev := handOverCheckPartialClone
+			t.Cleanup(func() { handOverCheckPartialClone = prev })
+			calls := 0
+			handOverCheckPartialClone = func(ctx context.Context, repo string) error {
+				calls++
+				if calls <= tc.failures {
+					return fmt.Errorf("%w: the test holds the hand-over", errHandOverInProgress)
+				}
+				return prev(ctx, repo)
+			}
+
+			r := newSilentRunnerTask359()
+			task := &Task{ID: handOverTestTask, Branch: e.branch}
+			var pushes int
+			err := r.pushBranchCounting(ctx, e.git, task, r.log, &pushes)
+			if pushes != tc.wantPushes {
+				t.Errorf("%d pushes, want %d", pushes, tc.wantPushes)
+			}
+			if tc.wantErr {
+				if !IsHandOverError(err) || !errors.Is(err, errHandOverInProgress) {
+					t.Fatalf("push loop: %v, want the hand-over error %v", err, errHandOverInProgress)
+				}
+				if got := e.remoteHead(t, e.branch); got != "" {
+					t.Errorf("the branch reached the remote at %s", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("push loop: %v, want the retry to pass", err)
+			}
+			if got := e.remoteHead(t, e.branch); got != head {
+				t.Fatalf("remote head = %q, want %q", got, head)
+			}
+			e.assertPublished(t, head)
+		})
 	}
 }

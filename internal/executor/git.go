@@ -262,10 +262,14 @@ func (g *GitOperations) remoteDir() string {
 // workspace: the attempt SHA is cleared before any step that can fail, so a
 // failed attempt is never compared with the SHA of an earlier one, and the
 // workspace record says "not pushed" until this attempt is published.
+// Decision: the record is written under handOverMu, as in
+// recordPublishedHandOver and pushHandOver, so the record and the attempt and
+// published SHAs change in one order: a concurrent Push of g cannot reset the
+// record to "not pushed" after another attempt recorded its push.
 func (g *GitOperations) beginHandOverAttempt(branch string) {
 	g.handOverMu.Lock()
+	defer g.handOverMu.Unlock()
 	g.attemptSHA, g.attemptBranch = "", strings.TrimPrefix(branch, "refs/heads/")
-	g.handOverMu.Unlock()
 	if g.workspace != nil {
 		g.workspace.setHandOver("", false)
 	}
@@ -277,8 +281,8 @@ func (g *GitOperations) beginHandOverAttempt(branch string) {
 // forgiveness of a failed push (acceptForgivenPush) both call it.
 func (g *GitOperations) recordPublishedHandOver(sha, branch string) {
 	g.handOverMu.Lock()
+	defer g.handOverMu.Unlock()
 	g.publishedSHA, g.publishedBranch = sha, strings.TrimPrefix(branch, "refs/heads/")
-	g.handOverMu.Unlock()
 	if g.workspace != nil {
 		g.workspace.setHandOver(sha, true)
 	}
@@ -1665,10 +1669,10 @@ func (g *GitOperations) pushHandOver(ctx context.Context, branchName, expectedRe
 	}
 	g.handOverMu.Lock()
 	g.attemptSHA = sha
-	g.handOverMu.Unlock()
 	if g.workspace != nil {
 		g.workspace.setHandOver(sha, false)
 	}
+	g.handOverMu.Unlock()
 	handOverBeforeGate(g.daemonRepo, taskID)
 	gateCtx := secretpatterns.WithGitEnv(ctx, daemonGateEnv(os.Environ()))
 	if err := checkSecretGateTip(gateCtx, g.daemonRepo, sha, branchName, taskID); err != nil {

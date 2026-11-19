@@ -3546,9 +3546,11 @@ func (r *Runner) pushTaskBranch(ctx context.Context, task *Task, git *GitOperati
 // already landed. A mere existing remote branch is not enough (GH-5729: a
 // rejected non-fast-forward push was swallowed because the branch existed, and
 // the stale PR was adopted as success). TASK-651: for an agent workspace the
-// compare is with the hand-over SHA of the attempt, never the local HEAD, and a
-// failed hand-over is never forgiven (pushFailureForgivenHead); a hand-over
-// with no commit above the base (IsPushNothingNew) is not retried.
+// compare is with the hand-over SHA of the attempt, never the local HEAD. A
+// hand-over with no commit above the base (IsPushNothingNew) is not retried;
+// each other failed hand-over (IsHandOverError, errHandOverInProgress among
+// them) is never forgiven and never taken as a non-fast-forward, but it is
+// retried as any other failure.
 //
 // An autopilot-fix continuation (FromPR > 0 and FixFromSHA != "") rebases the
 // branch, so it can never fast-forward: when the rejection is non-fast-forward
@@ -3578,17 +3580,24 @@ func (r *Runner) pushBranchCounting(ctx context.Context, git *GitOperations, tas
 		if pushErr == nil {
 			return nil
 		}
-		if pushNeverForgiven(pushErr) {
+		if pushGateStop(pushErr) {
 			// GH-6263: the secret gate refused the commits or could not run;
 			// retrying, or forgiving the failure, would publish them another way.
-			// TASK-651: a failed hand-over published nothing; the remote head
-			// is never its own.
 			return pushErr
 		}
 		if IsPushNothingNew(pushErr) {
 			// TASK-651: the hand-over found no commit above the base. Nothing
-			// to push, and a retry finds nothing either; not a failure.
+			// to push, and a retry finds nothing either; not a failure. It is a
+			// HandOverError too, so this check comes before the one below.
 			return pushErr
+		}
+		if IsHandOverError(pushErr) {
+			// TASK-651: a failed hand-over published nothing; the remote head
+			// is never its own (pushNeverForgiven), so it is not forgiven and
+			// not a non-fast-forward. It is retried: another hand-over of the
+			// task in progress (errHandOverInProgress) passes.
+			waitPushRetry(log, task, attempt, pushErr)
+			continue
 		}
 		localHead, localErr := git.LocalHead(ctx)
 		remoteHead, remoteOK := git.RemoteBranchHead(ctx, task.Branch)
@@ -3663,17 +3672,24 @@ func (r *Runner) pushBranchCounting(ctx context.Context, git *GitOperations, tas
 			return fmt.Errorf("push rejected, %s %s: remote head %s is not a SHA this run pushed (local HEAD %s); re-running from origin/main cannot fast-forward it\n%w",
 				nonFastForwardTaskBranchMarker, task.Branch, remoteHead, localHead, pushErr)
 		}
-		if attempt < gitPushRetryAttempts {
-			log.Warn("Push failed, retrying",
-				slog.String("task_id", task.ID),
-				slog.Int("attempt", attempt),
-				slog.Int("max_attempts", gitPushRetryAttempts),
-				slog.Any("error", pushErr),
-			)
-			time.Sleep(gitPushRetryDelay)
-		}
+		waitPushRetry(log, task, attempt, pushErr)
 	}
 	return pushErr
+}
+
+// waitPushRetry logs the failed push attempt of the push loop and waits
+// before the next one; after the last attempt it does nothing.
+func waitPushRetry(log *slog.Logger, task *Task, attempt int, pushErr error) {
+	if attempt >= gitPushRetryAttempts {
+		return
+	}
+	log.Warn("Push failed, retrying",
+		slog.String("task_id", task.ID),
+		slog.Int("attempt", attempt),
+		slog.Int("max_attempts", gitPushRetryAttempts),
+		slog.Any("error", pushErr),
+	)
+	time.Sleep(gitPushRetryDelay)
 }
 
 // pushedHead is the head a successful Push of git published: the published
