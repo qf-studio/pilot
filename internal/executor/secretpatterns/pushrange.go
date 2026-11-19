@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -350,7 +351,8 @@ func isShallowBoundary(ctx context.Context, dir, sha string) (bool, error) {
 	return false, nil
 }
 
-// minAbsolutePathGit is the first git release with rev-parse --path-format.
+// minAbsolutePathGit is the first git release with rev-parse --path-format and
+// git log --diff-merges.
 const minAbsolutePathGit = "2.31"
 
 var (
@@ -365,11 +367,12 @@ var gitVersionOutput = func(ctx context.Context, dir string) (string, error) {
 }
 
 // warnOldGit logs once per process when the host's git predates --path-format
-// (2.31). The shallow-boundary check needs it to find the shallow file and is
-// silently off without it, so a depth-limited clone is refused for its old
-// published content instead of recognised. The once-guard is spent only by a
-// version that was read: a failed call or an ended context leaves it for the
-// next push.
+// and --diff-merges (2.31). The shallow-boundary check needs the first to find
+// the shallow file and is silently off without it, so a depth-limited clone is
+// refused for its old published content instead of recognised. The read of a
+// binary file of a merge commit needs the second, so such a merge is refused.
+// The once-guard is spent only by a version that was read: a failed call or an
+// ended context leaves it for the next push.
 func warnOldGit(ctx context.Context, dir string) {
 	warnOldGitMu.Lock()
 	defer warnOldGitMu.Unlock()
@@ -382,7 +385,7 @@ func warnOldGit(ctx context.Context, dir string) {
 	}
 	warnOldGitDone = true
 	if v, ok := parseGitVersion(out); ok && versionLess(v, minAbsolutePathGit) {
-		slog.Warn("git is older than 2.31: the push secret gate cannot recognise the boundary of a shallow clone and scans its published history as new",
+		slog.Warn("git is older than 2.31: the push secret gate cannot recognise the boundary of a shallow clone and scans its published history as new, and refuses a merge commit with a binary file",
 			slog.String("git_version", v), slog.String("minimum", minAbsolutePathGit))
 	}
 }
@@ -857,7 +860,7 @@ func scanCommits(ctx context.Context, dir string, logArgs []string, opts PushOpt
 			if err != nil {
 				return err
 			}
-			patch = fp
+			patch = append(append(patch, '\n'), fp...)
 		}
 		if file, kind, hit := scanPatch(patch, opts); hit {
 			return newPushRangeError(shortSHA(sha), file, kind)
@@ -874,23 +877,41 @@ func scanCommits(ctx context.Context, dir string, logArgs []string, opts PushOpt
 // first-parent scan could not read either.
 var errMergeBinaryUnread = &PushScanError{Reason: "a binary file of a merge commit could not be read"}
 
+// errMergeBinaryOldGit is errMergeBinaryUnread for a git that does not know
+// --diff-merges.
+var errMergeBinaryOldGit = &PushScanError{Reason: "a binary file of a merge commit could not be read: git " + minAbsolutePathGit + " or later is needed (git log --diff-merges)"}
+
 // firstParentPatch is the patch of the merge commit sha against its first
-// parent, read with the arguments of the per-commit scan. bin is the set of
-// paths the combined diff printed as "Binary files differ".
+// parent for the paths in bin, read with the arguments of the per-commit scan.
+// bin is the set of paths the combined diff printed as "Binary files differ",
+// in their plain form.
 //
 // Decision: git does not apply --text to a combined diff. A file of a merge
 // commit with a NUL byte, or with the attribute binary or -diff, prints as
 // "Binary files differ" under --cc and no added line of it is read. The net
 // diff does not cover it when a later commit deletes the file, or when it is
 // skipped (no base and a merge in the range). With --diff-merges=first-parent
-// git honours --text, so the commit is read again that way and that patch
-// counts for the commit. It fails closed: a failed read, or a path still
-// printed as binary, is a refusal (GH-6561).
+// git honours --text, so the commit is read again that way for those paths,
+// and the blocks are added to the combined patch (GH-6561).
+//
+// Decision: the read is limited to the paths of bin, each a :(literal)
+// pathspec. The first-parent diff of a merge holds the whole change of the
+// other parent: for a merge of the published base it is the delta of the
+// base, which the push does not add, and a value or the size of that delta
+// refused an honest push (GH-6572). --no-walk keeps git from showing another
+// commit when the pathspec prunes this one.
+//
+// It fails closed: a failed read, a path of bin with no block, or one still
+// printed as binary, is a refusal.
 func firstParentPatch(ctx context.Context, dir, sha string, bin map[string]bool) ([]byte, error) {
 	if !isFullCommitID(sha) {
 		return nil, errMergeBinaryUnread
 	}
-	out, err := gitOutputMax(ctx, dir, int64(maxCommitScanBytes), "log", "--no-show-signature", "-1", "-p", "--diff-merges=first-parent", "--text", "--no-textconv", "--no-ext-diff", "--submodule=short", "--ignore-submodules=none", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "--format=", sha)
+	args := []string{"log", "--no-show-signature", "-1", "--no-walk", "-p", "--diff-merges=first-parent", "--text", "--no-textconv", "--no-ext-diff", "--submodule=short", "--ignore-submodules=none", "--src-prefix=a/", "--dst-prefix=b/", "--no-color", "--format=", sha, "--"}
+	for _, p := range slices.Sorted(maps.Keys(bin)) {
+		args = append(args, ":(literal)"+p)
+	}
+	out, err := gitOutputMax(ctx, dir, int64(maxCommitScanBytes), args...)
 	if cerr := ctxError(ctx); cerr != nil {
 		return nil, cerr
 	}
@@ -898,7 +919,17 @@ func firstParentPatch(ctx context.Context, dir, sha string, bin map[string]bool)
 		return nil, &PushScanError{Reason: fmt.Sprintf("commit %s has more than %d bytes of diff, too large to scan", shortSHA([]byte(sha)), maxCommitScanBytes)}
 	}
 	if err != nil {
+		if strings.Contains(err.Error(), "--diff-merges") {
+			warnOldGit(ctx, dir)
+			return nil, errMergeBinaryOldGit
+		}
 		return nil, errMergeBinaryUnread
+	}
+	read := filePaths(out)
+	for p := range bin {
+		if !read[p] {
+			return nil, errMergeBinaryUnread
+		}
 	}
 	for p := range binaryPaths(out, false) {
 		if bin[p] {
@@ -906,6 +937,17 @@ func firstParentPatch(ctx context.Context, dir, sha string, bin map[string]bool)
 		}
 	}
 	return out, nil
+}
+
+// filePaths returns the new path of every "diff --git" block of patch.
+func filePaths(patch []byte) map[string]bool {
+	paths := map[string]bool{}
+	for _, line := range bytes.Split(patch, []byte{'\n'}) {
+		if bytes.HasPrefix(line, []byte("diff --git ")) {
+			paths[diffGitNewPath(string(line[len("diff --git "):]))] = true
+		}
+	}
+	return paths
 }
 
 // binaryPaths returns the paths of the file blocks of patch that hold a
