@@ -103,27 +103,37 @@ func handOverGitArgs(args ...string) []string {
 	return append(secretpatterns.GitScanConfig(), args...)
 }
 
+// handOverEnvNames are the names of the daemon environment that reach a git
+// command of the daemon during a hand-over, besides the names that start with
+// LC_ (handOverEnvAllowed).
+var handOverEnvNames = map[string]bool{
+	"PATH": true, "HOME": true, "TMPDIR": true, "LANG": true, "USER": true, "LOGNAME": true,
+}
+
 // handOverEnvAllowed reports whether the variable name of the daemon
 // environment reaches a git command of the daemon during a hand-over. Decision:
-// an allow rule, no list of denied names: no name that starts with GIT_ passes
-// (GIT_COMMON_DIR, GIT_EXEC_PATH, GIT_GRAFT_FILE, GIT_TRACE each passed the
-// list of before). The GIT_ values a hand-over needs are set after the filter.
+// a list of allowed names, no rule by prefix: the commands are local and need
+// no token, so GITHUB_TOKEN and every other name of the daemon (GIT_COMMON_DIR,
+// GIT_EXEC_PATH, LD_PRELOAD, SSH_AUTH_SOCK, XDG_CONFIG_HOME) is removed. The
+// GIT_ values a hand-over needs are set after the filter.
 func handOverEnvAllowed(name string) bool {
-	return !strings.HasPrefix(name, "GIT_")
+	return handOverEnvNames[name] || strings.HasPrefix(name, "LC_")
 }
 
 // handOverDaemonEnv is env without the names handOverEnvAllowed refuses, plus
-// GIT_TERMINAL_PROMPT=0 and GIT_NO_LAZY_FETCH=1. Decision: with lazy fetch
-// off, a git command that misses an object of a partial clone fails; it does
-// not fetch the object from the promisor remote into the quarantine, where
-// the check of verifyHandOverObjects would take it for an object of the
-// workspace.
+// GIT_TERMINAL_PROMPT=0, GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1
+// and GIT_NO_LAZY_FETCH=1. Decision: HOME passes, so without the two config
+// names the global and the system git config of the daemon user (a trace2
+// target, a hooks path) would act on the commands. With lazy fetch off, a git
+// command that misses an object of a partial clone fails; it does not fetch
+// the object from the promisor remote into the quarantine, where the check of
+// verifyHandOverObjects would take it for an object of the workspace.
 func handOverDaemonEnv(env []string) []string {
 	kept := slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
 		return !handOverEnvAllowed(name)
 	})
-	return append(kept, "GIT_TERMINAL_PROMPT=0", "GIT_NO_LAZY_FETCH=1")
+	return append(kept, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_NO_LAZY_FETCH=1")
 }
 
 // checkHandOverPartialClone fails with errHandOverPartialClone when the
@@ -192,8 +202,8 @@ type handOverQuarantine struct {
 // that reads and writes objects in the quarantine: GIT_OBJECT_DIRECTORY is the
 // quarantine and, with alternate, GIT_ALTERNATE_OBJECT_DIRECTORIES is the
 // object directory of the daemon's repository; without it the quarantine is
-// the only object directory. Decision: handOverDaemonGit removes every GIT_
-// name of the daemon environment, these are set on purpose. A command that routes to
+// the only object directory. Decision: handOverDaemonGit removes every name of
+// the daemon environment that handOverEnvAllowed refuses, these are set on purpose. A command that routes to
 // the agent user would lose them, so it fails closed.
 func (q handOverQuarantine) git(ctx context.Context, daemonRepo string, alternate bool, args ...string) *exec.Cmd {
 	cmd := handOverDaemonGit(ctx, daemonRepo, handOverGitArgs(args...)...)
@@ -432,7 +442,7 @@ func removeHandOverFiles(paths []string) {
 // hand-over of the task set it, and errHandOverInProgress leaves its ref and
 // files alone. Before any of it, a daemon's repository that is a partial clone
 // is refused (handOverCheckPartialClone). Every git command of this step runs through
-// handOverDaemonGit (no GIT_ name of the daemon environment, a group kill on
+// handOverDaemonGit (only the allowed names of the daemon environment, a group kill on
 // a cancel of ctx). The quarantine, with the temporary file, is removed on every path; a
 // failed hand-over leaves objects/pack as it was and no hand-over ref.
 func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, baseSHA string) (string, error) {
