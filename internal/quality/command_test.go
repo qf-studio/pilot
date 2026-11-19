@@ -23,13 +23,31 @@ type builtCommand struct {
 	args []string
 }
 
-// recordingBuilder runs commands like the default and records each call.
+// recordingBuilder runs commands like the default and records each call. With
+// from and to set, a read of a path under from reads the same path under to.
 type recordingBuilder struct {
 	mu         sync.Mutex
 	builds     []builtCommand
 	configured []time.Duration
-	kills      []syscall.Signal
-	reads      []string
+	// startedAtConfigure records, per Configure call, whether the command had
+	// already started.
+	startedAtConfigure []bool
+	kills              []syscall.Signal
+	reads              []string
+	stats              []string
+	readDirs           []string
+	evals              []string
+	from, to           string
+}
+
+func (b *recordingBuilder) redirect(path string) string {
+	if b.from == "" {
+		return path
+	}
+	if rel, err := filepath.Rel(b.from, path); err == nil && !strings.HasPrefix(rel, "..") {
+		return filepath.Join(b.to, rel)
+	}
+	return path
 }
 
 func (b *recordingBuilder) Build(ctx context.Context, dir string, env []string, name string, args ...string) (*exec.Cmd, error) {
@@ -45,6 +63,7 @@ func (b *recordingBuilder) Build(ctx context.Context, dir string, env []string, 
 func (b *recordingBuilder) Configure(cmd *exec.Cmd, waitDelay time.Duration) {
 	b.mu.Lock()
 	b.configured = append(b.configured, waitDelay)
+	b.startedAtConfigure = append(b.startedAtConfigure, cmd.Process != nil)
 	b.mu.Unlock()
 	procgroup.Configure(cmd, waitDelay)
 	cmd.Cancel = func() error {
@@ -63,7 +82,28 @@ func (b *recordingBuilder) ReadFile(path string) ([]byte, error) {
 	b.mu.Lock()
 	b.reads = append(b.reads, path)
 	b.mu.Unlock()
-	return os.ReadFile(path)
+	return os.ReadFile(b.redirect(path))
+}
+
+func (b *recordingBuilder) Stat(path string) (os.FileInfo, error) {
+	b.mu.Lock()
+	b.stats = append(b.stats, path)
+	b.mu.Unlock()
+	return os.Stat(b.redirect(path))
+}
+
+func (b *recordingBuilder) ReadDir(path string) ([]os.DirEntry, error) {
+	b.mu.Lock()
+	b.readDirs = append(b.readDirs, path)
+	b.mu.Unlock()
+	return os.ReadDir(b.redirect(path))
+}
+
+func (b *recordingBuilder) EvalSymlinks(path string) (string, error) {
+	b.mu.Lock()
+	b.evals = append(b.evals, path)
+	b.mu.Unlock()
+	return filepath.EvalSymlinks(path)
 }
 
 func (b *recordingBuilder) builtNames() []string {

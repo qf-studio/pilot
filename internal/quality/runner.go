@@ -220,8 +220,23 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 		StartedAt: time.Now(),
 	}
 
-	command := r.resolveCommand(gate)
+	command, err := r.resolveCommandWithin(ctx, gate)
 	result.Command = command
+	if err != nil {
+		result.ExitCode = -1
+		result.Status = StatusFailed
+		if ctx.Err() != nil {
+			result.Err = fmt.Errorf("context cancelled: %w", ctx.Err())
+			result.Error = "context cancelled"
+		} else {
+			result.Err = fmt.Errorf("%w: after %s", ErrGateTimeout, gate.DefaultTimeout())
+			result.Error = result.Err.Error()
+		}
+		r.reportProgress(gate.Name, StatusFailed, fmt.Sprintf("%s gate failed: %s", gate.Name, result.Error))
+		result.CompletedAt = time.Now()
+		result.Duration = result.CompletedAt.Sub(result.StartedAt)
+		return result
+	}
 
 	r.reportProgress(gate.Name, StatusRunning, fmt.Sprintf("Running %s gate...", gate.Name))
 
@@ -250,6 +265,7 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 				case <-ctx.Done():
 					result.Status = StatusFailed
 					result.Error = "context cancelled during retry delay"
+					result.Err = fmt.Errorf("context cancelled during retry delay: %w", ctx.Err())
 					result.CompletedAt = time.Now()
 					result.Duration = result.CompletedAt.Sub(result.StartedAt)
 					return result
@@ -276,6 +292,7 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 			if ctx.Err() != nil {
 				result.Status = StatusFailed
 				result.Error = "context cancelled"
+				result.Err = fmt.Errorf("context cancelled: %w", ctx.Err())
 				break
 			}
 			// Command execution error (not exit code error)
@@ -353,6 +370,32 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 	result.Duration = result.CompletedAt.Sub(result.StartedAt)
 
 	return result
+}
+
+// resolveCommandWithin is resolveCommand bounded by the time limit of the
+// gate: the Makefile and the marker files it reads belong to the task, and a
+// FIFO in place of the Makefile would block the read. On the limit it returns
+// gate.Command and ErrGateTimeout, on a cancel of ctx the context error.
+//
+// Decision: the default builder cannot stop a blocked read, so the read runs
+// in a goroutine that may outlive the gate; the gate itself still returns.
+func (r *Runner) resolveCommandWithin(ctx context.Context, gate *Gate) (string, error) {
+	resCtx, cancel := context.WithTimeout(ctx, gate.DefaultTimeout())
+	defer cancel()
+
+	done := make(chan string, 1)
+	logging.SafeGo("quality-resolve", func() {
+		done <- r.resolveCommand(gate)
+	})
+	select {
+	case command := <-done:
+		return command, nil
+	case <-resCtx.Done():
+		if err := ctx.Err(); err != nil {
+			return gate.Command, err
+		}
+		return gate.Command, ErrGateTimeout
+	}
 }
 
 // resolveCommand returns the command to execute for gate. For a gate that runs
@@ -460,7 +503,7 @@ func defaultMakeTarget(t GateType) string {
 // makefileHasInclude reports whether the Makefile has an include directive, in
 // which case a target hasMakefileTarget cannot see may still be defined.
 func makefileHasInclude(path string) bool {
-	data, err := os.ReadFile(path)
+	data, err := readTaskFile(path)
 	if err != nil {
 		return false
 	}
@@ -540,7 +583,7 @@ func (r *Runner) executeCommand(ctx context.Context, gate *Gate, command string,
 	builder := CurrentCommandBuilder()
 	// Use shell to execute command (supports pipes, redirects, etc.)
 	// Later entries win over inherited duplicates (os/exec dedups keeping the last).
-	cmd, err := builder.Build(cmdCtx, r.projectDir, append(os.Environ(), scope.env()...), "sh", "-c", command)
+	cmd, err := buildCommand(builder, cmdCtx, r.projectDir, append(os.Environ(), scope.env()...), "sh", "-c", command)
 	if err != nil {
 		return -1, "", err
 	}
@@ -565,6 +608,11 @@ func (r *Runner) executeCommand(ctx context.Context, gate *Gate, command string,
 	// still held the pipes after the kill; output captured so far is returned.
 	if cmdCtx.Err() == context.DeadlineExceeded || errors.Is(err, exec.ErrWaitDelay) {
 		return -1, output, ErrGateTimeout
+	}
+	// A cancel of the outer context kills the command: its exit code is -1
+	// and the error must say why, not read as a plain exit (GH-6555).
+	if ctxErr := ctx.Err(); err != nil && ctxErr != nil {
+		return -1, output, fmt.Errorf("quality: gate %s: %w", gate.Name, ctxErr)
 	}
 
 	// Get exit code

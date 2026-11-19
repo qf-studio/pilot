@@ -4,9 +4,9 @@ package quality
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -362,7 +362,7 @@ func DetectBuildCommand(projectPath string) string {
 
 // fileExists checks if a file or directory exists at the given path.
 func fileExists(path string) bool {
-	_, err := os.Stat(path)
+	_, err := statTaskFile(path)
 	return err == nil
 }
 
@@ -421,14 +421,13 @@ func detectPackageManager(projectPath string) string {
 // target (e.g. a line beginning with `test:`). Returns false if the file is
 // missing or unreadable.
 func hasMakefileTarget(path, target string) bool {
-	f, err := os.Open(path)
+	data, err := readTaskFile(path)
 	if err != nil {
 		return false
 	}
-	defer func() { _ = f.Close() }()
 
 	prefix := target + ":"
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, prefix) {
@@ -447,7 +446,7 @@ func hasPythonProject(projectPath string) bool {
 			return true
 		}
 	}
-	entries, err := os.ReadDir(projectPath)
+	entries, err := readTaskDir(projectPath)
 	if err != nil {
 		return false
 	}

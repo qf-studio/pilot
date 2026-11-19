@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -81,7 +80,7 @@ func ChangedGoPackages(ctx context.Context, dir, baseBranch string) (pkgs []stri
 	if strings.TrimSpace(baseBranch) == "" {
 		return nil, true, "empty base branch"
 	}
-	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+	if _, err := statTaskFile(filepath.Join(dir, "go.mod")); err != nil {
 		return nil, true, "not a Go module root"
 	}
 
@@ -240,7 +239,7 @@ func relativeReads(root string, p *goListPackage, byDir map[string]*goListPackag
 	var out []string
 	seen := map[string]bool{}
 	for _, tf := range p.testFiles {
-		src, err := CurrentCommandBuilder().ReadFile(filepath.Join(root, filepath.FromSlash(p.dir), filepath.FromSlash(tf)))
+		src, err := readTaskFile(filepath.Join(root, filepath.FromSlash(p.dir), filepath.FromSlash(tf)))
 		if err != nil {
 			continue
 		}
@@ -333,10 +332,12 @@ func changedFiles(ctx context.Context, dir, baseBranch string) ([]string, error)
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd, err := CurrentCommandBuilder().Build(ctx, dir, nil, "git", args...)
+	builder := CurrentCommandBuilder()
+	cmd, err := buildCommand(builder, ctx, dir, nil, "git", args...)
 	if err != nil {
 		return nil, err
 	}
+	builder.Configure(cmd, gateWaitDelay)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -350,8 +351,8 @@ func gitOutput(ctx context.Context, dir string, args ...string) ([]byte, error) 
 }
 
 func samePath(a, b string) bool {
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
+	ra, errA := evalTaskSymlinks(a)
+	rb, errB := evalTaskSymlinks(b)
 	if errA != nil || errB != nil {
 		return filepath.Clean(a) == filepath.Clean(b)
 	}
@@ -361,17 +362,19 @@ func samePath(a, b string) bool {
 // listPackages reads the module's package graph with go list.
 func listPackages(ctx context.Context, dir string) ([]*goListPackage, error) {
 	const format = `{{.ImportPath}}{{"\t"}}{{.Dir}}{{"\t"}}{{join .Imports " "}}{{"\t"}}{{join .TestImports " "}} {{join .XTestImports " "}}{{"\t"}}{{join .TestGoFiles " "}} {{join .XTestGoFiles " "}}`
-	cmd, err := CurrentCommandBuilder().Build(ctx, dir, nil, "go", "list", "-f", format, "./...")
+	builder := CurrentCommandBuilder()
+	cmd, err := buildCommand(builder, ctx, dir, nil, "go", "list", "-f", format, "./...")
 	if err != nil {
 		return nil, fmt.Errorf("go list: %w", err)
 	}
+	builder.Configure(cmd, gateWaitDelay)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("go list: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	root, err := filepath.EvalSymlinks(dir)
+	root, err := evalTaskSymlinks(dir)
 	if err != nil {
 		root = dir
 	}
@@ -389,7 +392,7 @@ func listPackages(ctx context.Context, dir string) ([]*goListPackage, error) {
 		if len(cols) != 5 {
 			return nil, fmt.Errorf("go list: unexpected line %q", line)
 		}
-		pdir, err := filepath.EvalSymlinks(cols[1])
+		pdir, err := evalTaskSymlinks(cols[1])
 		if err != nil {
 			pdir = cols[1]
 		}
