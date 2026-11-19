@@ -151,7 +151,7 @@ var backendCLICommands = map[string]struct {
 	versionFlag string
 }{
 	"claude-code": {command: "claude", versionFlag: "--version"},
-	"opencode":    {command: "opencode", versionFlag: "version"},
+	"opencode":    {command: "opencode", versionFlag: "--version"},
 	"qwen-code":   {command: "qwen", versionFlag: "--version"},
 }
 
