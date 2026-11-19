@@ -307,15 +307,20 @@ func checkSecretGateTip(ctx context.Context, dir, tip, head, taskID string) erro
 // outcome, and the error text carries no "push failed" infra signature.
 const pushRefusedMarker = "push refused"
 
-// pushNeverForgiven reports whether a failed Push stopped at the secret gate:
-// the gate refused the commits (GH-6272) or could not run (the caller must not
-// push either). The commits did not leave the machine, so no remote state
-// excuses the failure, and retrying a refusal changes nothing. The one place
-// that classifies a push error as a gate stop; every push site goes through it.
-// TASK-651: a failed hand-over (HandOverError) is in the list too: the attempt
-// handed nothing over, so the remote head is never its own.
+// pushGateStop reports whether a failed Push stopped at the secret gate: the
+// gate refused the commits (GH-6272) or could not run (the caller must not
+// push either). The one place that classifies a push error as a gate stop.
+func pushGateStop(err error) bool {
+	return IsPushRefused(err) || IsSecretGateUnavailable(err)
+}
+
+// pushNeverForgiven reports whether a failed Push may never be forgiven: a
+// gate stop (pushGateStop) — the commits did not leave the machine, so no
+// remote state excuses the failure, and retrying a refusal changes nothing —
+// or, TASK-651, a failed hand-over (HandOverError): the attempt handed nothing
+// over, so the remote head is never its own. Every push site goes through it.
 func pushNeverForgiven(err error) bool {
-	return IsPushRefused(err) || IsSecretGateUnavailable(err) || IsHandOverError(err)
+	return pushGateStop(err) || IsHandOverError(err)
 }
 
 // acceptForgivenPush records a forgiven failed Push of branch whose remote

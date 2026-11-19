@@ -3632,7 +3632,7 @@ func (r *Runner) pushBranchCounting(ctx context.Context, git *GitOperations, tas
 				if replaced {
 					return nil
 				}
-				if pushNeverForgiven(leaseErr) {
+				if pushGateStop(leaseErr) {
 					// GH-6284: the gate stopped the lease push; escalating as a
 					// non-fast-forward would hide that.
 					return leaseErr
@@ -3759,7 +3759,7 @@ func (r *Runner) leasePushInheritedHead(ctx context.Context, git *GitOperations,
 	if err := git.PushForceWithLease(ctx, task.Branch, task.inheritedHeadSHA, task.ID); err != nil {
 		log.Warn("Lease push over the inherited head failed — escalating",
 			slog.String("task_id", task.ID), slog.Any("error", err))
-		if pushNeverForgiven(err) {
+		if pushGateStop(err) {
 			return false, err
 		}
 		return false, nil
