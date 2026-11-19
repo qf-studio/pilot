@@ -42,9 +42,10 @@ func (e *PushRangeError) Error() string {
 
 // newPushRangeError builds the verdict with the file path masked: a path can
 // hold the secret itself, and the error, the log line and the alert print it.
-// Control bytes of the path are not kept raw (TASK-651).
+// Control bytes of the path are not kept raw (TASK-651), and a long path is
+// cut to its last maxPrintedPath characters (GH-6535).
 func newPushRangeError(commit, file, kind string) *PushRangeError {
-	return &PushRangeError{Commit: commit, File: printableText(file), Kind: kind}
+	return &PushRangeError{Commit: commit, File: printablePath(file), Kind: kind}
 }
 
 // Is makes errors.Is(err, ErrPushRefused) true for a *PushRangeError.
@@ -442,7 +443,7 @@ func checkRange(ctx context.Context, dir, diffBase string, logArgs []string, hea
 	var diff []byte
 	if diffBase != "" {
 		var err error
-		diff, err = gitOutputMax(ctx, dir, int64(netDiffScanFactor*maxCommitScanBytes), "diff", "--no-color", "--text", "--no-textconv", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", diffBase+".."+head)
+		diff, err = gitOutputMax(ctx, dir, int64(netDiffScanFactor*maxCommitScanBytes), "diff", "--no-color", "--text", "--no-textconv", "--no-ext-diff", "--submodule=short", "--ignore-submodules=none", "--src-prefix=a/", "--dst-prefix=b/", diffBase+".."+head)
 		if cerr := ctxError(ctx); cerr != nil {
 			return cerr
 		}
@@ -738,9 +739,8 @@ func printableValue(v string) string {
 	return b.String()
 }
 
-// printableText is printableValue without the cut, for a file path: the path
-// names the file to fix, so it is printed whole. Redacted first, then each
-// control character becomes "?".
+// printableText is printableValue without the cut, for a file path (printablePath
+// cuts a very long one). Redacted first, then each control character becomes "?".
 func printableText(v string) string {
 	return strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {
@@ -748,6 +748,20 @@ func printableText(v string) string {
 		}
 		return r
 	}, Redact(v))
+}
+
+// maxPrintedPath is the most characters of a path a refusal prints.
+const maxPrintedPath = 200
+
+// printablePath is printableText cut to the last maxPrintedPath characters,
+// with "..." in front when it was cut. The cut comes after the redaction, for
+// the reason given at printableValue; the scan itself reads the whole path.
+func printablePath(v string) string {
+	r := []rune(printableText(v))
+	if len(r) <= maxPrintedPath {
+		return string(r)
+	}
+	return "..." + string(r[len(r)-maxPrintedPath:])
 }
 
 // scanCommits scans every selected commit on its own, streaming git's output so
@@ -768,7 +782,7 @@ func scanCommits(ctx context.Context, dir string, logArgs []string, opts PushOpt
 	start, msgMark, patchMark := []byte(mark+"S\n"), []byte("\n"+mark+"M\n"), []byte("\n"+mark+"P\n")
 	format := "--format=" + mark + "S%n%H%n" + mark + "M%n%B%n" + mark + "P"
 
-	args := append(GitScanConfig(), "log", "--no-show-signature", "-p", "--cc", "--text", "--no-textconv", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", "--reverse", "--topo-order", "--no-color", format)
+	args := append(GitScanConfig(), "log", "--no-show-signature", "-p", "--cc", "--text", "--no-textconv", "--no-ext-diff", "--submodule=short", "--ignore-submodules=none", "--src-prefix=a/", "--dst-prefix=b/", "--reverse", "--topo-order", "--no-color", format)
 	args = append(args, logArgs...)
 	defer gitCallDone(args)
 	cmd := gitCommand(ctx, dir, args...)
@@ -1078,9 +1092,13 @@ func GitScanConfig() []string {
 // pre-push script written into it ran inside the daemon's push (GH-6353).
 const NoHooksPath = "/dev/null/pilot-empty-hooks"
 
-// HooksOffArgs is the git -c arguments that turn every hook off.
+// HooksOffArgs is the git -c arguments that turn every hook off, and the
+// fsmonitor program with them. Decision: core.fsmonitor names a program that
+// git runs when it reads the index (a fetch does), the same as a hook: from
+// the config of a repository the session can write, it would run with the
+// token of a remote command in its environment (TASK-651).
 func HooksOffArgs() []string {
-	return []string{"-c", "core.hooksPath=" + NoHooksPath}
+	return []string{"-c", "core.hooksPath=" + NoHooksPath, "-c", "core.fsmonitor=false"}
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {

@@ -182,38 +182,63 @@ func (g *GitOperations) publishedHandOverSHA() string {
 	return g.publishedSHA
 }
 
-// daemonGitEnvDenied reports whether the variable name of the daemon
-// environment points a git command at another repository, work tree, index,
-// object store, ref namespace or config: GIT_DIR, GIT_WORK_TREE,
-// GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES,
-// GIT_NAMESPACE and every name that starts with GIT_CONFIG.
-func daemonGitEnvDenied(name string) bool {
-	switch name {
-	case "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
-		"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE":
-		return true
+// daemonGitEnvSet are the GIT_ names the code sets on purpose on a
+// daemon-side git command of the delivery of an agent workspace, after the
+// environment of the daemon and before daemonGitEnv: GIT_ASKPASS and
+// GIT_TERMINAL_PROMPT (withGitCredentials; its PILOT_GIT_TOKEN is no GIT_
+// name), and the names of appendGitEnv (gitAgentEnv): GIT_NO_REPLACE_OBJECTS
+// (the co-author read, the gate), GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL,
+// GIT_AUTHOR_DATE, GIT_COMMITTER_NAME, GIT_COMMITTER_EMAIL and
+// GIT_COMMITTER_DATE (the co-author rewrite).
+var daemonGitEnvSet = func() map[string]bool {
+	set := map[string]bool{"GIT_ASKPASS": true, "GIT_TERMINAL_PROMPT": true}
+	for name := range gitAgentEnv {
+		set[name] = true
 	}
-	return strings.HasPrefix(name, "GIT_CONFIG")
+	return set
+}()
+
+// daemonGitEnv is the environment of the daemon-side git commands of the
+// delivery of an agent workspace (TASK-651: the gate, the push, the remote
+// probes, the fetch and the count, the co-author read), so each works in the
+// daemon's repository and not in one that a variable of the daemon names:
+// inherited (the environment of the daemon) without each name that starts
+// with GIT_, then set (the values the code added to the command) without each
+// GIT_ name that is not in daemonGitEnvSet. Decision: an allow rule, not a
+// list of denied names: GIT_COMMON_DIR sent the push to the remote of
+// another repository, GIT_GRAFT_FILE and GIT_SHALLOW_FILE made the gate read
+// another history than the push sends, and git keeps adding such names.
+func daemonGitEnv(inherited, set []string) []string {
+	env := slices.DeleteFunc(slices.Clone(inherited), func(kv string) bool {
+		return strings.HasPrefix(kv, "GIT_")
+	})
+	for _, kv := range set {
+		if name, _, _ := strings.Cut(kv, "="); !strings.HasPrefix(name, "GIT_") || daemonGitEnvSet[name] {
+			env = append(env, kv)
+		}
+	}
+	return env
 }
 
-// daemonGitEnv is env without the names daemonGitEnvDenied refuses: the
-// environment of the daemon-side git commands of the delivery of an agent
-// workspace (TASK-651: the gate, the push, the remote probes, the fetch and
-// the count, the co-author read), so each works in the daemon's repository
-// and not in one that a variable of the daemon names. Decision: a short deny
-// list, not the allow rule of handOverDaemonEnv: the push needs the GIT_
-// names of withGitCredentials (GIT_ASKPASS, GIT_TERMINAL_PROMPT).
-func daemonGitEnv(env []string) []string {
-	return slices.DeleteFunc(slices.Clone(env), func(kv string) bool {
+// daemonGateEnv is the environment of the git commands of the secret gate for
+// an agent workspace: daemonGitEnv of the daemon environment without each
+// name handOverEnvAllowed refuses (PATH, HOME, TMPDIR, LANG, USER, LOGNAME
+// and the LC_ names pass). The gate adds GIT_NO_REPLACE_OBJECTS itself.
+// Decision: the gate commands are local, so no token of the daemon
+// (GITHUB_TOKEN, PILOT_GIT_TOKEN) reaches them.
+func daemonGateEnv(env []string) []string {
+	return slices.DeleteFunc(daemonGitEnv(env, nil), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
-		return daemonGitEnvDenied(name)
+		return !handOverEnvAllowed(name)
 	})
 }
 
-// withDaemonGitEnv sets the environment of cmd (os.Environ() when unset) to
-// its daemonGitEnv. It runs after withGitCredentials and appendGitEnv, which
-// build cmd.Env. A command the constructor failed closed, or one of the agent
-// route, is left as it is.
+// withDaemonGitEnv sets the environment of cmd to daemonGitEnv. It runs after
+// withGitCredentials and appendGitEnv, which build cmd.Env as os.Environ()
+// followed by the values they set: those values are the set part, the
+// os.Environ() prefix is inherited. A cmd.Env of another shape is all
+// inherited, so it keeps no GIT_ name. A command the constructor failed
+// closed, or one of the agent route, is left as it is.
 func withDaemonGitEnv(cmd *exec.Cmd) *exec.Cmd {
 	if gitRouteFailed(cmd) {
 		return cmd
@@ -221,11 +246,15 @@ func withDaemonGitEnv(cmd *exec.Cmd) *exec.Cmd {
 	if _, agent := agentCmdUser(cmd); agent {
 		return cmd
 	}
-	env := cmd.Env
-	if env == nil {
-		env = os.Environ()
+	base := os.Environ()
+	inherited, set := cmd.Env, []string(nil)
+	switch {
+	case cmd.Env == nil:
+		inherited = base
+	case len(cmd.Env) >= len(base) && slices.Equal(cmd.Env[:len(base)], base):
+		inherited, set = cmd.Env[:len(base)], cmd.Env[len(base):]
 	}
-	cmd.Env = daemonGitEnv(env)
+	cmd.Env = daemonGitEnv(inherited, set)
 	return cmd
 }
 
@@ -1455,10 +1484,10 @@ var handOverBeforeGate = func(daemonRepo, taskID string) {}
 // HANDOVER_SHA:refs/heads/BRANCH, the arguments of pushArgs, the explicit lease
 // and the credentials of today, without -u (no local branch to track). No git
 // command of the daemon runs with the workspace as its directory, so its
-// config, hooks and remotes have no effect; the gate, the push and the
-// co-author read get the environment of daemonGitEnv. A failed hand-over (a
-// branch with no commit above the base satisfies IsPushNothingNew) or a gate
-// stop returns before the push.
+// config, hooks and remotes have no effect; the push and the co-author read
+// get the environment of daemonGitEnv, the gate the one of daemonGateEnv. A
+// failed hand-over (a branch with no commit above the base satisfies
+// IsPushNothingNew) or a gate stop returns before the push.
 //
 // The attempt clears the hand-over SHAs of g first; attemptSHA is set after
 // the hand-over, handOverSHA and publishedSHA only after the push succeeded.
@@ -1481,7 +1510,7 @@ func (g *GitOperations) pushHandOver(ctx context.Context, branchName, expectedRe
 		g.workspace.setHandOver(sha, false)
 	}
 	handOverBeforeGate(g.daemonRepo, taskID)
-	gateCtx := secretpatterns.WithGitEnv(ctx, daemonGitEnv(os.Environ()))
+	gateCtx := secretpatterns.WithGitEnv(ctx, daemonGateEnv(os.Environ()))
 	if err := checkSecretGateTip(gateCtx, g.daemonRepo, sha, branchName, taskID); err != nil {
 		return err
 	}
