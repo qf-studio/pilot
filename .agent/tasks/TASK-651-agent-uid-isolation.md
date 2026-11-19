@@ -1575,6 +1575,50 @@ A lock per task. The mtime rule of the quarantine sweep. The callers in `git.go`
 
 - Navigator TASK-651 in this repo · review comment of PR#6497
 
+### LEG H12 — repo: qf-studio/pilot — title: fix(executor): run_as_user gh commands — the repository argument keeps the host of the remote, the epic gh calls leave the workspace, the graph file read has a time limit and refuses a FIFO, the secret gate git gets no token
+
+probe: present qf-studio/pilot \)[[:space:]]ghDirForDaemonRepo\(
+probe: present qf-studio/pilot func[[:space:]]daemonGitEnv\(
+probe: present qf-studio/pilot func[[:space:]]readMemoryGraphFile\(
+probe: present qf-studio/pilot func[[:space:]]queryRecentSubIssues\(
+probe: absent  qf-studio/pilot func[[:space:]]TestGhRepoArgKeepsHost\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-651. With run_as_user set, the agent works in a workspace that the agent user owns, and the daemon delivers from its own repository. A `gh` command of the daemon must not run in the workspace: gh reads the repository from the git config of its directory, and that config is the agent's. ghDirForDaemonRepo (`internal/executor/git.go`) gives the four PR commands the daemon's repository and a `--repo OWNER/NAME` argument. Run-it reviews found the points below. The option is off, and the preflight refuses it on every host today. Keep the change small: only the items below. With the option empty nothing changes.
+
+- ghDirForDaemonRepo keeps only the owner and the name of the origin remote. For a remote on another host (GitHub Enterprise) `--repo owner/name` has no host, and gh resolves it against github.com with the token of the daemon.
+- A remote that ends in `.git/` gives the name `name.git`.
+- The parse error for a remote with one path segment prints the URL, with the credentials when the URL holds them.
+- More gh commands of `internal/executor/epic.go` take the execution path as their directory: queryRecentSubIssues, recoverExistingSubIssues, runGHIssueCreateWithRetry, the issue comment call, the issue close call and queryParentDoneViaGitHub. With an agent workspace that path is the workspace.
+- readMemoryGraphFile reads the graph file of the workspace as the agent user with a background context. A FIFO in place of the file stalls each read for 30 seconds or more.
+- The git commands of the secret gate (`internal/executor/secretpatterns/pushrange.go`) run in the daemon's repository on commits of the agent with the environment of daemonGitEnv. That is a list of denied names; each token of the daemon is still in it. These commands are local and need no token.
+
+## Scope
+
+1. A function ghRepoArg in `git.go`: from the URL of the origin remote it gives `OWNER/NAME` for the host github.com and `HOST/OWNER/NAME` for each other host (https, ssh and the scp-like form; a port is dropped). It removes a final `/` before the suffix `.git`. Its error never holds the user part of the URL: print the URL with the part before `@` replaced by `REDACTED`. ghDirForDaemonRepo uses it.
+2. A helper that gives the directory and the repository arguments of a gh command for an execution path: for a path that is an agent workspace on record it gives the daemon's repository and the arguments of ghRepoArg; for each other path it gives the path and no argument, as today. The six gh calls of `epic.go` named above use it. A workspace path with no record is an error; no gh command runs in it.
+3. readMemoryGraphFile takes a context from its caller; the read as the agent user has a time limit of 10 seconds and refuses a path that is not a regular file (checked as the agent user in the same command, with no second step). A refusal or a time limit is handled as a missing file with the Warn line of today.
+4. The git commands of the secret gate, when they run for an agent workspace: the environment is the one of daemonGitEnv without each name that is not `PATH`, `HOME`, `TMPDIR`, `LANG`, `USER`, `LOGNAME`, a name that starts with `LC_`, or a `GIT_` name that the code sets on purpose. The push and the remote probes keep the environment of today (they need the credentials).
+5. Tests: a function TestGhRepoArgKeepsHost — a table of remote URLs (github.com https and scp-like, another host https, another host scp-like, a port, a final `.git/`, one path segment with credentials in the URL): the argument, and for the error row no credential text in the error; with an agent workspace each of the six epic calls runs in the daemon's repository with the `--repo` argument (a fake `gh` first in `PATH` that writes its directory and arguments to a file); a workspace path with no record runs no gh command; a FIFO in place of the graph file returns in under 15 seconds with the result of a missing file; with `GITHUB_TOKEN` set to a fake value in the test process, no git command of the secret gate for an agent workspace has the name in its environment (a wrapper `git` that writes its environment).
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/... -run 'GhRepoArg|Epic.*Workspace|MemoryGraph|SecretGate'` passes; paste the output into the PR body.
+- [ ] Let ghRepoArg drop the host -> TestGhRepoArgKeepsHost fails.
+- [ ] Set `cmd.Dir` of one epic call back to the execution path -> the epic test fails.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The life of the hand-over ref and the workspace sweep (a later leg). The environment of the push and of the remote probes. The `gh` shim of the agent side. GitLab and other trackers. Any change of behaviour with the option empty.
+
+## Refs
+
+- Navigator TASK-651 in this repo · review comments of PR#6482 and PR#6511
+
 ### LEG H15 — repo: qf-studio/pilot — title: fix(executor): run_as_user hand-over — the daemon-side git gets only named variables (no token), no global and no system git config, tests for the update-ref environment and for the wait delay on each host
 
 probe: present qf-studio/pilot func[[:space:]]handOverEnvAllowed\(
