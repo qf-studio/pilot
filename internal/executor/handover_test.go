@@ -1870,13 +1870,16 @@ func TestHandOverBranchKeepsTheOldRefAsRecovery(t *testing.T) {
 	})
 
 	// The other hand-over of the task wins with another commit right before
-	// the last update-ref: by a lock of the ref, or by the ref itself.
+	// the last update-ref: by a lock of the ref (with the ref written, or not
+	// yet written), or by the ref itself.
 	for _, tc := range []struct {
-		name string
-		lock bool
+		name      string
+		lock      bool
+		winnerRef bool
 	}{
-		{"a lock of the ref of the task", true},
-		{"the ref of the task exists", false},
+		{"a lock of the ref of the task", true, true},
+		{"a lock of the ref of the task, no ref yet", true, false},
+		{"the ref of the task exists", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newHandOverEnv(t)
@@ -1890,8 +1893,13 @@ func TestHandOverBranchKeepsTheOldRefAsRecovery(t *testing.T) {
 			prev := execCommandContext
 			execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
 				if name == "git" && slices.Contains(args, "update-ref") && slices.Contains(args, ref) && !slices.Contains(args, "-d") {
-					wsGit(t, e.repo, "update-ref", ref, winner)
+					if tc.winnerRef {
+						wsGit(t, e.repo, "update-ref", ref, winner)
+					}
 					if tc.lock {
+						if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+							t.Fatal(err)
+						}
 						if err := os.WriteFile(lock, nil, 0o600); err != nil {
 							t.Fatal(err)
 						}
@@ -1905,7 +1913,11 @@ func TestHandOverBranchKeepsTheOldRefAsRecovery(t *testing.T) {
 			if !errors.Is(err, errHandOverInProgress) {
 				t.Fatalf("handOverBranch = %s, %v, want %v", sha, err, errHandOverInProgress)
 			}
-			if got := wsGit(t, e.repo, "rev-parse", ref); got != winner {
+			if !tc.winnerRef {
+				if got := handOverRefValue(context.Background(), e.repo, ref); got != "" {
+					t.Errorf("%s = %s, want no ref while the lock holder has not written it", ref, got)
+				}
+			} else if got := wsGit(t, e.repo, "rev-parse", ref); got != winner {
 				t.Errorf("%s = %s, want the ref of the winner %s", ref, got, winner)
 			}
 			if got := e.packFiles(t); !slices.Equal(got, packsBefore) {

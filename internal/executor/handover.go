@@ -573,11 +573,12 @@ func handOverBranch(ctx context.Context, workspace, daemonRepo, taskID, branch, 
 		if strings.Contains(msg, "reference already exists") || (strings.Contains(msg, "Unable to create") && strings.Contains(msg, ".lock")) {
 			// Decision: another hand-over of the task set the ref after the
 			// removal above, or holds its lock; its ref stays. The files this
-			// call moved go, unless the ref names the tip of this call or
-			// cannot be read: a pack of the same name (the same objects, so
-			// the same tip) was moved by this call alone and the other
-			// hand-over relies on it.
-			if winner := handOverRefValue(ctx, daemonRepo, ref); winner != "" && winner != tip {
+			// call moved go, also when the holder of the lock has not
+			// written the ref yet, unless the ref names the tip of this
+			// call: a pack of the same name (the same objects, so the same
+			// tip) was moved by this call alone and the other hand-over
+			// relies on it.
+			if handOverRefValue(ctx, daemonRepo, ref) != tip {
 				removeHandOverFiles(moved)
 			}
 			return "", fmt.Errorf("%w: set %s to %s: %v: %s", errHandOverInProgress, ref, tip, err, strings.TrimSpace(msg))
