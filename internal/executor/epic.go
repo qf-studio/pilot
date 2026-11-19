@@ -874,10 +874,14 @@ func queryParentDoneViaGitHub(taskID, dir string) bool {
 	if issueNum == "" || issueNum == taskID {
 		return false
 	}
-	args := []string{"issue", "view", issueNum, "--json", "state,labels"}
+	ghDir, repoArgs, err := ghDirForExecutionPath(context.Background(), dir)
+	if err != nil {
+		return false
+	}
+	args := append([]string{"issue", "view", issueNum, "--json", "state,labels"}, repoArgs...)
 	cmd := withGhCredentials(context.Background(), exec.Command("gh", args...))
-	if dir != "" {
-		cmd.Dir = dir
+	if ghDir != "" {
+		cmd.Dir = ghDir
 	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -1079,9 +1083,13 @@ func queryRecentSubIssues(ctx context.Context, dir, parentID string) (bool, erro
 		"--json", "number",
 		"--limit", "3",
 	}
-	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
-	if dir != "" {
-		cmd.Dir = dir
+	ghDir, repoArgs, err := ghDirForExecutionPath(ctx, dir)
+	if err != nil {
+		return false, err
+	}
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", append(args, repoArgs...)...))
+	if ghDir != "" {
+		cmd.Dir = ghDir
 	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -1107,9 +1115,13 @@ func recoverExistingSubIssues(ctx context.Context, dir, parentID string) ([]Crea
 		"--json", "number,url,state,title,body",
 		"--limit", "50",
 	}
-	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
-	if dir != "" {
-		cmd.Dir = dir
+	ghDir, repoArgs, err := ghDirForExecutionPath(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", append(args, repoArgs...)...))
+	if ghDir != "" {
+		cmd.Dir = ghDir
 	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -1704,12 +1716,17 @@ func isTransientSubIssueCreateError(errText string) bool {
 // handled before this helper existed.
 func (r *Runner) runGHIssueCreateWithRetry(ctx context.Context, args []string, executionPath string, subtaskOrder int) (string, error) {
 	attempts, delay := r.subIssueCreateRetryConfig()
+	ghDir, repoArgs, err := ghDirForExecutionPath(ctx, executionPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create issue for subtask %d: %w", subtaskOrder, err)
+	}
+	ghArgs := append(append([]string{}, args...), repoArgs...)
 
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
-		cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
-		if executionPath != "" {
-			cmd.Dir = executionPath
+		cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", ghArgs...))
+		if ghDir != "" {
+			cmd.Dir = ghDir
 		}
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
@@ -1923,10 +1940,14 @@ func (r *Runner) UpdateIssueProgress(ctx context.Context, projectPath string, is
 		return nil
 	}
 
-	args := []string{"issue", "comment", issueID, "--body", secretpatterns.Redact(message)}
+	ghDir, repoArgs, err := ghDirForExecutionPath(ctx, projectPath)
+	if err != nil {
+		return fmt.Errorf("failed to comment on issue %s: %w", issueID, err)
+	}
+	args := append([]string{"issue", "comment", issueID, "--body", secretpatterns.Redact(message)}, repoArgs...)
 	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
-	if projectPath != "" {
-		cmd.Dir = projectPath
+	if ghDir != "" {
+		cmd.Dir = ghDir
 	}
 
 	var stderr bytes.Buffer
@@ -1946,10 +1967,15 @@ func (r *Runner) CloseIssueWithComment(ctx context.Context, projectPath string, 
 		return nil
 	}
 
+	ghDir, repoArgs, err := ghDirForExecutionPath(ctx, projectPath)
+	if err != nil {
+		return fmt.Errorf("failed to close issue %s: %w", issueID, err)
+	}
+
 	// Idempotency: check if issue is already closed before attempting close.
-	stateCmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", "issue", "view", issueID, "--json", "state", "--jq", ".state"))
-	if projectPath != "" {
-		stateCmd.Dir = projectPath
+	stateCmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", append([]string{"issue", "view", issueID, "--json", "state", "--jq", ".state"}, repoArgs...)...))
+	if ghDir != "" {
+		stateCmd.Dir = ghDir
 	}
 	if stateOut, err := stateCmd.Output(); err == nil {
 		if strings.TrimSpace(string(stateOut)) == "CLOSED" {
@@ -1958,10 +1984,10 @@ func (r *Runner) CloseIssueWithComment(ctx context.Context, projectPath string, 
 		}
 	}
 
-	args := []string{"issue", "close", issueID, "--comment", secretpatterns.Redact(comment)}
+	args := append([]string{"issue", "close", issueID, "--comment", secretpatterns.Redact(comment)}, repoArgs...)
 	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
-	if projectPath != "" {
-		cmd.Dir = projectPath
+	if ghDir != "" {
+		cmd.Dir = ghDir
 	}
 
 	var stderr bytes.Buffer
