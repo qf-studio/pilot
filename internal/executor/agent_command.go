@@ -714,13 +714,14 @@ const (
 	agentDialConnected
 	// agentDialNoAnswer: the connection ended by the time limit or by the
 	// context, with no answer, after the start line of the probe
-	// (runAsProbeStart).
+	// (runAsProbeStart) and before any marker line.
 	agentDialNoAnswer
-	// agentDialNotRun: the probe ended before the time limit without its
-	// marker line (runAsProbeMarker), or by the time limit without its start
-	// line, or wrote more than runAsProbeOutputLimit bytes: it never reported
-	// a connection try, as when sudo fails or hangs for the agent user, bash
-	// is missing or the probe is killed (GH-6480, GH-6516).
+	// agentDialNotRun: the probe ended before the time limit without one
+	// start line before one marker line (runAsProbeMarker), or by the time
+	// limit without its start line, or wrote more than runAsProbeOutputLimit
+	// bytes, or ended with its output held open: it never reported a
+	// connection try, as when sudo fails or hangs for the agent user, bash is
+	// missing or the probe is killed (GH-6480, GH-6516, GH-6530).
 	agentDialNotRun
 )
 
@@ -913,48 +914,59 @@ func localIPv4sOf(addrs []net.Addr) []string {
 	return out
 }
 
-// agentDialAs runs `bash --norc --noprofile -c 'echo pilot-probe=start; :
+// agentDialAs runs `bash --norc --noprofile -p -c 'echo pilot-probe=start; :
 // 2>/dev/null </dev/tcp/HOST/PORT; echo pilot-probe=$?'` as the agent user
 // with the agent environment, bounded by timeout, and reports how it ended:
 // the marker with 0 is a connection, the marker with 1 a failed connection,
-// an end by the time limit after the start line no answer, and any other end
-// a probe that did not run (agentDialNotRun). The output is read up to
-// runAsProbeOutputLimit bytes, and what the probe wrote before a kill is
-// kept.
+// an end by the time limit after the start line and with no marker no
+// answer, and any other end a probe that did not run (agentDialNotRun). The
+// output is read up to runAsProbeOutputLimit bytes, and what the probe wrote
+// before a kill is kept. A host that is not an IP address or a port outside
+// 1 to 65535 never reaches the script: the probe does not run.
 //
 // Decision: no answer by the time limit is the normal end of a blocked
 // metadata connection, and a sudo that hangs ends the same way without a
-// connection try; the start line tells them apart (GH-6516). --norc and
-// --noprofile keep a file of the agent user from printing the marker.
+// connection try; the start line tells them apart (GH-6516). A marker with 0
+// read at the time limit is a connection that was made, from a sudo that
+// ends late (GH-6530). --norc and --noprofile keep a file of the agent user
+// from printing the marker; -p keeps BASH_ENV and an exported function from
+// doing it. A process that keeps the output open after the probe ended makes
+// Wait end by the wait delay (runAsProbeWaitDelay), not by the context.
 func agentDialAs(s *runAsSettings, addr string, timeout time.Duration) agentDialResult {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
+	host, portText, err := net.SplitHostPort(addr)
+	if err != nil || net.ParseIP(host) == nil {
+		return agentDialNotRun
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
 		return agentDialNotRun
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	script := "echo " + runAsProbeStart + "; : 2>/dev/null </dev/tcp/" + host + "/" + port + "; echo " + runAsProbeMarker + "$?"
-	cmd, err := agentCommandAs(ctx, s, "bash", "--norc", "--noprofile", "-c", script)
+	script := "echo " + runAsProbeStart + "; : 2>/dev/null </dev/tcp/" + host + "/" + strconv.Itoa(port) + "; echo " + runAsProbeMarker + "$?"
+	cmd, err := agentCommandAs(ctx, s, "bash", "--norc", "--noprofile", "-p", "-c", script)
 	if err != nil {
 		return agentDialNotRun
 	}
+	cmd.WaitDelay = runAsProbeWaitDelay
 	setAgentEnv(cmd, gitAgentBaseEnv())
 	var out probeOutput
 	cmd.Stdout = &out
 	err = cmd.Run()
 	switch {
-	case out.over:
+	case out.over, errors.Is(err, exec.ErrWaitDelay):
 		return agentDialNotRun
 	case ctx.Err() != nil:
-		if probeStarted(string(out.buf)) {
-			return agentDialNoAnswer
-		}
-		return agentDialNotRun
+		return probeTimeLimitResult(string(out.buf))
 	case err != nil:
 		return agentDialNotRun
 	}
 	return probeMarkerResult(string(out.buf))
 }
+
+// runAsProbeWaitDelay bounds cmd.Wait of one probe after its end or the
+// cancel of its context.
+const runAsProbeWaitDelay = 2 * time.Second
 
 // errProbeOutputLimit ends the read of a probe that wrote more than
 // runAsProbeOutputLimit bytes.
@@ -976,40 +988,55 @@ func (o *probeOutput) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// probeStarted reports whether out has the start line of the probe
-// (runAsProbeStart).
-func probeStarted(out string) bool {
-	for _, line := range strings.Split(out, "\n") {
-		if strings.TrimSpace(line) == runAsProbeStart {
-			return true
-		}
-	}
-	return false
-}
-
-// probeMarkerResult reads the output of a probe that exited 0: exactly one
-// marker line with the status 0 (connected) or 1 (failed), as bash prints
-// it, else the probe did not run. The start line is not a marker line.
-func probeMarkerResult(out string) agentDialResult {
-	var status string
-	var markers int
+// probeLines reads the marker lines of a probe output: the number of start
+// lines (runAsProbeStart, the whole line), the status texts of the other
+// marker lines in order, and whether every status line comes after the
+// first start line.
+func probeLines(out string) (starts int, statuses []string, ordered bool) {
+	ordered = true
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == runAsProbeStart {
+			starts++
 			continue
 		}
 		if v, ok := strings.CutPrefix(line, runAsProbeMarker); ok {
-			status = v
-			markers++
+			if starts == 0 {
+				ordered = false
+			}
+			statuses = append(statuses, v)
 		}
 	}
+	return starts, statuses, ordered
+}
+
+// probeMarkerResult reads the output of a probe that exited 0: exactly one
+// start line before exactly one marker line with the status 0 (connected)
+// or 1 (failed), as bash prints it, else the probe did not run.
+func probeMarkerResult(out string) agentDialResult {
+	starts, statuses, ordered := probeLines(out)
 	switch {
-	case markers != 1:
+	case starts != 1 || len(statuses) != 1 || !ordered:
 		return agentDialNotRun
-	case status == "0":
+	case statuses[0] == "0":
 		return agentDialConnected
-	case status == "1":
+	case statuses[0] == "1":
 		return agentDialFailed
+	}
+	return agentDialNotRun
+}
+
+// probeTimeLimitResult reads the output of a probe that ended by the time
+// limit: exactly one start line and no marker line is no answer, a marker
+// line read by probeMarkerResult as a connection is a connection, and
+// anything else did not run (GH-6530).
+func probeTimeLimitResult(out string) agentDialResult {
+	starts, statuses, _ := probeLines(out)
+	switch {
+	case starts == 1 && len(statuses) == 0:
+		return agentDialNoAnswer
+	case probeMarkerResult(out) == agentDialConnected:
+		return agentDialConnected
 	}
 	return agentDialNotRun
 }
