@@ -150,6 +150,26 @@ func mintGitHubAppToken(ctx context.Context, appCfg *github.AppConfig) (string, 
 	return source.Token(ctx)
 }
 
+// agentReadTokenProvider returns the provider of read tokens for one
+// repository that the executor hands to the agent user (TASK-651): a GitHub
+// App installation token narrowed to the repository and to
+// github.ReadOnlyPermissions. It returns nil when adapters.github.app is not
+// configured — the config token, GITHUB_TOKEN and the gh CLI login of the
+// daemon can write, so none of them is a substitute.
+func agentReadTokenProvider(cfg *config.Config) executor.AgentReadTokenProvider {
+	if cfg == nil || cfg.Adapters == nil || cfg.Adapters.GitHub == nil || cfg.Adapters.GitHub.App == nil {
+		return nil
+	}
+	appCfg := cfg.Adapters.GitHub.App
+	return func(ctx context.Context, repo string) (string, time.Time, error) {
+		source, err := ghAppTokenCache.get(appCfg)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		return source.ScopedToken(ctx, repo, github.ReadOnlyPermissions())
+	}
+}
+
 // ghCLITokenCache memoizes the `gh auth token` fallback lookup for the process
 // lifetime — it forks a subprocess, and the credential can't change mid-run.
 // A pointer so tests can reset it by swapping in a fresh instance instead of
@@ -2516,6 +2536,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, startPreflight func(
 			return mintGitHubAppToken(ctx, appCfg)
 		})
 	}
+	// TASK-651: the agent user of a run_as_user run gets a token that can
+	// only read its one repository, minted by the same App. Nil with no App.
+	executor.SetAgentReadTokenProvider(agentReadTokenProvider(cfg))
 
 	// Check Telegram config if enabled
 	hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled
