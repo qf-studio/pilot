@@ -1871,15 +1871,20 @@ func TestHandOverBranchKeepsTheOldRefAsRecovery(t *testing.T) {
 
 	// The other hand-over of the task wins with another commit right before
 	// the last update-ref: by a lock of the ref (with the ref written, or not
-	// yet written), or by the ref itself.
+	// yet written), or by the ref itself. The pack of this call goes when the
+	// value of the winner is known; an empty lock (the value not written
+	// yet, maybe the tip of this call) keeps it.
 	for _, tc := range []struct {
 		name      string
 		lock      bool
+		lockValue bool
 		winnerRef bool
+		keepPack  bool
 	}{
-		{"a lock of the ref of the task", true, true},
-		{"a lock of the ref of the task, no ref yet", true, false},
-		{"the ref of the task exists", false, true},
+		{"a lock of the ref of the task", true, true, true, false},
+		{"a lock of the ref of the task, no ref yet", true, true, false, false},
+		{"an empty lock of the ref of the task, no ref yet", true, false, false, true},
+		{"the ref of the task exists", false, false, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newHandOverEnv(t)
@@ -1900,7 +1905,11 @@ func TestHandOverBranchKeepsTheOldRefAsRecovery(t *testing.T) {
 						if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
 							t.Fatal(err)
 						}
-						if err := os.WriteFile(lock, nil, 0o600); err != nil {
+						var data []byte
+						if tc.lockValue {
+							data = []byte(winner + "\n")
+						}
+						if err := os.WriteFile(lock, data, 0o600); err != nil {
 							t.Fatal(err)
 						}
 					}
@@ -1920,8 +1929,8 @@ func TestHandOverBranchKeepsTheOldRefAsRecovery(t *testing.T) {
 			} else if got := wsGit(t, e.repo, "rev-parse", ref); got != winner {
 				t.Errorf("%s = %s, want the ref of the winner %s", ref, got, winner)
 			}
-			if got := e.packFiles(t); !slices.Equal(got, packsBefore) {
-				t.Errorf("objects/pack after the hand-over: %q, want %q", got, packsBefore)
+			if got := e.packFiles(t); tc.keepPack == slices.Equal(got, packsBefore) {
+				t.Errorf("objects/pack after the hand-over: %q, before %q, want the pack of the hand-over kept: %v", got, packsBefore, tc.keepPack)
 			}
 			if quarantines, _ := filepath.Glob(filepath.Join(e.repo, ".git", "objects", handOverQuarantinePrefix+"*")); len(quarantines) != 0 {
 				t.Errorf("quarantine directories left: %q", quarantines)
@@ -1929,6 +1938,55 @@ func TestHandOverBranchKeepsTheOldRefAsRecovery(t *testing.T) {
 			assertEmptyDir(t, tmp)
 		})
 	}
+}
+
+// The other hand-over of the task has the same tip, so its pack has the same
+// name and only this call moved it; it holds the lock of the ref and has not
+// written the ref yet when this call loses.
+//
+// mutation pin: decide on the ref alone (handOverRefValue for
+// handOverWinnerValue) -> this test fails
+func TestHandOverBranchLoserKeepsThePackOfTheSameTip(t *testing.T) {
+	e := newHandOverEnv(t)
+	head := commitFile(t, e.ws, "a.txt", handOverSecretText())
+	e.sudoLog = mockSudoAgent(t, e.repo, "")
+	tmp := handOverTmpDir(t)
+	ref := handOverRef(handOverTestTask)
+	refFile := filepath.Join(e.repo, ".git", filepath.FromSlash(ref))
+	lock := refFile + ".lock"
+	t.Cleanup(func() { _ = os.Remove(lock) })
+	prev := execCommandContext
+	execCommandContext = func(c context.Context, name string, args ...string) *exec.Cmd {
+		if name == "git" && slices.Contains(args, "update-ref") && slices.Contains(args, ref) && !slices.Contains(args, "-d") {
+			if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(lock, []byte(head+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return prev(c, name, args...)
+	}
+	t.Cleanup(func() { execCommandContext = prev })
+
+	sha, err := handOverBranch(context.Background(), e.ws, e.repo, handOverTestTask, e.branch, e.base)
+	if !errors.Is(err, errHandOverInProgress) {
+		t.Fatalf("handOverBranch = %s, %v, want %v", sha, err, errHandOverInProgress)
+	}
+	// The winner commits its lock: git renames the lock to the ref.
+	if err := os.Rename(lock, refFile); err != nil {
+		t.Fatal(err)
+	}
+	if got := wsGit(t, e.repo, "rev-parse", ref); got != head {
+		t.Fatalf("%s = %s, want %s", ref, got, head)
+	}
+	if out, err := exec.Command("git", "-C", e.repo, "rev-list", "--objects", ref).CombinedOutput(); err != nil {
+		t.Errorf("the objects of %s: %v: %s", ref, err, out)
+	}
+	if out, err := exec.Command("git", "-C", e.repo, "fsck", "--connectivity-only", "--no-dangling").CombinedOutput(); err != nil {
+		t.Errorf("git fsck of the daemon repository: %v: %s", err, out)
+	}
+	assertEmptyDir(t, tmp)
 }
 
 func TestCheckHandOverPartialCloneValues(t *testing.T) {
