@@ -3457,6 +3457,24 @@ func (r *Runner) pushDirectCommit(ctx context.Context, task *Task, git *GitOpera
 func (r *Runner) pushTaskBranch(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger) bool {
 	pushes := 0
 	pushErr := r.pushBranchCounting(ctx, git, task, log, &pushes)
+	if IsPushNothingNew(pushErr) {
+		// TASK-651: the hand-over found no commit above the base. Not a push
+		// failure: the run ends as a run with no new commit does (the PR
+		// guard of the option empty).
+		r.emitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeDeadManSuccess,
+			TaskID:    task.ID,
+			Metadata:  map[string]string{"tracker": PushRetryExhaustedDeadManTrackerName},
+			Timestamp: time.Now(),
+		})
+		log.Warn("Hand-over found no commit above the base, skipping PR creation",
+			slog.String("task_id", task.ID),
+			slog.String("branch", task.Branch),
+		)
+		evaluateEmptyBranchPRGuard(false, nil, result)
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		return false
+	}
 	if IsPushRefused(pushErr) {
 		// GH-6272: a refusal is terminal and not an infra failure: the
 		// push machinery worked, the commits were held back. The tracker
@@ -3497,7 +3515,10 @@ func (r *Runner) pushTaskBranch(ctx context.Context, task *Task, git *GitOperati
 // the local HEAD — the GH-1389 chdir false positive, where the data had
 // already landed. A mere existing remote branch is not enough (GH-5729: a
 // rejected non-fast-forward push was swallowed because the branch existed, and
-// the stale PR was adopted as success).
+// the stale PR was adopted as success). TASK-651: for an agent workspace the
+// compare is with the hand-over SHA of the attempt, never the local HEAD, and a
+// failed hand-over is never forgiven (pushFailureForgivenHead); a hand-over
+// with no commit above the base (IsPushNothingNew) is not retried.
 //
 // An autopilot-fix continuation (FromPR > 0 and FixFromSHA != "") rebases the
 // branch, so it can never fast-forward: when the rejection is non-fast-forward
@@ -3532,16 +3553,22 @@ func (r *Runner) pushBranchCounting(ctx context.Context, git *GitOperations, tas
 			// retrying, or forgiving the failure, would publish them another way.
 			return pushErr
 		}
+		if IsPushNothingNew(pushErr) {
+			// TASK-651: the hand-over found no commit above the base. Nothing
+			// to push, and a retry finds nothing either; not a failure.
+			return pushErr
+		}
 		localHead, localErr := git.LocalHead(ctx)
 		remoteHead, remoteOK := git.RemoteBranchHead(ctx, task.Branch)
-		if localErr == nil && remoteOK && remoteHead == localHead {
+		if forgiveHead, ok := pushFailureForgivenHead(git, localHead, localErr); ok && remoteOK && remoteHead == forgiveHead {
 			// GH-1389: worktree push may fail with a chdir error even though the
-			// data was already pushed.
-			log.Warn("Push reported error but remote head equals local HEAD, continuing",
+			// data was already pushed. TASK-651: for an agent workspace the
+			// head is the hand-over SHA of this attempt, not the local HEAD.
+			log.Warn("Push reported error but remote head equals the pushed head, continuing",
 				slog.String("task_id", task.ID),
 				slog.Any("error", pushErr),
 				slog.String("branch", task.Branch),
-				slog.String("head", localHead),
+				slog.String("head", forgiveHead),
 			)
 			return nil
 		}

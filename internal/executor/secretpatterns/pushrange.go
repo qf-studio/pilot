@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -931,15 +932,37 @@ var gitCallDone = func(args []string) {}
 // gate starts. A test seam: it lets a test record what each command carries.
 var gitCommandSeen = func(args []string) {}
 
+// gitEnvKey is the context key of WithGitEnv.
+type gitEnvKey struct{}
+
+// WithGitEnv returns ctx with env as the environment of every git command the
+// gate starts under it, in place of os.Environ(). The hand-over push of an
+// agent workspace (TASK-651) passes the daemon environment without the
+// variables that name another repository.
+func WithGitEnv(ctx context.Context, env []string) context.Context {
+	return context.WithValue(ctx, gitEnvKey{}, slices.Clone(env))
+}
+
+// GitEnv is the environment WithGitEnv put into ctx; ok is false when none.
+func GitEnv(ctx context.Context) (env []string, ok bool) {
+	env, ok = ctx.Value(gitEnvKey{}).([]string)
+	return slices.Clone(env), ok
+}
+
 // gitCommand is the one way the gate starts git. Decision: it runs with
 // GIT_NO_REPLACE_OBJECTS=1. A replace ref or a graft made by the session maps a
 // commit to another one for every reading command, so the scan would see the
-// replacement while git push sends the real objects (GH-6318).
+// replacement while git push sends the real objects (GH-6318). The
+// environment is os.Environ(), or the one of WithGitEnv.
 func gitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	gitCommandSeen(args)
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
+	env, ok := GitEnv(ctx)
+	if !ok {
+		env = os.Environ()
+	}
+	cmd.Env = append(env, "GIT_NO_REPLACE_OBJECTS=1")
 	return cmd
 }
 

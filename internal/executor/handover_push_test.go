@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 // TASK-651: with run_as_user set, the push of an agent workspace runs in the
@@ -370,5 +371,288 @@ func TestHandOverPushOptionEmptyKeepsTheWorkspacePath(t *testing.T) {
 	g := newGitOperationsForWorkspace(repo, filepath.Join(repo, "daemon"))
 	if g.daemonRepo != "" || g.handOverBase != "" || g.remoteDir() != repo || g.ProjectPath() != repo {
 		t.Errorf("option empty: daemonRepo=%q base=%q remoteDir=%q, want the plain operations of %q", g.daemonRepo, g.handOverBase, g.remoteDir(), repo)
+	}
+}
+
+// remoteCount is the number of commits of the branch on the bare remote above
+// its main.
+func (e *handOverPushEnv) remoteCount(t *testing.T, branch string) int {
+	t.Helper()
+	var n int
+	if _, err := fmt.Sscanf(wsGit(t, e.remote, "rev-list", "--count", "main..refs/heads/"+branch), "%d", &n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// TestHandOverPushDeletedBranchRefIsNotForgiven: after a first push the agent
+// deletes its branch ref and leaves HEAD on the remote head. The hand-over of
+// the next push fails; the remote head equals the HEAD of the workspace, but
+// this attempt handed nothing over, so the loop returns an error and the run
+// stops before the PR.
+// mutation pin: pushFailureForgivenHead compares with LocalHead for an agent workspace -> this test fails
+func TestHandOverPushDeletedBranchRefIsNotForgiven(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	ctx := context.Background()
+	head := commitFile(t, e.ws, "a.txt", "one")
+	if err := e.git.Push(ctx, e.branch, handOverTestTask); err != nil {
+		t.Fatalf("first Push: %v", err)
+	}
+	wsGit(t, e.ws, "checkout", "-q", "--detach")
+	wsGit(t, e.ws, "update-ref", "-d", "refs/heads/"+e.branch)
+	if got, err := e.git.LocalHead(ctx); err != nil || got != head || e.remoteHead(t, e.branch) != head {
+		t.Fatalf("setup: LocalHead = %q, %v; remote head %q; want both %q", got, err, e.remoteHead(t, e.branch), head)
+	}
+
+	r := newSilentRunnerTask359()
+	task := &Task{ID: handOverTestTask, Branch: e.branch}
+	var pushes int
+	err := r.pushBranchCounting(ctx, e.git, task, r.log, &pushes)
+	if err == nil {
+		t.Fatal("the push loop forgave a failed hand-over because the remote head equals the HEAD of the workspace")
+	}
+	if !strings.Contains(err.Error(), "hand-over") {
+		t.Errorf("push loop error %v, want the hand-over error", err)
+	}
+	if sha := e.git.attemptHandOverSHA(); sha != "" {
+		t.Errorf("attemptHandOverSHA after a failed hand-over = %q, want empty", sha)
+	}
+	if pushFailureForgiven(ctx, e.git, e.branch, err) {
+		t.Error("pushFailureForgiven forgave a failed hand-over")
+	}
+
+	result := &ExecutionResult{TaskID: handOverTestTask, Success: true}
+	if r.pushTaskBranch(ctx, task, e.git, result, r.log) {
+		t.Fatal("pushTaskBranch went on to the PR after a failed hand-over")
+	}
+	if result.Success || result.PRUrl != "" || !strings.Contains(result.Error, "push") {
+		t.Errorf("result after a failed hand-over: success=%v pr=%q error=%q, want a push failure and no PR", result.Success, result.PRUrl, result.Error)
+	}
+}
+
+// TestHandOverPushRefusedGateKeepsThePublishedCount: a refused gate after a
+// published push leaves the hand-over SHA of the push empty, and the count of
+// new commits is the count on the remote, not the refused commit.
+func TestHandOverPushRefusedGateKeepsThePublishedCount(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	ctx := context.Background()
+	head := commitFile(t, e.ws, "a.txt", "one")
+	if err := e.git.Push(ctx, e.branch, handOverTestTask); err != nil {
+		t.Fatalf("first Push: %v", err)
+	}
+	if sha := e.git.lastHandOverSHA(); sha != head {
+		t.Fatalf("lastHandOverSHA after the push = %q, want %q", sha, head)
+	}
+	secretpatterns.RegisterSecretValues(secretGateValue)
+	commitFile(t, e.ws, "notes.md", "token = "+secretGateValue+"\n")
+
+	if err := e.git.Push(ctx, e.branch, handOverTestTask); !IsPushRefused(err) {
+		t.Fatalf("Push of a registered secret: %v, want a refusal", err)
+	}
+	if sha := e.git.lastHandOverSHA(); sha != "" {
+		t.Errorf("lastHandOverSHA after a refused gate = %q, want empty", sha)
+	}
+	if got := e.remoteHead(t, e.branch); got != head {
+		t.Fatalf("remote head = %q, want %q", got, head)
+	}
+	want := e.remoteCount(t, e.branch)
+	if n, err := e.git.CountNewCommitsAgainstOrigin(ctx, "main"); err != nil || n != want {
+		t.Errorf("CountNewCommitsAgainstOrigin after a refused gate = %d, %v; want the count on the remote %d", n, err, want)
+	}
+}
+
+// TestHandOverPushNothingNew: a branch equal to the base gives the typed
+// result after one attempt, and the run ends as a run with no new commit,
+// not as a push failure.
+func TestHandOverPushNothingNew(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	ctx := context.Background()
+	r := newSilentRunnerTask359()
+	task := &Task{ID: handOverTestTask, Branch: e.branch}
+
+	var pushes int
+	err := r.pushBranchCounting(ctx, e.git, task, r.log, &pushes)
+	if !IsPushNothingNew(err) {
+		t.Fatalf("push loop of a branch at the base: %v, want IsPushNothingNew", err)
+	}
+	if pushes != 1 {
+		t.Errorf("%d pushes, want 1 (nothing new is not retried)", pushes)
+	}
+	if IsPushRefused(err) || IsSecretGateUnavailable(err) {
+		t.Errorf("nothing new classified as a gate stop: %v", err)
+	}
+
+	result := &ExecutionResult{TaskID: handOverTestTask, Success: true}
+	if r.pushTaskBranch(ctx, task, e.git, result, r.log) {
+		t.Fatal("pushTaskBranch went on to the PR with nothing new")
+	}
+	want := &ExecutionResult{}
+	evaluateEmptyBranchPRGuard(false, nil, want)
+	if result.Error != want.Error || result.Success {
+		t.Errorf("result.Error = %q, want the no-commit guard %q", result.Error, want.Error)
+	}
+	if got := e.remoteHead(t, e.branch); got != "" {
+		t.Errorf("the branch reached the remote at %s", got)
+	}
+}
+
+// TestHandOverPushHooksOffInTheDaemonRepository: a reference-transaction hook
+// and a pre-push hook of the daemon's repository write a marker; the push,
+// its probes and the count (whose fetch moves origin/main) run none of them.
+// mutation pin: pushArgs without secretpatterns.HooksOffArgs -> this test fails
+func TestHandOverPushHooksOffInTheDaemonRepository(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	ctx := context.Background()
+	marker := filepath.Join(t.TempDir(), "marker")
+	for _, h := range []string{"reference-transaction", "pre-push"} {
+		writeGitHook(t, filepath.Join(e.repo, ".git"), h, marker)
+	}
+	head := commitFile(t, e.ws, "a.txt", "one")
+	// origin/main moves, so the fetch of the count updates a ref.
+	moved := wsGit(t, e.remote, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit-tree", "-p", e.base, "-m", "moved", e.base+"^{tree}")
+	wsGit(t, e.remote, "update-ref", "refs/heads/main", moved)
+	_ = os.Remove(marker)
+
+	e.logDaemonGit(t, func() {
+		if err := e.git.Push(ctx, e.branch, handOverTestTask); err != nil {
+			t.Errorf("Push: %v", err)
+		}
+		if sha, ok := e.git.RemoteBranchHead(ctx, e.branch); !ok || sha != head {
+			t.Errorf("RemoteBranchHead = %q, %v; want %q", sha, ok, head)
+		}
+		if ok, err := e.git.ProbeRemoteBranch(ctx, e.branch); err != nil || !ok {
+			t.Errorf("ProbeRemoteBranch = %v, %v; want true", ok, err)
+		}
+		if n, err := e.git.CountNewCommitsAgainstOrigin(ctx, "main"); err != nil || n != 1 {
+			t.Errorf("CountNewCommitsAgainstOrigin = %d, %v; want 1", n, err)
+		}
+	})
+	if raw, err := os.ReadFile(marker); err == nil {
+		t.Errorf("a hook of the daemon's repository ran: %q", raw)
+	}
+	if got := wsGit(t, e.repo, "rev-parse", "refs/remotes/origin/main"); got != moved {
+		t.Errorf("origin/main = %s after the count, want the fetched %s", got, moved)
+	}
+	hooksOff := strings.Join(secretpatterns.HooksOffArgs(), " ")
+	var remote int
+	for _, c := range e.daemonGitCalls(t) {
+		_, args, _ := strings.Cut(c, "| ")
+		if strings.Contains(args, " ls-remote ") || strings.Contains(args, " fetch ") || strings.Contains(args, " push ") {
+			remote++
+			if !strings.Contains(args, hooksOff) {
+				t.Errorf("remote command without the hooks-off arguments: %s", args)
+			}
+		}
+	}
+	if remote < 4 {
+		t.Errorf("%d remote commands of the daemon user logged, want the push, two probes and the fetch", remote)
+	}
+}
+
+// TestHandOverPushIgnoresGitDirOfTheDaemonEnvironment: GIT_DIR and the other
+// repository variables of the daemon environment name another repository; the
+// gate, the push, the probes and the count work in the daemon's repository and
+// the push lands on its remote.
+func TestHandOverPushIgnoresGitDirOfTheDaemonEnvironment(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	ctx := context.Background()
+	head := commitFile(t, e.ws, "a.txt", "one")
+	otherRemote := filepath.Join(t.TempDir(), "other-remote.git")
+	wsGit(t, filepath.Dir(otherRemote), "init", "-q", "--bare", otherRemote)
+	other := filepath.Join(t.TempDir(), "other")
+	wsGit(t, filepath.Dir(other), "init", "-q", other)
+	wsGit(t, other, "remote", "add", "origin", otherRemote)
+	gitTestCommit(t, other, "other")
+	wsGit(t, other, "push", "-q", "origin", "HEAD:refs/heads/main")
+	otherRefs := wsGit(t, otherRemote, "for-each-ref")
+
+	for k, v := range map[string]string{
+		"GIT_DIR":              filepath.Join(other, ".git"),
+		"GIT_WORK_TREE":        other,
+		"GIT_NAMESPACE":        "evil",
+		"GIT_CONFIG_COUNT":     "1",
+		"GIT_CONFIG_KEY_0":     "remote.origin.url",
+		"GIT_CONFIG_VALUE_0":   otherRemote,
+		"GIT_OBJECT_DIRECTORY": filepath.Join(other, ".git", "objects"),
+	} {
+		t.Setenv(k, v)
+	}
+	pushErr := e.git.Push(ctx, e.branch, handOverTestTask)
+	remoteSHA, remoteOK := e.git.RemoteBranchHead(ctx, e.branch)
+	count, countErr := e.git.CountNewCommitsAgainstOrigin(ctx, "main")
+	testutil.UnsetLeakedGitEnv()
+	for _, k := range []string{"GIT_NAMESPACE", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_OBJECT_DIRECTORY"} {
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if pushErr != nil {
+		t.Fatalf("Push with GIT_DIR of another repository: %v", pushErr)
+	}
+	if got := e.remoteHead(t, e.branch); got != head {
+		t.Errorf("remote head = %q, want %q", got, head)
+	}
+	if got := wsGit(t, otherRemote, "for-each-ref"); got != otherRefs {
+		t.Errorf("the push reached the remote of the other repository: %s", got)
+	}
+	if !remoteOK || remoteSHA != head {
+		t.Errorf("RemoteBranchHead = %q, %v; want %q", remoteSHA, remoteOK, head)
+	}
+	if countErr != nil || count != 1 {
+		t.Errorf("CountNewCommitsAgainstOrigin = %d, %v; want 1", count, countErr)
+	}
+}
+
+// TestDaemonGitEnv: the names of another repository leave the environment,
+// the rest stays.
+func TestDaemonGitEnv(t *testing.T) {
+	got := daemonGitEnv([]string{
+		"PATH=/bin", "GIT_DIR=/x", "GIT_WORK_TREE=/x", "GIT_INDEX_FILE=/x/i", "GIT_OBJECT_DIRECTORY=/x/o",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/x/a", "GIT_NAMESPACE=n", "GIT_CONFIG=/x/c", "GIT_CONFIG_GLOBAL=/x/g",
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=k", "GIT_CONFIG_VALUE_0=v", "GIT_ASKPASS=/a", "GIT_TERMINAL_PROMPT=0", "HOME=/h",
+	})
+	want := []string{"PATH=/bin", "GIT_ASKPASS=/a", "GIT_TERMINAL_PROMPT=0", "HOME=/h"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("daemonGitEnv = %q, want %q", got, want)
+	}
+}
+
+// TestHandOverPushGatesTheSHANotTheRef: the hand-over ref moves to a commit
+// with a secret between the hand-over and the gate; the gate scans the
+// hand-over SHA and the push sends that SHA.
+func TestHandOverPushGatesTheSHANotTheRef(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	ctx := context.Background()
+	secretpatterns.RegisterSecretValues(secretGateValue)
+	secret := e.daemonOnlyCommit(t, "notes.md", "token = "+secretGateValue+"\n")
+	head := commitFile(t, e.ws, "a.txt", "one")
+
+	prevSeam := handOverBeforeGate
+	t.Cleanup(func() { handOverBeforeGate = prevSeam })
+	moved := false
+	handOverBeforeGate = func(daemonRepo, taskID string) {
+		wsGit(t, daemonRepo, "update-ref", handOverRef(taskID), secret)
+		moved = true
+	}
+	prevGate := checkPushForGate
+	t.Cleanup(func() { checkPushForGate = prevGate })
+	var gated []string
+	checkPushForGate = func(ctx context.Context, dir, tip string, opts secretpatterns.PushOptions) error {
+		gated = append(gated, tip)
+		return prevGate(ctx, dir, tip, opts)
+	}
+
+	if err := e.git.Push(ctx, e.branch, handOverTestTask); err != nil {
+		t.Fatalf("Push: %v (the gate scanned the moved ref, not the hand-over SHA)", err)
+	}
+	if !moved {
+		t.Fatal("the seam between the hand-over and the gate did not run")
+	}
+	if len(gated) != 1 || gated[0] != head {
+		t.Errorf("gate tips %q, want the hand-over SHA %s", gated, head)
+	}
+	if got := e.remoteHead(t, e.branch); got != head {
+		t.Errorf("remote head = %q, want the gated commit %q", got, head)
 	}
 }
