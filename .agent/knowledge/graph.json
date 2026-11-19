@@ -3323,6 +3323,20 @@
         "issues": [
           "https://github.com/qf-studio/pilot/issues/6456"
         ]
+      },
+      "TASK-656": {
+        "path": ".agent/tasks/TASK-656-run-process-cleanup.md",
+        "title": "Run process clean-up \u2014 the daemon stops every process that a run started; a gate that its time limit killed says so",
+        "status": "planned",
+        "concepts": [
+          "context",
+          "markers",
+          "deployment",
+          "workflow",
+          "knowledge",
+          "api",
+          "testing"
+        ]
       }
     },
     "memories": {
@@ -13774,6 +13788,41 @@
       "from": "mem-327",
       "to": "TASK-651",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-656",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-656",
+      "to": "markers",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-656",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-656",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-656",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-656",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-656",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -13966,7 +14015,8 @@
       "mem-311",
       "mem-312",
       "mem-313",
-      "TASK-654"
+      "TASK-654",
+      "TASK-656"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -14393,7 +14443,8 @@
       "mem-316",
       "mem-317",
       "TASK-654",
-      "TASK-655"
+      "TASK-655",
+      "TASK-656"
     ],
     "conversational-bot": [
       "mem-036",
@@ -14705,7 +14756,8 @@
       "mem-316",
       "mem-317",
       "TASK-654",
-      "TASK-655"
+      "TASK-655",
+      "TASK-656"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -15236,7 +15288,8 @@
       "mem-315",
       "mem-316",
       "mem-317",
-      "TASK-651"
+      "TASK-651",
+      "TASK-656"
     ],
     "labels": [
       "mem-100",
@@ -15310,7 +15363,8 @@
       "TASK-646",
       "TASK-647",
       "TASK-651",
-      "TASK-650"
+      "TASK-650",
+      "TASK-656"
     ],
     "memory": [
       "TASK-358",
@@ -15818,7 +15872,8 @@
       "mem-316",
       "mem-317",
       "TASK-654",
-      "TASK-655"
+      "TASK-655",
+      "TASK-656"
     ],
     "testing-quality": [
       "TASK-384",
@@ -15977,7 +16032,8 @@
       "TASK-647",
       "TASK-650",
       "TASK-651",
-      "mem-318"
+      "mem-318",
+      "TASK-656"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -16501,10 +16557,10 @@
       "mem-326"
     ]
   },
-  "last_updated": "2026-11-19T14:47:03.104779+00:00",
+  "last_updated": "2026-11-19T16:57:34.404053+00:00",
   "stats": {
-    "total_nodes": 810,
-    "total_edges": 869,
+    "total_nodes": 811,
+    "total_edges": 876,
     "memory_count": 452
   },
   "metadata": {
