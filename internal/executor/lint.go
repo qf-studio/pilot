@@ -141,7 +141,7 @@ func (g *GitOperations) runLintProgram(ctx context.Context, args ...string) ([]b
 		return nil, err
 	}
 	cmd.Dir = g.projectPath
-	setAgentEnvIn(cmd, lintAgentEnv(), g.projectPath)
+	setAgentEnvIn(cmd, gateAgentBaseEnv(), g.projectPath)
 	output, err := cmd.CombinedOutput()
 	if lintProgramMissing(output, err) {
 		return nil, &exec.Error{Name: lintProgram, Err: exec.ErrNotFound}
@@ -149,9 +149,10 @@ func (g *GitOperations) runLintProgram(ctx context.Context, args ...string) ([]b
 	return output, err
 }
 
-// lintAgentEnv is the input of setAgentEnvIn for a lint command of the agent
-// user: gitAgentBaseEnv without the names of gateEnvDenied.
-func lintAgentEnv() []string {
+// gateAgentBaseEnv is the input of setAgentEnvIn for a lint command or a
+// workflow hook of the agent user: gitAgentBaseEnv without the names of
+// gateEnvDenied.
+func gateAgentBaseEnv() []string {
 	var env []string
 	for _, kv := range gitAgentBaseEnv() {
 		if name, _, _ := strings.Cut(kv, "="); !gateEnvDenied[name] {

@@ -134,12 +134,8 @@ func (gateCommandBuilder) Build(ctx context.Context, dir string, env []string, n
 	if err != nil {
 		return nil, err
 	}
-	if cmd == nil {
-		return nil, errors.New("run_as_user: no gate command was built")
-	}
-	if u, ok := agentCmdUser(cmd); !ok || u != s.user {
-		runAsSnapshots.Delete(cmd)
-		return nil, fmt.Errorf("run_as_user: the gate command %q is not a sudo command of the agent user %q", cmd.Args, s.user)
+	if err := agentSudoCommandError(cmd, s, "gate"); err != nil {
+		return nil, err
 	}
 	cmd.Dir = dir
 	setAgentEnvFrom(cmd, gateEnv(env), dir, false)
