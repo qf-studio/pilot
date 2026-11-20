@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -267,6 +270,113 @@ func TestRunAsUserGateCommandNotAgentSudo(t *testing.T) {
 	}
 	if cmd != nil {
 		t.Errorf("Build returned a command with the error: %q", cmd.Args)
+	}
+}
+
+// gateCmdEnv returns the value of name in the environment of cmd.
+func gateCmdEnv(cmd *exec.Cmd, name string) (string, bool) {
+	v, ok := "", false
+	for _, kv := range cmd.Env {
+		if n, val, _ := strings.Cut(kv, "="); n == name {
+			v, ok = val, true
+		}
+	}
+	return v, ok
+}
+
+// TestRunAsUserGateEnvFromScratchKeepsCallerValue: an env built from scratch
+// keeps a scope name the caller set, also with the value the daemon holds; an
+// env that starts from a copy of os.Environ() loses the entry of the copy and
+// keeps the one the caller appended; a nil env loses the names of the daemon.
+//
+// mutation pin: dropDaemonCodeSetEnv drops the first entry with the value of the daemon also from an env built from scratch -> this test fails
+func TestRunAsUserGateEnvFromScratchKeepsCallerValue(t *testing.T) {
+	f := newGateFixture(t, "")
+	t.Setenv(quality.EnvChangedPackages, "daemon-pkgs")
+	t.Setenv("PILOT_TASK_ID", "GH-DAEMON")
+	build := func(env []string) *exec.Cmd {
+		t.Helper()
+		cmd, err := gateCommandBuilder{}.Build(context.Background(), f.ws, env, "sh", "-c", "true")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cmd
+	}
+
+	cmd := build([]string{"PATH=" + os.Getenv("PATH"), quality.EnvChangedPackages + "=daemon-pkgs", "PILOT_TASK_ID=GH-DAEMON"})
+	if v, ok := gateCmdEnv(cmd, quality.EnvChangedPackages); !ok || v != "daemon-pkgs" {
+		t.Errorf("env from scratch: %s = %q (set %v), want the value the caller set", quality.EnvChangedPackages, v, ok)
+	}
+	if v, ok := gateCmdEnv(cmd, "PILOT_TASK_ID"); !ok || v != "GH-DAEMON" {
+		t.Errorf("env from scratch: PILOT_TASK_ID = %q (set %v), want the value the caller set", v, ok)
+	}
+
+	cmd = build(append(os.Environ(), quality.EnvChangedPackages+"=scope-pkgs"))
+	if v, ok := gateCmdEnv(cmd, quality.EnvChangedPackages); !ok || v != "scope-pkgs" {
+		t.Errorf("copy of the daemon: %s = %q (set %v), want the appended value", quality.EnvChangedPackages, v, ok)
+	}
+	if v, ok := gateCmdEnv(cmd, "PILOT_TASK_ID"); ok {
+		t.Errorf("copy of the daemon: PILOT_TASK_ID = %q, want the entry of the daemon dropped", v)
+	}
+
+	cmd = build(append(os.Environ(), quality.EnvChangedPackages+"=daemon-pkgs"))
+	if v, ok := gateCmdEnv(cmd, quality.EnvChangedPackages); !ok || v != "daemon-pkgs" {
+		t.Errorf("copy of the daemon: %s = %q (set %v), want the appended entry with the value of the daemon", quality.EnvChangedPackages, v, ok)
+	}
+
+	cmd = build(nil)
+	for _, name := range []string{quality.EnvChangedPackages, "PILOT_TASK_ID"} {
+		if v, ok := gateCmdEnv(cmd, name); ok {
+			t.Errorf("nil env: %s = %q, want the entry of the daemon dropped", name, v)
+		}
+	}
+}
+
+// TestRunAsUserGateStartSitesGuarded: every checker the executor makes from
+// qualityCheckerFactory goes through guardGateChecker, in each of the three
+// gate starts: the timeout salvage route, the gates of the run and the gates
+// after the review fix. A start that skips the wrap would run the gates as
+// the daemon user with the option set and the default builder in place.
+//
+// mutation pin: the timeout salvage route (attemptBackendTimeoutSalvage, runner.go) starts the gates without guardGateChecker -> this test fails
+func TestRunAsUserGateStartSitesGuarded(t *testing.T) {
+	want := map[string]bool{"attemptBackendTimeoutSalvage": false, "executeWithOptions": false, "runReviewFix": false}
+	fset := token.NewFileSet()
+	for _, name := range []string{"runner.go", "pre_pr_fix.go"} {
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			guarded := map[ast.Expr]bool{}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "guardGateChecker" && len(call.Args) == 1 {
+					guarded[call.Args[0]] = true
+					return true
+				}
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "qualityCheckerFactory" {
+					if !guarded[call] {
+						t.Errorf("%s: %s calls qualityCheckerFactory without guardGateChecker", fset.Position(call.Pos()), fn.Name.Name)
+					} else if _, named := want[fn.Name.Name]; named {
+						want[fn.Name.Name] = true
+					}
+				}
+				return true
+			})
+		}
+	}
+	for fn, found := range want {
+		if !found {
+			t.Errorf("%s has no gate start through guardGateChecker", fn)
+		}
 	}
 }
 

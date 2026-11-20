@@ -1221,6 +1221,14 @@ func setAgentEnv(cmd *exec.Cmd, env []string) {
 // setAgentEnvIn is setAgentEnv for a command that runs in dir, for the sites
 // that set cmd.Dir later or pass the directory in argv (git -C).
 func setAgentEnvIn(cmd *exec.Cmd, env []string, dir string) {
+	setAgentEnvFrom(cmd, env, dir, true)
+}
+
+// setAgentEnvFrom is setAgentEnvIn; dropDaemon says env starts from a copy of
+// os.Environ() whose entries of runAsCodeSetEnv are still in it
+// (dropDaemonCodeSetEnv removes them). A caller that removed them by position
+// (gateCommandBuilder.Build) passes false.
+func setAgentEnvFrom(cmd *exec.Cmd, env []string, dir string, dropDaemon bool) {
 	if _, ok := agentCmdUser(cmd); !ok {
 		cmd.Env = env
 		return
@@ -1236,16 +1244,22 @@ func setAgentEnvIn(cmd *exec.Cmd, env []string, dir string) {
 		cmd.Env = env
 		return
 	}
-	out := lastEnvWins(append(s.agentEnvFor(dropDaemonCodeSetEnv(env)), agentGitIdentityFor(s, dir)...))
+	if dropDaemon {
+		env = dropDaemonCodeSetEnv(env)
+	}
+	out := lastEnvWins(append(s.agentEnvFor(env), agentGitIdentityFor(s, dir)...))
 	cmd.Env = out
 	setPreserveEnvNames(cmd, out)
 }
 
 // dropDaemonCodeSetEnv removes from env, for each name of runAsCodeSetEnv the
-// daemon process holds, one entry with the value of the daemon: the copy of
-// os.Environ() a caller starts from. An entry the caller appended stays, also
-// with the same value as the daemon (the copy of the daemon comes first and is
-// the one removed).
+// daemon process holds, the first entry with the value of the daemon. env must
+// start from a copy of os.Environ(), filtered or not, as at every caller of
+// setAgentEnvIn: the copy of the daemon comes first and is the one removed, an
+// entry the caller appended stays, also with the same value as the daemon. In
+// an env built from scratch the first such entry is one the caller set and it
+// would be lost; the gate builder, whose env comes from internal/quality,
+// removes the copy by position instead (daemonEnvCopyLen).
 func dropDaemonCodeSetEnv(env []string) []string {
 	daemon := map[string]string{}
 	for name := range runAsCodeSetEnv {
@@ -1266,6 +1280,24 @@ func dropDaemonCodeSetEnv(env []string) []string {
 		out = append(out, kv)
 	}
 	return out
+}
+
+// daemonEnvCopyLen returns the length of the copy of os.Environ() env starts
+// from: the names of the first entries of env are the names of os.Environ(),
+// in the same order (a value may have changed since the copy). 0 when env does
+// not start from such a copy, as an env built from scratch.
+func daemonEnvCopyLen(env []string) int {
+	daemon := os.Environ()
+	if len(env) < len(daemon) {
+		return 0
+	}
+	for i, kv := range daemon {
+		name, _, _ := strings.Cut(kv, "=")
+		if got, _, _ := strings.Cut(env[i], "="); got != name {
+			return 0
+		}
+	}
+	return len(daemon)
 }
 
 // setPreserveEnvNames writes the names of env into the --preserve-env flag of
