@@ -1685,10 +1685,11 @@ func branchRefspec(branch string) string {
 // of a submodule the gate does not scan), and hooks are off through an empty
 // core.hooksPath that cannot exist (secretpatterns.NoHooksPath), so a pre-push
 // hook the session wrote does not run with the push's credentials (GH-6343,
-// GH-6353).
+// GH-6353). --no-signed: a push.gpgSign of the repository config would run its
+// gpg.program with the token in the environment (TASK-651).
 func pushArgs(options ...string) []string {
 	args := append(secretpatterns.HooksOffArgs(), "-c", "push.followTags=false", "-c", "push.recurseSubmodules=no",
-		"push", "--no-follow-tags", "--no-recurse-submodules")
+		"push", "--no-follow-tags", "--no-recurse-submodules", "--no-signed")
 	return append(args, options...)
 }
 
