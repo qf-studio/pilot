@@ -139,10 +139,21 @@ func (g *GitOperations) taskBranch() string {
 // daemon's repository and `--repo` from the origin remote of that repository
 // (ghRepoArg): gh reads the repository from the git config of its directory,
 // and the git config of the workspace is the agent's, so the agent would
-// choose the repository the daemon token acts on. Otherwise it is projectPath
-// and no argument, the call of today.
+// choose the repository the daemon token acts on. With the option set, a g
+// for an agent workspace with no daemon repository (or a projectPath that the
+// route rule refuses) is an error, and no gh command runs in it. Otherwise it
+// is projectPath and no argument, the call of today.
 func (g *GitOperations) ghDirForDaemonRepo(ctx context.Context) (string, []string, error) {
 	if g.daemonRepo == "" {
+		if s := runAsSettingsNow(); s != nil {
+			agent, err := gitRoutesToAgent(s.workspaceRoot, g.projectPath)
+			if err != nil {
+				return "", nil, fmt.Errorf("gh: %w", err)
+			}
+			if agent {
+				return "", nil, fmt.Errorf("gh: no daemon repository for the agent workspace %s: no gh command runs in it", g.projectPath)
+			}
+		}
 		return g.projectPath, nil, nil
 	}
 	repoArgs, err := ghRepoArgsOfDaemonRepo(ctx, g.daemonRepo)
@@ -705,7 +716,9 @@ func (g *GitOperations) loadMemoryGraph(ctx context.Context) (*memoryGraphDoc, e
 // memoryGraphReadTimeout bounds one read of readMemoryGraphFile as the agent
 // user, the open of the path included: a FIFO at the path does not block a
 // read for longer. memoryGraphReadBudget bounds the sum of the reads of one
-// delivery (one GitOperations, memoryGraphReads). Variables for the tests.
+// delivery (one GitOperations, memoryGraphReads) that failed: a read that
+// returned content costs nothing, and the context of the delivery bounds all
+// its reads. Variables for the tests.
 var (
 	memoryGraphReadTimeout = 2 * time.Second
 	memoryGraphReadBudget  = 30 * time.Second
@@ -716,7 +729,7 @@ var (
 const memoryGraphReadLimit = 8 << 20
 
 // memoryGraphReads is the read budget of the graph reads of one delivery:
-// the time its reads as the agent user took so far.
+// the time its failed reads as the agent user took so far.
 type memoryGraphReads struct {
 	mu     sync.Mutex
 	used   time.Duration
@@ -741,10 +754,18 @@ func (b *memoryGraphReads) next() (limit time.Duration, ok, warn bool) {
 	return memoryGraphReadTimeout, true, false
 }
 
-// spend adds the time d of one read to the budget.
-func (b *memoryGraphReads) spend(d time.Duration) {
+// spend adds the time d of one failed read with the time limit limit to the
+// budget.
+//
+// Decision: a read costs at most its time limit; the kill of a read past its
+// limit is not counted, so n reads that each end by the limit use up a budget
+// of n limits, never less.
+func (b *memoryGraphReads) spend(d, limit time.Duration) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if d > limit {
+		d = limit
+	}
 	b.used += d
 }
 
@@ -757,9 +778,11 @@ func (b *memoryGraphReads) spend(d time.Duration) {
 // read, and the read has a time limit of memoryGraphReadTimeout. A read error,
 // a refusal, a file over the size limit or the time limit there gives the
 // result of today for a missing file (an error that wraps fs.ErrNotExist) and
-// one Warn line. The reads share the budget reads (nil: no budget): once it
-// is used up each later read is a missing file, with one Warn line for the
-// delivery. A cancelled ctx of the caller gives the error of ctx.
+// one Warn line. The failed reads share the budget reads (nil: no budget): a
+// read that returned content costs nothing, and once the budget is used up
+// each later read is a missing file, with one Warn line for the delivery.
+// ctx, the context of the delivery, bounds all its reads: a cancelled ctx
+// gives the error of ctx.
 func readMemoryGraphFile(ctx context.Context, reads *memoryGraphReads, path string) ([]byte, error) {
 	if runAsSettingsNow() == nil {
 		return os.ReadFile(path) // #nosec G304 -- the os call of today
@@ -786,10 +809,10 @@ func readMemoryGraphFile(ctx context.Context, reads *memoryGraphReads, path stri
 	start := time.Now()
 	raw, err := agentReadRegularFile(readCtx, path, memoryGraphReadLimit)
 	cancel()
-	if reads != nil {
-		reads.spend(time.Since(start))
-	}
 	if err != nil {
+		if reads != nil {
+			reads.spend(time.Since(start), limit)
+		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
