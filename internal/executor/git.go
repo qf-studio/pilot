@@ -337,14 +337,15 @@ func (g *GitOperations) publishedHandOverSHA() string {
 
 // daemonGitEnvSet are the GIT_ names the code sets on purpose on a
 // daemon-side git command of the delivery of an agent workspace, after the
-// environment of the daemon and before daemonGitEnv: GIT_ASKPASS and
-// GIT_TERMINAL_PROMPT (withGitCredentials; its PILOT_GIT_TOKEN is no GIT_
-// name), and the names of appendGitEnv (gitAgentEnv): GIT_NO_REPLACE_OBJECTS
-// (the co-author read, the gate), GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL,
-// GIT_AUTHOR_DATE, GIT_COMMITTER_NAME, GIT_COMMITTER_EMAIL and
-// GIT_COMMITTER_DATE (the co-author rewrite).
+// environment of the daemon and before daemonGitEnv: GIT_ASKPASS,
+// GIT_TERMINAL_PROMPT, GIT_SSH_COMMAND and GIT_PROXY_COMMAND
+// (withGitCredentials; its PILOT_GIT_TOKEN is no GIT_ name), and the names of
+// appendGitEnv (gitAgentEnv): GIT_NO_REPLACE_OBJECTS (the co-author read, the
+// gate), GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_AUTHOR_DATE,
+// GIT_COMMITTER_NAME, GIT_COMMITTER_EMAIL and GIT_COMMITTER_DATE (the
+// co-author rewrite).
 var daemonGitEnvSet = func() map[string]bool {
-	set := map[string]bool{"GIT_ASKPASS": true, "GIT_TERMINAL_PROMPT": true}
+	set := map[string]bool{"GIT_ASKPASS": true, "GIT_TERMINAL_PROMPT": true, "GIT_SSH_COMMAND": true, "GIT_PROXY_COMMAND": true}
 	for name := range gitAgentEnv {
 		set[name] = true
 	}
@@ -361,6 +362,9 @@ var daemonGitEnvSet = func() map[string]bool {
 // list of denied names: GIT_COMMON_DIR sent the push to the remote of
 // another repository, GIT_GRAFT_FILE and GIT_SHALLOW_FILE made the gate read
 // another history than the push sends, and git keeps adding such names.
+// Each other name of the daemon passes, HOME and XDG_CONFIG_HOME among them:
+// git reads the global config of the daemon user (a pushInsteadOf there
+// redirects the push).
 func daemonGitEnv(inherited, set []string) []string {
 	env := slices.DeleteFunc(slices.Clone(inherited), func(kv string) bool {
 		return strings.HasPrefix(kv, "GIT_")
@@ -390,8 +394,12 @@ func daemonGateEnv(env []string) []string {
 // withGitCredentials and appendGitEnv, which build cmd.Env as os.Environ()
 // followed by the values they set: those values are the set part, the
 // os.Environ() prefix is inherited. A cmd.Env of another shape is all
-// inherited, so it keeps no GIT_ name. A command the constructor failed
-// closed, or one of the agent route, is left as it is.
+// inherited, so it keeps no GIT_ name. When the set part has no
+// GIT_TERMINAL_PROMPT, GIT_TERMINAL_PROMPT=0 is appended: with no token
+// withGitCredentials sets nothing, and the filter would remove an inherited
+// GIT_TERMINAL_PROMPT=0, so git could ask on the terminal of the daemon. A
+// command the constructor failed closed, or one of the agent route, is left
+// as it is.
 func withDaemonGitEnv(cmd *exec.Cmd) *exec.Cmd {
 	if gitRouteFailed(cmd) {
 		return cmd
@@ -408,6 +416,25 @@ func withDaemonGitEnv(cmd *exec.Cmd) *exec.Cmd {
 		inherited, set = cmd.Env[:len(base)], cmd.Env[len(base):]
 	}
 	cmd.Env = daemonGitEnv(inherited, set)
+	if !slices.ContainsFunc(set, func(kv string) bool { return strings.HasPrefix(kv, "GIT_TERMINAL_PROMPT=") }) {
+		cmd.Env = append(cmd.Env, "GIT_TERMINAL_PROMPT=0")
+	}
+	return cmd
+}
+
+// withDaemonLocalGitEnv sets the environment of a local git command of the
+// daemon in its repository of an agent workspace (the count, the co-author
+// read) to the one of the secret gate commands (daemonGateEnv: no token of the
+// daemon) plus GIT_NO_REPLACE_OBJECTS=1. A command the constructor failed
+// closed, or one of the agent route, is left as it is.
+func withDaemonLocalGitEnv(cmd *exec.Cmd) *exec.Cmd {
+	if gitRouteFailed(cmd) {
+		return cmd
+	}
+	if _, agent := agentCmdUser(cmd); agent {
+		return cmd
+	}
+	cmd.Env = append(daemonGateEnv(os.Environ()), "GIT_NO_REPLACE_OBJECTS=1")
 	return cmd
 }
 
@@ -1756,8 +1783,9 @@ var handOverBeforeGate = func(daemonRepo, taskID string) {}
 // HANDOVER_SHA:refs/heads/BRANCH, the arguments of pushArgs, the explicit lease
 // and the credentials of today, without -u (no local branch to track). No git
 // command of the daemon runs with the workspace as its directory, so its
-// config, hooks and remotes have no effect; the push and the co-author read
-// get the environment of daemonGitEnv, the gate the one of daemonGateEnv. A
+// config, hooks and remotes have no effect; the push gets the environment of
+// daemonGitEnv, the gate the one of daemonGateEnv and the co-author read the
+// one of withDaemonLocalGitEnv (no token). A
 // failed hand-over (a branch with no commit above the base satisfies
 // IsPushNothingNew) or a gate stop returns before the push.
 //
@@ -1810,8 +1838,7 @@ func (g *GitOperations) warnPushedCoAuthor(ctx context.Context, branch, sha, tas
 		rng = g.handOverBase + ".." + sha
 	}
 	cmd := gitCommandIn(ctx, g.daemonRepo, handOverGitArgs("log", "--no-show-signature", "--format=%H%x00%B%x00", rng)...)
-	appendGitEnv(cmd, "GIT_NO_REPLACE_OBJECTS=1")
-	withDaemonGitEnv(cmd)
+	withDaemonLocalGitEnv(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		slog.Warn("Could not read the pushed commits for the co-author check",
@@ -2148,10 +2175,10 @@ func (g *GitOperations) countNewCommits(ctx context.Context, baseBranch, head st
 }
 
 // daemonCountNewCommits is countNewCommits in the daemon's repository of an
-// agent workspace: hooks off and the environment of daemonGitEnv.
+// agent workspace: hooks off and the environment of withDaemonLocalGitEnv.
 func (g *GitOperations) daemonCountNewCommits(ctx context.Context, baseBranch, head string) (int, error) {
 	cmd := gitCommandIn(ctx, g.daemonRepo, append(secretpatterns.HooksOffArgs(), "rev-list", "--count", baseBranch+".."+head)...)
-	return parseNewCommitCount(withDaemonGitEnv(cmd))
+	return parseNewCommitCount(withDaemonLocalGitEnv(cmd))
 }
 
 // parseNewCommitCount runs a `git rev-list --count` command and parses its
@@ -2198,9 +2225,9 @@ func parseNewCommitCount(cmd *exec.Cmd) (int, error) {
 // of the PR path, the epic guard, the timeout salvage) count before any
 // attempt; a 0 there would end every run before its push. That count only
 // lets the push run, and the hand-over decides what it publishes
-// (IsPushNothingNew). The fetch runs with hooks off (remoteGitCmd); the fetch
-// and the count in the daemon's repository get the environment of
-// daemonGitEnv.
+// (IsPushNothingNew). The fetch runs with hooks off (remoteGitCmd); in the
+// daemon's repository the fetch gets the environment of daemonGitEnv and the
+// count, a local command, the one of withDaemonLocalGitEnv (no token).
 func (g *GitOperations) CountNewCommitsAgainstOrigin(ctx context.Context, baseBranch string) (int, error) {
 	fetchCmd := g.remoteGitCmd(ctx, "fetch", "origin", baseBranch)
 	_ = fetchCmd.Run() // best-effort; fall back to the existing tracking ref on failure
