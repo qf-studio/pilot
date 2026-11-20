@@ -124,8 +124,8 @@ const lintProgram = "golangci-lint"
 // returns its combined output. With run_as_user empty it is the command of
 // before. With the option set (TASK-651) the directory is the workspace of
 // the agent user: the program runs as that user (agentCommand) with the
-// environment of the git route (gitAgentBaseEnv, the allowlist) minus the
-// names a gate does not get (gateEnvDenied), so the config of the repository
+// tool environment of the git route (gitAgentBaseEnv, the allowlist,
+// agentToolEnv: no ANTHROPIC_ or CLAUDE_ name), so the config of the repository
 // is read and the files of the fix are written by the agent user. A missing
 // program is read from the result of that run (lintProgramMissing) and
 // returns what the lookup in PATH returns with the option empty: no output
@@ -141,25 +141,12 @@ func (g *GitOperations) runLintProgram(ctx context.Context, args ...string) ([]b
 		return nil, err
 	}
 	cmd.Dir = g.projectPath
-	setAgentEnvIn(cmd, gateAgentBaseEnv(), g.projectPath)
+	setAgentToolEnvIn(cmd, gitAgentBaseEnv(), g.projectPath)
 	output, err := cmd.CombinedOutput()
 	if lintProgramMissing(output, err) {
 		return nil, &exec.Error{Name: lintProgram, Err: exec.ErrNotFound}
 	}
 	return output, err
-}
-
-// gateAgentBaseEnv is the input of setAgentEnvIn for a lint command or a
-// workflow hook of the agent user: gitAgentBaseEnv without the names of
-// gateEnvDenied.
-func gateAgentBaseEnv() []string {
-	var env []string
-	for _, kv := range gitAgentBaseEnv() {
-		if name, _, _ := strings.Cut(kv, "="); !gateEnvDenied[name] {
-			env = append(env, kv)
-		}
-	}
-	return env
 }
 
 // lintProgramMissing reports whether a lint run as the agent user found no

@@ -1313,6 +1313,56 @@ func setAgentEnvIn(cmd *exec.Cmd, env []string, dir string) {
 // (dropDaemonCodeSetEnv removes them). A caller that removed them by position
 // (gateCommandBuilder.Build) passes false.
 func setAgentEnvFrom(cmd *exec.Cmd, env []string, dir string, dropDaemon bool) {
+	setAgentEnvWith(cmd, env, dir, dropDaemon, false)
+}
+
+// agentToolEnv is the environment of a command of the agent user that is not
+// the model session: a gate, a workflow hook, the lint program, an evidence
+// command and git of the agent side, whose hooks are programs of the
+// workspace. It is env without each name of runAsAllowedEnvPrefixes
+// (ANTHROPIC_, CLAUDE_) and each name of gateEnvDenied. Only the model session
+// gets these names: a list of single names does not hold, a new name of the
+// CLI is one more credential or endpoint for the code of the workspace.
+func agentToolEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if name, _, _ := strings.Cut(kv, "="); !agentToolEnvDenied(name) {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+func agentToolEnvDenied(name string) bool {
+	if gateEnvDenied[name] {
+		return true
+	}
+	for _, p := range runAsAllowedEnvPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// setAgentToolEnvIn is setAgentEnvIn for a tool command (agentToolEnv): the
+// filter applies to the input and to the result, so the names of envBase
+// (CLAUDE_CONFIG_DIR) do not reach the command either.
+func setAgentToolEnvIn(cmd *exec.Cmd, env []string, dir string) {
+	setAgentEnvWith(cmd, env, dir, true, true)
+}
+
+// setAgentToolEnvFrom is setAgentEnvFrom for a tool command.
+func setAgentToolEnvFrom(cmd *exec.Cmd, env []string, dir string, dropDaemon bool) {
+	setAgentEnvWith(cmd, env, dir, dropDaemon, true)
+}
+
+// setAgentEnvWith is setAgentEnvFrom; tool says cmd is a tool command whose
+// environment is agentToolEnv.
+func setAgentEnvWith(cmd *exec.Cmd, env []string, dir string, dropDaemon, tool bool) {
+	if tool {
+		env = agentToolEnv(env)
+	}
 	if _, ok := agentCmdUser(cmd); !ok {
 		cmd.Env = env
 		return
@@ -1333,6 +1383,9 @@ func setAgentEnvFrom(cmd *exec.Cmd, env []string, dir string, dropDaemon bool) {
 		env = dropDaemonCodeSetEnv(env)
 	}
 	out := lastEnvWins(append(s.agentEnvFor(env), agentGitIdentityFor(s, dir)...))
+	if tool {
+		out = agentToolEnv(out)
+	}
 	// After the allowlist: an inherited GIT_CONFIG_* never passes it, so the
 	// entries of the credential helper are the only config entries of git.
 	out = appendAgentGitCredentialEntries(out, snap.tokenFile)

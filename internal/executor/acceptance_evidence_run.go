@@ -287,7 +287,7 @@ func evidenceCommand(ctx context.Context, dir string, argv []string) (*exec.Cmd,
 		return nil, err
 	}
 	cmd.Dir = dir
-	setAgentEnvIn(cmd, sanitizedAcceptanceEnv(), dir)
+	setAgentToolEnvIn(cmd, sanitizedAcceptanceEnv(), dir)
 	return cmd, nil
 }
 
