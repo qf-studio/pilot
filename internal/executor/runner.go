@@ -5299,18 +5299,15 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						log.Warn("Failed to clean up hook scripts after merge error", slog.Any("error", rmErr))
 					}
 				} else {
-					hookRestoreFunc = func() error {
-						// GH-5460: RestoreHookSettings reverts settingsPath to its
-						// pre-merge state (byte-identical restore, or removal when
-						// Pilot created the file this run) instead of the old
-						// CleanStalePilotHooks-then-RemoveAll(scriptDir) order, which
-						// left a dangling pilot-bash-guard entry behind every task in
-						// root-mode execution (no worktree to discard it).
-						if err := RestoreHookSettings(settingsPath, scriptDir, restoreFunc, preExisted); err != nil {
-							log.Warn("Failed to restore Claude hook settings", slog.Any("error", err))
-						}
-						return nil
-					}
+					// GH-5460: RestoreHookSettings reverts settingsPath to its
+					// pre-merge state (byte-identical restore, or removal when
+					// Pilot created the file this run) instead of the old
+					// CleanStalePilotHooks-then-RemoveAll(scriptDir) order, which
+					// left a dangling pilot-bash-guard entry behind every task in
+					// root-mode execution (no worktree to discard it).
+					hookRestoreFunc = hookSettingsRestore(log, settingsPath, runAsSet, func() error {
+						return RestoreHookSettings(settingsPath, scriptDir, restoreFunc, preExisted)
+					})
 					log.Debug("Claude Code hooks configured",
 						slog.String("settings_path", settingsPath),
 						slog.String("script_dir", scriptDir))
@@ -5332,23 +5329,28 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		if coErr != nil {
 			log.Warn("Failed to disable co-author trailer in Claude settings", slog.Any("error", coErr))
 		} else {
-			hookRestoreFunc = func() error {
+			hookRestoreFunc = hookSettingsRestore(log, coAuthorSettingsPath, runAsSet, func() error {
 				if err := coRestore(); err != nil {
-					log.Warn("Failed to restore Claude settings", slog.Any("error", err))
-				} else if !coPreExisted {
+					return fmt.Errorf("failed to restore claude settings: %w", err)
+				}
+				if !coPreExisted {
 					if err := removeClaudeDirIfEmpty(coAuthorSettingsPath); err != nil {
 						log.Warn("Failed to remove empty .claude directory", slog.Any("error", err))
 					}
 				}
 				return nil
-			}
+			})
 		}
 	}
 
 	// Ensure cleanup happens regardless of execution outcome
+	// TASK-651: with run_as_user set a failed restore fails the run
+	// (failRunOnSettingsRestore); with it empty the error was logged inside.
 	defer func() {
 		if hookRestoreFunc != nil {
-			_ = hookRestoreFunc() // Error already logged inside hookRestoreFunc
+			if err := hookRestoreFunc(); err != nil {
+				outResult, outErr = failRunOnSettingsRestore(log, task.ID, outResult, outErr, err)
+			}
 		}
 	}()
 
