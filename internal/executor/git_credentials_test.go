@@ -425,15 +425,11 @@ func TestTokenCommandsRunNoConfigProgram(t *testing.T) {
 
 // TestTokenCommandsRunNoTransportProgram: with a token, a probe runs neither
 // the core.gitProxy of a git:// remote, nor the program of an ext:: remote
-// that the repository config allows, nor the core.sshCommand of an ssh remote.
+// that the repository config allows, nor the core.sshCommand of an ssh remote,
+// with the option empty and with it set (the probe runs in the repository of
+// the daemon, with the environment of daemonGitEnv).
+// mutation pin: GIT_PROXY_COMMAND out of daemonGitEnvSet -> this test fails
 func TestTokenCommandsRunNoTransportProgram(t *testing.T) {
-	setRunAsStateForTest(t, nil, "")
-	SetGitCredentialProvider(func(context.Context) (string, error) { return testutil.FakeGitHubToken, nil })
-	t.Cleanup(func() { SetGitCredentialProvider(nil) })
-	repo, remote := setupTestRepoWithRemote(t)
-	t.Cleanup(func() { _ = os.RemoveAll(repo); _ = os.RemoveAll(remote) })
-	g := NewGitOperations(repo)
-
 	cases := []struct {
 		name   string
 		config func(prog, marker string) (url string, kv [][2]string)
@@ -448,25 +444,43 @@ func TestTokenCommandsRunNoTransportProgram(t *testing.T) {
 			return "ssh://127.0.0.1:9/x", [][2]string{{"core.sshCommand", prog}}
 		}},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			marker := filepath.Join(t.TempDir(), "marker")
-			url, kv := tc.config(markerProgram(t, marker), marker)
-			wsGit(t, repo, "remote", "set-url", "origin", url)
-			for _, c := range kv {
-				wsGit(t, repo, "config", c[0], c[1])
-				t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "config", "--unset-all", c[0]).Run() })
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			_, _ = g.ProbeRemoteBranch(ctx, "main")
-			if raw, err := os.ReadFile(marker); err == nil {
-				t.Errorf("the %s program of the repository config ran: %q", tc.name, raw)
-			} else if !errors.Is(err, os.ErrNotExist) {
-				t.Fatal(err)
-			}
-		})
+	// run probes origin of repo through g with each program in its config.
+	run := func(t *testing.T, g *GitOperations, repo string) {
+		t.Helper()
+		SetGitCredentialProvider(func(context.Context) (string, error) { return testutil.FakeGitHubToken, nil })
+		t.Cleanup(func() { SetGitCredentialProvider(nil) })
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				marker := filepath.Join(t.TempDir(), "marker")
+				url, kv := tc.config(markerProgram(t, marker), marker)
+				wsGit(t, repo, "remote", "set-url", "origin", url)
+				for _, c := range kv {
+					wsGit(t, repo, "config", c[0], c[1])
+					t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "config", "--unset-all", c[0]).Run() })
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				_, _ = g.ProbeRemoteBranch(ctx, "main")
+				if raw, err := os.ReadFile(marker); err == nil {
+					t.Errorf("the %s program of the repository config ran: %q", tc.name, raw)
+				} else if !errors.Is(err, os.ErrNotExist) {
+					t.Fatal(err)
+				}
+			})
+		}
 	}
+
+	t.Run("option empty", func(t *testing.T) {
+		setRunAsStateForTest(t, nil, "")
+		repo, remote := setupTestRepoWithRemote(t)
+		t.Cleanup(func() { _ = os.RemoveAll(repo); _ = os.RemoveAll(remote) })
+		run(t, NewGitOperations(repo), repo)
+	})
+
+	t.Run("option set", func(t *testing.T) {
+		e := newHandOverPushEnv(t)
+		run(t, e.git, e.repo)
+	})
 }
 
 // TestWithDaemonGitEnvSplitsInheritedAndSet: withDaemonGitEnv drops each
