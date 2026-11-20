@@ -7,5 +7,6 @@ import "context"
 // github adapter (which itself imports executor), so it cannot live in
 // package executor.
 func AppendAcceptanceEvidenceForTest(ctx context.Context, r *Runner, task *Task, workDir, prBody string) string {
-	return r.appendAcceptanceEvidence(ctx, task, workDir, prBody, nil)
+	body, _ := r.appendAcceptanceEvidence(ctx, task, workDir, prBody, nil)
+	return body
 }

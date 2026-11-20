@@ -46,7 +46,7 @@ func TestAppendAcceptanceEvidence_BudgetExhausted(t *testing.T) {
 	}}
 
 	start := time.Now()
-	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary", nil)
+	got, _ := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary", nil)
 	elapsed := time.Since(start)
 
 	if n := cmdRunner.calls.Load(); n != 1 {
@@ -74,7 +74,7 @@ func TestAppendAcceptanceEvidence_BudgetKillsRunningCommand(t *testing.T) {
 	r.acceptanceRunner = blockingEvidenceRunner{}
 
 	task := &Task{ID: "GH-5867", AcceptanceCriteria: []string{"paste the output of `go test ./a/` into the PR body"}}
-	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary", nil)
+	got, _ := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary", nil)
 
 	if !strings.Contains(got, "Reason: "+evidenceBudgetExhaustedReason) {
 		t.Errorf("expected budget-exhausted reason, got:\n%s", got)
@@ -116,7 +116,7 @@ func TestAppendAcceptanceEvidence_ReusesQualityGateOutput(t *testing.T) {
 		"paste the output of `make test -j2` into the PR body",
 	}}
 
-	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary", gates)
+	got, _ := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary", gates)
 
 	if !strings.Contains(got, "gate output: ok pkg 1.2s") || !strings.Contains(got, evidenceFromQualityGateMarker) {
 		t.Errorf("expected the passed gate's output marked %q, got:\n%s", evidenceFromQualityGateMarker, got)
@@ -238,7 +238,7 @@ func TestAppendAcceptanceEvidence_NoReuseAfterHeadMoved(t *testing.T) {
 			}}
 			task := &Task{ID: "GH-5890", AcceptanceCriteria: []string{"paste the output of `make test` into the PR body"}}
 
-			got := r.appendAcceptanceEvidence(context.Background(), task, dir, "## Summary", gates)
+			got, _ := r.appendAcceptanceEvidence(context.Background(), task, dir, "## Summary", gates)
 
 			if reused := strings.Contains(got, evidenceFromQualityGateMarker); reused != tt.wantReuse {
 				t.Errorf("reused = %v, want %v:\n%s", reused, tt.wantReuse, got)

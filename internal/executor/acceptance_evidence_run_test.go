@@ -805,7 +805,7 @@ func TestAppendAcceptanceEvidence_FlagOff_ByteIdentical(t *testing.T) {
 	disabled := false
 	r := &Runner{config: &BackendConfig{AcceptanceEvidence: &AcceptanceEvidenceConfig{Enabled: &disabled}}}
 
-	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), prBody, nil)
+	got, _ := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), prBody, nil)
 	if got != prBody {
 		t.Fatalf("expected byte-identical PR body when disabled, got %q", got)
 	}
@@ -816,7 +816,7 @@ func TestAppendAcceptanceEvidence_NoAcceptanceCriteria_ByteIdentical(t *testing.
 	task := &Task{ID: "GH-1"}
 	r := &Runner{config: DefaultBackendConfig()}
 
-	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), prBody, nil)
+	got, _ := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), prBody, nil)
 	if got != prBody {
 		t.Fatalf("expected byte-identical PR body with no acceptance criteria, got %q", got)
 	}
@@ -825,12 +825,12 @@ func TestAppendAcceptanceEvidence_NoAcceptanceCriteria_ByteIdentical(t *testing.
 func TestAppendAcceptanceEvidence_NilRunnerOrTask_ByteIdentical(t *testing.T) {
 	prBody := "## Summary\n\nsome PR body"
 	var r *Runner
-	if got := r.appendAcceptanceEvidence(context.Background(), &Task{}, "/tmp", prBody, nil); got != prBody {
+	if got, _ := r.appendAcceptanceEvidence(context.Background(), &Task{}, "/tmp", prBody, nil); got != prBody {
 		t.Fatalf("nil Runner: expected byte-identical PR body, got %q", got)
 	}
 
 	r2 := &Runner{config: DefaultBackendConfig()}
-	if got := r2.appendAcceptanceEvidence(context.Background(), nil, "/tmp", prBody, nil); got != prBody {
+	if got, _ := r2.appendAcceptanceEvidence(context.Background(), nil, "/tmp", prBody, nil); got != prBody {
 		t.Fatalf("nil Task: expected byte-identical PR body, got %q", got)
 	}
 }
@@ -927,7 +927,7 @@ func TestEvidenceRun_LogsFailingTestNames(t *testing.T) {
 	}}
 	task := &Task{ID: "GH-6035", AcceptanceCriteria: []string{"paste the output of `go test ./pkg/` into the PR body"}}
 
-	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary", nil)
+	got, _ := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary", nil)
 
 	if !strings.Contains(got, "--- FAIL: TestAlpha") {
 		t.Errorf("PR body must keep the failure lines from the omitted middle:\n%s", got)

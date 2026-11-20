@@ -415,7 +415,8 @@ func runPasteOutputItemReusing(ctx context.Context, runner AcceptanceCommandRunn
 // aborts before any write, and every path past the write — including a
 // killed-by-timeout test run — reverts before returning. GH-6606: after each
 // outcome restoreMutatedFile reads the file back and repairs it; a file it
-// cannot repair is the result's Err, and the run stops before the push.
+// cannot repair is the result's Err, and the run stops before the push (or,
+// for evidence collected at PR creation, before the PR: GH-6617).
 func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir string, item AcceptanceItem, allowedCommands []string) AcceptanceEvidenceResult {
 	result := AcceptanceEvidenceResult{Item: item}
 
@@ -564,7 +565,9 @@ var mutationGitCheckout = func(ctx context.Context, dir, rel string) error {
 // mutationLeftChangedError is the Err of the result of a mutation line whose
 // file could not be brought back to its first content (GH-6606): no later
 // acceptance line runs and the run stops before the pre-PR review, its fix
-// rounds and the push. File is relative to the task directory.
+// rounds and the push; at PR creation the run fails without a PR
+// (evidenceLeftChangedAtPRCreation, GH-6617). File is relative to the task
+// directory.
 type mutationLeftChangedError struct {
 	File string
 }
@@ -608,6 +611,39 @@ func evidenceLeftChanged(results []AcceptanceEvidenceResult) *mutationLeftChange
 		}
 	}
 	return nil
+}
+
+// GH-6617: the Error line of a mutation line whose file stayed changed says
+// what the run does on its path. Before the review the run stops ahead of the
+// review and the push; at PR creation the branch is already pushed, so the run
+// fails and no PR is created.
+const (
+	evidenceLeftChangedBeforeReviewLog = "Acceptance evidence left a file changed; the run stops before the review and the push"
+	evidenceLeftChangedAtPRCreationLog = "Acceptance evidence left a file changed; the branch is pushed, the run fails and no PR is created"
+)
+
+// evidenceLeftChangedAtPRCreation is the failure text of err on the PR creation
+// path (GH-6617): it names the file and says that the branch is pushed.
+func evidenceLeftChangedAtPRCreation(err error) string {
+	var lc *mutationLeftChangedError
+	if errors.As(err, &lc) {
+		return fmt.Sprintf("acceptance evidence left %s changed; the branch is pushed, the run fails and no PR is created", lc.File)
+	}
+	return err.Error()
+}
+
+// logEvidenceLeftChanged writes the Error line msg for err, the error of a
+// mutation line whose file stayed changed (GH-6617).
+func (r *Runner) logEvidenceLeftChanged(task *Task, err error, msg string) {
+	if r == nil || r.log == nil || err == nil {
+		return
+	}
+	attrs := []any{slog.String("task_id", task.ID)}
+	var lc *mutationLeftChangedError
+	if errors.As(err, &lc) {
+		attrs = append(attrs, slog.String("file", lc.File))
+	}
+	r.log.Error(msg, attrs...)
 }
 
 // evidenceCancelledReason is the Not-verified reason of a line whose command
@@ -666,9 +702,13 @@ func relativeToTaskDir(dir, reason string) string {
 // (collectAcceptanceEvidenceForReview). When one is passed the commands are not
 // run again and its section is appended; without one the evidence is collected
 // here, as before.
-func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workDir, prBody string, gates *QualityGatesResult, cached ...*AcceptanceEvidenceCollection) string {
+//
+// GH-6617: the error is the leftChanged error of the collection — a mutation
+// line whose file stayed changed. Every caller handles it: on the PR creation
+// paths the run fails before the PR is created.
+func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workDir, prBody string, gates *QualityGatesResult, cached ...*AcceptanceEvidenceCollection) (string, error) {
 	if r == nil || task == nil {
-		return prBody
+		return prBody, nil
 	}
 
 	var ev *AcceptanceEvidenceCollection
@@ -678,10 +718,11 @@ func (r *Runner) appendAcceptanceEvidence(ctx context.Context, task *Task, workD
 	if ev == nil {
 		ev = r.collectAcceptanceEvidence(ctx, task, workDir, gates)
 	}
+	err := ev.leftChanged()
 	if ev == nil || ev.Section == "" {
-		return prBody
+		return prBody, err
 	}
-	return strings.TrimRight(prBody, "\n") + "\n\n" + ev.Section
+	return strings.TrimRight(prBody, "\n") + "\n\n" + ev.Section, err
 }
 
 // collectAcceptanceEvidence classifies the acceptance criteria, runs the
@@ -731,12 +772,6 @@ func (r *Runner) collectAcceptanceEvidence(ctx context.Context, task *Task, work
 			},
 		})
 		cancel()
-		if lc := evidenceLeftChanged(results); lc != nil && r.log != nil {
-			r.log.Error("Acceptance evidence left a file changed; the run stops before the push",
-				slog.String("task_id", task.ID),
-				slog.String("file", lc.File),
-			)
-		}
 	}
 
 	// GH-5466: merged into the same "## Not verified" section as the

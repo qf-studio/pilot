@@ -125,7 +125,7 @@ func TestAcceptanceEvidence_RunsOnceAcrossReviewAndPR(t *testing.T) {
 
 	ev := r.collectAcceptanceEvidenceForReview(context.Background(), task, dir, prePRGates())
 	r.runPrePRReview(context.Background(), task, dir, NewGitOperations(dir), &progressState{}, prePRGates(), ev)
-	prBody := r.appendAcceptanceEvidence(context.Background(), task, dir, "## Summary", prePRGates(), ev)
+	prBody, _ := r.appendAcceptanceEvidence(context.Background(), task, dir, "## Summary", prePRGates(), ev)
 
 	if n := cmd.count(); n != 1 {
 		t.Errorf("paste-output command ran %d times across review and PR body, want 1", n)
@@ -138,7 +138,7 @@ func TestAcceptanceEvidence_RunsOnceAcrossReviewAndPR(t *testing.T) {
 	}
 
 	// Without a cached result the PR body assembly still collects on its own.
-	r.appendAcceptanceEvidence(context.Background(), task, dir, "## Summary", prePRGates())
+	_, _ = r.appendAcceptanceEvidence(context.Background(), task, dir, "## Summary", prePRGates())
 	if n := cmd.count(); n != 2 {
 		t.Errorf("uncached append ran the command %d times in total, want 2", n)
 	}
@@ -170,7 +170,7 @@ func TestPrePRReview_FixRoundRerunsEvidence(t *testing.T) {
 				t.Fatalf("first evidence = %+v, want the failing run", first)
 			}
 			got := r.evidenceAfterFixRound(context.Background(), task, dir, &ReviewFixOutcome{Status: tt.status}, first)
-			prBody := r.appendAcceptanceEvidence(context.Background(), task, dir, "## Summary", prePRGates(), got)
+			prBody, _ := r.appendAcceptanceEvidence(context.Background(), task, dir, "## Summary", prePRGates(), got)
 
 			if n := cmd.count(); n != tt.wantCalls {
 				t.Errorf("command ran %d times, want %d", n, tt.wantCalls)
@@ -214,7 +214,7 @@ func TestCollectAcceptanceEvidenceForReview_Skips(t *testing.T) {
 			t.Errorf("log = %q, want the evidence-not-ready line", buf.String())
 		}
 		// The evidence still runs once at PR creation.
-		r.appendAcceptanceEvidence(ctx, evidenceTask(dir), dir, "## Summary", prePRGates(), nil)
+		_, _ = r.appendAcceptanceEvidence(ctx, evidenceTask(dir), dir, "## Summary", prePRGates(), nil)
 		if cmd.count() != 1 {
 			t.Errorf("command ran %d times after PR creation, want 1", cmd.count())
 		}

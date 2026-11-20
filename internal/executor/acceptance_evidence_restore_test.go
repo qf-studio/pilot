@@ -3,6 +3,9 @@ package executor
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -300,6 +303,154 @@ func testMutationLeftChangedStopsExecute(t *testing.T) {
 	line := logs.String()
 	if !strings.Contains(line, "level=ERROR") || !strings.Contains(line, "task_id="+e.task.ID) || !strings.Contains(line, "file=main.go") {
 		t.Errorf("no Error line with the task id and the relative file:\n%s", line)
+	}
+	if !strings.Contains(line, evidenceLeftChangedBeforeReviewLog) {
+		t.Errorf("the Error line does not say the run stops before the review and the push:\n%s", line)
+	}
+}
+
+// TestMutationLeftChangedAtPRCreation is the fixture of
+// testMutationLeftChangedStopsExecute with the review mode off (GH-6617): the
+// evidence runs at PR creation, after the push, and leaves main.go changed. The
+// run fails with a text that names the file, no PR is created, and the Error
+// line does not claim the run stops before the push.
+func TestMutationLeftChangedAtPRCreation(t *testing.T) {
+	cmd := &sequenceEvidenceRunner{outputs: []string{"--- FAIL: TestMain (0.00s)\nFAIL\n"}, errs: []error{exitOneError(t)}}
+	e := newEvidenceExecuteEnv(t, PrePRReviewModeOff, approveWithNotes(), cmd)
+	dir := e.task.ProjectPath
+	seedMutationDir(t, dir)
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "seed")
+	e.task.AcceptanceCriteria = append([]string{restoreTestMutationLine}, e.task.AcceptanceCriteria...)
+	creator := &bodyCapturingPRCreator{}
+	e.task.SourceAdapter = "linear"
+	e.runner.SetPRCreator(creator)
+	logs := &syncBuffer{}
+	e.runner.log = slog.New(slog.NewTextHandler(logs, nil))
+
+	setMutationWriteForTest(t, func(n int, path string, data []byte) error {
+		if n == 1 {
+			return writeOK(path, data)
+		}
+		return errRestoreTestWrite
+	})
+	failCheckoutForTest(t)
+
+	result, err := e.runner.Execute(context.Background(), e.task)
+	if err != nil {
+		t.Fatalf("Execute() returned error: %v", err)
+	}
+
+	const want = "acceptance evidence left main.go changed; the branch is pushed, the run fails and no PR is created"
+	if result.Success || result.Error != want {
+		t.Errorf("result success=%v error=%q, want the failure %q", result.Success, result.Error, want)
+	}
+	if strings.Contains(result.Error, dir) {
+		t.Errorf("error %q holds the task directory", result.Error)
+	}
+	if n := cmd.count(); n != 1 {
+		t.Errorf("evidence commands ran %d times, want 1 (the next line must not run)", n)
+	}
+	creator.mu.Lock()
+	created := len(creator.bodies)
+	creator.mu.Unlock()
+	if created != 0 || result.PRUrl != "" {
+		t.Errorf("a PR was created (%d calls, url %q)", created, result.PRUrl)
+	}
+	line := logs.String()
+	if !strings.Contains(line, "level=ERROR") || !strings.Contains(line, "task_id="+e.task.ID) || !strings.Contains(line, "file=main.go") {
+		t.Errorf("no Error line with the task id and the relative file:\n%s", line)
+	}
+	if !strings.Contains(line, evidenceLeftChangedAtPRCreationLog) {
+		t.Errorf("the Error line does not say that no PR is created:\n%s", line)
+	}
+	if strings.Contains(line, "stops before the push") {
+		t.Errorf("the Error line says the run stops before the push, but the branch is pushed:\n%s", line)
+	}
+}
+
+// appendAcceptanceEvidenceCalls is the number of calls of
+// appendAcceptanceEvidence in the non-test files of the package: the epic PR,
+// the timeout salvage, the three PR-creation sites of Execute and the pre-PR
+// hold.
+const appendAcceptanceEvidenceCalls = 6
+
+// TestMutationLeftChangedEveryAppendCallHandlesError reads the source of the
+// package (GH-6617): each call of appendAcceptanceEvidence binds its error to a
+// named variable and the next statement is an if on it, so no call site drops
+// the leftChanged error of the collection.
+func TestMutationLeftChangedEveryAppendCallHandlesError(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	isAppendCall := func(e ast.Expr) bool {
+		call, ok := e.(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		return ok && sel.Sel.Name == "appendAcceptanceEvidence"
+	}
+	mentions := func(n ast.Node, name string) bool {
+		found := false
+		ast.Inspect(n, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok && id.Name == name {
+				found = true
+			}
+			return !found
+		})
+		return found
+	}
+
+	calls, handled := 0, 0
+	fset := token.NewFileSet()
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if e, ok := n.(ast.Expr); ok && isAppendCall(e) {
+				calls++
+			}
+			block, ok := n.(*ast.BlockStmt)
+			if !ok {
+				return true
+			}
+			for i, stmt := range block.List {
+				as, ok := stmt.(*ast.AssignStmt)
+				if !ok || len(as.Rhs) != 1 || !isAppendCall(as.Rhs[0]) {
+					continue
+				}
+				pos := fset.Position(as.Pos())
+				errID, ok := as.Lhs[len(as.Lhs)-1].(*ast.Ident)
+				if len(as.Lhs) != 2 || !ok || errID.Name == "_" {
+					t.Errorf("%s:%d: the error of appendAcceptanceEvidence is not bound to a variable", name, pos.Line)
+					continue
+				}
+				var next ast.Stmt
+				if i+1 < len(block.List) {
+					next = block.List[i+1]
+				}
+				ifStmt, ok := next.(*ast.IfStmt)
+				if !ok || !mentions(ifStmt.Cond, errID.Name) {
+					t.Errorf("%s:%d: the statement after appendAcceptanceEvidence does not check %s", name, pos.Line, errID.Name)
+					continue
+				}
+				handled++
+			}
+			return true
+		})
+	}
+	if calls != appendAcceptanceEvidenceCalls {
+		t.Errorf("found %d calls of appendAcceptanceEvidence, want %d: a new call must handle the error and update the count", calls, appendAcceptanceEvidenceCalls)
+	}
+	if handled != calls {
+		t.Errorf("%d of %d calls of appendAcceptanceEvidence handle the error", handled, calls)
 	}
 }
 
