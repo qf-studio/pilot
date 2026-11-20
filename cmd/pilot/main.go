@@ -1059,6 +1059,11 @@ Examples:
 			// et al. above, all hoisted for the same reason).
 			var approvalMgr *approval.Manager
 
+			// TASK-651: remove the read token directories a killed daemon left,
+			// once before any runner of the gateway starts: the polling runner,
+			// the chat-only runner and the webhook runner alike.
+			sweepAgentTokenDirsAtStart()
+
 			if needsPollingInfra {
 				// Create shared runner with config (GH-956: enables worktree isolation)
 				var runnerErr error
@@ -1090,14 +1095,12 @@ Examples:
 				// real producer source rather than trusted outright.
 				gwRunner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 				gwRunner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
+				gwRunner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
 
 				// Set up team project access checker if configured (GH-635)
 				if gwTeamCleanup := wireProjectAccessChecker(gwRunner, cfg); gwTeamCleanup != nil {
 					defer gwTeamCleanup()
 				}
-
-				// TASK-651: remove the read token directories a killed daemon left.
-				sweepAgentTokenDirsAtStart()
 
 				// GH-962: Clean up orphaned worktree directories from previous crashed executions
 				if cfg.Executor != nil && cfg.Executor.EffectiveUseWorktree() {
@@ -1517,6 +1520,7 @@ Examples:
 				gwRunner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))
 				gwRunner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 				gwRunner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
+				gwRunner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
 			}
 
 			// Enable Telegram polling in gateway mode only if --telegram flag was explicitly passed (GH-351)
@@ -1706,6 +1710,7 @@ Examples:
 			// webhook/orchestrator mode, mirroring the dependency lookup wiring above.
 			p.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 			p.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
+			p.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
 
 			// GH-4864: surface the running process's compiled-in version on
 			// /health, /api/v1/status, and the pilot_build_info metric — the
@@ -2661,9 +2666,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, startPreflight func(
 	// polling mode, mirroring the dependency lookup wiring above.
 	runner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 	runner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
-	// TASK-651: the read token of a run_as_user run is for the repository of
-	// the project config entry of the task path, next to the provider above.
-	runner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg))
+	runner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
 
 	// Set up team project access checker if configured (GH-635)
 	if teamCleanup := wireProjectAccessChecker(runner, cfg); teamCleanup != nil {

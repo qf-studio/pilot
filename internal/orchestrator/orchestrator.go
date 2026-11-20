@@ -423,6 +423,12 @@ func (o *Orchestrator) SetNavigatorEnabledLookup(lookup executor.NavigatorEnable
 	o.runner.SetNavigatorEnabledLookup(lookup)
 }
 
+// SetAgentTokenRepoLookup sets the lookup of the repository a run_as_user run
+// gets a read token for (TASK-651).
+func (o *Orchestrator) SetAgentTokenRepoLookup(lookup executor.AgentTokenRepoLookup) {
+	o.runner.SetAgentTokenRepoLookup(lookup)
+}
+
 // SetContractContentFetcher sets the fetcher used by the executor's
 // Contract Evidence gate (GH-5009/GH-5011/GH-5022) to independently verify
 // a citation's producer source. Mirrors SetContractDependencyLookup's

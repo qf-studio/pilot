@@ -383,6 +383,25 @@ func TestAgentTokenDirsAreSweptAtStart(t *testing.T) {
 		} else if cleanup < 0 || sweep > cleanup {
 			t.Errorf("%s: sweepAgentTokenDirsAtStart() is not called before the left worktrees are removed", sig)
 		}
+		if n := strings.Count(body, "sweepAgentTokenDirsAtStart()"); n != 1 {
+			t.Errorf("%s calls sweepAgentTokenDirsAtStart() %d times, want once", sig, n)
+		}
+	}
+	// The gateway start sweeps once ahead of its three runner shapes, so the
+	// chat-only runner and the webhook runner are covered, not only the
+	// runner of the polling adapters.
+	gw := githubFuncBody(t, "main.go", "func newStartCmd(")
+	sweep := strings.Index(gw, "\tsweepAgentTokenDirsAtStart()\n")
+	for _, start := range []string{
+		"\t\t\tif needsPollingInfra {\n",
+		"} else if gatewayChatNeedsOwnRunner(chatEnabled, needsPollingInfra) {",
+		"p.SetAgentTokenRepoLookup(",
+	} {
+		if i := strings.Index(gw, start); i < 0 {
+			t.Errorf("newStartCmd: %q not found", start)
+		} else if sweep < 0 || sweep > i {
+			t.Errorf("newStartCmd: sweepAgentTokenDirsAtStart() is not called before %q", start)
+		}
 	}
 
 	tmp := t.TempDir()
@@ -466,6 +485,47 @@ func TestAgentTokenRepoLookupByProjectPath(t *testing.T) {
 	} {
 		if got := lookup(path); got != want {
 			t.Errorf("lookup(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// TestAgentTokenRepoLookupSetOnEachRunner (TASK-651): each place in cmd/pilot
+// that builds a Runner for task runs sets the repository lookup of the read
+// token next to the Navigator lookup, not only the polling runner: with no
+// lookup a run_as_user run of that runner gets no token.
+func TestAgentTokenRepoLookupSetOnEachRunner(t *testing.T) {
+	const (
+		nav   = ".SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))"
+		token = ".SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg))"
+	)
+	// The Runners of task runs: the polling runner, the two gateway runners and
+	// the webhook runner in main.go, the one-shot task runner in commands.go.
+	for file, want := range map[string]int{"main.go": 4, "commands.go": 1} {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(raw)
+		navN, tokenN := strings.Count(src, nav), strings.Count(src, token)
+		if navN != want {
+			t.Errorf("%s: %d Navigator lookup calls, want %d (update this test with the new runner)", file, navN, want)
+		}
+		if tokenN != navN {
+			t.Errorf("%s: %d token repository lookup calls for %d Navigator lookup calls", file, tokenN, navN)
+		}
+		lines := strings.Split(src, "\n")
+		for i, line := range lines {
+			recv, ok := strings.CutSuffix(strings.TrimSpace(line), nav)
+			if !ok {
+				continue
+			}
+			next := ""
+			if i+1 < len(lines) {
+				next = strings.TrimSpace(lines[i+1])
+			}
+			if !strings.HasPrefix(next, recv+token) {
+				t.Errorf("%s:%d: %s%s is not followed by %s%s", file, i+1, recv, nav, recv, token)
+			}
 		}
 	}
 }

@@ -1358,6 +1358,12 @@ func (p *Pilot) SetNavigatorEnabledLookup(lookup executor.NavigatorEnabledLookup
 	p.orchestrator.SetNavigatorEnabledLookup(lookup)
 }
 
+// SetAgentTokenRepoLookup sets the lookup of the repository a run_as_user run
+// gets a read token for (TASK-651).
+func (p *Pilot) SetAgentTokenRepoLookup(lookup executor.AgentTokenRepoLookup) {
+	p.orchestrator.SetAgentTokenRepoLookup(lookup)
+}
+
 // SetContractContentFetcher sets the fetcher used by the executor's
 // Contract Evidence gate (GH-5009/GH-5011/GH-5022) to independently verify
 // a citation's producer source. This allows main.go to wire the fetcher
