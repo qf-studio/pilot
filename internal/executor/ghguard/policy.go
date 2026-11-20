@@ -105,6 +105,12 @@ const (
 	// BackendResult.GhGuardDenials; also the evidence trail the GH-4670
 	// audit's alert channel references.
 	EnvJournalPath = "PILOT_GH_GUARD_JOURNAL"
+
+	// EnvTokenFile is the absolute path of the file that holds the read-only
+	// GitHub token of a run_as_user run (TASK-651). The guard hands its
+	// content to the real `gh` as GH_TOKEN; the token itself is never in an
+	// environment of the agent.
+	EnvTokenFile = "PILOT_GH_TOKEN_FILE"
 )
 
 // Verdict is the outcome of classifying one `gh` invocation.

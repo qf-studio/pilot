@@ -144,10 +144,12 @@ var runAsCodeSetEnv = map[string]bool{
 // shim directory (ghguard.ResolveFallbackGh excludes it from the PATH search)
 // and the denial journal. PATH keeps the shim directory first, so dropping any
 // of these breaks the guard: with the shim directory lost the fallback search
-// finds the shim itself and every allowed gh call re-enters it.
+// finds the shim itself and every allowed gh call re-enters it. The path of
+// the read token file of the run (agentTokenFile) passes too, never the token.
 var runAsGhGuardEnv = map[string]bool{
 	ghguard.EnvTaskIssue: true, ghguard.EnvTaskRepo: true, ghguard.EnvTaskBranch: true,
 	ghguard.EnvRealGh: true, ghguard.EnvShimDir: true, ghguard.EnvJournalPath: true,
+	ghguard.EnvTokenFile: true,
 }
 
 // runAsAllowedEnvPrefixes are the prefixes the allowlist keeps: how the CLI

@@ -114,6 +114,9 @@ func runGhGuard(args []string, getenv func(string) string, stdin io.Reader, stdo
 	execCmd.Stdin = stdin
 	execCmd.Stdout = stdout
 	execCmd.Stderr = stderr
+	if token := agentTokenFromFile(getenv(ghguard.EnvTokenFile)); token != "" {
+		execCmd.Env = append(os.Environ(), "GH_TOKEN="+token)
+	}
 	if err := execCmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if isExitError(err, &exitErr) {
@@ -123,6 +126,20 @@ func runGhGuard(args []string, getenv func(string) string, stdin io.Reader, stdo
 		return 1
 	}
 	return 0
+}
+
+// agentTokenFromFile returns the read token of a run_as_user run (TASK-651)
+// from the file at path, cut of white space: "" when path is empty or the file
+// is missing, unreadable or empty — then the real gh gets no GH_TOKEN.
+func agentTokenFromFile(path string) string {
+	if path == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(path) // #nosec G304 -- the token file the executor made for this run
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 // isExitError is a small indirection around errors.As purely so runGhGuard

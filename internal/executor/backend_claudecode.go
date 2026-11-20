@@ -714,6 +714,12 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 			env = prependPathEnv(env, shimDir)
 			env = append(env, ghGuardTaskEnv(opts, b.ghGuardRealGh, shimDir, journalPath)...)
 			ghGuardJournalPath = journalPath
+			// TASK-651: with run_as_user set the guard hands the read token of
+			// the source repo to the real gh from a file; the env holds the path.
+			if tokenFile := startAgentTokenFile(ctx, b.log, opts.SourceRepo); tokenFile != nil {
+				defer tokenFile.Stop()
+				env = append(env, tokenFile.Env())
+			}
 		}
 	}
 
