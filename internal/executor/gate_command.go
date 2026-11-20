@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -80,6 +82,18 @@ func gateBuilderError() error {
 	return nil
 }
 
+// GateBuilderError is gateBuilderError for the quality checker factory of the
+// daemon (cmd/pilot): with the option set and any builder but the gate
+// builder, the detection of the build and test command would read the
+// workspace as the daemon user.
+func GateBuilderError() error { return gateBuilderError() }
+
+// refusedGateChecker is the checker of a gate start whose command detection
+// was refused (gateBuilderError): it returns the error and runs nothing.
+type refusedGateChecker struct{ err error }
+
+func (c refusedGateChecker) Check(context.Context) (*QualityOutcome, error) { return nil, c.err }
+
 // runAsGateChecker is a QualityChecker that refuses to start the gates on
 // gateBuilderError: the registration of the builder does not depend on one
 // call (PreflightRunAsUser) that can be skipped in silence.
@@ -128,6 +142,14 @@ func (gateCommandBuilder) Build(ctx context.Context, dir string, env []string, n
 		return nil, fmt.Errorf("run_as_user: the gate command %q is not a sudo command of the agent user %q", cmd.Args, s.user)
 	}
 	cmd.Dir = dir
+	setAgentEnvFrom(cmd, gateEnv(env), dir, false)
+	return cmd, nil
+}
+
+// gateEnv is env of a gate command before the allowlist: a nil env is the
+// environment of the daemon; the model-env deny list, gateEnvDenied and the
+// gh guard names (a gate does not call gh) are removed.
+func gateEnv(env []string) []string {
 	if env == nil {
 		env = os.Environ()
 	}
@@ -138,18 +160,66 @@ func (gateCommandBuilder) Build(ctx context.Context, dir string, env []string, n
 	var kept []string
 	for i, kv := range env {
 		n, _, _ := strings.Cut(kv, "=")
-		if isModelEnvDenied(n) || gateEnvDenied[n] || (i < daemonCopy && runAsCodeSetEnv[n]) {
+		if isModelEnvDenied(n) || gateEnvDenied[n] || runAsGhGuardEnv[n] || (i < daemonCopy && runAsCodeSetEnv[n]) {
 			continue
 		}
 		kept = append(kept, kv)
 	}
-	setAgentEnvFrom(cmd, kept, dir, false)
-	return cmd, nil
+	return kept
 }
 
 // gateEnvDenied lists the names the allowlist keeps for the model that a gate
 // command does not get.
 var gateEnvDenied = map[string]bool{"ANTHROPIC_CUSTOM_HEADERS": true}
+
+// runAsGateToolsCheck is the probe of the preflight for the gate environment
+// of the agent user (checkRunAsGateTools); tests replace it.
+var runAsGateToolsCheck = checkRunAsGateTools
+
+// runAsGateToolsTimeout bounds the gate tool probe; tests replace it.
+var runAsGateToolsTimeout = 10 * time.Second
+
+// gateToolsScript runs as `sh -c SCRIPT sh TOOL...` as the agent user with the
+// environment of a gate: it prints "missing TOOL" for the first tool not found
+// in PATH, or "tmpdir DIR" when no file can be made and removed in the
+// temporary directory.
+const gateToolsScript = `for t in "$@"; do command -v "$t" >/dev/null 2>&1 || { echo "missing $t"; exit 4; }; done; ` +
+	`d=${TMPDIR:-/tmp}; f="$d/.pilot-gate-probe-$$"; ` +
+	`if (umask 077; set -C; : > "$f") 2>/dev/null && rm -f -- "$f"; then exit 0; fi; echo "tmpdir $d"; exit 5`
+
+// checkRunAsGateTools runs gateToolsScript as the agent user of s with the
+// environment a gate gets (PATH and TMPDIR of the daemon) within
+// runAsGateToolsTimeout. The tools are sh and git, and make and go when the
+// daemon finds them in its own PATH: an entry the agent user cannot read or a
+// TMPDIR it cannot write fails every gate of every run. It returns the failed
+// check, "" when the probe passed.
+func checkRunAsGateTools(s *runAsSettings) string {
+	tools := []string{"sh", "git"}
+	for _, t := range []string{"make", "go"} {
+		if _, err := exec.LookPath(t); err == nil {
+			tools = append(tools, t)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), runAsGateToolsTimeout)
+	defer cancel()
+	cmd, err := agentCommandAs(ctx, s, "sh", append([]string{"-c", gateToolsScript, "sh"}, tools...)...)
+	if err != nil {
+		return fmt.Sprintf("run_as_user: the gate tool probe as the agent user %s: %v", s.user, err)
+	}
+	cmd.Dir = s.home
+	setAgentEnvFrom(cmd, gateEnv(nil), s.home, false)
+	out, err := cmd.Output()
+	line := strings.TrimSpace(string(out))
+	switch {
+	case strings.HasPrefix(line, "missing "):
+		return fmt.Sprintf("run_as_user: the agent user %s finds no %s in the PATH of a gate", s.user, strings.TrimPrefix(line, "missing "))
+	case strings.HasPrefix(line, "tmpdir "):
+		return fmt.Sprintf("run_as_user: the agent user %s cannot make a file in the temporary directory %s of a gate", s.user, strings.TrimPrefix(line, "tmpdir "))
+	case err != nil:
+		return fmt.Sprintf("run_as_user: the gate tool probe as the agent user %s failed: %v", s.user, err)
+	}
+	return ""
+}
 
 // Configure sets the wait delay of a command built as the agent user:
 // agentCommand made its session and its cancel (the kill through sudo).
@@ -175,7 +245,7 @@ func (gateCommandBuilder) ReadFile(path string) ([]byte, error) {
 	if runAsSettingsNow() == nil {
 		return os.ReadFile(path) // #nosec G304 -- the read of the default builder.
 	}
-	return boundGateRead("read", path, func(ctx context.Context) ([]byte, error) {
+	return boundGateRead("ReadFile", "read", path, func(ctx context.Context) ([]byte, error) {
 		return agentReadFile(ctx, path)
 	})
 }
@@ -184,7 +254,7 @@ func (gateCommandBuilder) Stat(path string) (os.FileInfo, error) {
 	if runAsSettingsNow() == nil {
 		return os.Stat(path)
 	}
-	out, agent, err := runGateRead("stat", path, gateStatScript)
+	out, agent, err := runGateRead("Stat", "stat", path, gateStatScript)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +268,7 @@ func (gateCommandBuilder) ReadDir(path string) ([]os.DirEntry, error) {
 	if runAsSettingsNow() == nil {
 		return os.ReadDir(path)
 	}
-	out, agent, err := runGateRead("readdir", path, gateReadDirScript)
+	out, agent, err := runGateRead("ReadDir", "readdir", path, gateReadDirScript)
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +291,7 @@ func (gateCommandBuilder) EvalSymlinks(path string) (string, error) {
 	if runAsSettingsNow() == nil {
 		return filepath.EvalSymlinks(path)
 	}
-	out, agent, err := runGateRead("realpath", path, gateEvalSymlinksScript)
+	out, agent, err := runGateRead("EvalSymlinks", "realpath", path, gateEvalSymlinksScript)
 	if err != nil {
 		return "", err
 	}
@@ -238,8 +308,8 @@ func (gateCommandBuilder) EvalSymlinks(path string) (string, error) {
 // runGateRead runs script for path as the agent user within gateReadTimeout
 // when path takes the agent route of the file helpers (agentFileRoute);
 // agent is false for a path outside the workspace root, which the caller
-// reads with the os call.
-func runGateRead(op, path, script string) (out []byte, agent bool, err error) {
+// reads with the os call. method is the builder method that reads.
+func runGateRead(method, op, path, script string) (out []byte, agent bool, err error) {
 	agent, err = agentFileRoute(path)
 	if err != nil || !agent {
 		return nil, agent, err
@@ -248,7 +318,7 @@ func runGateRead(op, path, script string) (out []byte, agent bool, err error) {
 	if err != nil {
 		return nil, true, fmt.Errorf("run_as_user: %s %q: %w", op, path, err)
 	}
-	out, err = boundGateRead(op, path, func(ctx context.Context) ([]byte, error) {
+	out, err = boundGateRead(method, op, path, func(ctx context.Context) ([]byte, error) {
 		return runAgentFileScript(ctx, op, path, script, nil, abs)
 	})
 	return out, true, err
@@ -258,9 +328,12 @@ func runGateRead(op, path, script string) (out []byte, agent bool, err error) {
 // gateReadTimeout plus gateReadGrace at most: when the kill through sudo does
 // not end the process, the wait of os/exec lasts the wait delay and the kill
 // grace on top of the limit. It then stops waiting and returns the time limit
-// error; the process is left to the kill route.
-func boundGateRead(op, path string, read func(ctx context.Context) ([]byte, error)) ([]byte, error) {
+// error; the process is left to the kill route, with one Error line that
+// names the builder method, the path and the process id.
+func boundGateRead(method, op, path string, read func(ctx context.Context) ([]byte, error)) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gateReadTimeout)
+	var pid atomic.Int64
+	ctx = context.WithValue(ctx, agentPidRecorderKey{}, &pid)
 	type result struct {
 		out []byte
 		err error
@@ -277,6 +350,11 @@ func boundGateRead(op, path string, read func(ctx context.Context) ([]byte, erro
 	case r := <-done:
 		return r.out, r.err
 	case <-timer.C:
+		slog.Default().Error("run_as_user: a read of the gate builder was given up, its kill through sudo did not end the process",
+			slog.String("method", method),
+			slog.String("path", path),
+			slog.Int64("pid", pid.Load()),
+		)
 		return nil, fmt.Errorf("run_as_user: %s %s as the agent user: %w", op, path, context.DeadlineExceeded)
 	}
 }

@@ -222,6 +222,15 @@ func newProjectQualityCheckerFactory(cfg *config.Config) executor.QualityChecker
 			slog.String("project_path", taskProjectPath),
 			slog.Bool("project_found", proj != nil),
 			slog.Bool("project_override", projectQuality != nil))
+		// TASK-651: the detection of the build and test command reads the
+		// workspace through the builder of internal/quality; with run_as_user
+		// set and any builder but the gate builder of the executor it would
+		// read as the daemon user. It reads nothing and the gates refuse.
+		if !qualityEnabled(projectQuality) && !qualityEnabled(cfg.Quality) {
+			if err := gateBuilderError(); err != nil {
+				return refusedQualityChecker{err}
+			}
+		}
 		resolved := quality.ResolveConfig(projectQuality, cfg.Quality, executionPath)
 		return &qualityCheckerWrapper{
 			executor: quality.NewExecutor(&quality.ExecutorConfig{
@@ -234,6 +243,20 @@ func newProjectQualityCheckerFactory(cfg *config.Config) executor.QualityChecker
 			}),
 		}
 	}
+}
+
+// gateBuilderError is executor.GateBuilderError; tests replace it.
+var gateBuilderError = executor.GateBuilderError
+
+// qualityEnabled reports whether c is a quality config ResolveConfig uses as
+// it is, without the detection of the commands.
+func qualityEnabled(c *quality.Config) bool { return c != nil && c.Enabled }
+
+// refusedQualityChecker returns err and runs no gate.
+type refusedQualityChecker struct{ err error }
+
+func (c refusedQualityChecker) Check(context.Context) (*executor.QualityOutcome, error) {
+	return nil, c.err
 }
 
 // newProjectContractDependencyLookup builds an executor.ContractDependencyLookup

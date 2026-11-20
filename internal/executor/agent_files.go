@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/executor/workflow"
@@ -151,7 +152,12 @@ func runAgentFileScriptLimit(ctx context.Context, op, path, script string, stdin
 	stdout := &agentLimitedBuffer{name: "standard output", limit: readLimit, stop: stop}
 	stderr := &agentLimitedBuffer{name: "standard error", limit: agentFileStderrLimit, stop: stop}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	err = cmd.Run()
+	if err = cmd.Start(); err == nil {
+		if rec, ok := ctx.Value(agentPidRecorderKey{}).(*atomic.Int64); ok {
+			rec.Store(int64(cmd.Process.Pid))
+		}
+		err = cmd.Wait()
+	}
 	for _, b := range []*agentLimitedBuffer{stdout, stderr} {
 		if b.over {
 			return nil, fmt.Errorf("run_as_user: %s %s as the agent user: the %s of the command is over the limit of %d bytes, the command was stopped", op, path, b.name, b.limit)
@@ -166,6 +172,11 @@ func runAgentFileScriptLimit(ctx context.Context, op, path, script string, stdin
 	}
 	return stdout.buf.Bytes(), nil
 }
+
+// agentPidRecorderKey is the context key of an *atomic.Int64 that
+// runAgentFileScriptLimit sets to the process id of its command once it
+// started: a caller that gives up the wait (boundGateRead) can name it.
+type agentPidRecorderKey struct{}
 
 // errAgentOutputLimit is the error of a write to an agentLimitedBuffer that
 // is over its limit: os/exec stops the copy of the stream.
