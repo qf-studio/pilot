@@ -131,13 +131,19 @@ func (gateCommandBuilder) Build(ctx context.Context, dir string, env []string, n
 	if env == nil {
 		env = os.Environ()
 	}
+	// The names of runAsCodeSetEnv leave the copy of the daemon by position:
+	// an env built from scratch keeps every entry the caller set, also one
+	// with the value of the daemon.
+	daemonCopy := daemonEnvCopyLen(env)
 	var kept []string
-	for _, kv := range env {
-		if n, _, _ := strings.Cut(kv, "="); !isModelEnvDenied(n) && !gateEnvDenied[n] {
-			kept = append(kept, kv)
+	for i, kv := range env {
+		n, _, _ := strings.Cut(kv, "=")
+		if isModelEnvDenied(n) || gateEnvDenied[n] || (i < daemonCopy && runAsCodeSetEnv[n]) {
+			continue
 		}
+		kept = append(kept, kv)
 	}
-	setAgentEnvIn(cmd, kept, dir)
+	setAgentEnvFrom(cmd, kept, dir, false)
 	return cmd, nil
 }
 
