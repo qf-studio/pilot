@@ -305,7 +305,7 @@ func (b *settingsBreakingCommitBackend) Execute(ctx context.Context, opts Execut
 	if err := os.WriteFile(filepath.Join(opts.ProjectPath, "work.go"), []byte("package work\n"), 0o600); err != nil {
 		return nil, err
 	}
-	for _, args := range [][]string{{"add", "work.go"}, {"commit", "-m", "feat: work"}} {
+	for _, args := range [][]string{{"add", "work.go"}, {"-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-m", "feat: work"}} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = opts.ProjectPath
 		if out, err := cmd.CombinedOutput(); err != nil {
