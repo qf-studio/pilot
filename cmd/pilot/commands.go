@@ -858,6 +858,7 @@ Examples:
 			runner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 			runner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
 			runner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
+			installAgentReadTokenProvider(cfg)
 
 			// Decomposer status (GH-218) - wired via NewRunnerWithConfig
 			if cfg.Executor != nil && cfg.Executor.Decompose != nil && cfg.Executor.Decompose.Enabled {
@@ -1646,6 +1647,8 @@ Examples:
 			runner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
 			// GH-4670: post-run GitHub side-effect audit — see GH-4649 incident.
 			runner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
+			runner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
+			installAgentReadTokenProvider(cfg)
 
 			// GH-962: Clean up orphaned worktree directories from previous crashed executions.
 			// TASK-651: a one-shot command keeps the agent workspaces; only the daemon sweeps them.

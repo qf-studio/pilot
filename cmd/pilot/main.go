@@ -198,17 +198,31 @@ func sweepAgentTokenDirsAtStart() int {
 	return executor.SweepAgentTokenDirs(logging.WithComponent("start"))
 }
 
+// installAgentReadTokenProvider installs the provider of the read token the
+// agent user of a run_as_user run gets (TASK-651), built from cfg: minted by
+// the GitHub App of adapters.github.app, nil with no App. Each start path that
+// builds a Runner for task runs calls it next to SetAgentTokenRepoLookup; with
+// no provider no run gets a token.
+func installAgentReadTokenProvider(cfg *config.Config) {
+	executor.SetAgentReadTokenProvider(agentReadTokenProvider(cfg))
+}
+
 // newProjectAgentTokenRepoLookup returns the lookup of the repository a
 // run_as_user run gets a read token for (TASK-651): the "OWNER/NAME" of the
 // project config entry whose path is the project path of the task, "" for a
-// path of no entry or an entry with no GitHub owner and repo.
+// path of no entry or an entry with no GitHub owner and repo. Both paths are
+// compared in their canonical form (cleaned, links resolved), so a trailing
+// slash, a "./" or a link to the project directory finds the entry.
 func newProjectAgentTokenRepoLookup(cfg *config.Config) executor.AgentTokenRepoLookup {
-	return func(taskProjectPath string) string {
-		proj := cfg.FindProjectByPath(taskProjectPath)
-		if proj == nil || proj.GitHub == nil || proj.GitHub.Owner == "" || proj.GitHub.Repo == "" {
-			return ""
+	return func(taskProjectPath string) (string, bool) {
+		proj := cfg.FindProjectByCanonicalPath(memory.CanonicalizeProjectPath(taskProjectPath))
+		if proj == nil {
+			return "", false
 		}
-		return proj.GitHub.Owner + "/" + proj.GitHub.Repo
+		if proj.GitHub == nil || proj.GitHub.Owner == "" || proj.GitHub.Repo == "" {
+			return "", true
+		}
+		return proj.GitHub.Owner + "/" + proj.GitHub.Repo, true
 	}
 }
 
@@ -1096,6 +1110,7 @@ Examples:
 				gwRunner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 				gwRunner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
 				gwRunner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
+				installAgentReadTokenProvider(cfg)
 
 				// Set up team project access checker if configured (GH-635)
 				if gwTeamCleanup := wireProjectAccessChecker(gwRunner, cfg); gwTeamCleanup != nil {
@@ -1521,6 +1536,7 @@ Examples:
 				gwRunner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 				gwRunner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
 				gwRunner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
+				installAgentReadTokenProvider(cfg)
 			}
 
 			// Enable Telegram polling in gateway mode only if --telegram flag was explicitly passed (GH-351)
@@ -1711,6 +1727,7 @@ Examples:
 			p.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 			p.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
 			p.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
+			installAgentReadTokenProvider(cfg)
 
 			// GH-4864: surface the running process's compiled-in version on
 			// /health, /api/v1/status, and the pilot_build_info metric — the
@@ -2612,10 +2629,6 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, startPreflight func(
 			return mintGitHubAppToken(ctx, appCfg)
 		})
 	}
-	// TASK-651: the agent user of a run_as_user run gets a token that can
-	// only read its one repository, minted by the same App. Nil with no App.
-	executor.SetAgentReadTokenProvider(agentReadTokenProvider(cfg))
-
 	// Check Telegram config if enabled
 	hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled
 	if hasTelegram && cfg.Adapters.Telegram.BotToken == "" {
@@ -2667,6 +2680,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, startPreflight func(
 	runner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 	runner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
 	runner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
+	installAgentReadTokenProvider(cfg)
 
 	// Set up team project access checker if configured (GH-635)
 	if teamCleanup := wireProjectAccessChecker(runner, cfg); teamCleanup != nil {

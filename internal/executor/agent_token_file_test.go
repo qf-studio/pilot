@@ -314,11 +314,11 @@ func TestAgentTokenFileModeAndRefresh(t *testing.T) {
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 			projectPath := t.TempDir()
-			r := &Runner{log: slog.Default(), agentTokenRepoLookup: func(path string) string {
+			r := &Runner{log: slog.Default(), agentTokenRepoLookup: func(path string) (string, bool) {
 				if path == projectPath {
-					return "qf-studio/pilot"
+					return "qf-studio/pilot", true
 				}
-				return ""
+				return "", false
 			}}
 			ctx := context.Background()
 			tokenFile := r.startRunAgentTokenFile(ctx, &Task{ID: "GH-6596", ProjectPath: projectPath})
@@ -442,7 +442,10 @@ func TestAgentTokenRepoOfTheProjectEntry(t *testing.T) {
 	setAgentReadTokenProviderForTest(t, p.provide)
 	entries := map[string]string{"/srv/a/name": "OWNER-A/NAME", "/srv/b/name": "OWNER-B/NAME", "/srv/c": ""}
 	var buf bytes.Buffer
-	r := &Runner{log: slog.New(slog.NewJSONHandler(&buf, nil)), agentTokenRepoLookup: func(path string) string { return entries[path] }}
+	r := &Runner{log: slog.New(slog.NewJSONHandler(&buf, nil)), agentTokenRepoLookup: func(path string) (string, bool) {
+		repo, ok := entries[path]
+		return repo, ok
+	}}
 
 	for _, tc := range []struct {
 		name, path, taskRepo, want string
