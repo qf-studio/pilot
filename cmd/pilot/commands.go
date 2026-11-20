@@ -857,6 +857,7 @@ Examples:
 			// mirroring the dependency lookup wiring above.
 			runner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 			runner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
+			runner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
 
 			// Decomposer status (GH-218) - wired via NewRunnerWithConfig
 			if cfg.Executor != nil && cfg.Executor.Decompose != nil && cfg.Executor.Decompose.Enabled {

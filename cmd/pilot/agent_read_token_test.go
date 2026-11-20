@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 // TestAgentReadTokenProvider_NilWithoutApp: with no GitHub App configured
@@ -360,5 +362,170 @@ func TestAgentTokenFileProviderSetAtStartup(t *testing.T) {
 	}
 	if n := strings.Count(string(src), "executor.SetAgentReadTokenProvider("); n != 1 {
 		t.Errorf("SetAgentReadTokenProvider( occurs %d times in main.go, want 1", n)
+	}
+}
+
+// TestAgentTokenDirsAreSweptAtStart (TASK-651): each daemon start removes the
+// read token directories a killed daemon left, where it removes left
+// worktrees. A left directory of the daemon user goes; a link with the name
+// pattern is not followed and its target stays; with the option empty
+// nothing is removed.
+func TestAgentTokenDirsAreSweptAtStart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file owners")
+	}
+	for _, sig := range []string{"func runPollingMode(", "func newStartCmd("} {
+		body := githubFuncBody(t, "main.go", sig)
+		sweep := strings.Index(body, "\tsweepAgentTokenDirsAtStart()\n")
+		cleanup := strings.Index(body, "executor.CleanupOrphanedWorktrees(")
+		if sweep < 0 {
+			t.Errorf("%s does not call sweepAgentTokenDirsAtStart()", sig)
+		} else if cleanup < 0 || sweep > cleanup {
+			t.Errorf("%s: sweepAgentTokenDirsAtStart() is not called before the left worktrees are removed", sig)
+		}
+		if n := strings.Count(body, "sweepAgentTokenDirsAtStart()"); n != 1 {
+			t.Errorf("%s calls sweepAgentTokenDirsAtStart() %d times, want once", sig, n)
+		}
+	}
+	// The gateway start sweeps once ahead of its three runner shapes, so the
+	// chat-only runner and the webhook runner are covered, not only the
+	// runner of the polling adapters.
+	gw := githubFuncBody(t, "main.go", "func newStartCmd(")
+	sweep := strings.Index(gw, "\tsweepAgentTokenDirsAtStart()\n")
+	for _, start := range []string{
+		"\t\t\tif needsPollingInfra {\n",
+		"} else if gatewayChatNeedsOwnRunner(chatEnabled, needsPollingInfra) {",
+		"p.SetAgentTokenRepoLookup(",
+	} {
+		if i := strings.Index(gw, start); i < 0 {
+			t.Errorf("newStartCmd: %q not found", start)
+		} else if sweep < 0 || sweep > i {
+			t.Errorf("newStartCmd: sweepAgentTokenDirsAtStart() is not called before %q", start)
+		}
+	}
+
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	t.Cleanup(func() { executor.PreflightRunAsUser(nil, "", true, 0) })
+	setOption := func(set bool) {
+		if set {
+			executor.PreflightRunAsUser(&executor.ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents"}, "", true, 0)
+		} else {
+			executor.PreflightRunAsUser(nil, "", true, 0)
+		}
+	}
+	makeLeft := func(name string) string {
+		dir := filepath.Join(tmp, name)
+		if err := os.Mkdir(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "github-token"), []byte("test-read-token"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+
+	left := makeLeft("pilot-ghtoken-111")
+	target := t.TempDir()
+	targetFile := filepath.Join(target, "keep")
+	if err := os.WriteFile(targetFile, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmp, "pilot-ghtoken-222")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	setOption(true)
+	if n := sweepAgentTokenDirsAtStart(); n != 1 {
+		t.Errorf("sweep removed %d, want 1", n)
+	}
+	if _, err := os.Lstat(left); !os.IsNotExist(err) {
+		t.Errorf("left token directory still there: %v", err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link was removed or replaced: %v", err)
+	}
+	if raw, err := os.ReadFile(targetFile); err != nil || string(raw) != "keep" {
+		t.Errorf("link target file = %q, %v, want keep", raw, err)
+	}
+
+	setOption(false)
+	kept := makeLeft("pilot-ghtoken-333")
+	if n := sweepAgentTokenDirsAtStart(); n != 0 {
+		t.Errorf("option empty: sweep removed %d, want 0", n)
+	}
+	if _, err := os.Stat(kept); err != nil {
+		t.Errorf("option empty: the directory was removed: %v", err)
+	}
+}
+
+// TestAgentTokenRepoLookupByProjectPath (TASK-651): the repository of the read
+// token is that of the project config entry of the task path, so two entries
+// with the same repository name under two owners each get their own.
+func TestAgentTokenRepoLookupByProjectPath(t *testing.T) {
+	const line = "runner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg))"
+	if body := githubFuncBody(t, "main.go", "func runPollingMode("); !strings.Contains(body, line) {
+		t.Errorf("runPollingMode does not call %s", line)
+	}
+	cfg := &config.Config{Projects: []*config.ProjectConfig{
+		{Name: "a", Path: "/srv/a/name", GitHub: &config.ProjectGitHubConfig{Owner: "OWNER-A", Repo: "NAME"}},
+		{Name: "b", Path: "/srv/b/name", GitHub: &config.ProjectGitHubConfig{Owner: "OWNER-B", Repo: "NAME"}},
+		{Name: "c", Path: "/srv/c"},
+		{Name: "d", Path: "/srv/d", GitHub: &config.ProjectGitHubConfig{Repo: "NAME"}},
+	}}
+	lookup := newProjectAgentTokenRepoLookup(cfg)
+	for path, want := range map[string]string{
+		"/srv/a/name": "OWNER-A/NAME",
+		"/srv/b/name": "OWNER-B/NAME",
+		"/srv/c":      "",
+		"/srv/d":      "",
+		"/srv/none":   "",
+		"":            "",
+	} {
+		if got := lookup(path); got != want {
+			t.Errorf("lookup(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// TestAgentTokenRepoLookupSetOnEachRunner (TASK-651): each place in cmd/pilot
+// that builds a Runner for task runs sets the repository lookup of the read
+// token next to the Navigator lookup, not only the polling runner: with no
+// lookup a run_as_user run of that runner gets no token.
+func TestAgentTokenRepoLookupSetOnEachRunner(t *testing.T) {
+	const (
+		nav   = ".SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))"
+		token = ".SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg))"
+	)
+	// The Runners of task runs: the polling runner, the two gateway runners and
+	// the webhook runner in main.go, the one-shot task runner in commands.go.
+	for file, want := range map[string]int{"main.go": 4, "commands.go": 1} {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(raw)
+		navN, tokenN := strings.Count(src, nav), strings.Count(src, token)
+		if navN != want {
+			t.Errorf("%s: %d Navigator lookup calls, want %d (update this test with the new runner)", file, navN, want)
+		}
+		if tokenN != navN {
+			t.Errorf("%s: %d token repository lookup calls for %d Navigator lookup calls", file, tokenN, navN)
+		}
+		lines := strings.Split(src, "\n")
+		for i, line := range lines {
+			recv, ok := strings.CutSuffix(strings.TrimSpace(line), nav)
+			if !ok {
+				continue
+			}
+			next := ""
+			if i+1 < len(lines) {
+				next = strings.TrimSpace(lines[i+1])
+			}
+			if !strings.HasPrefix(next, recv+token) {
+				t.Errorf("%s:%d: %s%s is not followed by %s%s", file, i+1, recv, nav, recv, token)
+			}
+		}
 	}
 }

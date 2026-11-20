@@ -128,15 +128,25 @@ func runGhGuard(args []string, getenv func(string) string, stdin io.Reader, stdo
 	return 0
 }
 
+// agentTokenFileMax is the largest token file the shim reads, in bytes. A
+// GitHub token is far shorter; a larger file is not a token file of the run.
+const agentTokenFileMax = 1024
+
 // agentTokenFromFile returns the read token of a run_as_user run (TASK-651)
 // from the file at path, cut of white space: "" when path is empty or the file
-// is missing, unreadable or empty — then the real gh gets no GH_TOKEN.
+// is missing, unreadable, empty or larger than agentTokenFileMax bytes — then
+// the real gh gets no GH_TOKEN. It reads at most agentTokenFileMax+1 bytes.
 func agentTokenFromFile(path string) string {
 	if path == "" {
 		return ""
 	}
-	raw, err := os.ReadFile(path) // #nosec G304 -- the token file the executor made for this run
+	f, err := os.Open(path) // #nosec G304 -- the token file the executor made for this run
 	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(f, agentTokenFileMax+1))
+	if err != nil || len(raw) > agentTokenFileMax {
 		return ""
 	}
 	return strings.TrimSpace(string(raw))

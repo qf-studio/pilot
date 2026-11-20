@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -292,7 +293,7 @@ func TestAgentTokenFileModeAndRefresh(t *testing.T) {
 		}
 	})
 
-	t.Run("the agent process: path in its env, the token in no env value or argument", func(t *testing.T) {
+	t.Run("the agent process: path in its env, the token in no env value or argument; one directory for two backend calls", func(t *testing.T) {
 		stubRunAsGOOS(t)
 		const token = "-test'agent\"read$token\\"
 		for _, tc := range []struct {
@@ -304,7 +305,7 @@ func TestAgentTokenFileModeAndRefresh(t *testing.T) {
 			setAgentReadTokenProviderForTest(t, p.provide)
 
 			rec := t.TempDir()
-			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\0' \"$@\" > '%[1]s/argv'\nenv > '%[1]s/env'\n"+
+			script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\0' \"$@\" >> '%[1]s/argv'\nenv >> '%[1]s/env'\n"+
 				"if [ -n \"$PILOT_GH_TOKEN_FILE\" ]; then cat \"$PILOT_GH_TOKEN_FILE\" > '%[1]s/seen'; fi\nexit 0\n", rec)
 			bin := t.TempDir()
 			if err := os.WriteFile(filepath.Join(bin, "sudo"), []byte(script), 0o755); err != nil { //nolint:gosec // mock must be executable
@@ -312,11 +313,36 @@ func TestAgentTokenFileModeAndRefresh(t *testing.T) {
 			}
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
+			projectPath := t.TempDir()
+			r := &Runner{log: slog.Default(), agentTokenRepoLookup: func(path string) string {
+				if path == projectPath {
+					return "qf-studio/pilot"
+				}
+				return ""
+			}}
+			ctx := context.Background()
+			tokenFile := r.startRunAgentTokenFile(ctx, &Task{ID: "GH-6596", ProjectPath: projectPath})
+			if tokenFile != nil {
+				ctx = withAgentTokenFile(ctx, tokenFile)
+			}
 			b := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: "claude-model-cli"})
 			b.SetGhGuard(true, "")
-			_, _ = b.Execute(context.Background(), ExecuteOptions{
-				ProjectPath: t.TempDir(), Prompt: "p", SourceRepo: "qf-studio/pilot", SourceIssueID: "6587",
-			})
+			for i := 0; i < 2; i++ { // the first process and a retry of the run
+				_, _ = b.Execute(ctx, ExecuteOptions{
+					ProjectPath: t.TempDir(), Prompt: "p", SourceRepo: "qf-studio/pilot", SourceIssueID: "6587",
+				})
+			}
+			if got := p.callCount(); got != 1 {
+				t.Errorf("%s: provider called %d times for a run of two backend calls, want 1", tc.name, got)
+			}
+			if tc.err == nil {
+				if got := tokenDirs(t, tmp); len(got) != 1 {
+					t.Errorf("%s: token dirs during the run = %v, want one", tc.name, got)
+				}
+			}
+			if tokenFile != nil {
+				tokenFile.Stop()
+			}
 
 			argv, err := os.ReadFile(filepath.Join(rec, "argv"))
 			if err != nil {
@@ -331,29 +357,29 @@ func TestAgentTokenFileModeAndRefresh(t *testing.T) {
 					t.Errorf("%s: an argument holds the token: %q", tc.name, a)
 				}
 			}
-			var tokenFile string
+			var tokenFiles []string
 			for _, kv := range strings.Split(string(env), "\n") {
 				if strings.Contains(kv, token) || strings.Contains(kv, "test-read-token") {
 					t.Errorf("%s: an env value holds the token: %q", tc.name, kv)
 				}
 				if v, ok := strings.CutPrefix(kv, "PILOT_GH_TOKEN_FILE="); ok {
-					tokenFile = v
+					tokenFiles = append(tokenFiles, v)
 				}
 			}
 			seen, seenErr := os.ReadFile(filepath.Join(rec, "seen"))
 			if tc.err != nil {
-				if tokenFile != "" || seenErr == nil {
-					t.Errorf("%s: token file %q in the env, seen %q", tc.name, tokenFile, seen)
+				if tokenFile != nil || len(tokenFiles) != 0 || seenErr == nil {
+					t.Errorf("%s: token files %q in the env, seen %q", tc.name, tokenFiles, seen)
 				}
 				continue
 			}
-			if tokenFile == "" || filepath.Base(tokenFile) != "github-token" {
-				t.Fatalf("%s: PILOT_GH_TOKEN_FILE = %q in the env of the agent", tc.name, tokenFile)
+			if len(tokenFiles) != 2 || tokenFiles[0] != tokenFiles[1] || filepath.Base(tokenFiles[0]) != "github-token" {
+				t.Fatalf("%s: PILOT_GH_TOKEN_FILE of the two processes = %q, want one github-token twice", tc.name, tokenFiles)
 			}
 			if string(seen) != token {
 				t.Errorf("%s: the agent read %q from the token file, want %q", tc.name, seen, token)
 			}
-			if _, err := os.Stat(filepath.Dir(tokenFile)); !os.IsNotExist(err) {
+			if _, err := os.Stat(filepath.Dir(tokenFiles[0])); !os.IsNotExist(err) {
 				t.Errorf("%s: token dir still there after the run: %v", tc.name, err)
 			}
 			if got := tokenDirs(t, tmp); len(got) != 0 {
@@ -366,6 +392,269 @@ func TestAgentTokenFileModeAndRefresh(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("a backend process outside a run makes no token file", func(t *testing.T) {
+		stubRunAsGOOS(t)
+		_, tmp := tokenTestRunAs(t, true)
+		p := &fakeReadTokenProvider{expiry: time.Hour}
+		setAgentReadTokenProviderForTest(t, p.provide)
+		rec := t.TempDir()
+		bin := t.TempDir()
+		script := fmt.Sprintf("#!/bin/sh\nenv > '%s/env'\nexit 0\n", rec)
+		if err := os.WriteFile(filepath.Join(bin, "sudo"), []byte(script), 0o755); err != nil { //nolint:gosec // mock must be executable
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+		b := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: "claude-model-cli"})
+		b.SetGhGuard(true, "")
+		_, _ = b.Execute(context.Background(), ExecuteOptions{ProjectPath: t.TempDir(), Prompt: "p", SourceRepo: "qf-studio/pilot"})
+		env, err := os.ReadFile(filepath.Join(rec, "env"))
+		if err != nil {
+			t.Fatalf("the agent process did not start: %v", err)
+		}
+		if strings.Contains(string(env), "PILOT_GH_TOKEN_FILE=") || p.callCount() != 0 || len(tokenDirs(t, tmp)) != 0 {
+			t.Errorf("a token file outside a run: provider calls %d, dirs %v", p.callCount(), tokenDirs(t, tmp))
+		}
+	})
+}
+
+// repoTokenProvider hands out "test-read-token-for-<repo>".
+type repoTokenProvider struct {
+	mu    sync.Mutex
+	repos []string
+}
+
+func (p *repoTokenProvider) provide(_ context.Context, repo string) (string, time.Time, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.repos = append(p.repos, repo)
+	return "test-read-token-for-" + repo, time.Now().Add(time.Hour), nil
+}
+
+// TestAgentTokenRepoOfTheProjectEntry: the repository of the read token is
+// that of the project config entry of the task path. Of two entries with the
+// same repository name under two owners each run gets the token of its own;
+// a task that names the repository of the other owner gets none and one Warn
+// line names both.
+func TestAgentTokenRepoOfTheProjectEntry(t *testing.T) {
+	tokenTestRunAs(t, true)
+	p := &repoTokenProvider{}
+	setAgentReadTokenProviderForTest(t, p.provide)
+	entries := map[string]string{"/srv/a/name": "OWNER-A/NAME", "/srv/b/name": "OWNER-B/NAME", "/srv/c": ""}
+	var buf bytes.Buffer
+	r := &Runner{log: slog.New(slog.NewJSONHandler(&buf, nil)), agentTokenRepoLookup: func(path string) string { return entries[path] }}
+
+	for _, tc := range []struct {
+		name, path, taskRepo, want string
+	}{
+		{"owner A, no full name on the task", "/srv/a/name", "", "test-read-token-for-OWNER-A/NAME"},
+		{"owner B, no full name on the task", "/srv/b/name", "", "test-read-token-for-OWNER-B/NAME"},
+		{"owner A, full name of another letter case", "/srv/a/name", "owner-a/name", "test-read-token-for-OWNER-A/NAME"},
+		{"owner B, full name of owner A", "/srv/b/name", "OWNER-A/NAME", ""},
+		{"no GitHub repository in the config", "/srv/c", "", ""},
+		{"no config entry", "/srv/none", "OWNER-A/NAME", ""},
+	} {
+		buf.Reset()
+		p.mu.Lock()
+		p.repos = nil
+		p.mu.Unlock()
+		f := r.startRunAgentTokenFile(context.Background(), &Task{ID: "GH-6596", ProjectPath: tc.path, SourceRepo: tc.taskRepo})
+		if tc.want == "" {
+			if f != nil {
+				f.Stop()
+				t.Errorf("%s: a token file", tc.name)
+			}
+			if len(p.repos) != 0 {
+				t.Errorf("%s: provider asked for %v", tc.name, p.repos)
+			}
+			continue
+		}
+		if f == nil {
+			t.Errorf("%s: no token file", tc.name)
+			continue
+		}
+		if got := readTokenFile(t, f.path); got != tc.want {
+			t.Errorf("%s: token file = %q, want %q", tc.name, got, tc.want)
+		}
+		f.Stop()
+	}
+
+	buf.Reset()
+	if f := r.startRunAgentTokenFile(context.Background(), &Task{ID: "GH-6596", ProjectPath: "/srv/b/name", SourceRepo: "OWNER-A/NAME"}); f != nil {
+		f.Stop()
+		t.Fatal("a token file for a task of the other owner")
+	}
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("log lines = %q, want one Warn line", lines)
+	}
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec["level"] != "WARN" || rec["task_repo"] != "OWNER-A/NAME" || rec["project_repo"] != "OWNER-B/NAME" {
+		t.Errorf("warning = %v, want WARN naming task_repo OWNER-A/NAME and project_repo OWNER-B/NAME", rec)
+	}
+}
+
+// TestAgentTokenFileExclusiveCreate: a file at the temporary name makes the
+// write fail and stays as it was.
+func TestAgentTokenFileExclusiveCreate(t *testing.T) {
+	tokenTestRunAs(t, true)
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, "github-token.tmp")
+	if err := os.WriteFile(tmp, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAgentTokenFile(dir, "test-read-token"); err == nil {
+		t.Error("the write over a file at the temporary name did not fail")
+	}
+	if raw, err := os.ReadFile(tmp); err != nil || string(raw) != "original" {
+		t.Errorf("file at the temporary name = %q, %v, want original", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "github-token")); err == nil {
+		t.Error("a token file came from a failed write")
+	}
+}
+
+// recordAgentTokenWaits replaces the timer of the refresh with one that fires
+// at once and sends each wait to the returned channel.
+func recordAgentTokenWaits(t *testing.T) <-chan time.Duration {
+	t.Helper()
+	waits := make(chan time.Duration, 64)
+	prev := agentTokenTimer
+	agentTokenTimer = func(d time.Duration) (<-chan time.Time, func() bool) {
+		c := make(chan time.Time, 1)
+		select {
+		case waits <- d:
+			c <- time.Now()
+		default: // the test read enough: block until Stop
+		}
+		return c, func() bool { return true }
+	}
+	t.Cleanup(func() { agentTokenTimer = prev })
+	return waits
+}
+
+func nextWait(t *testing.T, waits <-chan time.Duration) time.Duration {
+	t.Helper()
+	select {
+	case d := <-waits:
+		return d
+	case <-time.After(5 * time.Second):
+		t.Fatal("no wait of the refresh")
+		return 0
+	}
+}
+
+// TestAgentTokenFileRefreshMargin: a token that expires in 20 minutes is
+// refreshed after about 5 minutes (a margin of 15), not after 19.
+func TestAgentTokenFileRefreshMargin(t *testing.T) {
+	tokenTestRunAs(t, true)
+	waits := recordAgentTokenWaits(t)
+	gate := make(chan struct{})
+	var calls atomic.Int32
+	setAgentReadTokenProviderForTest(t, func(ctx context.Context, _ string) (string, time.Time, error) {
+		if calls.Add(1) > 1 {
+			select { // hold the refresh so only the first wait is seen
+			case <-gate:
+			case <-ctx.Done():
+			}
+		}
+		return "test-read-token", time.Now().Add(20 * time.Minute), nil
+	})
+	f := startAgentTokenFile(context.Background(), slog.Default(), "qf-studio/pilot")
+	if f == nil {
+		t.Fatal("no token file")
+	}
+	defer f.Stop()
+	defer close(gate)
+	if d := nextWait(t, waits); d > 5*time.Minute+5*time.Second || d < 4*time.Minute {
+		t.Errorf("refresh of a token that expires in 20 minutes after %v, want about 5m", d)
+	}
+}
+
+// TestAgentTokenFileRefreshErrorWaitsGrow: after each failed refresh the wait
+// doubles from 30 seconds up to 5 minutes; a success resets it.
+func TestAgentTokenFileRefreshErrorWaitsGrow(t *testing.T) {
+	tokenTestRunAs(t, true)
+	waits := recordAgentTokenWaits(t)
+	var calls atomic.Int32
+	setAgentReadTokenProviderForTest(t, func(context.Context, string) (string, time.Time, error) {
+		n := calls.Add(1)
+		if n == 1 || n == 9 {
+			return "test-read-token", time.Now().Add(time.Hour), nil
+		}
+		return "", time.Time{}, errors.New("test-provider-failure")
+	})
+	f := startAgentTokenFile(context.Background(), slog.Default(), "qf-studio/pilot")
+	if f == nil {
+		t.Fatal("no token file")
+	}
+	defer f.Stop()
+	if d := nextWait(t, waits); d < 40*time.Minute {
+		t.Errorf("first wait %v, want the wait to the margin", d)
+	}
+	for i, want := range []time.Duration{30 * time.Second, time.Minute, 2 * time.Minute, 4 * time.Minute, 5 * time.Minute, 5 * time.Minute, 5 * time.Minute} {
+		if d := nextWait(t, waits); d != want {
+			t.Errorf("wait after %d provider errors = %v, want %v", i+1, d, want)
+		}
+	}
+	if d := nextWait(t, waits); d < 40*time.Minute {
+		t.Errorf("wait after a success = %v, want the wait to the margin", d)
+	}
+}
+
+// TestAgentTokenFileStopDuringProviderCall: Stop cancels the context of a
+// provider call in flight and returns within 3 seconds, also when the
+// provider does not return.
+func TestAgentTokenFileStopDuringProviderCall(t *testing.T) {
+	for _, honorsCtx := range []bool{true, false} {
+		tokenTestRunAs(t, true)
+		recordAgentTokenWaits(t)
+		release := make(chan struct{})
+		inFlight := make(chan struct{})
+		cancelled := make(chan struct{})
+		var calls atomic.Int32
+		setAgentReadTokenProviderForTest(t, func(ctx context.Context, _ string) (string, time.Time, error) {
+			if calls.Add(1) == 1 {
+				return "test-read-token", time.Now().Add(time.Hour), nil
+			}
+			close(inFlight)
+			if honorsCtx {
+				<-ctx.Done()
+				close(cancelled)
+				return "", time.Time{}, ctx.Err()
+			}
+			<-release
+			return "", time.Time{}, errors.New("test-provider-failure")
+		})
+		f := startAgentTokenFile(context.Background(), slog.Default(), "qf-studio/pilot")
+		if f == nil {
+			t.Fatal("no token file")
+		}
+		select {
+		case <-inFlight:
+		case <-time.After(5 * time.Second):
+			t.Fatal("no provider call of the refresh")
+		}
+		start := time.Now()
+		f.Stop()
+		if d := time.Since(start); d > 3*time.Second {
+			t.Errorf("honors ctx %v: Stop returned after %v, want within 3s", honorsCtx, d)
+		}
+		if honorsCtx {
+			select {
+			case <-cancelled:
+			default:
+				t.Error("Stop did not cancel the context of the provider call")
+			}
+		}
+		if _, err := os.Stat(f.dir); !os.IsNotExist(err) {
+			t.Errorf("honors ctx %v: token dir still there after Stop: %v", honorsCtx, err)
+		}
+		close(release)
+	}
 }
 
 // TestAgentTokenFileCutError: the cut counts characters, not bytes.

@@ -190,6 +190,28 @@ func agentReadTokenProvider(cfg *config.Config) executor.AgentReadTokenProvider 
 	}
 }
 
+// sweepAgentTokenDirsAtStart removes the read token directories of
+// run_as_user runs that a killed daemon left behind (TASK-651). The daemon
+// start calls it once, where it removes left worktrees, before any run; with
+// the option empty it removes nothing.
+func sweepAgentTokenDirsAtStart() int {
+	return executor.SweepAgentTokenDirs(logging.WithComponent("start"))
+}
+
+// newProjectAgentTokenRepoLookup returns the lookup of the repository a
+// run_as_user run gets a read token for (TASK-651): the "OWNER/NAME" of the
+// project config entry whose path is the project path of the task, "" for a
+// path of no entry or an entry with no GitHub owner and repo.
+func newProjectAgentTokenRepoLookup(cfg *config.Config) executor.AgentTokenRepoLookup {
+	return func(taskProjectPath string) string {
+		proj := cfg.FindProjectByPath(taskProjectPath)
+		if proj == nil || proj.GitHub == nil || proj.GitHub.Owner == "" || proj.GitHub.Repo == "" {
+			return ""
+		}
+		return proj.GitHub.Owner + "/" + proj.GitHub.Repo
+	}
+}
+
 // configuredGitHubRepos lists the "OWNER/NAME" repositories of the GitHub
 // config of the daemon: adapters.github.repo and the owner/repo of each
 // project.
@@ -1037,6 +1059,11 @@ Examples:
 			// et al. above, all hoisted for the same reason).
 			var approvalMgr *approval.Manager
 
+			// TASK-651: remove the read token directories a killed daemon left,
+			// once before any runner of the gateway starts: the polling runner,
+			// the chat-only runner and the webhook runner alike.
+			sweepAgentTokenDirsAtStart()
+
 			if needsPollingInfra {
 				// Create shared runner with config (GH-956: enables worktree isolation)
 				var runnerErr error
@@ -1068,6 +1095,7 @@ Examples:
 				// real producer source rather than trusted outright.
 				gwRunner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 				gwRunner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
+				gwRunner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
 
 				// Set up team project access checker if configured (GH-635)
 				if gwTeamCleanup := wireProjectAccessChecker(gwRunner, cfg); gwTeamCleanup != nil {
@@ -1492,6 +1520,7 @@ Examples:
 				gwRunner.SetContractDependencyLookup(newProjectContractDependencyLookup(cfg))
 				gwRunner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 				gwRunner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
+				gwRunner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
 			}
 
 			// Enable Telegram polling in gateway mode only if --telegram flag was explicitly passed (GH-351)
@@ -1681,6 +1710,7 @@ Examples:
 			// webhook/orchestrator mode, mirroring the dependency lookup wiring above.
 			p.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 			p.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
+			p.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
 
 			// GH-4864: surface the running process's compiled-in version on
 			// /health, /api/v1/status, and the pilot_build_info metric — the
@@ -2636,11 +2666,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, startPreflight func(
 	// polling mode, mirroring the dependency lookup wiring above.
 	runner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 	runner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
+	runner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
 
 	// Set up team project access checker if configured (GH-635)
 	if teamCleanup := wireProjectAccessChecker(runner, cfg); teamCleanup != nil {
 		defer teamCleanup()
 	}
+
+	// TASK-651: remove the read token directories a killed daemon left.
+	sweepAgentTokenDirsAtStart()
 
 	// GH-962: Clean up orphaned worktree directories from previous crashed executions
 	if cfg.Executor != nil && cfg.Executor.EffectiveUseWorktree() {
