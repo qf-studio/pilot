@@ -85,7 +85,13 @@ func (r *Runner) holdPrePRReview(ctx context.Context, task *Task, git *GitOperat
 	} else {
 		result.CommitSHA = sha
 	}
-	evidenceBlock := strings.TrimSpace(r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), "", result.QualityGates, evidence))
+	evidenceBody, evidenceErr := r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), "", result.QualityGates, evidence)
+	if evidenceErr != nil {
+		// GH-6617: the hold opens no PR either; the reason names the file.
+		r.logEvidenceLeftChanged(task, evidenceErr, evidenceLeftChangedAtPRCreationLog)
+		reason = reason + "; " + evidenceLeftChangedAtPRCreation(evidenceErr)
+	}
+	evidenceBlock := strings.TrimSpace(evidenceBody)
 
 	r.holdPushedBranch(ctx, task, git, result, log, reason, executionPath, preserveWorktree)
 

@@ -40,7 +40,7 @@ func TestEvidenceGateOutputs_TestChangedDoesNotSatisfyMakeTestBullet(t *testing.
 	}}
 	r.acceptanceRunner = fake
 	task := &Task{ID: "GH-5926", AcceptanceCriteria: []string{"paste the output of `make test` into the PR body"}}
-	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary", gates)
+	got, _ := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), "## Summary", gates)
 	if !strings.Contains(got, "full suite ran for real") || strings.Contains(got, "scoped output") {
 		t.Errorf("make test bullet must run, not reuse the make test-changed gate, got:\n%s", got)
 	}

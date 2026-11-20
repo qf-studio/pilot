@@ -2738,7 +2738,17 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	} else {
 		prBody = fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, extraFixesKeyword(task.Description, epicIssueNum), task.Description)
 	}
-	prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, nil)
+	prBody, evidenceErr := r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, nil)
+	if evidenceErr != nil {
+		// GH-6617: the branch is pushed; a file the evidence left changed fails
+		// the run before the PR.
+		result.Success = false
+		result.Error = evidenceLeftChangedAtPRCreation(evidenceErr)
+		r.logEvidenceLeftChanged(task, evidenceErr, evidenceLeftChangedAtPRCreationLog)
+		r.reportProgress(task.ID, "Acceptance Evidence Failed", 100, result.Error)
+		r.sweepEpicChildrenOnAbort(task, result.Error)
+		return
+	}
 	// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 	// blown meanwhile. Re-derive the finalize window right before PR/MR creation
 	// so CreatePR and the recovery ref get a live ctx (a real cancellation is
@@ -3934,7 +3944,16 @@ func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, gi
 	issueNum := strings.TrimPrefix(task.ID, "GH-")
 	prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot after a task timeout (GH-5346 salvage path) for %s.\n\nCloses #%s%s\n\n## Changes\n\n%s",
 		task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
-	prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, nil)
+	prBody, evidenceErr := r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, nil)
+	if evidenceErr != nil {
+		// GH-6617: a file the evidence left changed fails the salvage before the
+		// PR, through the same hold as a failed PR creation.
+		r.logEvidenceLeftChanged(task, evidenceErr, evidenceLeftChangedAtPRCreationLog)
+		r.holdPushedBranch(ctx, task, git, result, log,
+			"timeout salvage: "+evidenceLeftChangedAtPRCreation(evidenceErr),
+			executionPath, preserveWorktree)
+		return
+	}
 	// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 	// blown meanwhile. Re-derive the finalize window right before PR/MR creation
 	// so CreatePR and the recovery ref get a live ctx (a real cancellation is
@@ -7034,14 +7053,20 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 		// GH-6606: a mutation line whose file the repair could not bring back
 		// stops the run before the review, the fix rounds and the push, which
-		// all work on the same tree.
-		failEvidenceLeftChanged := func(ev *AcceptanceEvidenceCollection) bool {
-			err := ev.leftChanged()
+		// all work on the same tree. GH-6617: at PR creation (atPRCreation) the
+		// branch is already pushed; the run fails there and no PR is created.
+		failEvidenceLeftChanged := func(err error, atPRCreation bool) bool {
 			if err == nil {
 				return false
 			}
 			result.Success = false
-			result.Error = err.Error()
+			if atPRCreation {
+				result.Error = evidenceLeftChangedAtPRCreation(err)
+				r.logEvidenceLeftChanged(task, err, evidenceLeftChangedAtPRCreationLog)
+			} else {
+				result.Error = err.Error()
+				r.logEvidenceLeftChanged(task, err, evidenceLeftChangedBeforeReviewLog)
+			}
 			r.reportProgress(task.ID, "Acceptance Evidence Failed", 100, result.Error)
 			r.emitAlertEvent(AlertEvent{
 				Type:      AlertEventTypeTaskFailed,
@@ -7068,7 +7093,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			}
 			return true
 		}
-		if failEvidenceLeftChanged(prePREvidence) {
+		if failEvidenceLeftChanged(prePREvidence.leftChanged(), false) {
 			return result, nil
 		}
 
@@ -7086,7 +7111,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// GH-6037: the fix moved HEAD, so the first evidence result describes a
 			// tree that is not pushed; the PR body carries the rerun instead.
 			prePREvidence = r.evidenceAfterFixRound(ctx, task, git.ProjectPath(), fix, prePREvidence)
-			if failEvidenceLeftChanged(prePREvidence) {
+			if failEvidenceLeftChanged(prePREvidence.leftChanged(), false) {
 				return result, nil
 			}
 		}
@@ -7563,7 +7588,10 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			if creatorKind == prCreatorKindGitHubSDK {
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
-				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates, prePREvidence)
+				prBody, evidenceErr := r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates, prePREvidence)
+				if failEvidenceLeftChanged(evidenceErr, true) {
+					return result, nil
+				}
 				prBody += RenderPrePRReviewSection(result.PrePRReview) // TASK-620
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
@@ -7604,7 +7632,10 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// GH-5583: on the project-keyed path "Closes #" is emitted only
 				// for gitlab-sourced tasks (see mrSourceSuffix).
 				prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, mrSourceSuffix(task, creatorKind), task.Description)
-				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates, prePREvidence)
+				prBody, evidenceErr := r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates, prePREvidence)
+				if failEvidenceLeftChanged(evidenceErr, true) {
+					return result, nil
+				}
 				prBody += RenderPrePRReviewSection(result.PrePRReview) // TASK-620
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation
@@ -7641,7 +7672,10 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// GitHub: use gh CLI with auto-close keyword
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s%s\n\n## Changes\n\n%s", task.ID, issueNum, extraFixesKeyword(task.Description, issueNum), task.Description)
-				prBody = r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates, prePREvidence)
+				prBody, evidenceErr := r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, result.QualityGates, prePREvidence)
+				if failEvidenceLeftChanged(evidenceErr, true) {
+					return result, nil
+				}
 				prBody += RenderPrePRReviewSection(result.PrePRReview) // TASK-620
 				// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
 				// blown meanwhile. Re-derive the finalize window right before PR/MR creation

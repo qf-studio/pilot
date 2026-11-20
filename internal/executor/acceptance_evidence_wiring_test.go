@@ -37,8 +37,9 @@ import (
 // TestWiringSiteDetectionLogic proves the checker itself actually catches a
 // removed/altered hook call, independent of runner.go's current source.
 
-// reassignsPRBodyFromEvidenceHook reports whether stmt is `prBody =
-// <expr>.appendAcceptanceEvidence(...)` and the call hands over the evidence
+// reassignsPRBodyFromEvidenceHook reports whether stmt is `prBody, <err> =
+// <expr>.appendAcceptanceEvidence(...)` (or `:=`; GH-6617: the error is bound
+// to a named variable, not dropped to _) and the call hands over the evidence
 // the pre-PR review already read (GH-6051): either `prePREvidence` as the last
 // argument, or — on the epic and timeout-salvage paths, where no review runs —
 // a literal nil quality-gates argument and nothing cached. A direct-path site
@@ -48,11 +49,14 @@ import (
 // unrelated rename of the Runner receiver variable.
 func reassignsPRBodyFromEvidenceHook(stmt ast.Stmt) bool {
 	as, ok := stmt.(*ast.AssignStmt)
-	if !ok || as.Tok != token.ASSIGN || len(as.Lhs) != 1 || len(as.Rhs) != 1 {
+	if !ok || (as.Tok != token.ASSIGN && as.Tok != token.DEFINE) || len(as.Lhs) != 2 || len(as.Rhs) != 1 {
 		return false
 	}
 	id, ok := as.Lhs[0].(*ast.Ident)
 	if !ok || id.Name != "prBody" {
+		return false
+	}
+	if errID, ok := as.Lhs[1].(*ast.Ident); !ok || errID.Name == "_" {
 		return false
 	}
 	call, ok := as.Rhs[0].(*ast.CallExpr)
@@ -166,7 +170,7 @@ func TestWiringSiteDetectionLogic(t *testing.T) {
 
 func f(r *Runner) string {
 	prBody := "x"
-	prBody = r.appendAcceptanceEvidence(nil, nil, "", prBody, nil, prePREvidence)
+	prBody, evidenceErr := r.appendAcceptanceEvidence(nil, nil, "", prBody, nil, prePREvidence)
 	return prBody
 }
 `,
@@ -208,6 +212,18 @@ func f(r *Runner) string {
 			wantFailure: true,
 		},
 		{
+			name: "the evidence error dropped to _ is caught (GH-6617)",
+			src: `package executor
+
+func f(r *Runner) string {
+	prBody := "x"
+	prBody, _ = r.appendAcceptanceEvidence(nil, nil, "", prBody, nil, prePREvidence)
+	return prBody
+}
+`,
+			wantFailure: true,
+		},
+		{
 			name: "multiple sites in separate if/else blocks are each checked independently",
 			src: `package executor
 
@@ -215,7 +231,7 @@ func f(r *Runner, useSDK bool) string {
 	var prURL string
 	if useSDK {
 		prBody := "sdk"
-		prBody = r.appendAcceptanceEvidence(nil, nil, "", prBody, nil, prePREvidence)
+		prBody, evidenceErr := r.appendAcceptanceEvidence(nil, nil, "", prBody, nil, prePREvidence)
 		prURL = prBody
 	} else {
 		prBody := "cli"
@@ -266,7 +282,7 @@ func TestWiringSiteChecksCachedEvidenceArgument(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			src := "package executor\n\nfunc f(r *Runner) string {\n\tprBody := \"x\"\n\tprBody = " + tt.call + "\n\treturn prBody\n}\n"
+			src := "package executor\n\nfunc f(r *Runner) string {\n\tprBody := \"x\"\n\tprBody, evidenceErr := " + tt.call + "\n\treturn prBody\n}\n"
 			fset := token.NewFileSet()
 			file, err := parser.ParseFile(fset, "snippet.go", src, 0)
 			if err != nil {
@@ -306,7 +322,7 @@ func TestAcceptanceEvidenceWiring_ExecutionRowReachesEvidenceGate(t *testing.T) 
 	r.acceptanceRunner = fake
 
 	prBody := "## Summary\n\nsome PR body"
-	got := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), prBody, nil)
+	got, _ := r.appendAcceptanceEvidence(context.Background(), task, t.TempDir(), prBody, nil)
 
 	if !strings.Contains(got, "## Evidence") {
 		t.Fatalf("PR body has no Evidence section; the execution-row path dropped the criteria: %q", got)
