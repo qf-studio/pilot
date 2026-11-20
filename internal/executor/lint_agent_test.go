@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/testutil"
 )
@@ -233,4 +235,188 @@ func TestRestoreHookSettingsFailureFailsRunAsAgent(t *testing.T) {
 			t.Errorf("option empty: restore returned %v, want the warning only", err)
 		}
 	})
+}
+
+// settingsBreakingBackend turns .claude/settings.json of the directory it runs
+// in into a directory that holds a file, so the removal of the settings file
+// Pilot created for the run fails in the deferred restore of
+// executeWithOptions.
+type settingsBreakingBackend struct {
+	retryPathRecordingBackend
+}
+
+func (b *settingsBreakingBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	settingsPath := filepath.Join(opts.ProjectPath, ".claude", "settings.json")
+	_ = os.Remove(settingsPath)
+	if err := os.MkdirAll(settingsPath, 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(settingsPath, "block"), []byte("x"), 0o600); err != nil {
+		return nil, err
+	}
+	return b.retryPathRecordingBackend.Execute(ctx, opts)
+}
+
+// mutation pin: the deferred restore of executeWithOptions drops the error of hookRestoreFunc (no failRunOnSettingsRestore) -> this test fails
+//
+// TestSettingsRestoreFailureFailsRunThroughExecute (GH-6626 item 1): with the
+// option set, a failed restore of the settings file in the deferred cleanup of
+// executeWithOptions makes the result of the run a failure that names the
+// file, and the run error carries it.
+func TestSettingsRestoreFailureFailsRunThroughExecute(t *testing.T) {
+	e := newAgentWorkspaceEnv(t)
+	backend := &settingsBreakingBackend{}
+	runner := NewRunnerWithBackend(backend)
+	runner.config = &BackendConfig{}
+	runner.SetSkipPreflightChecks(true)
+	runner.SetRecordingEnabled(false)
+	runner.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	task := &Task{ID: "GH-6626", Title: "t", Description: "d", ProjectPath: e.repo, Branch: "pilot/GH-6626", CreatePR: true, BaseBranch: "main"}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	res, err := runner.executeWithOptions(ctx, task, true)
+	if len(backend.paths()) == 0 {
+		t.Fatal("the backend never ran")
+	}
+	const want = "restore of the claude settings file"
+	if res == nil || res.Success || !strings.Contains(res.Error, want) || !strings.Contains(res.Error, filepath.Join(".claude", "settings.json")) {
+		t.Errorf("result = %+v, want a failure whose Error names the settings file (%q)", res, want)
+	}
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("run error = %v, want one with %q", err, want)
+	}
+}
+
+// mutation pin: the co-author restore with run_as_user empty logs "Failed to restore Claude hook settings" instead of "Failed to restore Claude settings" -> this test fails
+//
+// TestCoAuthorSettingsRestoreKeepsLogTextThroughExecute (GH-6626 item 2):
+// with the option empty and hooks off, a failed restore of the co-author
+// settings file logs the warning text of before and the run result does not
+// name the file.
+func TestCoAuthorSettingsRestoreKeepsLogTextThroughExecute(t *testing.T) {
+	setRunAsStateForTest(t, nil, "")
+	repo, remote := setupTestRepoWithRemote(t)
+	t.Cleanup(func() { _ = os.RemoveAll(repo); _ = os.RemoveAll(remote) })
+	backend := &settingsBreakingBackend{}
+	runner := NewRunnerWithBackend(backend)
+	runner.config = &BackendConfig{UseWorktree: boolPtr(true)}
+	runner.SetSkipPreflightChecks(true)
+	runner.SetRecordingEnabled(false)
+	logs := &syncBuffer{}
+	runner.log = slog.New(slog.NewTextHandler(logs, nil))
+	task := &Task{ID: "GH-6626", Title: "t", Description: "d", ProjectPath: repo, Branch: "pilot/GH-6626", CreatePR: true}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	res, _ := runner.executeWithOptions(ctx, task, true)
+	if len(backend.paths()) == 0 {
+		t.Fatal("the backend never ran")
+	}
+	out := logs.String()
+	if !strings.Contains(out, `msg="Failed to restore Claude settings"`) {
+		t.Errorf("log lacks the warning \"Failed to restore Claude settings\":\n%s", out)
+	}
+	if strings.Contains(out, "Failed to restore Claude hook settings") {
+		t.Errorf("co-author restore logged the hook settings text:\n%s", out)
+	}
+	if res != nil && strings.Contains(res.Error, "restore of the claude settings file") {
+		t.Errorf("option empty: the restore failure reached the result: %q", res.Error)
+	}
+}
+
+// mutation pin: a failed settings restore with run_as_user set flips Success to false on a run that already opened a PR -> this test fails
+//
+// TestFailRunOnSettingsRestoreKeepsOpenPR (GH-6626 item 3): a run that has a
+// PR keeps Success and its run error; the restore failure goes to the log and
+// to IntentWarning.
+func TestFailRunOnSettingsRestoreKeepsOpenPR(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	restoreErr := errors.New("restore of the claude settings file /ws/.claude/settings.json failed with run_as_user set: boom")
+	in := &ExecutionResult{TaskID: "GH-1", Success: true, PRUrl: "https://github.com/OWNER-A/NAME/pull/7"}
+
+	res, runErr := failRunOnSettingsRestore(log, "GH-1", in, nil, restoreErr)
+	if res == nil || !res.Success || res.PRUrl != in.PRUrl {
+		t.Fatalf("result = %+v, want the successful run with its PR", res)
+	}
+	if res.Error != "" {
+		t.Errorf("result Error = %q, want none on a run with an open PR", res.Error)
+	}
+	if runErr != nil {
+		t.Errorf("run error = %v, want nil", runErr)
+	}
+	if !strings.Contains(res.IntentWarning, "/ws/.claude/settings.json") {
+		t.Errorf("IntentWarning = %q, want the restore failure", res.IntentWarning)
+	}
+	if !strings.Contains(buf.String(), "level=ERROR") || !strings.Contains(buf.String(), "pr_url=") {
+		t.Errorf("want an Error line with the PR, got:\n%s", buf.String())
+	}
+
+	res, _ = failRunOnSettingsRestore(log, "GH-1", &ExecutionResult{TaskID: "GH-1", Success: true}, nil, restoreErr)
+	if res.Success {
+		t.Error("a run with no PR still succeeds after a failed restore")
+	}
+}
+
+// mutation pin: the co-author restore with run_as_user set only logs a failed removal of the empty .claude directory -> this test fails
+//
+// TestCoAuthorSettingsRestoreDirRemovalFailure (GH-6626 item 4): with the
+// option set, a failed removal of the empty .claude directory fails the
+// restore as on the hooks path; with it empty the warning of before stays.
+func TestCoAuthorSettingsRestoreDirRemovalFailure(t *testing.T) {
+	setRunAsStateForTest(t, nil, "")
+	// .claude is a file: the read of the directory fails.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".claude"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(dir, ".claude", "settings.json")
+	restored := func() error { return nil }
+
+	t.Run("option set", func(t *testing.T) {
+		log := slog.New(slog.NewTextHandler(io.Discard, nil))
+		err := coAuthorSettingsRestore(log, settingsPath, true, restored, false)()
+		if err == nil || !strings.Contains(err.Error(), "failed to remove empty .claude directory") || !strings.Contains(err.Error(), settingsPath) {
+			t.Errorf("restore error = %v, want the directory removal failure naming %s", err, settingsPath)
+		}
+		if hookErr := RestoreHookSettings(settingsPath, t.TempDir(), restored, false); hookErr == nil {
+			t.Error("the hooks path no longer fails on the directory removal; the two paths should agree")
+		}
+	})
+
+	t.Run("option empty", func(t *testing.T) {
+		var buf bytes.Buffer
+		log := slog.New(slog.NewTextHandler(&buf, nil))
+		if err := coAuthorSettingsRestore(log, settingsPath, false, restored, false)(); err != nil {
+			t.Errorf("option empty: restore returned %v, want the warning only", err)
+		}
+		if !strings.Contains(buf.String(), `msg="Failed to remove empty .claude directory"`) {
+			t.Errorf("log lacks the warning of before:\n%s", buf.String())
+		}
+	})
+}
+
+// mutation pin: RestoreHookSettings returns on a failed restoreFunc before it removes the hook script directory -> this test fails
+//
+// TestRestoreHookSettingsFailureRemovesScriptDir (GH-6626 item 5): a failed
+// restore still removes the temporary hook script directory.
+func TestRestoreHookSettingsFailureRemovesScriptDir(t *testing.T) {
+	setRunAsStateForTest(t, nil, "")
+	scriptDir := filepath.Join(t.TempDir(), "pilot-hooks-x")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptDir, "pilot-bash-guard.sh"), []byte("#!/bin/sh\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(t.TempDir(), ".claude", "settings.json")
+
+	err := RestoreHookSettings(settingsPath, scriptDir, func() error { return errors.New("write failed") }, true)
+	if err == nil || !strings.Contains(err.Error(), "write failed") {
+		t.Errorf("err = %v, want the restore failure", err)
+	}
+	if _, statErr := os.Stat(scriptDir); !os.IsNotExist(statErr) {
+		t.Errorf("hook script directory %s left after a failed restore (stat: %v)", scriptDir, statErr)
+	}
 }

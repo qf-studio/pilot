@@ -328,7 +328,15 @@ func removeClaudeDirIfEmpty(settingsPath string) error {
 // earlier crash on this exact path (GH-1884) — normally redundant since
 // restoreFunc already reverted to the pre-merge state, but cheap insurance
 // if that invariant is ever violated by a future change.
-func RestoreHookSettings(settingsPath, scriptDir string, restoreFunc func() error, preExisted bool) error {
+//
+// scriptDir is removed on every return, also after a failed step before it
+// (GH-6626): an early return used to leave the temporary script directory.
+func RestoreHookSettings(settingsPath, scriptDir string, restoreFunc func() error, preExisted bool) (err error) {
+	defer func() {
+		if rmErr := os.RemoveAll(scriptDir); rmErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to remove hook script directory: %w", rmErr))
+		}
+	}()
 	if restoreErr := restoreFunc(); restoreErr != nil {
 		return fmt.Errorf("failed to restore claude settings: %w", restoreErr)
 	}
@@ -339,9 +347,6 @@ func RestoreHookSettings(settingsPath, scriptDir string, restoreFunc func() erro
 	}
 	if err := CleanStalePilotHooks(settingsPath); err != nil {
 		return fmt.Errorf("failed to clean stale pilot hooks: %w", err)
-	}
-	if err := os.RemoveAll(scriptDir); err != nil {
-		return fmt.Errorf("failed to remove hook script directory: %w", err)
 	}
 	return nil
 }
@@ -355,23 +360,72 @@ func RestoreHookSettings(settingsPath, scriptDir string, restoreFunc func() erro
 // in the workspace.
 func hookSettingsRestore(log *slog.Logger, settingsPath string, runAsSet bool, restore func() error) func() error {
 	return func() error {
-		err := restore()
-		if err == nil {
-			return nil
+		if err := restore(); err != nil {
+			return settingsRestoreFailure(log, settingsPath, runAsSet, "Failed to restore Claude hook settings", err)
 		}
-		if runAsSet {
-			return fmt.Errorf("restore of the claude settings file %s failed with run_as_user set: %w", settingsPath, err)
-		}
-		log.Warn("Failed to restore Claude hook settings", slog.String("path", settingsPath), slog.Any("error", err))
 		return nil
 	}
+}
+
+// coAuthorSettingsRestore is the restore of the settings file settingsPath
+// after the co-author key alone was merged (restore, from MergeWithExisting)
+// and, when Pilot created the file (preExisted false), the removal of the
+// empty .claude directory. A failed step is handled as in hookSettingsRestore:
+// with runAsSet false it logs the warning of before ("Failed to restore Claude
+// settings", "Failed to remove empty .claude directory") and returns nil; with
+// runAsSet true it returns the failure, the directory removal included, as the
+// hooks path does through RestoreHookSettings (GH-6626).
+func coAuthorSettingsRestore(log *slog.Logger, settingsPath string, runAsSet bool, restore func() error, preExisted bool) func() error {
+	return func() error {
+		if err := restore(); err != nil {
+			return settingsRestoreFailure(log, settingsPath, runAsSet, "Failed to restore Claude settings",
+				fmt.Errorf("failed to restore claude settings: %w", err))
+		}
+		if !preExisted {
+			if err := removeClaudeDirIfEmpty(settingsPath); err != nil {
+				return settingsRestoreFailure(log, settingsPath, runAsSet, "Failed to remove empty .claude directory",
+					fmt.Errorf("failed to remove empty .claude directory: %w", err))
+			}
+		}
+		return nil
+	}
+}
+
+// settingsRestoreFailure is the outcome of err, a failed step of the restore
+// of settingsPath: with runAsSet the error that fails the run and names the
+// file, else nil after a warning with msg.
+func settingsRestoreFailure(log *slog.Logger, settingsPath string, runAsSet bool, msg string, err error) error {
+	if runAsSet {
+		return fmt.Errorf("restore of the claude settings file %s failed with run_as_user set: %w", settingsPath, err)
+	}
+	log.Warn(msg, slog.String("path", settingsPath), slog.Any("error", err))
+	return nil
 }
 
 // failRunOnSettingsRestore makes the result of a run a failure for err, the
 // failed restore of the settings file (hookSettingsRestore): Success false,
 // the text of err in Error (after an error the run already had), and err in
 // the returned error.
+//
+// Decision (GH-6626): a run that already opened a PR (PRUrl set) keeps its
+// result and its run error. The restore runs in the deferred cleanup, after
+// CreatePR; a failure there would hand the caller a failed task with an open
+// PR. The failure is logged as an Error and added to IntentWarning, which the
+// completion message shows.
 func failRunOnSettingsRestore(log *slog.Logger, taskID string, res *ExecutionResult, runErr, err error) (*ExecutionResult, error) {
+	if res != nil && res.PRUrl != "" {
+		log.Error("Claude settings restore failed with run_as_user set after the PR was opened: the run keeps its result",
+			slog.String("task_id", taskID),
+			slog.String("pr_url", res.PRUrl),
+			slog.Any("error", err),
+		)
+		if res.IntentWarning == "" {
+			res.IntentWarning = err.Error()
+		} else {
+			res.IntentWarning += "; " + err.Error()
+		}
+		return res, runErr
+	}
 	log.Error("Claude settings restore failed with run_as_user set: the run fails",
 		slog.String("task_id", taskID),
 		slog.Any("error", err),

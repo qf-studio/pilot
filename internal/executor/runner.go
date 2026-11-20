@@ -5388,23 +5388,14 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		if coErr != nil {
 			log.Warn("Failed to disable co-author trailer in Claude settings", slog.Any("error", coErr))
 		} else {
-			hookRestoreFunc = hookSettingsRestore(log, coAuthorSettingsPath, runAsSet, func() error {
-				if err := coRestore(); err != nil {
-					return fmt.Errorf("failed to restore claude settings: %w", err)
-				}
-				if !coPreExisted {
-					if err := removeClaudeDirIfEmpty(coAuthorSettingsPath); err != nil {
-						log.Warn("Failed to remove empty .claude directory", slog.Any("error", err))
-					}
-				}
-				return nil
-			})
+			hookRestoreFunc = coAuthorSettingsRestore(log, coAuthorSettingsPath, runAsSet, coRestore, coPreExisted)
 		}
 	}
 
 	// Ensure cleanup happens regardless of execution outcome
-	// TASK-651: with run_as_user set a failed restore fails the run
-	// (failRunOnSettingsRestore); with it empty the error was logged inside.
+	// TASK-651: with run_as_user set a failed restore fails the run, or adds
+	// a warning when the run already opened a PR (failRunOnSettingsRestore);
+	// with it empty the error was logged inside.
 	defer func() {
 		if hookRestoreFunc != nil {
 			if err := hookRestoreFunc(); err != nil {
