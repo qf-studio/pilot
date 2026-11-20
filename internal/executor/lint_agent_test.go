@@ -87,8 +87,13 @@ func lintWorkspace(t *testing.T) (root, ws string) {
 	ws = filepath.Join(root, "ws-1")
 	writeTestFile(t, filepath.Join(ws, "go.mod"), "module example.com/lint\n\ngo 1.21\n")
 	wsGit(t, ws, "init", "-q", "-b", "main")
+	// The identity is in the config of the repository: the amend of autoFixLint
+	// commits without -c, and a host that cannot name itself gives git no
+	// identity to guess (exit 128).
+	wsGit(t, ws, "config", "user.email", "t@example.com")
+	wsGit(t, ws, "config", "user.name", "T")
 	wsGit(t, ws, "add", ".")
-	wsGit(t, ws, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "-m", "init")
+	wsGit(t, ws, "commit", "-q", "-m", "init")
 	return root, ws
 }
 
@@ -101,6 +106,7 @@ func setLintDaemonEnv(t *testing.T) {
 }
 
 func TestAutoFixLintRunsAsAgent(t *testing.T) {
+	isolateHostGitIdentity(t)
 	t.Run("lint and fix run as the agent user", func(t *testing.T) {
 		stubRunAsGOOS(t)
 		root, ws := lintWorkspace(t)
