@@ -2,10 +2,12 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -173,6 +175,10 @@ func TestRunAsUserGateStartSitesRefuseTheDefaultBuilder(t *testing.T) {
 		if _, err := os.Stat(marker); err == nil {
 			t.Error("the gate command ran")
 		}
+		// GH-6629: no gate checked the commits, so nothing is pushed.
+		if out := gitOutput(t, dir, "ls-remote", "origin", branch); strings.TrimSpace(out) != "" {
+			t.Errorf("the branch of the task was pushed without a gate:\n%s", out)
+		}
 	})
 
 	t.Run("re-gate of the pre-PR fix", func(t *testing.T) {
@@ -272,7 +278,7 @@ func TestRunAsUserGateStartSitesRefuseTheDefaultBuilder(t *testing.T) {
 	})
 }
 
-// gateProbeHost is a PATH for the gate tool probe: bin holds sh, git and rm of
+// gateProbeHost is a PATH for the gate tool probe: bin holds sh, git, rm and mktemp of
 // the host, extra holds a fake make (and go when asked); the mock sudo is
 // first. agentPath is the PATH the mock gives the agent side with
 // agentLacksExtra.
@@ -283,7 +289,7 @@ type gateProbeHost struct {
 func newGateProbeHost(t *testing.T, withGo, agentLacksExtra bool) *gateProbeHost {
 	t.Helper()
 	h := &gateProbeHost{bin: t.TempDir(), extra: t.TempDir()}
-	for _, tool := range []string{"sh", "git", "rm"} {
+	for _, tool := range []string{"sh", "git", "rm", "mktemp"} {
 		p, err := exec.LookPath(tool)
 		if err != nil {
 			t.Skipf("%s is not installed", tool)
@@ -314,7 +320,7 @@ func newGateProbeHost(t *testing.T, withGo, agentLacksExtra bool) *gateProbeHost
 func (h *gateProbeHost) probeCall(t *testing.T) string {
 	t.Helper()
 	for _, c := range sudoCalls(t, h.sudoLog) {
-		if strings.Contains(c, ".pilot-gate-probe-") {
+		if strings.Contains(c, ".pilot-gate-probe.") {
 			return c
 		}
 	}
@@ -379,11 +385,89 @@ func TestRunAsUserPreflightGateToolProbe(t *testing.T) {
 
 	t.Run("the daemon has go", func(t *testing.T) {
 		h := newGateProbeHost(t, true, false)
+		tmp := t.TempDir()
+		t.Setenv("TMPDIR", tmp)
 		if err := preflight(t); err != nil {
 			t.Fatalf("preflight = %v", err)
 		}
 		if call := h.probeCall(t); !strings.HasSuffix(call, " sh sh git make go") {
 			t.Errorf("probe call = %q, want the tools sh git make go", call)
 		}
+		// GH-6629: the probe file has a name mktemp picks and the trap
+		// removes it.
+		if strings.Contains(gateToolsScript, "$$") || !strings.Contains(gateToolsScript, "mktemp ") {
+			t.Errorf("the probe file name can be known before: %s", gateToolsScript)
+		}
+		if left, err := os.ReadDir(tmp); err != nil || len(left) != 0 {
+			t.Errorf("the probe left files in the temporary directory: %v %v", left, err)
+		}
 	})
+
+	// GH-6629: a failed probe command names the first line of the standard
+	// error of sudo, at most gateToolsStderrMax bytes of it.
+	t.Run("failed probe command names the error of sudo", func(t *testing.T) {
+		long := "sudo: a password is required " + strings.Repeat("x", 300)
+		mockSudoGateProbe(t, `echo '`+long+`' >&2; echo 'sudo: second line' >&2; exit 1`)
+		err := preflight(t)
+		if err == nil || !strings.Contains(err.Error(), "failed: exit status 1: "+long[:gateToolsStderrMax]) {
+			t.Fatalf("preflight = %v, want the first line of the error of sudo", err)
+		}
+		if strings.Contains(err.Error(), long[:gateToolsStderrMax+1]) || strings.Contains(err.Error(), "second line") {
+			t.Errorf("the refusal holds more than the first %d bytes of the first line: %v", gateToolsStderrMax, err)
+		}
+	})
+
+	// GH-6629: the probe has a time limit; a probe with no answer refuses the
+	// start and says so.
+	//
+	// mutation pin: checkRunAsGateTools runs the probe with a context that has no limit -> this test fails
+	t.Run("probe with no answer", func(t *testing.T) {
+		if runAsGateToolsTimeout != 10*time.Second {
+			t.Errorf("runAsGateToolsTimeout = %v, want 10s", runAsGateToolsTimeout)
+		}
+		sleep, err := exec.LookPath("sleep")
+		if err != nil {
+			t.Skip("sleep is not installed")
+		}
+		mockSudoGateProbe(t, "exec '"+sleep+"' 15")
+		prev := runAsGateToolsTimeout
+		runAsGateToolsTimeout = 500 * time.Millisecond
+		t.Cleanup(func() { runAsGateToolsTimeout = prev })
+		start := time.Now()
+		err = preflight(t)
+		if err == nil || !strings.HasSuffix(err.Error(), "the gate tool probe as the agent user pilot-agent failed: no answer in 0.5 seconds") {
+			t.Fatalf("preflight = %v, want the refusal by the time limit", err)
+		}
+		if d := time.Since(start); d > 10*time.Second {
+			t.Errorf("the refusal came after %v", d)
+		}
+	})
+}
+
+// mockSudoGateProbe puts a fake sudo first on PATH: the preflight probes
+// without "--" exit 0 (the terminal probe prints "?"), the gate tool probe
+// runs probe (shell code), and a kill through sudo runs kill of the host on
+// the process group.
+func mockSudoGateProbe(t *testing.T, probe string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("mock sudo is a shell script")
+	}
+	kill, err := exec.LookPath("kill")
+	if err != nil {
+		t.Skip("kill is not installed")
+	}
+	dir := t.TempDir()
+	body := fmt.Sprintf(`#!/bin/sh
+case "$*" in
+*"ps -o tty= -p"*) echo "?"; exit 0 ;;
+*" kill -s "*) shift 3; shift; exec '%[1]s' "$@" ;;
+*.pilot-gate-probe.*) %[2]s ;;
+esac
+exit 0
+`, kill, probe)
+	if err := os.WriteFile(filepath.Join(dir, "sudo"), []byte(body), 0o755); err != nil { //nolint:gosec // mock must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

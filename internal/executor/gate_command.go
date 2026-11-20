@@ -177,11 +177,17 @@ var runAsGateToolsTimeout = 10 * time.Second
 
 // gateToolsScript runs as `sh -c SCRIPT sh TOOL...` as the agent user with the
 // environment of a gate: it prints "missing TOOL" for the first tool not found
-// in PATH, or "tmpdir DIR" when no file can be made and removed in the
-// temporary directory.
-const gateToolsScript = `for t in "$@"; do command -v "$t" >/dev/null 2>&1 || { echo "missing $t"; exit 4; }; done; ` +
-	`d=${TMPDIR:-/tmp}; f="$d/.pilot-gate-probe-$$"; ` +
-	`if (umask 077; set -C; : > "$f") 2>/dev/null && rm -f -- "$f"; then exit 0; fi; echo "tmpdir $d"; exit 5`
+// in PATH (mktemp, which the probe itself uses, included), or "tmpdir DIR" when
+// no file can be made in the temporary directory. The probe file has a name
+// mktemp picks, so no file or link the agent user made before can stand in its
+// place; the trap removes it at the exit of the script (GH-6629).
+const gateToolsScript = `for t in "$@" mktemp; do command -v "$t" >/dev/null 2>&1 || { echo "missing $t"; exit 4; }; done; ` +
+	`d=${TMPDIR:-/tmp}; f=; trap '[ -z "$f" ] || rm -f -- "$f"' EXIT; ` +
+	`f=$(mktemp "$d/.pilot-gate-probe.XXXXXXXXXX" 2>/dev/null) || { f=; echo "tmpdir $d"; exit 5; }; exit 0`
+
+// gateToolsStderrMax bounds the line of the standard error of sudo that the
+// refusal of a failed probe command holds.
+const gateToolsStderrMax = 200
 
 // checkRunAsGateTools runs gateToolsScript as the agent user of s with the
 // environment a gate gets (PATH and TMPDIR of the daemon) within
@@ -207,12 +213,22 @@ func checkRunAsGateTools(s *runAsSettings) string {
 	out, err := cmd.Output()
 	line := strings.TrimSpace(string(out))
 	switch {
+	case ctx.Err() == context.DeadlineExceeded:
+		return fmt.Sprintf("run_as_user: the gate tool probe as the agent user %s failed: no answer in %v seconds", s.user, runAsGateToolsTimeout.Seconds())
 	case strings.HasPrefix(line, "missing "):
 		return fmt.Sprintf("run_as_user: the agent user %s finds no %s in the PATH of a gate", s.user, strings.TrimPrefix(line, "missing "))
 	case strings.HasPrefix(line, "tmpdir "):
 		return fmt.Sprintf("run_as_user: the agent user %s cannot make a file in the temporary directory %s of a gate", s.user, strings.TrimPrefix(line, "tmpdir "))
 	case err != nil:
-		return fmt.Sprintf("run_as_user: the gate tool probe as the agent user %s failed: %v", s.user, err)
+		msg := fmt.Sprintf("run_as_user: the gate tool probe as the agent user %s failed: %v", s.user, err)
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			first, _, _ := strings.Cut(strings.TrimSpace(string(exitErr.Stderr)), "\n")
+			if first = truncateUTF8(strings.TrimSpace(first), gateToolsStderrMax); first != "" {
+				msg += ": " + first
+			}
+		}
+		return msg
 	}
 	return ""
 }

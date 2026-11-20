@@ -3302,6 +3302,24 @@ func (r *Runner) attemptBackendTimeoutSalvage(ctx context.Context, task *Task, g
 			checker := guardGateChecker(r.qualityCheckerFactory(task.ID, qualityLookupPath(task, executionPath), executionPath))
 			outcome, qErr := checker.Check(finCtx)
 			switch {
+			case errors.Is(qErr, errGateNoAgentBuilder):
+				// GH-6629: the guard refused the gates, so no gate checked the
+				// commits. The run fails with the text of the guard and pushes
+				// nothing; the worktree is kept, as for a failed hold push, so
+				// the cleanup does not delete the only copy of the work.
+				result.Success = false
+				result.Error = fmt.Sprintf("timeout salvage: quality gate error: %v", qErr)
+				log.Error("timeout salvage: quality gates refused, nothing pushed",
+					slog.String("task_id", task.ID),
+					slog.String("branch", task.Branch),
+					slog.Any("error", qErr),
+				)
+				if preserveWorktree != nil {
+					*preserveWorktree = true
+				}
+				r.reportProgress(task.ID, "Quality Failed", 100, result.Error)
+				r.recordExecutionEvent(task.LogExecutionID(), memory.StageFailed, result.Error)
+				return true
 			case qErr != nil:
 				r.holdPushedBranch(finCtx, task, git, result, log,
 					fmt.Sprintf("timeout salvage: quality gate error: %v", qErr),

@@ -467,6 +467,51 @@ func TestRunAsUserPreflightFailsClosed(t *testing.T) {
 	}
 }
 
+// TestGoProxyCredentialsCheckFailsClosed: an element that does not parse as a
+// URL or that holds an @ is credentials; Go cannot use such a proxy, but the
+// text with the password would reach the agent user (GH-6629).
+//
+// mutation pin: goProxyHasCredentials skips an element that does not parse (continue) -> this test fails
+func TestGoProxyCredentialsCheckFailsClosed(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"password with a % and no hex digits", "https://test-user:fake%password@proxy.example.com", true},
+		{"password with a space", "https://test-user:fake password@proxy.example.com", true},
+		{"password with a /", "https://test-user:fake/password@proxy.example.com", true},
+		{"password with a #", "https://test-user:fake#password@proxy.example.com", true},
+		{"password with a ?", "https://test-user:fake?password@proxy.example.com", true},
+		{"bad port", "https://test-user:fake-password@proxy.example.com:port", true},
+		{"no scheme", "test-user:fake-password@proxy.example.com", true},
+		{"host that does not parse", "https://test-user@%zz", true},
+		{"second element that does not parse", "https://proxy.golang.org,https://test-user@%zz,direct", true},
+		{"default list", "https://proxy.golang.org,direct", false},
+		{"off", "off", false},
+		{"empty", "", false},
+		{"path", "https://proxy.example.com/path", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := goProxyHasCredentials(tc.value); got != tc.want {
+				t.Errorf("goProxyHasCredentials(%q) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("GOFLAGS value ends at a tab", func(t *testing.T) {
+		if !goFlagsProxyHasCredentials("-mod=mod GOPROXY=https://test-user:fake-password@proxy.example.com\t-trimpath") {
+			t.Error("credentials before a tab not found")
+		}
+		// The text after the tab is not part of the proxy value: an @ there
+		// is no credential of GOPROXY.
+		if goFlagsProxyHasCredentials("GOPROXY=https://proxy.golang.org,direct\t-ldflags=-X=main.mail=build@example.com") {
+			t.Error("the proxy value did not end at the tab")
+		}
+	})
+}
+
 func TestRunAsUserPreflightRefusesGoProxyCredentials(t *testing.T) {
 	home := t.TempDir()
 	tests := []struct {
@@ -481,7 +526,7 @@ func TestRunAsUserPreflightRefusesGoProxyCredentials(t *testing.T) {
 		{"name and password", "https://test-user:fake-password@proxy.example.com", "", runAsGoProxyCheck},
 		{"second element with a name only", "https://proxy.golang.org,https://test-user@proxy.example.com,direct", "", runAsGoProxyCheck},
 		{"pipe separator", "https://proxy.golang.org|https://test-user:fake-password@proxy.example.com", "", runAsGoProxyCheck},
-		{"element that is not a URL", "https://proxy.golang.org,https://test-user@%zz,direct", "", ""},
+		{"element that is not a URL", "https://proxy.golang.org,https://test-user@%zz,direct", "", runAsGoProxyCheck},
 		{"GOFLAGS without credentials", "", "-mod=mod GOPROXY=https://proxy.golang.org,direct", ""},
 		{"GOFLAGS with credentials", "", "-mod=mod GOPROXY=https://test-user:fake-password@proxy.example.com -trimpath", runAsGoFlagsProxyCheck},
 	}
