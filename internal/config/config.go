@@ -36,6 +36,7 @@ import (
 	"github.com/qf-studio/pilot/internal/tunnel"
 	"github.com/qf-studio/pilot/internal/typesafe"
 	"github.com/qf-studio/pilot/internal/webhooks"
+	"github.com/qf-studio/studio-sdk/sdk/integrations/forgejo"
 )
 
 // Config represents the main Pilot configuration loaded from YAML.
@@ -244,6 +245,7 @@ type AdaptersConfig struct {
 	Telegram    *telegram.Config    `yaml:"telegram"`
 	GitHub      *github.Config      `yaml:"github"`
 	GitLab      *gitlab.Config      `yaml:"gitlab"`
+	Forgejo     *forgejo.Config     `yaml:"forgejo"`
 	AzureDevOps *azuredevops.Config `yaml:"azure_devops"`
 	Jira        *jira.Config        `yaml:"jira"`
 	Asana       *asana.Config       `yaml:"asana"`
@@ -391,8 +393,9 @@ type ProjectConfig struct {
 	// Startup registers a project-keyed MR creator for it so a task from any
 	// source adapter (e.g. Linear) opens a GitLab MR instead of falling through
 	// to `gh pr create`. Mutually exclusive with GitHub.
-	GitLab *ProjectGitLabConfig `yaml:"gitlab,omitempty"`
-	Linear *ProjectLinearConfig `yaml:"linear,omitempty"`
+	GitLab  *ProjectGitLabConfig  `yaml:"gitlab,omitempty"`
+	Forgejo *ProjectForgejoConfig `yaml:"forgejo,omitempty"`
+	Linear  *ProjectLinearConfig  `yaml:"linear,omitempty"`
 	// Quality overrides the global quality gate config for this project
 	// (GH-3716). Takes precedence over the top-level Config.Quality — lets a
 	// pnpm/yarn/bun or other non-Go project define its own build/test/lint
@@ -774,6 +777,7 @@ func DefaultConfig() *Config {
 			Telegram:    telegram.DefaultConfig(),
 			GitHub:      github.DefaultConfig(),
 			GitLab:      gitlab.DefaultConfig(),
+			Forgejo:     forgejo.DefaultConfig(),
 			AzureDevOps: azuredevops.DefaultConfig(),
 			Jira:        jira.DefaultConfig(),
 			Asana:       asana.DefaultConfig(),
@@ -1673,6 +1677,10 @@ func (c *Config) Validate() error {
 
 	// GH-5583: Validate each project's gitlab block.
 	if err := c.validateProjectGitLab(); err != nil {
+		return err
+	}
+
+	if err := c.validateProjectForgejo(); err != nil {
 		return err
 	}
 

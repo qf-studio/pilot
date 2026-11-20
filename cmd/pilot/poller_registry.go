@@ -83,6 +83,7 @@ func StartAdapterPollers(ctx context.Context, deps *PollerDeps, registrations []
 	// (not gated on adapters.gitlab.enabled / polling.enabled, which only govern
 	// issue intake), before any poller can dispatch a task.
 	registerProjectGitLabPRCreators(deps.Cfg, deps.Runner)
+	registerProjectForgejoPRCreators(deps.Cfg, deps.Runner)
 
 	for _, reg := range registrations {
 		if reg.Enabled(deps.Cfg) {
