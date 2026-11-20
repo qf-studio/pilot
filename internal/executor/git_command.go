@@ -94,7 +94,7 @@ func gitCommand(ctx context.Context, routeDir string, args ...string) *exec.Cmd 
 	if err != nil {
 		return failedGitCommand(args, fmt.Errorf("run_as_user: git in %s: %w", routeDir, err))
 	}
-	setAgentEnvIn(cmd, gitAgentBaseEnv(), routeDir)
+	setAgentToolEnvIn(cmd, gitAgentBaseEnv(), routeDir)
 	return cmd
 }
 
@@ -120,7 +120,8 @@ func gitRouteFailed(cmd *exec.Cmd) bool {
 // model-env deny list, the input of setAgentEnv on the agent route.
 //
 // Decision: the allowlist keeps CLAUDE_* and ANTHROPIC_* for the model; a git
-// process needs no model credential, and a hook of the workspace would read it.
+// process needs no model credential, and a hook of the workspace would read
+// it, so the git route drops every such name (setAgentToolEnvIn).
 func gitAgentBaseEnv() []string {
 	var env []string
 	for _, kv := range os.Environ() {

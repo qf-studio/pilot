@@ -117,8 +117,9 @@ func guardGateChecker(c QualityChecker) QualityChecker {
 
 // Build returns the gate command. With the option set it runs through sudo as
 // the agent user (agentCommand) with the allowlist applied to env, after the
-// model-env deny list: a gate runs code the agent wrote and needs no model
-// credential, and no header of the model requests (ANTHROPIC_CUSTOM_HEADERS).
+// model-env deny list, and with no ANTHROPIC_ or CLAUDE_ name (agentToolEnv):
+// a gate runs code the agent wrote and needs no model credential, endpoint or
+// header of the model requests (ANTHROPIC_CUSTOM_HEADERS).
 // A nil env is the environment of the daemon, as for the default. A command
 // that is not a sudo command of the agent user is an error, never a command
 // that would run as the daemon user.
@@ -138,7 +139,7 @@ func (gateCommandBuilder) Build(ctx context.Context, dir string, env []string, n
 		return nil, err
 	}
 	cmd.Dir = dir
-	setAgentEnvFrom(cmd, gateEnv(env), dir, false)
+	setAgentToolEnvFrom(cmd, gateEnv(env), dir, false)
 	return cmd, nil
 }
 
@@ -209,7 +210,7 @@ func checkRunAsGateTools(s *runAsSettings) string {
 		return fmt.Sprintf("run_as_user: the gate tool probe as the agent user %s: %v", s.user, err)
 	}
 	cmd.Dir = s.home
-	setAgentEnvFrom(cmd, gateEnv(nil), s.home, false)
+	setAgentToolEnvFrom(cmd, gateEnv(nil), s.home, false)
 	out, err := cmd.Output()
 	line := strings.TrimSpace(string(out))
 	switch {

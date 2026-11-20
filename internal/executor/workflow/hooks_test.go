@@ -112,6 +112,26 @@ func TestRunHook_LogFn(t *testing.T) {
 	}
 }
 
+// mutation pin: bashCommand does not set cmd.Dir -> this test fails
+//
+// TestRunHookRunsInDirOfCall (GH-6635): RunHook with the builder of the
+// option empty runs the script in dir, not in the directory of the test
+// process: `pwd -P` prints dir.
+func TestRunHookRunsInDirOfCall(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var captured []string
+	logFn := func(s string) { captured = append(captured, s) }
+	if err := workflow.RunHook(context.Background(), "test", workflow.HookValue{"pwd -P"}, dir, os.Environ(), 0, logFn); err != nil {
+		t.Fatalf("RunHook: %v", err)
+	}
+	if got := strings.TrimSpace(strings.Join(captured, "")); got != dir {
+		t.Errorf("hook ran in %q, want the directory of the call %q", got, dir)
+	}
+}
+
 // TestRunHookBackgroundChildDoesNotFail is GH-6616: a script that exits with
 // status 0 while a child it started in the background keeps the output open
 // passes after the wait delay, and the later scripts run.
