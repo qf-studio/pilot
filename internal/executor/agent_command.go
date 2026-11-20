@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -318,7 +319,8 @@ func resolveRunAs(userName, group string) (*runAsSettings, string) {
 // them and checks the host. backendType is the configured executor backend
 // ("" is claude-code). The checks: neither value is blank (white space only),
 // the names are valid, not root, run_as_group is set, the backend does not run
-// model-chosen commands in the daemon process, Linux, user and group exist
+// model-chosen commands in the daemon process, GOPROXY of the daemon (and a
+// GOPROXY= in its GOFLAGS) holds no credentials, Linux, user and group exist
 // with uid and gid not 0, the user is not the daemon user, the daemon user is
 // a member of the group, `sudo -n -u <user> -g <group> true` exits 0 within 5
 // seconds, the agent gets no terminal from sudo, and the home of the user
@@ -411,6 +413,10 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 		failed = "run_as_data_dir is not an absolute path"
 	case backendRunsToolsInProcess(backendType):
 		failed = "run_as_user is not supported with the " + backendType + " backend"
+	case goProxyHasCredentials(runAsGetenv("GOPROXY")):
+		failed = runAsGoProxyCheck
+	case goFlagsProxyHasCredentials(runAsGetenv("GOFLAGS")):
+		failed = runAsGoFlagsProxyCheck
 	case runAsGOOS != "linux":
 		failed = "linux only"
 	default:
@@ -470,6 +476,60 @@ const runAsGatewayPortCheck = "run_as_user needs a gateway port for the firewall
 
 // runAsIncompleteCheck is the failed check of the refusal.
 const runAsIncompleteCheck = "run_as_user cannot be set yet: the hand-over leg and the gates leg of TASK-651 are not merged"
+
+// runAsGetenv is os.Getenv for the Go proxy check of the preflight; tests
+// replace it.
+var runAsGetenv = os.Getenv
+
+// Decision (founder, 2026-11-19): GOPROXY, GOFLAGS, GONOSUMDB and GOPRIVATE
+// of the daemon pass to the agent user (runAsAllowedEnv), so a proxy URL with
+// credentials in them would hand the credentials to the model. The start is
+// refused instead; the checks name the variable and never print its value.
+const (
+	runAsGoProxyCheck      = "GOPROXY of the daemon holds credentials: a proxy with credentials cannot pass to the agent user"
+	runAsGoFlagsProxyCheck = "GOPROXY in GOFLAGS of the daemon holds credentials: a proxy with credentials cannot pass to the agent user"
+)
+
+// goProxyHasCredentials reports whether a GOPROXY value, a list with the
+// separators comma and pipe, holds an element that parses as a URL with a
+// user part (a name, or a name and a password). The elements direct and off
+// and an element that does not parse are not credentials.
+func goProxyHasCredentials(value string) bool {
+	for _, elem := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == '|' }) {
+		elem = strings.TrimSpace(elem)
+		if elem == "" || elem == "direct" || elem == "off" {
+			continue
+		}
+		u, err := url.Parse(elem)
+		if err != nil || u.User == nil {
+			continue
+		}
+		if _, hasPassword := u.User.Password(); u.User.Username() != "" || hasPassword {
+			return true
+		}
+	}
+	return false
+}
+
+// goFlagsProxyHasCredentials checks, with goProxyHasCredentials, the text
+// after each GOPROXY= in a GOFLAGS value up to the next space.
+func goFlagsProxyHasCredentials(flags string) bool {
+	const key = "GOPROXY="
+	for rest := flags; ; {
+		i := strings.Index(rest, key)
+		if i < 0 {
+			return false
+		}
+		rest = rest[i+len(key):]
+		value := rest
+		if j := strings.IndexByte(rest, ' '); j >= 0 {
+			value = rest[:j]
+		}
+		if goProxyHasCredentials(value) {
+			return true
+		}
+	}
+}
 
 // daemonHomeDir is os.UserHomeDir; tests replace it.
 var daemonHomeDir = os.UserHomeDir
