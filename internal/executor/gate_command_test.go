@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,14 +75,13 @@ func gateConfig(gates ...*quality.Gate) *quality.Config {
 }
 
 // gateEnvAllowed is the fixed list of the names a gate environment may hold:
-// the allowlist, the gh guard names, the names the agent base and the git
-// identity set, the scope names and the names the shell sets.
+// the allowlist, the names the agent base and the git identity set, the scope
+// names and the names the shell sets. No gh guard name: a gate does not call
+// gh.
 var gateEnvAllowed = map[string]bool{
 	"PATH": true, "LANG": true, "LC_ALL": true, "TERM": true, "TZ": true, "TMPDIR": true,
 	"GOCACHE": true, "GOMODCACHE": true, "GOFLAGS": true, "GOTOOLCHAIN": true,
 	"GOPROXY": true, "GONOSUMDB": true, "GOPRIVATE": true, "NODE_OPTIONS": true, "PILOT_EXECUTOR": true,
-	"PILOT_TASK_ISSUE": true, "PILOT_TASK_REPO": true, "PILOT_TASK_BRANCH": true,
-	"PILOT_GH_REAL": true, "PILOT_GH_GUARD_SHIM_DIR": true, "PILOT_GH_GUARD_JOURNAL": true,
 	"HOME": true, "CLAUDE_CONFIG_DIR": true, "GOPATH": true,
 	"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true,
 	"PILOT_CHANGED_PACKAGES": true, "PILOT_CHANGED_FULL": true, "PILOT_CHANGED_REASON": true,
@@ -562,14 +562,20 @@ func TestRunAsUserGateReadsReturnWithinLimit(t *testing.T) {
 
 // TestRunAsUserGateReadsReturnWhenKillFails: with a sudo that does not return
 // and ignores the kill (the kill through sudo fails), each read method returns
-// the time limit error within its limit plus 3 seconds.
+// the time limit error within its limit plus 3 seconds, with one Error line
+// that names the method, the path and the process id.
 func TestRunAsUserGateReadsReturnWhenKillFails(t *testing.T) {
 	f := newGateFixture(t, `case "$1" in -[0-9]*) exit 1 ;; esac
 trap '' TERM INT HUP
 sleep 30`)
+	logBuf := &syncBuffer{}
+	prevLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLog) })
 	path := filepath.Join(f.ws, "go.mod")
 	writeTestFile(t, path, "module example.com/gate\n")
 	b := gateCommandBuilder{}
+	paths := map[string]string{"ReadFile": path, "Stat": path, "ReadDir": f.ws, "EvalSymlinks": path}
 	reads := map[string]func() error{
 		"ReadFile":     func() error { _, err := b.ReadFile(path); return err },
 		"Stat":         func() error { _, err := b.Stat(path); return err },
@@ -592,6 +598,18 @@ sleep 30`)
 		}()
 	}
 	wg.Wait()
+	logs := logBuf.String()
+	for name, p := range paths {
+		var lines []string
+		for _, line := range strings.Split(logs, "\n") {
+			if strings.Contains(line, "level=ERROR") && strings.Contains(line, "method="+name+" ") && strings.Contains(line, "path="+p+" ") {
+				lines = append(lines, line)
+			}
+		}
+		if len(lines) != 1 || strings.Contains(lines[0], "pid=0") || !strings.Contains(lines[0], "pid=") {
+			t.Errorf("%s: want one Error line with the method, the path and the process id, got %q", name, lines)
+		}
+	}
 }
 
 // TestRunAsUserGateOptionEmpty: with the option empty the builder is the

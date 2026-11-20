@@ -385,7 +385,7 @@ func TestRunAsUserKillOptionEmptyIsDirect(t *testing.T) {
 func stubRunAsHost(t *testing.T, goos string, daemonUID string, users map[string]string) {
 	t.Helper()
 	pg, pu, pc, po, pd, pw, pdd := lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups, runAsWorkspaceCheck, runAsDataDirCheck
-	pf, pe := runAsFirewallCheck, runAsGetenv
+	pf, pe, pt := runAsFirewallCheck, runAsGetenv, runAsGateToolsCheck
 	runAsGOOS = goos
 	// The Go proxy variables of the test process are not part of the stub
 	// host (TestRunAsUserPreflightRefusesGoProxyCredentials).
@@ -396,6 +396,9 @@ func stubRunAsHost(t *testing.T, goos string, daemonUID string, users map[string
 	runAsWorkspaceCheck = func(*runAsSettings) string { return "" }
 	runAsDataDirCheck = func(*runAsSettings) string { return "" }
 	runAsFirewallCheck = func(*runAsSettings) string { return "" }
+	// The gate tool probe is a host check of its own
+	// (TestRunAsUserPreflightGateToolProbe).
+	runAsGateToolsCheck = func(*runAsSettings) string { return "" }
 	currentUID = func() (string, error) { return daemonUID, nil }
 	lookupUser = func(name string) (*user.User, error) {
 		home, ok := users[name]
@@ -413,7 +416,7 @@ func stubRunAsHost(t *testing.T, goos string, daemonUID string, users map[string
 	daemonGroups = func() ([]int, error) { return []int{1000, 6000}, nil }
 	t.Cleanup(func() {
 		lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups, runAsWorkspaceCheck, runAsDataDirCheck = pg, pu, pc, po, pd, pw, pdd
-		runAsFirewallCheck, runAsGetenv = pf, pe
+		runAsFirewallCheck, runAsGetenv, runAsGateToolsCheck = pf, pe, pt
 	})
 }
 

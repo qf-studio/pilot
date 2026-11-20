@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/config"
@@ -105,5 +109,73 @@ func TestQualityCheckerFactory_BaseBranchFromProject(t *testing.T) {
 				t.Errorf("BaseBranch() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// recordingQualityBuilder is the default builder of internal/quality that
+// records every read of the task directory.
+type recordingQualityBuilder struct {
+	quality.CommandBuilder
+	reads []string
+}
+
+func (b *recordingQualityBuilder) ReadFile(p string) ([]byte, error) {
+	b.reads = append(b.reads, "ReadFile "+p)
+	return b.CommandBuilder.ReadFile(p)
+}
+
+func (b *recordingQualityBuilder) Stat(p string) (os.FileInfo, error) {
+	b.reads = append(b.reads, "Stat "+p)
+	return b.CommandBuilder.Stat(p)
+}
+
+func (b *recordingQualityBuilder) ReadDir(p string) ([]os.DirEntry, error) {
+	b.reads = append(b.reads, "ReadDir "+p)
+	return b.CommandBuilder.ReadDir(p)
+}
+
+// TestRunAsUserGateDetectionRefusedInFactory (GH-6614, TASK-651): with the
+// check of the gate builder failing (run_as_user set, the wrong builder) the
+// factory reads no file of the workspace to detect the build and test command
+// and its checker returns the error. A configured quality block needs no
+// detection and is used as it is; with the check passing the detection runs.
+func TestRunAsUserGateDetectionRefusedInFactory(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "Makefile"), []byte("build:\n\ttrue\ntest:\n\ttrue\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "go.mod"), []byte("module example.com/x\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prevBuilder := quality.CurrentCommandBuilder()
+	quality.SetCommandBuilder(nil)
+	rec := &recordingQualityBuilder{CommandBuilder: quality.CurrentCommandBuilder()}
+	quality.SetCommandBuilder(rec)
+	t.Cleanup(func() { quality.SetCommandBuilder(prevBuilder) })
+	refusal := errors.New("run_as_user: the quality gates have no agent command builder")
+	prevCheck := gateBuilderError
+	gateBuilderError = func() error { return refusal }
+	t.Cleanup(func() { gateBuilderError = prevCheck })
+
+	checker := newProjectQualityCheckerFactory(&config.Config{})("GH-1", ws, ws)
+	if _, err := checker.Check(context.Background()); !errors.Is(err, refusal) {
+		t.Errorf("Check = %v, want the refusal", err)
+	}
+	if len(rec.reads) != 0 {
+		t.Errorf("the detection read the workspace: %q", rec.reads)
+	}
+
+	configured := &config.Config{Quality: &quality.Config{Enabled: true, Gates: []*quality.Gate{{Name: "build", Type: quality.GateBuild, Command: "make build"}}}}
+	if _, ok := newProjectQualityCheckerFactory(configured)("GH-1", ws, ws).(*qualityCheckerWrapper); !ok {
+		t.Error("a configured quality block was refused")
+	}
+
+	gateBuilderError = func() error { return nil }
+	wrapper, ok := newProjectQualityCheckerFactory(&config.Config{})("GH-1", ws, ws).(*qualityCheckerWrapper)
+	if !ok || len(wrapper.executor.Config().Gates) != 2 {
+		t.Fatalf("with the check passing: %T, want the detected build and test gates", wrapper)
+	}
+	if len(rec.reads) == 0 {
+		t.Error("the detection read nothing with the check passing")
 	}
 }

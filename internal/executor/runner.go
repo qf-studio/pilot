@@ -1287,6 +1287,7 @@ type Runner struct {
 	mergeMetricsWarnOnce   sync.Once                                                       // Log the first dropped merge-metric event only, not every one
 	webhooks               *webhooks.Manager                                               // Optional webhook manager for event delivery
 	qualityCheckerFactory  QualityCheckerFactory                                           // Optional factory for creating quality checkers
+	qualityDetectRefused   bool                                                            // qualityCheckerFactory is the refusal of ensureQualityCheckerFactory (TASK-651)
 	modelRouter            *ModelRouter                                                    // Model and timeout routing based on complexity
 	parallelRunner         *ParallelRunner                                                 // Optional parallel research runner (GH-217)
 	decomposer             *TaskDecomposer                                                 // Optional task decomposer for complex tasks (GH-218)
@@ -3157,9 +3158,23 @@ func qualityLookupPath(task *Task, executionPath string) string {
 // gate-check can reuse the exact same auto-enable behavior instead of running
 // with no gate at all just because it takes a different code path than the
 // ordinary success flow.
+//
+// TASK-651: with run_as_user set the detection reads the workspace through the
+// builder of internal/quality. With any builder but the gate builder of the
+// executor it reads nothing and every gate start returns the refusal of
+// gateBuilderError; a later call detects again.
 func (r *Runner) ensureQualityCheckerFactory(executionPath string, log *slog.Logger) {
-	if r.qualityCheckerFactory != nil {
+	if r.qualityCheckerFactory != nil && !r.qualityDetectRefused {
 		return
+	}
+	if err := gateBuilderError(); err != nil {
+		log.Warn("Quality gate auto-detection refused", slog.Any("error", err))
+		r.qualityCheckerFactory = func(string, string, string) QualityChecker { return refusedGateChecker{err} }
+		r.qualityDetectRefused = true
+		return
+	}
+	if r.qualityDetectRefused {
+		r.qualityCheckerFactory, r.qualityDetectRefused = nil, false
 	}
 	buildCmd := quality.DetectBuildCommand(executionPath)
 	testCmd := quality.DetectTestCommand(executionPath)

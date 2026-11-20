@@ -324,7 +324,9 @@ func resolveRunAs(userName, group string) (*runAsSettings, string) {
 // with uid and gid not 0, the user is not the daemon user, the daemon user is
 // a member of the group, `sudo -n -u <user> -g <group> true` exits 0 within 5
 // seconds, the agent gets no terminal from sudo, and the home of the user
-// exists. Before all of them the refusal of runAsIncompleteRefusal fails
+// exists. After the worktree checks below, the agent user with the
+// environment of a gate finds sh, git, and make and go when the daemon finds
+// them, and can make a file in its temporary directory (checkRunAsGateTools). Before all of them the refusal of runAsIncompleteRefusal fails
 // every host, and before that a daemon start (RunAsGatewayRequired) with a
 // gateway port of 0 or below is refused (runAsGatewayPortCheck). Then the workspace (TASK-651 4.2): use_worktree is true,
 // worktree_pool_size is 0, the workspace root is not /, the home of the daemon
@@ -435,7 +437,13 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 			failed = "run_as_user requires worktree_pool_size 0"
 		default:
 			s.workspaceRoot, s.dataDir, s.gatewayPort, s.gatewayHost = root, dataDir, gatewayPort, gatewayHost
-			if failed = refusedRunAsWorkspaceRoot(root, dataDir, cfg); failed == "" {
+			// The tools and the temporary directory of a gate, as the agent
+			// user with the environment of a gate (checkRunAsGateTools).
+			failed = runAsGateToolsCheck(s)
+			if failed == "" {
+				failed = refusedRunAsWorkspaceRoot(root, dataDir, cfg)
+			}
+			if failed == "" {
 				failed = runAsWorkspaceCheck(s)
 			}
 			if failed == "" {
