@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
@@ -87,7 +88,7 @@ func withGitCredentials(ctx context.Context, cmd *exec.Cmd) *exec.Cmd {
 	gitMintFailureMu.Lock()
 	gitMintFailureLast = ""
 	gitMintFailureMu.Unlock()
-	cmd.Args = slices.Insert(cmd.Args, 1, gitCredentialConfigArgs...)
+	cmd.Args = slices.Insert(cmd.Args, 1, gitCredentialArgs(cmd.Args[1:])...)
 	cmd.Env = append(os.Environ(),
 		"GIT_ASKPASS="+askpass,
 		"PILOT_GIT_TOKEN="+token,
@@ -98,11 +99,31 @@ func withGitCredentials(ctx context.Context, cmd *exec.Cmd) *exec.Cmd {
 	return cmd
 }
 
+// gitCredentialArgs are the arguments withGitCredentials puts after the name
+// of git: the hooks-off arguments (secretpatterns.HooksOffArgs), unless args
+// already holds them, then gitCredentialConfigArgs. Decision: the hooks go
+// off here and not at each call site, so no command that carries the token
+// runs a hook (reference-transaction, post-merge) or a core.fsmonitor program
+// of the repository with PILOT_GIT_TOKEN in its environment; a call site that
+// adds them itself keeps one copy.
+func gitCredentialArgs(args []string) []string {
+	hooksOff := secretpatterns.HooksOffArgs()
+	for i := 0; i+len(hooksOff) <= len(args); i++ {
+		if slices.Equal(args[i:i+len(hooksOff)], hooksOff) {
+			return slices.Clone(gitCredentialConfigArgs)
+		}
+	}
+	return append(hooksOff, gitCredentialConfigArgs...)
+}
+
 // gitCredentialConfigArgs are the git -c arguments of each command that
 // withGitCredentials gives the token (TASK-651): the config of the repository
 // names no program that runs with the token in its environment. An empty
 // credential.helper clears the list of helpers, so git asks only the askpass
-// helper; core.gitProxy is cleared and the ext transport is refused. The
+// helper; core.gitProxy is cleared and the ext transport is refused. An
+// empty core.alternateRefsCommand runs no program of the config for the refs
+// of an alternate (.git/objects/info/alternates), and an empty
+// fetch.bundleURI makes a fetch ask no other host for a bundle. The
 // environment of the command adds GIT_SSH_COMMAND=ssh, which git takes over
 // core.sshCommand. Decision: GIT_PROXY_COMMAND= as well: git takes the first
 // core.gitProxy it reads and reads the command line last, so the -c value
@@ -112,6 +133,8 @@ var gitCredentialConfigArgs = []string{
 	"-c", "credential.helper=",
 	"-c", "core.gitProxy=",
 	"-c", "protocol.ext.allow=never",
+	"-c", "core.alternateRefsCommand=",
+	"-c", "fetch.bundleURI=",
 }
 
 var (
