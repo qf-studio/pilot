@@ -112,6 +112,47 @@ func TestRunHook_LogFn(t *testing.T) {
 	}
 }
 
+// TestRunHookBackgroundChildDoesNotFail is GH-6616: a script that exits with
+// status 0 while a child it started in the background keeps the output open
+// passes after the wait delay, and the later scripts run.
+func TestRunHookBackgroundChildDoesNotFail(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	var captured []string
+	logFn := func(s string) { captured = append(captured, s) }
+	start := time.Now()
+	err := workflow.RunHook(context.Background(), "after_create", workflow.HookValue{"sleep 8 & echo done", "echo second"}, dir, os.Environ(), 0, logFn)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("RunHook: %v", err)
+	}
+	if elapsed >= 7*time.Second {
+		t.Errorf("RunHook returned after %v, want under 7s", elapsed)
+	}
+	combined := strings.Join(captured, "")
+	if !strings.Contains(combined, "done") {
+		t.Errorf("logFn output %q has no output of the first script", combined)
+	}
+	if !strings.Contains(combined, "second") {
+		t.Errorf("logFn output %q: the second script did not run", combined)
+	}
+}
+
+// TestRunHookBackgroundChildFailedStatusFails: a script with a status that is
+// not 0 stays a failure when a background child keeps the output open.
+func TestRunHookBackgroundChildFailedStatusFails(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "sentinel")
+	err := workflow.RunHook(context.Background(), "after_create", workflow.HookValue{"sleep 8 & exit 3", "touch " + sentinel}, dir, os.Environ(), 0, nil)
+	if err == nil {
+		t.Fatal("expected an error from the failing script")
+	}
+	if _, statErr := os.Stat(sentinel); statErr == nil {
+		t.Error("second script ran after the failure")
+	}
+}
+
 func TestHookValue_YAML(t *testing.T) {
 	dir := t.TempDir()
 	writeWorkflow(t, dir, `---

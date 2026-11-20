@@ -1391,6 +1391,21 @@ func agentCmdUser(cmd *exec.Cmd) (string, bool) {
 	return cmd.Args[3], true
 }
 
+// agentSudoCommandError returns an error when cmd, a command agentCommand
+// built as the kind what, is not a sudo command of the agent user of s, and
+// drops its snapshot; nil otherwise. A caller with the option set uses it so a
+// command never runs as the daemon user.
+func agentSudoCommandError(cmd *exec.Cmd, s *runAsSettings, what string) error {
+	if cmd == nil {
+		return fmt.Errorf("run_as_user: no %s command was built", what)
+	}
+	if u, ok := agentCmdUser(cmd); !ok || u != s.user {
+		runAsSnapshots.Delete(cmd)
+		return fmt.Errorf("run_as_user: the %s command %q is not a sudo command of the agent user %q", what, cmd.Args, s.user)
+	}
+	return nil
+}
+
 // signalName is the name `kill -s` takes.
 func signalName(sig syscall.Signal) string {
 	switch sig {

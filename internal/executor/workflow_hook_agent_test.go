@@ -55,6 +55,47 @@ func TestRunWorkflowHookRunsAsAgent(t *testing.T) {
 		}
 	})
 
+	t.Run("hook gets no model credential and no request header", func(t *testing.T) {
+		names := []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS"}
+		for _, n := range names {
+			t.Setenv(n, "fake-value-6616")
+		}
+		f := newAgentFilesFixture(t, "")
+		out := runHookForTest(t, t.Context(), f.ws, taskID, "env")
+		if !strings.Contains(out, "PILOT_TASK_ID="+taskID) {
+			t.Fatalf("hook output has no PILOT_TASK_ID=%s, the hook did not run:\n%s", taskID, out)
+		}
+		for _, n := range names {
+			if strings.Contains(out, n+"=") {
+				t.Errorf("hook environment has %s:\n%s", n, out)
+			}
+		}
+		if strings.Contains(out, "fake-value-6616") {
+			t.Errorf("hook output has a value of the daemon:\n%s", out)
+		}
+	})
+
+	t.Run("hook runs in the task directory", func(t *testing.T) {
+		f := newAgentFilesFixture(t, "")
+		out := runHookForTest(t, t.Context(), f.ws, taskID, "pwd -P")
+		if !strings.Contains(out, "output="+f.ws+"\n") {
+			t.Errorf("hook output has no working directory %s:\n%s", f.ws, out)
+		}
+	})
+
+	t.Run("command that is not a sudo command of the agent user does not run", func(t *testing.T) {
+		f := newAgentFilesFixture(t, "")
+		runAsGOOS = "darwin" // agentCommand builds a plain command; stubRunAsGOOS of the fixture restores
+		sentinel := filepath.Join(t.TempDir(), "ran")
+		out := runHookForTest(t, t.Context(), f.ws, taskID, "touch "+sentinel)
+		if _, err := os.Stat(sentinel); err == nil {
+			t.Error("the hook ran as the daemon user")
+		}
+		if !strings.Contains(out, "workflow hook failed") || !strings.Contains(out, "is not a sudo command of the agent user") {
+			t.Errorf("hook log does not name the cause:\n%s", out)
+		}
+	})
+
 	t.Run("option empty: the environment of the daemon, no sudo call", func(t *testing.T) {
 		t.Setenv("DAEMON_ONLY_SECRET", secret)
 		f := newAgentFilesFixture(t, "")

@@ -9532,9 +9532,10 @@ func (r *Runner) getContractEvidence(ctx context.Context, dir string, fields []s
 //
 // With run_as_user set (TASK-651) the scripts are text of the repository the
 // agent can change: each runs as the agent user through agentCommand, with
-// the allowlist of setAgentEnvIn over gitAgentBaseEnv plus PILOT_TASK_ID (the
-// value of the task, never the one of the daemon process), and a cancel kills
-// its process group through sudo. With the option empty the environment is
+// the allowlist of setAgentEnvIn over gateAgentBaseEnv (no model credential,
+// no header of the model requests) plus PILOT_TASK_ID (the value of the task,
+// never the one of the daemon process), and a cancel kills its process group
+// through sudo. With the option empty the environment is
 // the one of the daemon plus PILOT_TASK_ID, as before.
 func runWorkflowHook(ctx context.Context, name string, scripts workflow.HookValue, dir, taskID string, log *slog.Logger) {
 	if len(scripts) == 0 {
@@ -9547,7 +9548,7 @@ func runWorkflowHook(ctx context.Context, name string, scripts workflow.HookValu
 	if runAsSettingsNow() == nil {
 		err = workflow.RunHook(ctx, name, scripts, dir, append(os.Environ(), "PILOT_TASK_ID="+taskID), 0, logFn)
 	} else {
-		err = workflow.RunHookWith(ctx, name, scripts, dir, append(gitAgentBaseEnv(), "PILOT_TASK_ID="+taskID), 0, logFn, agentHookCommand)
+		err = workflow.RunHookWith(ctx, name, scripts, dir, append(gateAgentBaseEnv(), "PILOT_TASK_ID="+taskID), 0, logFn, agentHookCommand)
 	}
 	if err != nil {
 		log.Warn("workflow hook failed", slog.String("hook", name), slog.Any("error", err))
@@ -9556,10 +9557,18 @@ func runWorkflowHook(ctx context.Context, name string, scripts workflow.HookValu
 
 // agentHookCommand is the workflow.CommandBuilder of the agent user: bash -lc
 // script in dir through agentCommand, whose cancel kills the process group
-// through sudo, with the allowlisted env.
+// through sudo, with the allowlisted env. A command that is not a sudo command
+// of the agent user is an error, never a hook that runs as the daemon user.
 func agentHookCommand(ctx context.Context, dir string, env []string, script string) (*exec.Cmd, error) {
+	s := runAsSettingsNow()
+	if s == nil {
+		return nil, errors.New("run_as_user: the hook command has no agent user")
+	}
 	cmd, err := agentCommand(ctx, "bash", "-lc", script)
 	if err != nil {
+		return nil, err
+	}
+	if err := agentSudoCommandError(cmd, s, "hook"); err != nil {
 		return nil, err
 	}
 	cmd.Dir = dir

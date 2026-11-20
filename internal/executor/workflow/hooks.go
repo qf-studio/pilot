@@ -3,7 +3,9 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"syscall"
 	"time"
@@ -55,6 +57,12 @@ func RunHook(ctx context.Context, name string, scripts HookValue, dir string, en
 }
 
 // RunHookWith is RunHook with the command of each script built by build.
+//
+// A script that exits with status 0 while a child it started in the
+// background keeps its output open passes once the wait delay of the command
+// ends (exec.ErrWaitDelay): one Warn line names the hook and the later
+// scripts run. A status that is not 0, the time limit and a cancel of ctx stay
+// failures.
 func RunHookWith(ctx context.Context, name string, scripts HookValue, dir string, env []string, timeout time.Duration, logFn func(string), build CommandBuilder) error {
 	if len(scripts) == 0 {
 		return nil
@@ -65,6 +73,11 @@ func RunHookWith(ctx context.Context, name string, scripts HookValue, dir string
 	for i, script := range scripts {
 		hctx, cancel := context.WithTimeout(ctx, timeout)
 		out, err := runScript(hctx, script, dir, env, build)
+		if errors.Is(err, errOutputKeptOpen) {
+			slog.Warn("workflow hook: a child process kept the output open after the script exited with status 0",
+				slog.String("hook", name), slog.Int("script", i))
+			err = nil
+		}
 		cancel()
 		if logFn != nil && len(out) > 0 {
 			logFn(string(out))
@@ -97,5 +110,12 @@ func runScript(ctx context.Context, script, dir string, env []string, build Comm
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 	err = cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		err = errOutputKeptOpen
+	}
 	return buf.Bytes(), err
 }
+
+// errOutputKeptOpen is the result of runScript for a script that exited with
+// status 0 whose output a child kept open past the wait delay.
+var errOutputKeptOpen = errors.New("a child process kept the output open")
