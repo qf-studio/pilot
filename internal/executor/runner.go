@@ -5181,15 +5181,13 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	}
 
 	// TASK-305: fire after_create and wire before_remove now that the workflow is loaded.
-	var hookEnv []string
 	if repoWorkflow != nil {
-		hookEnv = append(os.Environ(), "PILOT_TASK_ID="+task.ID)
-		runWorkflowHook(ctx, "after_create", repoWorkflow.Hooks.AfterCreate, executionPath, hookEnv, log)
+		runWorkflowHook(ctx, "after_create", repoWorkflow.Hooks.AfterCreate, executionPath, task.ID, log)
 		if len(repoWorkflow.Hooks.BeforeRemove) > 0 {
 			scripts := repoWorkflow.Hooks.BeforeRemove
-			env := hookEnv
+			taskID := task.ID
 			beforeRemoveHookFn = func() {
-				runWorkflowHook(context.Background(), "before_remove", scripts, executionPath, env, log)
+				runWorkflowHook(context.Background(), "before_remove", scripts, executionPath, taskID, log)
 			}
 		}
 	}
@@ -5395,7 +5393,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// that ignore context cancellation.
 	// TASK-305: before_run hook fires just before agent execution.
 	if repoWorkflow != nil {
-		runWorkflowHook(ctx, "before_run", repoWorkflow.Hooks.BeforeRun, executionPath, hookEnv, log)
+		runWorkflowHook(ctx, "before_run", repoWorkflow.Hooks.BeforeRun, executionPath, task.ID, log)
 	}
 
 	// GH-4129: mirror the epic path's :1919 pattern — record the milestone
@@ -5480,7 +5478,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	// TASK-305: after_run hook fires as soon as the agent finishes (success or error).
 	if repoWorkflow != nil {
-		runWorkflowHook(ctx, "after_run", repoWorkflow.Hooks.AfterRun, executionPath, hookEnv, log)
+		runWorkflowHook(ctx, "after_run", repoWorkflow.Hooks.AfterRun, executionPath, task.ID, log)
 	}
 
 	// Transfer stallDetected flag to progressState for post-Execute checks.
@@ -9451,17 +9449,43 @@ func (r *Runner) getContractEvidence(ctx context.Context, dir string, fields []s
 }
 
 // runWorkflowHook executes a workflow lifecycle hook, logging output and warning on failure.
-// It is a no-op when scripts is empty.
-func runWorkflowHook(ctx context.Context, name string, scripts workflow.HookValue, dir string, env []string, log *slog.Logger) {
+// It is a no-op when scripts is empty. The hook gets PILOT_TASK_ID=taskID.
+//
+// With run_as_user set (TASK-651) the scripts are text of the repository the
+// agent can change: each runs as the agent user through agentCommand, with
+// the allowlist of setAgentEnvIn over gitAgentBaseEnv plus PILOT_TASK_ID (the
+// value of the task, never the one of the daemon process), and a cancel kills
+// its process group through sudo. With the option empty the environment is
+// the one of the daemon plus PILOT_TASK_ID, as before.
+func runWorkflowHook(ctx context.Context, name string, scripts workflow.HookValue, dir, taskID string, log *slog.Logger) {
 	if len(scripts) == 0 {
 		return
 	}
 	logFn := func(output string) {
 		log.Info("hook output", slog.String("hook", name), slog.String("output", strings.TrimSpace(output)))
 	}
-	if err := workflow.RunHook(ctx, name, scripts, dir, env, 0, logFn); err != nil {
+	var err error
+	if runAsSettingsNow() == nil {
+		err = workflow.RunHook(ctx, name, scripts, dir, append(os.Environ(), "PILOT_TASK_ID="+taskID), 0, logFn)
+	} else {
+		err = workflow.RunHookWith(ctx, name, scripts, dir, append(gitAgentBaseEnv(), "PILOT_TASK_ID="+taskID), 0, logFn, agentHookCommand)
+	}
+	if err != nil {
 		log.Warn("workflow hook failed", slog.String("hook", name), slog.Any("error", err))
 	}
+}
+
+// agentHookCommand is the workflow.CommandBuilder of the agent user: bash -lc
+// script in dir through agentCommand, whose cancel kills the process group
+// through sudo, with the allowlisted env.
+func agentHookCommand(ctx context.Context, dir string, env []string, script string) (*exec.Cmd, error) {
+	cmd, err := agentCommand(ctx, "bash", "-lc", script)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Dir = dir
+	setAgentEnvIn(cmd, env, dir)
+	return cmd, nil
 }
 
 // outcomeRunnerMissing reports whether any failed gate in outcome failed because
