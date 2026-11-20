@@ -6615,7 +6615,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					var outcome *QualityOutcome
 					var qErr error
 					if retryAttempt > 0 {
-						checkCtx, checkCancel := context.WithTimeout(context.Background(), timeout)
+						// TASK-651: the fresh context keeps the token file of the
+						// run, so the gates of the agent user keep its git helper.
+						checkCtx, checkCancel := context.WithTimeout(withAgentTokenFile(context.Background(), agentTokenFileFrom(ctx)), timeout)
 						outcome, qErr = checker.Check(checkCtx)
 						checkCancel()
 					} else {
