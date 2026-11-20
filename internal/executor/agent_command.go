@@ -506,20 +506,27 @@ const (
 )
 
 // goProxyHasCredentials reports whether a GOPROXY value, a list with the
-// separators comma and pipe, holds an element that parses as a URL with a
-// user part (a name, or a name and a password). The elements direct and off
-// and an element that does not parse are not credentials.
+// separators comma and pipe, holds credentials: an element other than direct
+// and off that does not parse as a URL, that holds an @, or that parses with a
+// user part (a name, or a name and a password). An empty element is not
+// credentials.
+//
+// Decision (GH-6629): the check fails closed. A password with a %, a space, a
+// / , a # or a ?, a bad port or an element with no scheme does not parse (or
+// parses with no user part), and Go cannot use such a proxy, but the text with
+// the password would still reach the agent user.
 func goProxyHasCredentials(value string) bool {
 	for _, elem := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == '|' }) {
 		elem = strings.TrimSpace(elem)
 		if elem == "" || elem == "direct" || elem == "off" {
 			continue
 		}
-		u, err := url.Parse(elem)
-		if err != nil || u.User == nil {
-			continue
+		if _, err := url.Parse(elem); err != nil {
+			return true
 		}
-		if _, hasPassword := u.User.Password(); u.User.Username() != "" || hasPassword {
+		// A URL with a user part holds an @; an @ without one (no scheme, an
+		// @ in the path) is the text of a password all the same.
+		if strings.Contains(elem, "@") {
 			return true
 		}
 	}
@@ -527,7 +534,7 @@ func goProxyHasCredentials(value string) bool {
 }
 
 // goFlagsProxyHasCredentials checks, with goProxyHasCredentials, the text
-// after each GOPROXY= in a GOFLAGS value up to the next space.
+// after each GOPROXY= in a GOFLAGS value up to the next space or tab.
 func goFlagsProxyHasCredentials(flags string) bool {
 	const key = "GOPROXY="
 	for rest := flags; ; {
@@ -537,7 +544,7 @@ func goFlagsProxyHasCredentials(flags string) bool {
 		}
 		rest = rest[i+len(key):]
 		value := rest
-		if j := strings.IndexByte(rest, ' '); j >= 0 {
+		if j := strings.IndexAny(rest, " \t"); j >= 0 {
 			value = rest[:j]
 		}
 		if goProxyHasCredentials(value) {
