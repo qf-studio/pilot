@@ -91,9 +91,10 @@ var agentTokenSweepDir = os.TempDir
 
 // AgentTokenRepoLookup returns the "OWNER/NAME" of the GitHub repository of the
 // project config entry whose path is projectPath, or "" when no entry has
-// that path or the entry has no GitHub repository (TASK-651). cmd/pilot
-// supplies the config-backed implementation.
-type AgentTokenRepoLookup func(projectPath string) string
+// that path or the entry has no GitHub repository (TASK-651). entry reports
+// whether a project config entry has the path, so the run can say which of
+// the two it was. cmd/pilot supplies the config-backed implementation.
+type AgentTokenRepoLookup func(projectPath string) (repo string, entry bool)
 
 // agentTokenFileKey is the context key of the token file of a run.
 type agentTokenFileKey struct{}
@@ -153,22 +154,38 @@ func sweepAgentTokenDirs(log *slog.Logger, dir string) int {
 // startRunAgentTokenFile makes the token file of the run of task: the read
 // token of the repository of the project config entry whose path is
 // task.ProjectPath. It returns nil, and the run goes on with no token, when the
-// option is empty, no provider or lookup is installed, the project has no
-// GitHub repository in its config, or the full repository name the task
-// carries differs (letter case ignored) from that of the project; the last
-// logs one Warn line naming both. Callers defer Stop on a non-nil result.
+// option is empty, no provider or lookup is installed, no project config entry
+// has the path, the entry has no GitHub repository, or the full repository
+// name the task carries differs (letter case ignored) from that of the
+// project. With the option set each of these logs one Warn line for the run
+// that says why. Callers defer Stop on a non-nil result.
 //
 // Decision: the repository of the task is never the input. On the paths with
 // no full name (webhook, retry) it was matched by the name only, and of two
 // projects with the same name under two owners one run got the token of the
 // other.
 func (r *Runner) startRunAgentTokenFile(ctx context.Context, task *Task) *agentTokenFile {
-	if runAsSettingsNow() == nil || GetAgentReadTokenProvider() == nil || r.agentTokenRepoLookup == nil {
+	if runAsSettingsNow() == nil {
 		return nil
 	}
-	repo := r.agentTokenRepoLookup(task.ProjectPath)
-	if repo == "" {
+	noToken := func(reason string) *agentTokenFile {
+		r.log.Warn("run_as_user: no GitHub read token for the agent: "+reason,
+			slog.String("task_id", task.ID),
+			slog.String("project_path", task.ProjectPath))
 		return nil
+	}
+	if GetAgentReadTokenProvider() == nil {
+		return noToken("no read token provider is installed (it needs adapters.github.app)")
+	}
+	if r.agentTokenRepoLookup == nil {
+		return noToken("no repository lookup is installed on the runner")
+	}
+	repo, entry := r.agentTokenRepoLookup(task.ProjectPath)
+	if !entry {
+		return noToken("no project config entry has the path")
+	}
+	if repo == "" {
+		return noToken("the project config entry has no GitHub repository")
 	}
 	if task.SourceRepo != "" && !strings.EqualFold(task.SourceRepo, repo) {
 		r.log.Warn("run_as_user: no GitHub read token for the agent: the repository of the task is not the repository of its project",

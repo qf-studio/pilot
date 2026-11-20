@@ -1856,6 +1856,12 @@ func (r *Runner) SetAgentTokenRepoLookup(lookup AgentTokenRepoLookup) {
 	r.agentTokenRepoLookup = lookup
 }
 
+// AgentTokenRepoLookup returns the lookup SetAgentTokenRepoLookup set, nil
+// when none: the wiring tests of the callers call it.
+func (r *Runner) AgentTokenRepoLookup() AgentTokenRepoLookup {
+	return r.agentTokenRepoLookup
+}
+
 // SetModelRouter sets the model router for complexity-based model and timeout selection.
 func (r *Runner) SetModelRouter(router *ModelRouter) {
 	r.modelRouter = router

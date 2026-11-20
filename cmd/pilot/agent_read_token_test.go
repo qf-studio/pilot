@@ -348,21 +348,60 @@ func TestScopedTokenChecksTheOwnerOfTheAnswer(t *testing.T) {
 	}
 }
 
-// TestAgentTokenFileProviderSetAtStartup (TASK-651): the daemon start installs
-// the read token provider that the token file of each run asks, once, built
-// from the config.
+// TestAgentTokenFileProviderSetAtStartup (TASK-651): the read token provider
+// that the token file of each run asks is installed by one function, built
+// from the config; the daemon start of the polling mode calls it, and no
+// other place in the package installs a provider.
 func TestAgentTokenFileProviderSetAtStartup(t *testing.T) {
 	const line = "executor.SetAgentReadTokenProvider(agentReadTokenProvider(cfg))"
-	if body := githubFuncBody(t, "main.go", "func runPollingMode("); !strings.Contains(body, line) {
-		t.Errorf("runPollingMode does not call %s", line)
+	if body := githubFuncBody(t, "main.go", "func installAgentReadTokenProvider("); !strings.Contains(body, line) {
+		t.Errorf("installAgentReadTokenProvider does not call %s", line)
 	}
-	src, err := os.ReadFile("main.go")
+	if body := githubFuncBody(t, "main.go", "func runPollingMode("); !strings.Contains(body, "\tinstallAgentReadTokenProvider(cfg)\n") {
+		t.Error("runPollingMode does not call installAgentReadTokenProvider(cfg)")
+	}
+	for _, file := range cmdPilotSourceFiles(t) {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if file == "main.go" {
+			want = 1
+		}
+		if n := strings.Count(string(src), "executor.SetAgentReadTokenProvider("); n != want {
+			t.Errorf("SetAgentReadTokenProvider( occurs %d times in %s, want %d", n, file, want)
+		}
+	}
+
+	// The provider it installs is that of the config: nil with no GitHub App.
+	t.Cleanup(func() { executor.SetAgentReadTokenProvider(nil) })
+	executor.SetAgentReadTokenProvider(func(context.Context, string) (string, time.Time, error) {
+		return "", time.Time{}, nil
+	})
+	installAgentReadTokenProvider(&config.Config{Adapters: &config.AdaptersConfig{}})
+	if executor.GetAgentReadTokenProvider() != nil {
+		t.Error("installAgentReadTokenProvider with no GitHub App left a provider installed")
+	}
+}
+
+// cmdPilotSourceFiles lists the .go files of the package that are not tests.
+func cmdPilotSourceFiles(t *testing.T) []string {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := strings.Count(string(src), "executor.SetAgentReadTokenProvider("); n != 1 {
-		t.Errorf("SetAgentReadTokenProvider( occurs %d times in main.go, want 1", n)
+	var out []string
+	for _, f := range files {
+		if !strings.HasSuffix(f, "_test.go") {
+			out = append(out, f)
+		}
 	}
+	if len(out) == 0 {
+		t.Fatal("no source files found")
+	}
+	return out
 }
 
 // TestAgentTokenDirsAreSweptAtStart (TASK-651): each daemon start removes the
@@ -462,7 +501,8 @@ func TestAgentTokenDirsAreSweptAtStart(t *testing.T) {
 
 // TestAgentTokenRepoLookupByProjectPath (TASK-651): the repository of the read
 // token is that of the project config entry of the task path, so two entries
-// with the same repository name under two owners each get their own.
+// with the same repository name under two owners each get their own. The
+// lookup also says whether an entry has the path.
 func TestAgentTokenRepoLookupByProjectPath(t *testing.T) {
 	const line = "runner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg))"
 	if body := githubFuncBody(t, "main.go", "func runPollingMode("); !strings.Contains(body, line) {
@@ -475,57 +515,126 @@ func TestAgentTokenRepoLookupByProjectPath(t *testing.T) {
 		{Name: "d", Path: "/srv/d", GitHub: &config.ProjectGitHubConfig{Repo: "NAME"}},
 	}}
 	lookup := newProjectAgentTokenRepoLookup(cfg)
-	for path, want := range map[string]string{
-		"/srv/a/name": "OWNER-A/NAME",
-		"/srv/b/name": "OWNER-B/NAME",
-		"/srv/c":      "",
-		"/srv/d":      "",
-		"/srv/none":   "",
-		"":            "",
+	for path, want := range map[string]struct {
+		repo  string
+		entry bool
+	}{
+		"/srv/a/name": {"OWNER-A/NAME", true},
+		"/srv/b/name": {"OWNER-B/NAME", true},
+		"/srv/c":      {"", true},
+		"/srv/d":      {"", true},
+		"/srv/none":   {"", false},
+		"":            {"", false},
 	} {
-		if got := lookup(path); got != want {
-			t.Errorf("lookup(%q) = %q, want %q", path, got, want)
+		if repo, entry := lookup(path); repo != want.repo || entry != want.entry {
+			t.Errorf("lookup(%q) = %q, %v, want %q, %v", path, repo, entry, want.repo, want.entry)
 		}
 	}
 }
 
-// TestAgentTokenRepoLookupSetOnEachRunner (TASK-651): each place in cmd/pilot
-// that builds a Runner for task runs sets the repository lookup of the read
-// token next to the Navigator lookup, not only the polling runner: with no
-// lookup a run_as_user run of that runner gets no token.
-func TestAgentTokenRepoLookupSetOnEachRunner(t *testing.T) {
+// TestAgentTokenRepoLookupCanonicalPath (TASK-651): the task path and the path
+// of the config entry are compared in their canonical form, so a trailing
+// slash, a "./" or a link to the project directory, in the task path or in
+// the config entry, finds the entry.
+func TestAgentTokenRepoLookupCanonicalPath(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "proj")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	const repo = "OWNER-A/NAME"
+	for _, entryPath := range []string{dir, dir + "/", link, root + "/./proj"} {
+		cfg := &config.Config{Projects: []*config.ProjectConfig{
+			{Name: "a", Path: entryPath, GitHub: &config.ProjectGitHubConfig{Owner: "OWNER-A", Repo: "NAME"}},
+		}}
+		lookup := newProjectAgentTokenRepoLookup(cfg)
+		for _, taskPath := range []string{dir, dir + "/", root + "/./proj", link, link + "/"} {
+			if got, entry := lookup(taskPath); got != repo || !entry {
+				t.Errorf("entry %q: lookup(%q) = %q, %v, want %q, true", entryPath, taskPath, got, entry, repo)
+			}
+		}
+		if got, entry := lookup(root); got != "" || entry {
+			t.Errorf("entry %q: lookup of the parent %q = %q, %v, want no entry", entryPath, root, got, entry)
+		}
+	}
+}
+
+// agentTokenStartPathExempt are the files of the package that build a Runner
+// and need neither the read token provider nor the repository lookup.
+var agentTokenStartPathExempt = map[string]string{
+	"navigator.go":   "pilot navigator bootstrap runs one session that writes .agent/ only, not a task run",
+	"interactive.go": "the interactive menu is not a start path of TASK-651; its runner sets no project lookup at all",
+}
+
+// TestAgentTokenProviderOnEachStartPath (TASK-651): each file of cmd/pilot that
+// builds a Runner for task runs, not on the exempt list, installs the read
+// token provider next to each call that sets the repository lookup: with no
+// provider a run_as_user run gets no token. The lookup follows the Navigator
+// lookup where a site sets one.
+func TestAgentTokenProviderOnEachStartPath(t *testing.T) {
 	const (
-		nav   = ".SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))"
-		token = ".SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg))"
+		nav     = ".SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))"
+		lookup  = ".SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg))"
+		install = "installAgentReadTokenProvider(cfg)"
 	)
-	// The Runners of task runs: the polling runner, the two gateway runners and
-	// the webhook runner in main.go, the one-shot task runner in commands.go.
-	for file, want := range map[string]int{"main.go": 4, "commands.go": 1} {
+	// The start paths: the polling runner, the two gateway runners and the
+	// pilot instance of the orchestrator in main.go; pilot task and pilot
+	// github run in commands.go.
+	want := map[string]int{"main.go": 4, "commands.go": 2}
+	seen := map[string]bool{}
+	for _, file := range cmdPilotSourceFiles(t) {
 		raw, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
 		}
 		src := string(raw)
-		navN, tokenN := strings.Count(src, nav), strings.Count(src, token)
-		if navN != want {
-			t.Errorf("%s: %d Navigator lookup calls, want %d (update this test with the new runner)", file, navN, want)
+		if !strings.Contains(src, "executor.NewRunner") {
+			continue
 		}
-		if tokenN != navN {
-			t.Errorf("%s: %d token repository lookup calls for %d Navigator lookup calls", file, tokenN, navN)
+		if _, ok := agentTokenStartPathExempt[file]; ok {
+			seen[file] = true
+			continue
+		}
+		lookupN, installN := strings.Count(src, lookup), strings.Count(src, "\t"+install+"\n")
+		if lookupN == 0 || installN == 0 {
+			t.Errorf("%s builds a Runner: %d repository lookup calls, %d provider install calls, want both (or add it to the exempt list with a reason)", file, lookupN, installN)
+		}
+		if w, ok := want[file]; ok && lookupN != w {
+			t.Errorf("%s: %d repository lookup calls, want %d (update this test with the new runner)", file, lookupN, w)
+		}
+		if installN != lookupN {
+			t.Errorf("%s: %d provider install calls for %d repository lookup calls", file, installN, lookupN)
 		}
 		lines := strings.Split(src, "\n")
 		for i, line := range lines {
-			recv, ok := strings.CutSuffix(strings.TrimSpace(line), nav)
-			if !ok {
-				continue
-			}
+			trimmed := strings.TrimSpace(line)
 			next := ""
 			if i+1 < len(lines) {
 				next = strings.TrimSpace(lines[i+1])
 			}
-			if !strings.HasPrefix(next, recv+token) {
-				t.Errorf("%s:%d: %s%s is not followed by %s%s", file, i+1, recv, nav, recv, token)
+			if recv, ok := strings.CutSuffix(trimmed, nav); ok && !strings.HasPrefix(next, recv+lookup) {
+				t.Errorf("%s:%d: %s%s is not followed by %s%s", file, i+1, recv, nav, recv, lookup)
 			}
+			if strings.Contains(trimmed, lookup) && next != install {
+				t.Errorf("%s:%d: %s is not followed by %s", file, i+1, trimmed, install)
+			}
+		}
+	}
+	for file := range want {
+		if _, err := os.Stat(file); err != nil {
+			t.Errorf("%s: %v", file, err)
+		}
+	}
+	for file := range agentTokenStartPathExempt {
+		if !seen[file] {
+			t.Errorf("exempt file %s builds no Runner: remove it from the list", file)
 		}
 	}
 }
