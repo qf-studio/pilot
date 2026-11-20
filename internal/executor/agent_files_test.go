@@ -743,31 +743,6 @@ func TestRunAsUserNavigatorDocsSkippedAfterTask(t *testing.T) {
 	}
 }
 
-// TestRunAsUserEvidenceWritesRefused is item 4: with the option set the
-// mutate write of an evidence command returns the error that names the gates
-// leg; the file stays as it was and no test command runs.
-func TestRunAsUserEvidenceWritesRefused(t *testing.T) {
-	dir := t.TempDir()
-	seedToolchainMarker(t, dir, "go.mod")
-	original := "package main\n\nfunc main() {\n\tprintln(\"hello\")\n}\n"
-	writeTestFile(t, filepath.Join(dir, "main.go"), original)
-	setRunAsStateForTest(t, testRunAsSettings(t), "")
-
-	runner := &fakeAcceptanceCommandRunner{responses: map[string]fakeCommandResponse{}}
-	item := ClassifyAcceptanceItem("delete line 4 in main.go -> TestMain fails")
-	result := runMutationItem(context.Background(), runner, dir, item, defaultTestAllowedCommands)
-
-	if !strings.Contains(result.NotVerifiedReason, "gates leg of TASK-651") {
-		t.Errorf("NotVerifiedReason = %q, want the error that names the gates leg", result.NotVerifiedReason)
-	}
-	if len(runner.calls) != 0 {
-		t.Errorf("test commands ran: %q", runner.calls)
-	}
-	if got := readTestFile(t, filepath.Join(dir, "main.go")); got != original {
-		t.Errorf("main.go = %q, want it unchanged", got)
-	}
-}
-
 // mockSudoKill is the extra code of mockSudoWritable that runs the kill of
 // killAgentProcessGroup (`sudo ... kill -s KILL -- -PGID`, "$1" is -PGID after
 // the "--"), so the Cancel of agentCommand stops the command in the fixture.

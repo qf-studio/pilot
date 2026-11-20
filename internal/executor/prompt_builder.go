@@ -505,8 +505,12 @@ func renderMemoryBlock(header, footer string, memories []graphrecall.MemorySumma
 // It skips Navigator workflow, PR constraints, and project context injection.
 // Designed for `pilot task --local` where the goal is direct problem-solving.
 // v9: proven baseline from v5m (68.5%).
+//
+// readEnvContext reads the file as the agent user when it is on the agent
+// side (agentReadFile, TASK-651): a link the agent put there is followed with
+// the rights of the agent user only. A read error is the empty text.
 func readEnvContext(projectPath string) string {
-	data, err := os.ReadFile(filepath.Join(projectPath, ".pilot-env-context.txt"))
+	data, err := agentReadFile(context.Background(), filepath.Join(projectPath, ".pilot-env-context.txt"))
 	if err != nil {
 		return ""
 	}

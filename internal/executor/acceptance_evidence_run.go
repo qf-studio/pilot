@@ -245,9 +245,10 @@ func (r shellAcceptanceCommandRunner) RunCommand(ctx context.Context, dir, comma
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, argv[0], argv[1:]...) // #nosec G204 -- argv[0] was already allowlist-checked by the caller, and no shell is invoked, so no operator or expansion sequence in the remaining arguments can be interpreted.
-	cmd.Dir = dir
-	cmd.Env = sanitizedAcceptanceEnv()
+	cmd, err := evidenceCommand(cctx, dir, argv)
+	if err != nil {
+		return "", err
+	}
 
 	// GH-5437: own process group so a timeout (or outer ctx cancellation)
 	// reaches every child the command forks, not just the tracked "sh" PID
@@ -262,6 +263,28 @@ func (r shellAcceptanceCommandRunner) RunCommand(ctx context.Context, dir, comma
 		return string(out), &acceptanceCommandTimeoutError{timeout: timeout}
 	}
 	return string(out), err
+}
+
+// evidenceCommand builds the command of RunCommand in dir with the
+// environment of sanitizedAcceptanceEnv. With run_as_user set (TASK-651) it
+// runs as the agent user through agentCommand, still as argv with no shell
+// (GH-5442), and setAgentEnvIn applies the allowlist of the agent user to that
+// environment: the code of the agent never runs as the daemon user. With the
+// option empty it is the exec.CommandContext of today.
+func evidenceCommand(ctx context.Context, dir string, argv []string) (*exec.Cmd, error) {
+	if runAsSettingsNow() == nil {
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- argv[0] was already allowlist-checked by the caller, and no shell is invoked, so no operator or expansion sequence in the remaining arguments can be interpreted.
+		cmd.Dir = dir
+		cmd.Env = sanitizedAcceptanceEnv()
+		return cmd, nil
+	}
+	cmd, err := agentCommand(ctx, argv[0], argv[1:]...)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Dir = dir
+	setAgentEnvIn(cmd, sanitizedAcceptanceEnv(), dir)
+	return cmd, nil
 }
 
 // finalizeEvidenceOutput trims output to the PR-body line cap and then
@@ -410,7 +433,8 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 		return result
 	}
 
-	original, err := os.ReadFile(fullPath) // #nosec G304 -- fullPath was confined to dir by resolveWorktreeConfinedPath above.
+	// TASK-651: a path on the agent side is read as the agent user.
+	original, err := agentReadFile(ctx, fullPath)
 	if err != nil {
 		result.NotVerifiedReason = fmt.Sprintf("could not read %s to apply mutation: %v", file, err)
 		return result
@@ -431,9 +455,9 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 		return result
 	}
 
-	// TASK-651: with run_as_user set the write returns an error that names
-	// the gates leg (evidenceWriteFile); the tree stays untouched.
-	if err := evidenceWriteFile(fullPath, []byte(mutated), 0o600); err != nil {
+	// TASK-651: with run_as_user set the mutate and revert writes run as the
+	// agent user (evidenceWriteFile).
+	if err := evidenceWriteFile(ctx, fullPath, []byte(mutated), 0o600); err != nil {
 		result.NotVerifiedReason = fmt.Sprintf("could not write mutated %s: %v", file, err)
 		return result
 	}
@@ -447,8 +471,9 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 	}
 
 	// Always attempt to revert, whatever the run above returned — never
-	// leave the mutated content on disk.
-	if err := evidenceWriteFile(fullPath, original, 0o600); err != nil {
+	// leave the mutated content on disk. The revert does not take the
+	// cancellation of ctx: a cancelled run still restores the file.
+	if err := evidenceWriteFile(context.WithoutCancel(ctx), fullPath, original, 0o600); err != nil {
 		result.NotVerifiedReason = fmt.Sprintf(
 			"reverting mutation to %s failed: %v (worktree may be left dirty; original content was not restored)", file, err,
 		)

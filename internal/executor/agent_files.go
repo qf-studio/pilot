@@ -312,18 +312,11 @@ func agentRemoveDirIfEmpty(ctx context.Context, dir string) error {
 	return nil
 }
 
-// errEvidenceWriteRunAsUser is the error of the mutate and revert writes of
-// the evidence commands with the option set: they move to the agent user in
-// the gates leg of TASK-651.
-var errEvidenceWriteRunAsUser = errors.New("run_as_user: the mutate and revert writes of the evidence commands run as the agent user only after the gates leg of TASK-651 merges")
-
 // evidenceWriteFile is the write of the mutate and revert steps of an
-// evidence command: os.WriteFile with the option empty, an error with it set.
-func evidenceWriteFile(path string, data []byte, mode os.FileMode) error {
-	if runAsSettingsNow() != nil {
-		return errEvidenceWriteRunAsUser
-	}
-	return os.WriteFile(path, data, mode)
+// evidence command: agentWriteFile, as the agent user for a path on the agent
+// side, else os.WriteFile.
+func evidenceWriteFile(ctx context.Context, path string, data []byte, mode os.FileMode) error {
+	return agentWriteFile(ctx, path, data, mode)
 }
 
 // loadRepoWorkflow is workflow.Load(executionPath). With the option set the
