@@ -1059,8 +1059,10 @@ type ExecutionResult struct {
 	// PrePRReview is the outcome of the pre-PR review (TASK-620); nil when the
 	// mode is off. Shadow mode records it and acts on nothing.
 	PrePRReview *PrePRReviewOutcome
-	// IntentWarning carries the unfixable pre-push lint issues; the PR is created
-	// with the warning in its completion message.
+	// IntentWarning carries the unfixable pre-push lint issues, and with
+	// run_as_user set a failed restore of the settings file after the PR was
+	// opened (failRunOnSettingsRestore, GH-6626); the PR is created and the
+	// caller shows the warning in its execution comment.
 	IntentWarning string
 	// TitleRejected indicates the task failed at the conventional-commit title
 	// guard and the runner has already posted a structured "how to fix" comment

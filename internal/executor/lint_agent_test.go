@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"os"
@@ -288,6 +291,73 @@ func TestSettingsRestoreFailureFailsRunThroughExecute(t *testing.T) {
 	}
 }
 
+// settingsBreakingCommitBackend breaks the settings file as
+// settingsBreakingBackend does and commits a file, so the run reaches the PR
+// creation before the deferred restore fails.
+type settingsBreakingCommitBackend struct {
+	settingsBreakingBackend
+}
+
+func (b *settingsBreakingCommitBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	if _, err := b.settingsBreakingBackend.Execute(ctx, opts); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(opts.ProjectPath, "work.go"), []byte("package work\n"), 0o600); err != nil {
+		return nil, err
+	}
+	for _, args := range [][]string{{"add", "work.go"}, {"commit", "-m", "feat: work"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = opts.ProjectPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return &BackendResult{Success: true, Output: "done"}, nil
+}
+
+// mutation pin: the deferred restore of executeWithOptions fails a run that already opened a PR (failRunOnSettingsRestore not reached with PRUrl set) -> this test fails
+//
+// TestSettingsRestoreFailureKeepsOpenPRThroughExecute (GH-6646 item 2): with
+// the option set, a run that opened a PR keeps Success, its PR and a nil run
+// error when the deferred restore of the settings file fails; the failure
+// reaches IntentWarning.
+func TestSettingsRestoreFailureKeepsOpenPRThroughExecute(t *testing.T) {
+	e := newAgentWorkspaceEnv(t)
+	backend := &settingsBreakingCommitBackend{}
+	runner := NewRunnerWithBackend(backend)
+	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.SetSkipPreflightChecks(true)
+	runner.SetRecordingEnabled(false)
+	runner.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	creator := &bodyCapturingPRCreator{}
+	runner.SetPRCreator(creator)
+	task := &Task{ID: "GH-6646", Title: "t", Description: "d", ProjectPath: e.repo, Branch: "pilot/GH-6646", CreatePR: true, BaseBranch: "main", SourceAdapter: "linear", SkipQualityGates: true}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	res, err := runner.executeWithOptions(ctx, task, true)
+	if len(backend.paths()) == 0 {
+		t.Fatal("the backend never ran")
+	}
+	if res == nil || res.PRUrl == "" {
+		t.Fatalf("result = %+v, want a run that opened a PR", res)
+	}
+	creator.only(t)
+	if !res.Success {
+		t.Errorf("a run with an open PR failed after the settings restore: Error = %q", res.Error)
+	}
+	if err != nil {
+		t.Errorf("run error = %v, want nil on a run with an open PR", err)
+	}
+	const want = "restore of the claude settings file"
+	if !strings.Contains(res.IntentWarning, want) || !strings.Contains(res.IntentWarning, filepath.Join(".claude", "settings.json")) {
+		t.Errorf("IntentWarning = %q, want the restore failure naming the settings file", res.IntentWarning)
+	}
+	if strings.Contains(res.Error, want) {
+		t.Errorf("result Error = %q, want the restore failure in IntentWarning only", res.Error)
+	}
+}
+
 // mutation pin: the co-author restore with run_as_user empty logs "Failed to restore Claude hook settings" instead of "Failed to restore Claude settings" -> this test fails
 //
 // TestCoAuthorSettingsRestoreKeepsLogTextThroughExecute (GH-6626 item 2):
@@ -418,5 +488,139 @@ func TestRestoreHookSettingsFailureRemovesScriptDir(t *testing.T) {
 	}
 	if _, statErr := os.Stat(scriptDir); !os.IsNotExist(statErr) {
 		t.Errorf("hook script directory %s left after a failed restore (stat: %v)", scriptDir, statErr)
+	}
+}
+
+// declDoc is the doc comment of the function or struct field name in the Go
+// file path, with its white space folded to single spaces. A field is named
+// Type.Field.
+func declDoc(t *testing.T, path, name string) string {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	typeName, fieldName, isField := strings.Cut(name, ".")
+	var doc *ast.CommentGroup
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch d := n.(type) {
+		case *ast.FuncDecl:
+			if !isField && d.Recv == nil && d.Name.Name == name {
+				doc = d.Doc
+			}
+		case *ast.TypeSpec:
+			st, ok := d.Type.(*ast.StructType)
+			if !isField || !ok || d.Name.Name != typeName {
+				return true
+			}
+			for _, f := range st.Fields.List {
+				for _, id := range f.Names {
+					if id.Name == fieldName {
+						doc = f.Doc
+					}
+				}
+			}
+		}
+		return true
+	})
+	if doc == nil {
+		t.Fatalf("%s: no doc comment on %s", path, name)
+	}
+	return strings.Join(strings.Fields(doc.Text()), " ")
+}
+
+// mutation pin: the hookSettingsRestore doc says the run fails (failRunOnSettingsRestore) with no word of a run that opened a PR -> this test fails
+//
+// TestHookSettingsRestoreDocNamesTheOpenPRCase (GH-6646 item 1): with the
+// option set a failed restore fails only a run with no PR; the doc says so.
+func TestHookSettingsRestoreDocNamesTheOpenPRCase(t *testing.T) {
+	doc := declDoc(t, "hooks.go", "hookSettingsRestore")
+	if strings.Contains(doc, "the run fails (failRunOnSettingsRestore)") {
+		t.Errorf("hookSettingsRestore doc still says every run fails:\n%s", doc)
+	}
+	for _, want := range []string{"a run with no PR fails", "PRUrl set", "IntentWarning"} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("hookSettingsRestore doc lacks %q:\n%s", want, doc)
+		}
+	}
+}
+
+// mutation pin: the IntentWarning field doc or the buildExecutionComment comment says the warning is lint issues only -> this test fails
+//
+// TestIntentWarningDocNamesTheSettingsRestore (GH-6646 item 3): IntentWarning
+// also carries a failed settings restore of a run with an open PR
+// (failRunOnSettingsRestore); the field doc and its consumer comment say so.
+func TestIntentWarningDocNamesTheSettingsRestore(t *testing.T) {
+	const want = "failed restore of the settings file"
+	if doc := declDoc(t, "runner.go", "ExecutionResult.IntentWarning"); !strings.Contains(doc, want) {
+		t.Errorf("IntentWarning field doc lacks %q:\n%s", want, doc)
+	}
+
+	path := filepath.Join("..", "..", "cmd", "pilot", "handlers.go")
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	var fn *ast.FuncDecl
+	for _, d := range file.Decls {
+		if f, ok := d.(*ast.FuncDecl); ok && f.Name.Name == "buildExecutionComment" {
+			fn = f
+		}
+	}
+	if fn == nil {
+		t.Fatalf("%s: no buildExecutionComment", path)
+	}
+	// The comment that ends on the line above the IntentWarning check.
+	checkLine := 0
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "IntentWarning" && checkLine == 0 {
+			checkLine = fset.Position(sel.Pos()).Line
+		}
+		return true
+	})
+	var comment string
+	for _, cg := range file.Comments {
+		if fset.Position(cg.End()).Line == checkLine-1 {
+			comment = strings.Join(strings.Fields(cg.Text()), " ")
+		}
+	}
+	if !strings.Contains(comment, want) {
+		t.Errorf("%s: the comment above the IntentWarning line lacks %q:\n%s", path, want, comment)
+	}
+}
+
+// mutation pin: the failRunOnSettingsRestore doc says the completion message shows the restore warning -> this test fails
+//
+// TestFailRunOnSettingsRestoreDocNamesTheExecutionComment (GH-6646 item 4):
+// the restore runs in the defer, after the runner stored its completion
+// memory, so only the execution comment of the caller shows the warning.
+func TestFailRunOnSettingsRestoreDocNamesTheExecutionComment(t *testing.T) {
+	doc := declDoc(t, "hooks.go", "failRunOnSettingsRestore")
+	if strings.Contains(doc, "the completion message shows") {
+		t.Errorf("failRunOnSettingsRestore doc still names the completion message:\n%s", doc)
+	}
+	for _, want := range []string{"completion memory the runner stores there never holds it", "execution comment", "buildExecutionComment"} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("failRunOnSettingsRestore doc lacks %q:\n%s", want, doc)
+		}
+	}
+}
+
+// mutation pin: the failRunOnSettingsRestore doc opens with "makes the result of a run a failure for err" -> this test fails
+//
+// TestFailRunOnSettingsRestoreDocOpensWithBothOutcomes (GH-6646 item 5): the
+// first paragraph of the doc gives the outcome with no PR and the outcome with
+// PRUrl set.
+func TestFailRunOnSettingsRestoreDocOpensWithBothOutcomes(t *testing.T) {
+	doc := declDoc(t, "hooks.go", "failRunOnSettingsRestore")
+	first, _, _ := strings.Cut(doc, "Decision (GH-6626)")
+	if strings.HasPrefix(first, "failRunOnSettingsRestore makes the result of a run a failure for err") {
+		t.Errorf("failRunOnSettingsRestore doc still opens with the failure for every run:\n%s", first)
+	}
+	for _, want := range []string{"A run with no PR (PRUrl empty) becomes a failure", "opened a PR (PRUrl set) keeps its result"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("first paragraph of the failRunOnSettingsRestore doc lacks %q:\n%s", want, first)
+		}
 	}
 }
