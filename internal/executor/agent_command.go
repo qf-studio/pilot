@@ -117,8 +117,15 @@ var (
 	// runAsSnapshots holds the settings one command was built with, from
 	// agentCommand until setAgentEnv takes them: a reload in between cannot
 	// give the command a preserve list that differs from cmd.Env.
-	runAsSnapshots sync.Map // *exec.Cmd -> *runAsSettings
+	runAsSnapshots sync.Map // *exec.Cmd -> agentCmdSnapshot
 )
+
+// agentCmdSnapshot is what agentCommand keeps for setAgentEnv: the settings
+// of the command and the token file of the run of its context (nil: none).
+type agentCmdSnapshot struct {
+	settings  *runAsSettings
+	tokenFile *agentTokenFile
+}
 
 // runAsAllowedEnv lists the names a model process keeps when it runs as the
 // agent user. Everything else, the GitHub names included, is dropped: the
@@ -1202,7 +1209,7 @@ func agentCommandAs(ctx context.Context, s *runAsSettings, name string, args ...
 	}
 	cmd.Cancel = func() error { return killAgentProcessGroup(cmd, s.user, syscall.SIGKILL) }
 	cmd.WaitDelay = runAsWaitDelay
-	runAsSnapshots.Store(cmd, s)
+	runAsSnapshots.Store(cmd, agentCmdSnapshot{settings: s, tokenFile: agentTokenFileFrom(ctx)})
 	return cmd, nil
 }
 
@@ -1280,8 +1287,10 @@ func (s *runAsSettings) agentEnvFor(env []string) []string {
 // setAgentEnv sets cmd.Env for a command made by agentCommand. With the option
 // empty (or cmd built without sudo) it assigns env unchanged. With the option
 // set it assigns the allowlisted env plus the git identity of the agent user
-// for the directory cmd.Dir (agentGitIdentityFor) and writes the names of
-// those entries into the --preserve-env flag.
+// for the directory cmd.Dir (agentGitIdentityFor), plus, when the context of
+// agentCommand carried the token file of the run, the config entries of the
+// git credential helper of github.com (appendAgentGitCredentialEntries), and
+// writes the names of those entries into the --preserve-env flag.
 func setAgentEnv(cmd *exec.Cmd, env []string) {
 	setAgentEnvIn(cmd, env, cmd.Dir)
 }
@@ -1302,8 +1311,9 @@ func setAgentEnvFrom(cmd *exec.Cmd, env []string, dir string, dropDaemon bool) {
 		return
 	}
 	// The settings agentCommand built this command with, not the current ones.
-	snap, found := runAsSnapshots.LoadAndDelete(cmd)
-	s, _ := snap.(*runAsSettings)
+	v, found := runAsSnapshots.LoadAndDelete(cmd)
+	snap, _ := v.(agentCmdSnapshot)
+	s := snap.settings
 	if !found || s == nil {
 		s = runAsSettingsNow()
 	}
@@ -1316,6 +1326,9 @@ func setAgentEnvFrom(cmd *exec.Cmd, env []string, dir string, dropDaemon bool) {
 		env = dropDaemonCodeSetEnv(env)
 	}
 	out := lastEnvWins(append(s.agentEnvFor(env), agentGitIdentityFor(s, dir)...))
+	// After the allowlist: an inherited GIT_CONFIG_* never passes it, so the
+	// entries of the credential helper are the only config entries of git.
+	out = appendAgentGitCredentialEntries(out, snap.tokenFile)
 	cmd.Env = out
 	setPreserveEnvNames(cmd, out)
 }

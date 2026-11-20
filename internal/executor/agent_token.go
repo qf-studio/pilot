@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,15 @@ func GetAgentReadTokenProvider() AgentReadTokenProvider {
 // agentTokenFileName is the name of the file with the read token in the token
 // directory of a run.
 const agentTokenFileName = "github-token"
+
+// agentGitCredentialHelperName is the name of the git credential helper
+// script in the token directory of a run.
+const agentGitCredentialHelperName = "git-credential-pilot"
+
+// agentGitCredentialURL is the URL whose credential helper of git is the
+// script of the run: github.com over https, no other host. Tests replace it
+// with the URL of a local server.
+var agentGitCredentialURL = "https://github.com"
 
 // agentTokenRefreshMargin is how long before its expiry the token in the file
 // is replaced. The expiry is the clock of GitHub, so the margin is wide.
@@ -200,10 +210,13 @@ func (r *Runner) startRunAgentTokenFile(ctx context.Context, task *Task) *agentT
 // agentTokenFile is the read token of one run_as_user run: a directory of its
 // own (owner the daemon, group the agent group, 0750) with the token in
 // github-token (0640), replaced before each expiry until Stop. The agent user
-// can read the file and cannot write the directory.
+// can read the file and cannot write the directory. helper is the git
+// credential helper script next to the token (0750), "" when it could not be
+// written.
 type agentTokenFile struct {
 	dir    string
 	path   string
+	helper string
 	cancel context.CancelFunc
 	done   chan struct{}
 	once   sync.Once
@@ -250,6 +263,12 @@ func startAgentTokenFile(ctx context.Context, log *slog.Logger, repo string) *ag
 		log.Warn("run_as_user: no GitHub read token for the agent",
 			slog.String("repo", repo), slog.String("error", cutAgentTokenError(err)))
 		return nil
+	}
+	if helper, err := writeAgentGitCredentialHelper(dir, f.path); err != nil {
+		log.Warn("run_as_user: no git credential helper for the agent, git of the agent gets no GitHub token",
+			slog.String("repo", repo), slog.String("error", cutAgentTokenError(err)))
+	} else {
+		f.helper = helper
 	}
 	refreshCtx, cancel := context.WithCancel(ctx)
 	f.cancel = cancel
@@ -313,6 +332,81 @@ func nextAgentTokenErrorWait(prev time.Duration) time.Duration {
 // Env returns the environment entry that points the gh guard at the file.
 func (f *agentTokenFile) Env() string {
 	return ghguard.EnvTokenFile + "=" + f.path
+}
+
+// appendAgentGitCredentialEntries returns env plus the config entries of git
+// (GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n, GIT_CONFIG_VALUE_n) that make the
+// helper script of f the credential helper of agentGitCredentialURL. env is
+// the environment of an agent command after the allowlist, so a config entry
+// in it was set by the code: the new entry takes the next index. With no
+// token file or no helper env is returned unchanged.
+//
+// Decision: the entries hold the path of the script, never the token: the
+// environment of a process can be read by other processes of the agent user
+// and lands in logs of the argv and env; the script reads the file at each
+// call, so a refreshed token is used too.
+func appendAgentGitCredentialEntries(env []string, f *agentTokenFile) []string {
+	if f == nil || f.helper == "" {
+		return env
+	}
+	return appendGitConfigEntry(env, "credential."+agentGitCredentialURL+".helper", f.helper)
+}
+
+// appendGitConfigEntry adds key=value as the next config entry of env in the
+// GIT_CONFIG_COUNT form; a count that is not a number counts as none.
+func appendGitConfigEntry(env []string, key, value string) []string {
+	n := 0
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
+			if n, _ = strconv.Atoi(v); n < 0 {
+				n = 0
+			}
+		}
+	}
+	i := strconv.Itoa(n)
+	return lastEnvWins(append(env,
+		"GIT_CONFIG_KEY_"+i+"="+key,
+		"GIT_CONFIG_VALUE_"+i+"="+value,
+		"GIT_CONFIG_COUNT="+strconv.Itoa(n+1)))
+}
+
+// agentGitCredentialHelperScript is the git credential helper for the token
+// file at tokenPath: for `get` it prints the user name of a GitHub App token
+// and the content of the file as the password, for any other operation
+// (store, erase) nothing. It reads the request of git and holds the path of
+// the file, not the token.
+func agentGitCredentialHelperScript(tokenPath string) string {
+	return `#!/bin/sh
+# git credential helper of a run_as_user run (TASK-651): the read token of the
+# run, read from its file at each call.
+cat >/dev/null
+[ "$1" = get ] || exit 0
+t=$(cat -- ` + shellQuote(tokenPath) + ` 2>/dev/null) || exit 0
+[ -n "$t" ] || exit 0
+printf 'username=x-access-token\npassword=%s\n' "$t"
+`
+}
+
+// writeAgentGitCredentialHelper writes the helper script of the token file at
+// tokenPath into dir/git-credential-pilot (0750, group of the agent): created
+// exclusively with no follow of a link. It returns the path of the script.
+func writeAgentGitCredentialHelper(dir, tokenPath string) (string, error) {
+	path := filepath.Join(dir, agentGitCredentialHelperName)
+	out, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY|agentTokenNoFollow, 0o700)
+	if err != nil {
+		return "", fmt.Errorf("agent git credential helper: create %s: %w", path, err)
+	}
+	_, werr := out.Write([]byte(agentGitCredentialHelperScript(tokenPath)))
+	cerr := out.Close()
+	if err := errors.Join(werr, cerr); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("agent git credential helper: write %s: %w", path, err)
+	}
+	if err := applyGuardPerm(path, 0o750); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return path, nil
 }
 
 // Stop ends the refresh: it cancels the context of a provider call in flight,
