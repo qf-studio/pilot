@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/qf-studio/pilot/internal/logging"
@@ -86,12 +87,31 @@ func withGitCredentials(ctx context.Context, cmd *exec.Cmd) *exec.Cmd {
 	gitMintFailureMu.Lock()
 	gitMintFailureLast = ""
 	gitMintFailureMu.Unlock()
+	cmd.Args = slices.Insert(cmd.Args, 1, gitCredentialConfigArgs...)
 	cmd.Env = append(os.Environ(),
 		"GIT_ASKPASS="+askpass,
 		"PILOT_GIT_TOKEN="+token,
 		"GIT_TERMINAL_PROMPT=0",
+		"GIT_SSH_COMMAND=ssh",
+		"GIT_PROXY_COMMAND=",
 	)
 	return cmd
+}
+
+// gitCredentialConfigArgs are the git -c arguments of each command that
+// withGitCredentials gives the token (TASK-651): the config of the repository
+// names no program that runs with the token in its environment. An empty
+// credential.helper clears the list of helpers, so git asks only the askpass
+// helper; core.gitProxy is cleared and the ext transport is refused. The
+// environment of the command adds GIT_SSH_COMMAND=ssh, which git takes over
+// core.sshCommand. Decision: GIT_PROXY_COMMAND= as well: git takes the first
+// core.gitProxy it reads and reads the command line last, so the -c value
+// alone leaves the proxy of the repository config in place; an empty
+// GIT_PROXY_COMMAND is read before the config and means no proxy.
+var gitCredentialConfigArgs = []string{
+	"-c", "credential.helper=",
+	"-c", "core.gitProxy=",
+	"-c", "protocol.ext.allow=never",
 }
 
 var (

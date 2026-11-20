@@ -3,10 +3,18 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
@@ -162,5 +170,344 @@ func TestGitAskpassHelperPath_ScriptContainsNoSecret(t *testing.T) {
 	}
 	if strings.Contains(gitAskpassScript, testutil.FakeGitHubToken) {
 		t.Error("askpass script must never contain literal token material — it should only read PILOT_GIT_TOKEN from the environment")
+	}
+}
+
+// tokenCommandKinds are the git commands that carry the token: the push, the
+// two ls-remote probes and the fetch of the count, by a part of their argv.
+var tokenCommandKinds = map[string]string{
+	"push":  " push ",
+	"probe": " ls-remote ",
+	"fetch": " fetch ",
+}
+
+// tokenCommandKind is the kind of the git command of r, "" for another one.
+func tokenCommandKind(r daemonGitEnvRecord) string {
+	for kind, part := range tokenCommandKinds {
+		if strings.Contains(" "+r.args+" ", part) {
+			return kind
+		}
+	}
+	return ""
+}
+
+// basicAuthRemote is a local HTTP server that answers each request with 401
+// and WWW-Authenticate: Basic, so git asks for credentials; the URL of a
+// repository on it and the number of requests that carried credentials.
+func basicAuthRemote(t *testing.T) (url string, authed *atomic.Int64) {
+	t.Helper()
+	authed = &atomic.Int64{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			authed.Add(1)
+		}
+		w.Header().Set("WWW-Authenticate", `Basic realm="pilot-test"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/repo.git", authed
+}
+
+// markerProgram writes a shell program that appends its arguments to marker.
+func markerProgram(t *testing.T, marker string) string {
+	t.Helper()
+	prog := filepath.Join(t.TempDir(), "program")
+	body := fmt.Sprintf("#!/bin/sh\necho \"$@\" >> '%s'\nexit 1\n", marker)
+	if err := os.WriteFile(prog, []byte(body), 0o755); err != nil { //nolint:gosec // program must be executable
+		t.Fatal(err)
+	}
+	return prog
+}
+
+// TestTokenCommandsRunNoConfigProgram (TASK-651): a credential.helper of the
+// repository config runs for none of the git commands that carry the token
+// (the two probes, the fetch of the count, the push), with the option set and
+// with it empty; each of them has -c protocol.ext.allow=never, -c
+// core.gitProxy= and GIT_SSH_COMMAND=ssh. With no token, the remote commands
+// of an agent workspace have GIT_TERMINAL_PROMPT=0. The count and the
+// co-author read of an agent workspace get no token and no inherited
+// GIT_ASKPASS; the push gets the helper of the code.
+// mutation pin: withGitCredentials without -c credential.helper= -> this test fails
+// mutation pin: withDaemonGitEnv takes the whole environment as the set part -> this test fails
+func TestTokenCommandsRunNoConfigProgram(t *testing.T) {
+	// run drives the token commands of g with credential.helper=!PROGRAM in
+	// the config of repo and its origin on a server that asks for basic auth.
+	run := func(t *testing.T, g *GitOperations, repo, branch string) {
+		t.Helper()
+		SetGitCredentialProvider(func(context.Context) (string, error) { return testutil.FakeGitHubToken, nil })
+		t.Cleanup(func() { SetGitCredentialProvider(nil) })
+		url, authed := basicAuthRemote(t)
+		wsGit(t, repo, "remote", "set-url", "origin", url)
+		marker := filepath.Join(t.TempDir(), "marker")
+		wsGit(t, repo, "config", "credential.helper", "!"+markerProgram(t, marker))
+		flag, logDir := installGitEnvWrapper(t)
+		if err := os.WriteFile(flag, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		_, _ = g.RemoteBranchHead(ctx, branch)
+		_, _ = g.ProbeRemoteBranch(ctx, branch)
+		_, _ = g.CountNewCommitsAgainstOrigin(ctx, "main")
+		if err := g.Push(ctx, branch, handOverTestTask); err == nil {
+			t.Error("Push to a remote that refuses each credential succeeded")
+		}
+		if err := os.Remove(flag); err != nil {
+			t.Fatal(err)
+		}
+
+		if raw, err := os.ReadFile(marker); err == nil {
+			t.Errorf("the credential.helper of the repository config ran: %q", raw)
+		}
+		if authed.Load() == 0 {
+			t.Error("no request with credentials reached the remote: the askpass helper was not asked")
+		}
+		seen := map[string]int{}
+		for _, r := range readGitEnvRecords(t, logDir) {
+			kind := tokenCommandKind(r)
+			if kind == "" {
+				continue
+			}
+			seen[kind]++
+			for _, arg := range []string{"protocol.ext.allow=never", "core.gitProxy=", "credential.helper="} {
+				if !strings.Contains(r.args, "-c "+arg+" ") {
+					t.Errorf("%s without -c %s: %s", kind, arg, r.args)
+				}
+			}
+			if got := r.env["GIT_SSH_COMMAND"]; got != "ssh" {
+				t.Errorf("%s: GIT_SSH_COMMAND = %q, want ssh", kind, got)
+			}
+		}
+		for kind := range tokenCommandKinds {
+			if seen[kind] == 0 {
+				t.Errorf("the wrapper logged no %s command", kind)
+			}
+		}
+	}
+
+	t.Run("option set", func(t *testing.T) {
+		e := newHandOverPushEnv(t)
+		commitFile(t, e.ws, "a.txt", "one")
+		run(t, e.git, e.repo, e.branch)
+	})
+
+	t.Run("option empty", func(t *testing.T) {
+		secretpatterns.ResetSecretValuesForTest()
+		ResetSecretGateConfigForTest()
+		t.Cleanup(func() {
+			secretpatterns.ResetSecretValuesForTest()
+			ResetSecretGateConfigForTest()
+		})
+		setRunAsStateForTest(t, nil, "")
+		repo, remote := setupTestRepoWithRemote(t)
+		t.Cleanup(func() { _ = os.RemoveAll(repo); _ = os.RemoveAll(remote) })
+		branch := "pilot/GH-1"
+		wsGit(t, repo, "checkout", "-q", "-b", branch)
+		commitFile(t, repo, "a.txt", "one")
+		g := newGitOperationsForWorkspace(repo, repo)
+		if g.daemonRepo != "" {
+			t.Fatalf("option empty: daemonRepo = %q, want empty", g.daemonRepo)
+		}
+		run(t, g, repo, branch)
+	})
+
+	t.Run("no token: no terminal prompt", func(t *testing.T) {
+		e := newHandOverPushEnv(t)
+		SetGitCredentialProvider(func(context.Context) (string, error) { return "", nil })
+		t.Cleanup(func() { SetGitCredentialProvider(nil) })
+		ctx := context.Background()
+		head := commitFile(t, e.ws, "a.txt", "one")
+		flag, logDir := installGitEnvWrapper(t)
+		t.Setenv("GIT_ASKPASS", "/inherited")
+		t.Setenv("GIT_TERMINAL_PROMPT", "1")
+		if err := os.WriteFile(flag, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		pushErr := e.git.Push(ctx, e.branch, handOverTestTask)
+		_, _ = e.git.RemoteBranchHead(ctx, e.branch)
+		_, _ = e.git.ProbeRemoteBranch(ctx, e.branch)
+		_, _ = e.git.CountNewCommitsAgainstOrigin(ctx, "main")
+		if err := os.Remove(flag); err != nil {
+			t.Fatal(err)
+		}
+		if pushErr != nil {
+			t.Fatalf("Push: %v", pushErr)
+		}
+		if got := e.remoteHead(t, e.branch); got != head {
+			t.Errorf("remote head = %q, want %q", got, head)
+		}
+		seen := map[string]int{}
+		for _, r := range readGitEnvRecords(t, logDir) {
+			kind := tokenCommandKind(r)
+			if kind == "" {
+				continue
+			}
+			seen[kind]++
+			if got := r.env["GIT_TERMINAL_PROMPT"]; got != "0" {
+				t.Errorf("%s with no token: GIT_TERMINAL_PROMPT = %q, want 0", kind, got)
+			}
+			if r.has("GIT_ASKPASS") {
+				t.Errorf("%s with no token has GIT_ASKPASS=%q", kind, r.env["GIT_ASKPASS"])
+			}
+		}
+		for kind := range tokenCommandKinds {
+			if seen[kind] == 0 {
+				t.Errorf("the wrapper logged no %s command", kind)
+			}
+		}
+	})
+
+	t.Run("local commands: no token", func(t *testing.T) {
+		e := newHandOverPushEnv(t)
+		SetGitCredentialProvider(func(context.Context) (string, error) { return testutil.FakeGitHubToken, nil })
+		t.Cleanup(func() { SetGitCredentialProvider(nil) })
+		askpass, err := gitAskpassHelperPath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		commitFile(t, e.ws, "a.txt", "one")
+		flag, logDir := installGitEnvWrapper(t)
+		t.Setenv("GIT_ASKPASS", "/inherited")
+		t.Setenv("GIT_TERMINAL_PROMPT", "1")
+		t.Setenv("GITHUB_TOKEN", testutil.FakeGitHubToken)
+		if err := os.WriteFile(flag, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		pushErr := e.git.Push(ctx, e.branch, handOverTestTask)
+		count, countErr := e.git.CountNewCommitsAgainstOrigin(ctx, "main")
+		if err := os.Remove(flag); err != nil {
+			t.Fatal(err)
+		}
+		if pushErr != nil {
+			t.Fatalf("Push: %v", pushErr)
+		}
+		if countErr != nil || count != 1 {
+			t.Errorf("CountNewCommitsAgainstOrigin = %d, %v; want 1", count, countErr)
+		}
+		seen := map[string]int{}
+		for _, r := range readGitEnvRecords(t, logDir) {
+			var kind string
+			switch {
+			case strings.Contains(r.args, "rev-list --count"):
+				kind = "count"
+			case strings.Contains(r.args, "--format=%H%x00%B%x00"):
+				kind = "coauthor"
+			case strings.Contains(" "+r.args+" ", " push "):
+				seen["push"]++
+				if got := r.env["GIT_ASKPASS"]; got != askpass {
+					t.Errorf("push: GIT_ASKPASS = %q, want the helper %q", got, askpass)
+				}
+				if got := r.env["GIT_TERMINAL_PROMPT"]; got != "0" {
+					t.Errorf("push: GIT_TERMINAL_PROMPT = %q, want 0", got)
+				}
+				continue
+			default:
+				continue
+			}
+			seen[kind]++
+			for _, name := range []string{"GIT_ASKPASS", "GITHUB_TOKEN", "PILOT_GIT_TOKEN"} {
+				if r.has(name) {
+					t.Errorf("%s has %s=%q", kind, name, r.env[name])
+				}
+			}
+			if got := r.env["GIT_NO_REPLACE_OBJECTS"]; got != "1" {
+				t.Errorf("%s: GIT_NO_REPLACE_OBJECTS = %q, want 1", kind, got)
+			}
+		}
+		for _, kind := range []string{"push", "count", "coauthor"} {
+			if seen[kind] == 0 {
+				t.Errorf("the wrapper logged no %s command", kind)
+			}
+		}
+	})
+}
+
+// TestTokenCommandsRunNoTransportProgram: with a token, a probe runs neither
+// the core.gitProxy of a git:// remote, nor the program of an ext:: remote
+// that the repository config allows, nor the core.sshCommand of an ssh remote.
+func TestTokenCommandsRunNoTransportProgram(t *testing.T) {
+	setRunAsStateForTest(t, nil, "")
+	SetGitCredentialProvider(func(context.Context) (string, error) { return testutil.FakeGitHubToken, nil })
+	t.Cleanup(func() { SetGitCredentialProvider(nil) })
+	repo, remote := setupTestRepoWithRemote(t)
+	t.Cleanup(func() { _ = os.RemoveAll(repo); _ = os.RemoveAll(remote) })
+	g := NewGitOperations(repo)
+
+	cases := []struct {
+		name   string
+		config func(prog, marker string) (url string, kv [][2]string)
+	}{
+		{"core.gitProxy", func(prog, _ string) (string, [][2]string) {
+			return "git://127.0.0.1:9/x", [][2]string{{"core.gitProxy", prog}}
+		}},
+		{"ext remote", func(_, marker string) (string, [][2]string) {
+			return "ext::sh -c touch% " + marker, [][2]string{{"protocol.ext.allow", "always"}}
+		}},
+		{"core.sshCommand", func(prog, _ string) (string, [][2]string) {
+			return "ssh://127.0.0.1:9/x", [][2]string{{"core.sshCommand", prog}}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "marker")
+			url, kv := tc.config(markerProgram(t, marker), marker)
+			wsGit(t, repo, "remote", "set-url", "origin", url)
+			for _, c := range kv {
+				wsGit(t, repo, "config", c[0], c[1])
+				t.Cleanup(func() { _ = exec.Command("git", "-C", repo, "config", "--unset-all", c[0]).Run() })
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_, _ = g.ProbeRemoteBranch(ctx, "main")
+			if raw, err := os.ReadFile(marker); err == nil {
+				t.Errorf("the %s program of the repository config ran: %q", tc.name, raw)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// TestWithDaemonGitEnvSplitsInheritedAndSet: withDaemonGitEnv drops each
+// inherited GIT_ name (GIT_ASKPASS=/inherited, GIT_TERMINAL_PROMPT=1) and keeps
+// the values the code set after os.Environ(); with no GIT_TERMINAL_PROMPT in
+// the set part it appends GIT_TERMINAL_PROMPT=0.
+func TestWithDaemonGitEnvSplitsInheritedAndSet(t *testing.T) {
+	setRunAsStateForTest(t, nil, "")
+	t.Setenv("GIT_ASKPASS", "/inherited")
+	t.Setenv("GIT_TERMINAL_PROMPT", "1")
+	envOf := func(cmd *exec.Cmd) map[string][]string {
+		env := map[string][]string{}
+		for _, kv := range cmd.Env {
+			name, value, _ := strings.Cut(kv, "=")
+			env[name] = append(env[name], value)
+		}
+		return env
+	}
+
+	set := exec.Command("git", "fetch")
+	set.Env = append(os.Environ(), "GIT_ASKPASS=/code", "GIT_NO_REPLACE_OBJECTS=1")
+	env := envOf(withDaemonGitEnv(set))
+	if got := env["GIT_ASKPASS"]; len(got) != 1 || got[0] != "/code" {
+		t.Errorf("set part: GIT_ASKPASS = %q, want only /code", got)
+	}
+	if got := env["GIT_TERMINAL_PROMPT"]; len(got) != 1 || got[0] != "0" {
+		t.Errorf("set part: GIT_TERMINAL_PROMPT = %q, want only 0", got)
+	}
+
+	none := exec.Command("git", "fetch")
+	env = envOf(withDaemonGitEnv(none))
+	if got := env["GIT_ASKPASS"]; len(got) != 0 {
+		t.Errorf("nil env: GIT_ASKPASS = %q, want none", got)
+	}
+	if got := env["GIT_TERMINAL_PROMPT"]; len(got) != 1 || got[0] != "0" {
+		t.Errorf("nil env: GIT_TERMINAL_PROMPT = %q, want only 0", got)
+	}
+
+	prompt := exec.Command("git", "fetch")
+	prompt.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if got := envOf(withDaemonGitEnv(prompt))["GIT_TERMINAL_PROMPT"]; len(got) != 1 || got[0] != "0" {
+		t.Errorf("GIT_TERMINAL_PROMPT in the set part: %q, want only 0", got)
 	}
 }

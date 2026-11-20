@@ -18,10 +18,11 @@ import (
 // the fsmonitor program of a repository runs for no remote command.
 
 // daemonGitEnvRecord is one git command of the daemon user that the env
-// wrapper logged: the GIT_ and token names of its environment, its directory
-// and its arguments.
+// wrapper logged: the GIT_ and token names of its environment with their
+// values, its directory and its arguments.
 type daemonGitEnvRecord struct {
 	names []string
+	env   map[string]string
 	dir   string
 	args  string
 }
@@ -31,7 +32,7 @@ func (r daemonGitEnvRecord) has(name string) bool { return slices.Contains(r.nam
 // installGitEnvWrapper puts a git wrapper first on PATH that, while the flag
 // file exists, writes one file per git command of the daemon user (the agent
 // side exports handOverPushAgentMark) with the GIT_ names, GITHUB_TOKEN and
-// PILOT_GIT_TOKEN of its environment. The paths are in the script, not in a
+// PILOT_GIT_TOKEN of its environment and their values. The paths are in the script, not in a
 // variable: the gate commands get no variable of the test.
 func installGitEnvWrapper(t *testing.T) (flag, logDir string) {
 	t.Helper()
@@ -45,7 +46,7 @@ func installGitEnvWrapper(t *testing.T) (flag, logDir string) {
 	wrapper := fmt.Sprintf(`#!/bin/sh
 if [ -e '%[1]s' ] && [ -z "$%[2]s" ]; then
   f=$(mktemp '%[3]s/cmd.XXXXXX')
-  { env | grep -E '^(GIT_[A-Za-z0-9_]*|GITHUB_TOKEN|PILOT_GIT_TOKEN)=' | cut -d= -f1; echo '--'; pwd -P; printf '%%s\n' "$*"; } > "$f"
+  { env | grep -E '^(GIT_[A-Za-z0-9_]*|GITHUB_TOKEN|PILOT_GIT_TOKEN)=' ; echo '--'; pwd -P; printf '%%s\n' "$*"; } > "$f"
 fi
 exec '%[4]s' "$@"
 `, flag, handOverPushAgentMark, logDir, next)
@@ -70,7 +71,14 @@ func readGitEnvRecords(t *testing.T, logDir string) []daemonGitEnvRecord {
 		}
 		head, rest, _ := strings.Cut(string(raw), "--\n")
 		dir, args, _ := strings.Cut(rest, "\n")
-		recs = append(recs, daemonGitEnvRecord{names: strings.Fields(head), dir: dir, args: strings.TrimSpace(args)})
+		r := daemonGitEnvRecord{env: map[string]string{}, dir: dir, args: strings.TrimSpace(args)}
+		for _, kv := range strings.Split(strings.TrimSuffix(head, "\n"), "\n") {
+			if name, value, ok := strings.Cut(kv, "="); ok {
+				r.names = append(r.names, name)
+				r.env[name] = value
+			}
+		}
+		recs = append(recs, r)
 	}
 	return recs
 }
@@ -170,8 +178,9 @@ func TestDaemonGitEnvDropsInheritedGitNames(t *testing.T) {
 				seen[kind]++
 			}
 		}
-		for name := range inherited {
-			if r.has(name) {
+		// GIT_SSH_COMMAND=ssh is the value of withGitCredentials.
+		for name, value := range inherited {
+			if r.has(name) && r.env[name] == value {
 				t.Errorf("daemon-side git command has the inherited %s: dir=%s args=%s", name, r.dir, r.args)
 			}
 		}
