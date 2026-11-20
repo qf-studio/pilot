@@ -70,14 +70,55 @@ func gateConfig(gates ...*quality.Gate) *quality.Config {
 	return &quality.Config{Enabled: true, Gates: gates}
 }
 
+// gateEnvAllowed is the fixed list of the names a gate environment may hold:
+// the allowlist, the gh guard names, the names the agent base and the git
+// identity set, the scope names and the names the shell sets.
+var gateEnvAllowed = map[string]bool{
+	"PATH": true, "LANG": true, "LC_ALL": true, "TERM": true, "TZ": true, "TMPDIR": true,
+	"GOCACHE": true, "GOMODCACHE": true, "GOFLAGS": true, "GOTOOLCHAIN": true,
+	"GOPROXY": true, "GONOSUMDB": true, "GOPRIVATE": true, "NODE_OPTIONS": true, "PILOT_EXECUTOR": true,
+	"PILOT_TASK_ISSUE": true, "PILOT_TASK_REPO": true, "PILOT_TASK_BRANCH": true,
+	"PILOT_GH_REAL": true, "PILOT_GH_GUARD_SHIM_DIR": true, "PILOT_GH_GUARD_JOURNAL": true,
+	"HOME": true, "CLAUDE_CONFIG_DIR": true, "GOPATH": true,
+	"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true,
+	"PILOT_CHANGED_PACKAGES": true, "PILOT_CHANGED_FULL": true, "PILOT_CHANGED_REASON": true,
+	"PWD": true, "OLDPWD": true, "SHLVL": true, "_": true,
+}
+
+// clearModelEnvForTest unsets the CLAUDE_* and ANTHROPIC_* names of the test
+// process for one test: the allowlist keeps them by prefix, and a test run
+// from a model session has its own.
+func clearModelEnvForTest(t *testing.T) {
+	t.Helper()
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(name, "CLAUDE_") || strings.HasPrefix(name, "ANTHROPIC_") {
+			t.Setenv(name, "")
+			if err := os.Unsetenv(name); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
 // TestRunAsUserGateEnvHasNoDaemonSecret: a gate that prints its environment
-// runs through sudo as the agent user, prints no secret of the daemon and
-// prints the scope variables; git and go list of the scope run through sudo.
+// runs through sudo as the agent user and gets only the names of
+// gateEnvAllowed: no name of the daemon (probes with no denied ending, which
+// only the allowlist removes), no PILOT_CHANGED_ name and no PILOT_TASK_ID of
+// the daemon, no ANTHROPIC_CUSTOM_HEADERS; the scope names arrive with the
+// values of the scope. git and go list of the scope run through sudo. The
+// agent session gets no task id and no PILOT_CHANGED_ name of the daemon.
 func TestRunAsUserGateEnvHasNoDaemonSecret(t *testing.T) {
 	f := newGateFixture(t, "")
-	t.Setenv("DAEMON_ONLY_SECRET", "daemon-only-value")
+	clearModelEnvForTest(t)
+	t.Setenv("DAEMON_ONLY_VALUE", "daemon-only-value")
+	t.Setenv("SSH_AUTH_SOCK", "/daemon/agent.sock")
+	t.Setenv("AWS_ACCESS_KEY_ID", "daemon-aws-key-id")
 	t.Setenv("GITHUB_TOKEN", testutil.FakeGitHubToken)
-	t.Setenv("PILOT_TASK_ID", "GH-1")
+	t.Setenv("PILOT_CHANGED_OPERATOR", "x")
+	t.Setenv("PILOT_TASK_ID", "GH-DAEMON")
+	t.Setenv(quality.EnvChangedReason, "daemon-reason")
+	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Daemon: daemon-header")
 
 	writeTestFile(t, filepath.Join(f.ws, "go.mod"), "module example.com/gate\n\ngo 1.21\n")
 	writeTestFile(t, filepath.Join(f.ws, "a", "a.go"), "package a\n\nconst A = 1\n")
@@ -102,19 +143,32 @@ func TestRunAsUserGateEnvHasNoDaemonSecret(t *testing.T) {
 	// The messages name variables only: the output holds the values of the
 	// environment of the test process.
 	names := gateEnvNames(res.Output)
-	for _, name := range []string{"DAEMON_ONLY_SECRET", "GITHUB_TOKEN"} {
-		if strings.Contains(res.Output, name) {
-			t.Errorf("gate environment has %s; names: %v", name, names)
+	if len(names) == 0 {
+		t.Fatalf("the gate printed no environment")
+	}
+	for _, name := range names {
+		if !gateEnvAllowed[name] {
+			t.Errorf("gate environment has %s, a name outside the fixed list", name)
 		}
 	}
-	for _, kv := range []string{
-		quality.EnvChangedPackages + "=example.com/gate/a",
-		quality.EnvChangedFull + "=0",
-		quality.EnvChangedReason + "=",
-		"PILOT_TASK_ID=GH-1",
+	for _, v := range []string{"daemon-only-value", "/daemon/agent.sock", "daemon-aws-key-id", "GH-DAEMON", "daemon-reason", "daemon-header"} {
+		if strings.Contains(res.Output, v) {
+			t.Errorf("gate environment has a value of the daemon; names: %v", names)
+		}
+	}
+	got := map[string]string{}
+	for _, line := range strings.Split(res.Output, "\n") {
+		if name, value, ok := strings.Cut(line, "="); ok {
+			got[name] = value
+		}
+	}
+	for name, want := range map[string]string{
+		quality.EnvChangedPackages: "example.com/gate/a",
+		quality.EnvChangedFull:     "0",
+		quality.EnvChangedReason:   "affected 1 of 3 packages",
 	} {
-		if !strings.Contains(res.Output, kv) {
-			t.Errorf("gate environment lacks %q; names: %v", kv, names)
+		if v, ok := got[name]; !ok || v != want {
+			t.Errorf("gate environment %s = %q (set %v), want the value of the scope %q", name, v, ok, want)
 		}
 	}
 
@@ -123,6 +177,96 @@ func TestRunAsUserGateEnvHasNoDaemonSecret(t *testing.T) {
 		if !strings.Contains(log, want) {
 			t.Errorf("sudo log lacks %q:\n%s", want, log)
 		}
+	}
+
+	// The agent session: no task id and no PILOT_CHANGED_ name of the daemon.
+	cmd, err := agentCommand(context.Background(), "claude", "-p", "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	setAgentEnv(cmd, modelSubprocessEnv(os.Environ()))
+	if _, ok := agentCmdUser(cmd); !ok {
+		t.Fatalf("the agent session is not a sudo command: %q", cmd.Args)
+	}
+	for _, kv := range cmd.Env {
+		name, _, _ := strings.Cut(kv, "=")
+		if name == "PILOT_TASK_ID" || strings.HasPrefix(name, "PILOT_CHANGED_") {
+			t.Errorf("the agent session has %s of the daemon", name)
+		}
+	}
+}
+
+// TestRunAsUserGateRefusesTheDefaultBuilder: with the option set and the
+// default builder of internal/quality in place, the gate start of the
+// executor returns the error and no gate command runs. After
+// PreflightRunAsUser alone the builder of internal/quality is the gate
+// builder of the executor.
+func TestRunAsUserGateRefusesTheDefaultBuilder(t *testing.T) {
+	f := newGateFixture(t, "")
+	quality.SetCommandBuilder(nil) // the default builder; the fixture restores
+	marker := filepath.Join(t.TempDir(), "gate-ran")
+	gate := &quality.Gate{Name: "touch", Type: quality.GateCustom, Command: "touch " + marker, Timeout: time.Minute}
+	inner := &gateTestChecker{runner: quality.NewRunner(gateConfig(gate), f.ws)}
+
+	_, err := guardGateChecker(inner).Check(context.Background())
+	if err == nil || err.Error() != "run_as_user: the quality gates have no agent command builder" {
+		t.Errorf("Check = %v, want the refusal", err)
+	}
+	if inner.calls != 0 {
+		t.Errorf("the checker ran %d times", inner.calls)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("a gate command ran")
+	}
+	if calls := sudoCalls(t, f.sudoLog); len(calls) != 0 {
+		t.Errorf("sudo ran: %q", calls)
+	}
+
+	// The preflight registers the gate builder on its own, here with the
+	// option empty; the run_as state of the fixture comes back at cleanup.
+	PreflightRunAsUser(&ClaudeCodeConfig{}, "claude-code", false, 0)
+	if _, ok := quality.CurrentCommandBuilder().(gateCommandBuilder); !ok {
+		t.Fatalf("after PreflightRunAsUser the builder is %T, want gateCommandBuilder", quality.CurrentCommandBuilder())
+	}
+	setRunAsStateForTest(t, gitRouteSettings(t, f.root), "")
+	if _, err := guardGateChecker(inner).Check(context.Background()); err != nil {
+		t.Fatalf("Check with the gate builder = %v", err)
+	}
+	if inner.calls != 1 {
+		t.Errorf("the checker ran %d times, want 1", inner.calls)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("the gate did not run: %v", err)
+	}
+}
+
+// gateTestChecker is a QualityChecker that runs the gates of runner.
+type gateTestChecker struct {
+	runner *quality.Runner
+	calls  int
+}
+
+func (c *gateTestChecker) Check(ctx context.Context) (*QualityOutcome, error) {
+	c.calls++
+	results, err := c.runner.RunAll(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	return &QualityOutcome{Passed: results.AllPassed}, nil
+}
+
+// TestRunAsUserGateCommandNotAgentSudo: a command agentCommand gives without
+// sudo (the platform is not Linux) is an error of Build with the option set,
+// never a command that runs as the daemon user.
+func TestRunAsUserGateCommandNotAgentSudo(t *testing.T) {
+	f := newGateFixture(t, "")
+	runAsGOOS = "darwin" // stubRunAsGOOS of the fixture restores
+	cmd, err := gateCommandBuilder{}.Build(context.Background(), f.ws, nil, "sh", "-c", "true")
+	if err == nil {
+		t.Fatalf("Build = %q, want an error", cmd.Args)
+	}
+	if cmd != nil {
+		t.Errorf("Build returned a command with the error: %q", cmd.Args)
 	}
 }
 
@@ -206,6 +350,7 @@ done`, daemonDir)
 	f := newGateFixture(t, deny)
 	secret := filepath.Join(daemonDir, "secret.txt")
 	writeTestFile(t, secret, "daemon secret\n")
+	writeTestFile(t, filepath.Join(daemonDir, "sub", "secret.txt"), "daemon secret\n")
 	fileLink := filepath.Join(f.ws, "file-link")
 	dirLink := filepath.Join(f.ws, "dir-link")
 	if err := os.Symlink(secret, fileLink); err != nil {
@@ -227,6 +372,21 @@ done`, daemonDir)
 	}
 	if got, err := b.ReadFile(fileLink); err == nil {
 		t.Errorf("ReadFile read %q through the link", got)
+	}
+	// A path below the link to the daemon directory: an error of each method,
+	// never a read as the daemon user.
+	below := filepath.Join(dirLink, "secret.txt")
+	if _, err := b.Stat(below); err == nil {
+		t.Error("Stat of a path below the link to the daemon directory gave no error")
+	}
+	if _, err := b.ReadDir(filepath.Join(dirLink, "sub")); err == nil {
+		t.Error("ReadDir below the link to the daemon directory gave no error")
+	}
+	if got, err := b.EvalSymlinks(below); err == nil {
+		t.Errorf("EvalSymlinks of a path below the link resolved to %q", got)
+	}
+	if got, err := b.ReadFile(below); err == nil {
+		t.Errorf("ReadFile read %q below the link", got)
 	}
 	log := f.log(t)
 	for _, p := range []string{fileLink, dirLink} {
@@ -280,6 +440,40 @@ func TestRunAsUserGateReadsReturnWithinLimit(t *testing.T) {
 			start := time.Now()
 			err := read()
 			if d := time.Since(start); d > 12*time.Second {
+				t.Errorf("%s returned after %s", name, d)
+			}
+			if err == nil {
+				t.Errorf("%s returned no error", name)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestRunAsUserGateReadsReturnWhenKillFails: with a sudo that does not return
+// and ignores the kill (the kill through sudo fails), each read method returns
+// the time limit error within its limit plus 3 seconds.
+func TestRunAsUserGateReadsReturnWhenKillFails(t *testing.T) {
+	f := newGateFixture(t, `case "$1" in -[0-9]*) exit 1 ;; esac
+trap '' TERM INT HUP
+sleep 30`)
+	path := filepath.Join(f.ws, "go.mod")
+	writeTestFile(t, path, "module example.com/gate\n")
+	b := gateCommandBuilder{}
+	reads := map[string]func() error{
+		"ReadFile":     func() error { _, err := b.ReadFile(path); return err },
+		"Stat":         func() error { _, err := b.Stat(path); return err },
+		"ReadDir":      func() error { _, err := b.ReadDir(f.ws); return err },
+		"EvalSymlinks": func() error { _, err := b.EvalSymlinks(path); return err },
+	}
+	var wg sync.WaitGroup
+	for name, read := range reads {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			start := time.Now()
+			err := read()
+			if d := time.Since(start); d > gateReadTimeout+3*time.Second {
 				t.Errorf("%s returned after %s", name, d)
 			}
 			if err == nil {

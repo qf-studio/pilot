@@ -19,6 +19,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/executor/ghguard"
 	"github.com/qf-studio/pilot/internal/procgroup"
+	"github.com/qf-studio/pilot/internal/quality"
 )
 
 // TASK-651 (design: .agent/system/agent-isolation-design.md, 4.1 and 4.3):
@@ -126,7 +127,16 @@ var runAsAllowedEnv = map[string]bool{
 	"PATH": true, "LANG": true, "LC_ALL": true, "TERM": true, "TZ": true, "TMPDIR": true,
 	"GOCACHE": true, "GOMODCACHE": true, "GOFLAGS": true, "GOTOOLCHAIN": true,
 	"GOPROXY": true, "GONOSUMDB": true, "GOPRIVATE": true,
-	"NODE_OPTIONS": true, "PILOT_EXECUTOR": true, "PILOT_TASK_ID": true,
+	"NODE_OPTIONS": true, "PILOT_EXECUTOR": true,
+}
+
+// runAsCodeSetEnv lists the names only the code sets: the task id and the
+// change scope of the quality gates. The value the daemon process holds for
+// one of them never reaches the agent user (dropDaemonCodeSetEnv); a value
+// the caller put into the environment on purpose does.
+var runAsCodeSetEnv = map[string]bool{
+	"PILOT_TASK_ID":            true,
+	quality.EnvChangedPackages: true, quality.EnvChangedFull: true, quality.EnvChangedReason: true,
 }
 
 // runAsGhGuardEnv lists the names the gh guard shim hands to the `pilot
@@ -141,9 +151,8 @@ var runAsGhGuardEnv = map[string]bool{
 }
 
 // runAsAllowedEnvPrefixes are the prefixes the allowlist keeps: how the CLI
-// is configured, routed and billed, and the changed-package scope of the
-// quality gates (quality.EnvChangedPackages and its siblings).
-var runAsAllowedEnvPrefixes = []string{"CLAUDE_", "ANTHROPIC_", "PILOT_CHANGED_"}
+// is configured, routed and billed.
+var runAsAllowedEnvPrefixes = []string{"CLAUDE_", "ANTHROPIC_"}
 
 // runAsDevNull is the null device every sudo command of the option reads as
 // standard input when the caller sets none. Opened once, never closed: each
@@ -1150,7 +1159,7 @@ func agentEnvNames(env []string) []string {
 }
 
 func runAsEnvAllowed(name string) bool {
-	if runAsAllowedEnv[name] || runAsGhGuardEnv[name] {
+	if runAsAllowedEnv[name] || runAsGhGuardEnv[name] || runAsCodeSetEnv[name] {
 		return true
 	}
 	for _, p := range runAsAllowedEnvPrefixes {
@@ -1225,9 +1234,36 @@ func setAgentEnvIn(cmd *exec.Cmd, env []string, dir string) {
 		cmd.Env = env
 		return
 	}
-	out := lastEnvWins(append(s.agentEnvFor(env), agentGitIdentityFor(s, dir)...))
+	out := lastEnvWins(append(s.agentEnvFor(dropDaemonCodeSetEnv(env)), agentGitIdentityFor(s, dir)...))
 	cmd.Env = out
 	setPreserveEnvNames(cmd, out)
+}
+
+// dropDaemonCodeSetEnv removes from env, for each name of runAsCodeSetEnv the
+// daemon process holds, one entry with the value of the daemon: the copy of
+// os.Environ() a caller starts from. An entry the caller appended stays, also
+// with the same value as the daemon (the copy of the daemon comes first and is
+// the one removed).
+func dropDaemonCodeSetEnv(env []string) []string {
+	daemon := map[string]string{}
+	for name := range runAsCodeSetEnv {
+		if v, ok := os.LookupEnv(name); ok {
+			daemon[name] = name + "=" + v
+		}
+	}
+	if len(daemon) == 0 {
+		return env
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if d, ok := daemon[name]; ok && kv == d {
+			delete(daemon, name)
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // setPreserveEnvNames writes the names of env into the --preserve-env flag of
