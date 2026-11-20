@@ -192,6 +192,10 @@ func TestAgentTokenRefreshRemakesLostDir(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	// The new token shows before remake writes the helper script; write holds
+	// f.mu over the whole remake, so taking it waits for the remake to end.
+	f.mu.Lock()
+	f.mu.Unlock() //nolint:staticcheck // SA2001: the empty section waits for the write in flight
 	for path, mode := range map[string]os.FileMode{f.dir: 0o750, f.path: 0o640, f.helper: 0o750} {
 		fi, err := os.Stat(path)
 		if err != nil {
