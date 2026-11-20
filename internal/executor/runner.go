@@ -3257,7 +3257,7 @@ func (r *Runner) attemptBackendTimeoutSalvage(ctx context.Context, task *Task, g
 	if !task.SkipQualityGates {
 		r.ensureQualityCheckerFactory(executionPath, log)
 		if r.qualityCheckerFactory != nil {
-			checker := r.qualityCheckerFactory(task.ID, qualityLookupPath(task, executionPath), executionPath)
+			checker := guardGateChecker(r.qualityCheckerFactory(task.ID, qualityLookupPath(task, executionPath), executionPath))
 			outcome, qErr := checker.Check(finCtx)
 			switch {
 			case qErr != nil:
@@ -6535,7 +6535,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					r.reportProgress(task.ID, "Quality Gates", 91, "Running quality checks...")
 					r.saveLogEntry(task.LogExecutionID(), "info", "Running tests...")
 
-					checker := r.qualityCheckerFactory(task.ID, qualityLookupPath(task, executionPath), executionPath)
+					checker := guardGateChecker(r.qualityCheckerFactory(task.ID, qualityLookupPath(task, executionPath), executionPath))
 
 					// GH-5060/GH-5346: the first-pass gate check (retryAttempt == 0)
 					// runs on ctx, which by this point is the finalization ctx set up

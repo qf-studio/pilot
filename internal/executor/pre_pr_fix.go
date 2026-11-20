@@ -210,7 +210,7 @@ func (r *Runner) runReviewFix(taskCtx context.Context, taskCtxWasDone bool, task
 		log.Info("Pre-PR review fix kept without a re-gate: no quality gates configured")
 		return finish(ReviewFixFixed)
 	}
-	checker := r.qualityCheckerFactory(task.ID, qualityLookupPath(task, executionPath), executionPath)
+	checker := guardGateChecker(r.qualityCheckerFactory(task.ID, qualityLookupPath(task, executionPath), executionPath))
 	// The re-gate runs on a fresh context, like the GH-4876 quality-gate retry
 	// pass, so a task deadline that blew during the fix cannot doom the check.
 	fix.RegateBudget = cfg.EffectiveRegateTimeout()

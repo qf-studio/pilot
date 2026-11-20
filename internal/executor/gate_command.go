@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -31,6 +30,10 @@ import (
 // limit of their own, so a read that does not return (a FIFO) would block a
 // run before any gate limit.
 const gateReadTimeout = 10 * time.Second
+
+// gateReadGrace is how long a read waits past gateReadTimeout for the kill of
+// the agent route to end it (boundGateRead).
+const gateReadGrace = time.Second
 
 // The scripts run as `sh -c SCRIPT sh PATH` as the agent user; exit 3 is a
 // path that does not exist (agentFileMissingExit).
@@ -56,20 +59,58 @@ type gateCommandBuilder struct{}
 
 var _ quality.CommandBuilder = gateCommandBuilder{}
 
-var registerGateCommandBuilderOnce sync.Once
-
 // registerGateCommandBuilder sets gateCommandBuilder as the builder of
-// internal/quality, once per process.
-func registerGateCommandBuilder() {
-	registerGateCommandBuilderOnce.Do(func() { quality.SetCommandBuilder(gateCommandBuilder{}) })
+// internal/quality.
+func registerGateCommandBuilder() { quality.SetCommandBuilder(gateCommandBuilder{}) }
+
+// errGateNoAgentBuilder is the error of a gate start with the option set while
+// the builder of internal/quality is not gateCommandBuilder: the gates would
+// run as the daemon user with its full environment.
+var errGateNoAgentBuilder = errors.New("run_as_user: the quality gates have no agent command builder")
+
+// gateBuilderError returns errGateNoAgentBuilder when the option is set and
+// the builder of internal/quality is not gateCommandBuilder, nil otherwise.
+func gateBuilderError() error {
+	if runAsSettingsNow() == nil {
+		return nil
+	}
+	if _, ok := quality.CurrentCommandBuilder().(gateCommandBuilder); !ok {
+		return errGateNoAgentBuilder
+	}
+	return nil
+}
+
+// runAsGateChecker is a QualityChecker that refuses to start the gates on
+// gateBuilderError: the registration of the builder does not depend on one
+// call (PreflightRunAsUser) that can be skipped in silence.
+type runAsGateChecker struct{ QualityChecker }
+
+func (c runAsGateChecker) Check(ctx context.Context) (*QualityOutcome, error) {
+	if err := gateBuilderError(); err != nil {
+		return nil, err
+	}
+	return c.QualityChecker.Check(ctx)
+}
+
+// guardGateChecker wraps the checker of a gate start in runAsGateChecker; a
+// nil checker stays nil.
+func guardGateChecker(c QualityChecker) QualityChecker {
+	if c == nil {
+		return nil
+	}
+	return runAsGateChecker{c}
 }
 
 // Build returns the gate command. With the option set it runs through sudo as
 // the agent user (agentCommand) with the allowlist applied to env, after the
 // model-env deny list: a gate runs code the agent wrote and needs no model
-// credential. A nil env is the environment of the daemon, as for the default.
+// credential, and no header of the model requests (ANTHROPIC_CUSTOM_HEADERS).
+// A nil env is the environment of the daemon, as for the default. A command
+// that is not a sudo command of the agent user is an error, never a command
+// that would run as the daemon user.
 func (gateCommandBuilder) Build(ctx context.Context, dir string, env []string, name string, args ...string) (*exec.Cmd, error) {
-	if runAsSettingsNow() == nil {
+	s := runAsSettingsNow()
+	if s == nil {
 		cmd := exec.CommandContext(ctx, name, args...)
 		cmd.Dir = dir
 		cmd.Env = env
@@ -82,19 +123,27 @@ func (gateCommandBuilder) Build(ctx context.Context, dir string, env []string, n
 	if cmd == nil {
 		return nil, errors.New("run_as_user: no gate command was built")
 	}
+	if u, ok := agentCmdUser(cmd); !ok || u != s.user {
+		runAsSnapshots.Delete(cmd)
+		return nil, fmt.Errorf("run_as_user: the gate command %q is not a sudo command of the agent user %q", cmd.Args, s.user)
+	}
 	cmd.Dir = dir
 	if env == nil {
 		env = os.Environ()
 	}
 	var kept []string
 	for _, kv := range env {
-		if n, _, _ := strings.Cut(kv, "="); !isModelEnvDenied(n) {
+		if n, _, _ := strings.Cut(kv, "="); !isModelEnvDenied(n) && !gateEnvDenied[n] {
 			kept = append(kept, kv)
 		}
 	}
 	setAgentEnvIn(cmd, kept, dir)
 	return cmd, nil
 }
+
+// gateEnvDenied lists the names the allowlist keeps for the model that a gate
+// command does not get.
+var gateEnvDenied = map[string]bool{"ANTHROPIC_CUSTOM_HEADERS": true}
 
 // Configure sets the wait delay of a command built as the agent user:
 // agentCommand made its session and its cancel (the kill through sudo).
@@ -120,9 +169,9 @@ func (gateCommandBuilder) ReadFile(path string) ([]byte, error) {
 	if runAsSettingsNow() == nil {
 		return os.ReadFile(path) // #nosec G304 -- the read of the default builder.
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), gateReadTimeout)
-	defer cancel()
-	return agentReadFile(ctx, path)
+	return boundGateRead("read", path, func(ctx context.Context) ([]byte, error) {
+		return agentReadFile(ctx, path)
+	})
 }
 
 func (gateCommandBuilder) Stat(path string) (os.FileInfo, error) {
@@ -193,10 +242,37 @@ func runGateRead(op, path, script string) (out []byte, agent bool, err error) {
 	if err != nil {
 		return nil, true, fmt.Errorf("run_as_user: %s %q: %w", op, path, err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), gateReadTimeout)
-	defer cancel()
-	out, err = runAgentFileScript(ctx, op, path, script, nil, abs)
+	out, err = boundGateRead(op, path, func(ctx context.Context) ([]byte, error) {
+		return runAgentFileScript(ctx, op, path, script, nil, abs)
+	})
 	return out, true, err
+}
+
+// boundGateRead runs read with a context of gateReadTimeout and returns after
+// gateReadTimeout plus gateReadGrace at most: when the kill through sudo does
+// not end the process, the wait of os/exec lasts the wait delay and the kill
+// grace on top of the limit. It then stops waiting and returns the time limit
+// error; the process is left to the kill route.
+func boundGateRead(op, path string, read func(ctx context.Context) ([]byte, error)) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gateReadTimeout)
+	type result struct {
+		out []byte
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		defer cancel()
+		out, err := read(ctx)
+		done <- result{out, err}
+	}()
+	timer := time.NewTimer(gateReadTimeout + gateReadGrace)
+	defer timer.Stop()
+	select {
+	case r := <-done:
+		return r.out, r.err
+	case <-timer.C:
+		return nil, fmt.Errorf("run_as_user: %s %s as the agent user: %w", op, path, context.DeadlineExceeded)
+	}
 }
 
 // gateFileMode is the mode of a type letter of the scripts above.
