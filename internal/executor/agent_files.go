@@ -64,6 +64,18 @@ const (
 	// file is created under the umask (no bit beyond the mode) and gets the
 	// mode before the content: the umask alone never sets an execute bit.
 	agentWriteScript = `umask "$2" || exit 1; if [ -e "$1" ]; then exec cat > "$1"; fi; { chmod -- "$3" "$1" && exec cat; } > "$1"`
+	// $1 path. Standard output is the `ls -ld` line of the path: the type
+	// and the permission bits of the path itself, a link is not followed
+	// (os.Lstat).
+	agentLstatScript = `[ -e "$1" ] || [ -L "$1" ] || exit 3; exec ls -ld -- "$1"`
+	// $1 path, $2 umask, $3 mode. Standard input is the content. The path
+	// (a file, a link or an empty directory) is removed and a new regular
+	// file is created: noclobber makes the create fail on any path that is
+	// there again, so the write never follows a link. The file gets the mode
+	// before the content.
+	agentRecreateScript = `if [ -d "$1" ] && [ ! -L "$1" ]; then rmdir -- "$1" || exit 1
+elif [ -e "$1" ] || [ -L "$1" ]; then rm -f -- "$1" || exit 1; fi
+umask "$2" || exit 1; set -C; { chmod -- "$3" "$1" && exec cat; } > "$1"`
 	// $1 path, $2 umask.
 	agentMkdirScript = `umask "$2" && exec mkdir -p -- "$1"`
 	// $1 path: os.Remove, a file or an empty directory.
@@ -265,6 +277,104 @@ func agentReadRegularFile(ctx context.Context, path string, limit int) ([]byte, 
 		return os.ReadFile(path) // #nosec G304 -- the os call of today; workspace paths take the agent route.
 	}
 	return runAgentFileScriptLimit(ctx, "read", path, agentReadRegularScript, nil, limit, path)
+}
+
+// agentLstatMode is os.Lstat(path).Mode(), as the agent user for a path
+// inside the workspace root: the type and the permission bits of the path
+// itself, a link is not followed.
+func agentLstatMode(ctx context.Context, path string) (os.FileMode, error) {
+	agent, err := agentFileRoute(path)
+	if err != nil {
+		return 0, err
+	}
+	if !agent {
+		fi, err := os.Lstat(path)
+		if err != nil {
+			return 0, err
+		}
+		return fi.Mode(), nil
+	}
+	out, err := runAgentFileScript(ctx, "lstat", path, agentLstatScript, nil, path)
+	if err != nil {
+		return 0, err
+	}
+	mode, ok := parseLsMode(string(out))
+	if !ok {
+		return 0, fmt.Errorf("run_as_user: lstat %s as the agent user: no mode in %q", path, strings.TrimSpace(string(out)))
+	}
+	return mode, nil
+}
+
+// parseLsMode reads the type and the permission bits from the first ten
+// characters of an `ls -l` line ("-rwxr-xr-x ...").
+func parseLsMode(line string) (os.FileMode, bool) {
+	if len(line) < 10 {
+		return 0, false
+	}
+	var mode os.FileMode
+	switch line[0] {
+	case '-':
+	case 'd':
+		mode = os.ModeDir
+	case 'l':
+		mode = os.ModeSymlink
+	case 'p':
+		mode = os.ModeNamedPipe
+	case 's':
+		mode = os.ModeSocket
+	case 'c':
+		mode = os.ModeDevice | os.ModeCharDevice
+	case 'b':
+		mode = os.ModeDevice
+	default:
+		mode = os.ModeIrregular
+	}
+	for i, c := range line[1:10] {
+		bit := os.FileMode(1) << (8 - i)
+		switch {
+		case c == '-', c == 'S', c == 'T':
+		case c == rune("rwx"[i%3]), i%3 == 2 && (c == 's' || c == 't'):
+			mode |= bit
+		default:
+			return 0, false
+		}
+	}
+	return mode, true
+}
+
+// agentRecreateFile removes path (a file, a link or an empty directory) and
+// creates a new regular file with data and the permission bits of mode, as the
+// agent user for a path inside the workspace root. The create never follows a
+// link: a path that is there again is an error. Outside the root it is
+// os.Remove and an exclusive create of the os package.
+func agentRecreateFile(ctx context.Context, path string, data []byte, mode os.FileMode) error {
+	agent, err := agentFileRoute(path)
+	if err != nil {
+		return err
+	}
+	if agent {
+		if data == nil {
+			data = []byte{}
+		}
+		_, err = runAgentFileScript(ctx, "recreate", path, agentRecreateScript, data, path, agentUmask(mode), agentModeArg(mode))
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode.Perm()) // #nosec G304 -- the path of a mutation line, confined to the task directory; O_EXCL never follows a link.
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(mode.Perm()); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // agentMkdirAll is os.MkdirAll(path, mode), as the agent user for a path

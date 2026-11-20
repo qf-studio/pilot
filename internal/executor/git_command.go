@@ -73,12 +73,36 @@ func gitCommandIn(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// gitCommandInEnv is gitCommandIn with env in place of the environment of the
+// daemon on both routes: on the plain route cmd.Env is env, on the agent route
+// env is the input of setAgentToolEnvIn. The repair of a mutation line of the
+// acceptance evidence gives its git commands the environment of the evidence
+// commands with it (GH-6638).
+func gitCommandInEnv(ctx context.Context, dir string, env []string, args ...string) *exec.Cmd {
+	cmd := gitCommandWithEnv(ctx, dir, env, args...)
+	cmd.Dir = dir
+	return cmd
+}
+
 // gitCommand builds a git command routed by routeDir and leaves cmd.Dir unset:
 // the form of the sites that pass `-C <dir>` in args, which give that dir.
 func gitCommand(ctx context.Context, routeDir string, args ...string) *exec.Cmd {
+	return gitCommandWithEnv(ctx, routeDir, nil, args...)
+}
+
+// gitCommandWithEnv is gitCommand; a nil env is the environment of the daemon
+// (cmd.Env unset on the plain route, gitAgentBaseEnv on the agent route).
+func gitCommandWithEnv(ctx context.Context, routeDir string, env []string, args ...string) *exec.Cmd {
+	plain := func() *exec.Cmd {
+		cmd := execCommandContext(ctx, "git", args...)
+		if env != nil {
+			cmd.Env = env
+		}
+		return cmd
+	}
 	s := runAsSettingsNow()
 	if s == nil {
-		return execCommandContext(ctx, "git", args...)
+		return plain()
 	}
 	agent, err := gitRoutesToAgent(s.workspaceRoot, routeDir)
 	if err != nil {
@@ -88,13 +112,16 @@ func gitCommand(ctx context.Context, routeDir string, args ...string) *exec.Cmd 
 		if target := gitArgIntoRoot(s.workspaceRoot, routeDir, args); target != "" {
 			return failedGitCommand(args, fmt.Errorf("run_as_user: git argument %q points inside the workspace root %q, the command runs in %q", target, s.workspaceRoot, routeDir))
 		}
-		return execCommandContext(ctx, "git", args...)
+		return plain()
 	}
 	cmd, err := agentCommand(ctx, "git", args...)
 	if err != nil {
 		return failedGitCommand(args, fmt.Errorf("run_as_user: git in %s: %w", routeDir, err))
 	}
-	setAgentToolEnvIn(cmd, gitAgentBaseEnv(), routeDir)
+	if env == nil {
+		env = gitAgentBaseEnv()
+	}
+	setAgentToolEnvIn(cmd, env, routeDir)
 	return cmd
 }
 
