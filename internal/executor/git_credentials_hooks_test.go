@@ -70,7 +70,10 @@ func TestEachTokenCommandRunsNoRepositoryProgram(t *testing.T) {
 	g := NewGitOperations(repo)
 
 	ahead := filepath.Join(t.TempDir(), "ahead")
-	wsGit(t, filepath.Dir(ahead), "clone", "-q", remote, ahead)
+	// -b main: the HEAD of the bare remote is init.defaultBranch (master on a
+	// runner with no config), which the remote does not have; a plain clone
+	// would sit on an unborn branch and push a root commit to main.
+	wsGit(t, filepath.Dir(ahead), "clone", "-q", "-b", "main", remote, ahead)
 	wsGit(t, ahead, "config", "user.email", "test@example.com")
 	wsGit(t, ahead, "config", "user.name", "Test User")
 	n := 0
