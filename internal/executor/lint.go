@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -80,9 +81,7 @@ func (g *GitOperations) autoFixLint(ctx context.Context, baseBranch string) *Lin
 
 	if result.Linter == "golangci-lint" {
 		// Attempt auto-fix
-		fixCmd := exec.CommandContext(ctx, "golangci-lint", "run", "--fix", "./...")
-		fixCmd.Dir = g.projectPath
-		output, err := fixCmd.CombinedOutput()
+		output, err := g.runLintProgram(ctx, "run", "--fix", "./...")
 		if err == nil {
 			// Verify fixes worked
 			verifyResult := g.runLintCheck(ctx, baseBranch)
@@ -108,9 +107,7 @@ func (g *GitOperations) autoFixLint(ctx context.Context, baseBranch string) *Lin
 
 // runGoLint runs golangci-lint on files changed relative to the base branch
 func (g *GitOperations) runGoLint(ctx context.Context, baseBranch string) (string, error) {
-	cmd := exec.CommandContext(ctx, "golangci-lint", goLintArgs(g.resolveLintBase(ctx, baseBranch))...)
-	cmd.Dir = g.projectPath
-	output, err := cmd.CombinedOutput()
+	output, err := g.runLintProgram(ctx, goLintArgs(g.resolveLintBase(ctx, baseBranch))...)
 	outputStr := strings.TrimSpace(string(output))
 
 	if err != nil {
@@ -118,6 +115,65 @@ func (g *GitOperations) runGoLint(ctx context.Context, baseBranch string) (strin
 		return outputStr, err
 	}
 	return outputStr, nil
+}
+
+// lintProgram is the lint program runGoLint and autoFixLint run.
+const lintProgram = "golangci-lint"
+
+// runLintProgram runs the lint program with args in the project directory and
+// returns its combined output. With run_as_user empty it is the command of
+// before. With the option set (TASK-651) the directory is the workspace of
+// the agent user: the program runs as that user (agentCommand) with the
+// environment of the git route (gitAgentBaseEnv, the allowlist) minus the
+// names a gate does not get (gateEnvDenied), so the config of the repository
+// is read and the files of the fix are written by the agent user. A missing
+// program is read from the result of that run (lintProgramMissing) and
+// returns what the lookup in PATH returns with the option empty: no output
+// and exec.ErrNotFound.
+func (g *GitOperations) runLintProgram(ctx context.Context, args ...string) ([]byte, error) {
+	if runAsSettingsNow() == nil {
+		cmd := exec.CommandContext(ctx, lintProgram, args...)
+		cmd.Dir = g.projectPath
+		return cmd.CombinedOutput()
+	}
+	cmd, err := agentCommand(ctx, lintProgram, args...)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Dir = g.projectPath
+	setAgentEnvIn(cmd, lintAgentEnv(), g.projectPath)
+	output, err := cmd.CombinedOutput()
+	if lintProgramMissing(output, err) {
+		return nil, &exec.Error{Name: lintProgram, Err: exec.ErrNotFound}
+	}
+	return output, err
+}
+
+// lintAgentEnv is the input of setAgentEnvIn for a lint command of the agent
+// user: gitAgentBaseEnv without the names of gateEnvDenied.
+func lintAgentEnv() []string {
+	var env []string
+	for _, kv := range gitAgentBaseEnv() {
+		if name, _, _ := strings.Cut(kv, "="); !gateEnvDenied[name] {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+// lintProgramMissing reports whether a lint run as the agent user found no
+// lint program: exit status 127 (the shell or exec of the command), or the
+// "command not found" line with which sudo exits 1.
+func lintProgramMissing(output []byte, err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	if exitErr.ExitCode() == 127 {
+		return true
+	}
+	out := strings.TrimSpace(string(output))
+	return exitErr.ExitCode() == 1 && out == "sudo: "+lintProgram+": command not found"
 }
 
 // stageAndAmendCommit stages all changes and amends the last commit
