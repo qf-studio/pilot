@@ -1,16 +1,20 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/executor/secretpatterns"
 	"github.com/qf-studio/pilot/internal/typesafe"
 )
 
@@ -409,7 +413,9 @@ func runPasteOutputItemReusing(ctx context.Context, runner AcceptanceCommandRunn
 // allowed_commands excludes that runner).
 // The file is never left mutated on disk: a read/parse/escape failure
 // aborts before any write, and every path past the write — including a
-// killed-by-timeout test run — reverts before returning.
+// killed-by-timeout test run — reverts before returning. GH-6606: after each
+// outcome restoreMutatedFile reads the file back and repairs it; a file it
+// cannot repair is the result's Err, and the run stops before the push.
 func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir string, item AcceptanceItem, allowedCommands []string) AcceptanceEvidenceResult {
 	result := AcceptanceEvidenceResult{Item: item}
 
@@ -455,10 +461,23 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 		return result
 	}
 
+	// GH-6606: the path the reports name, relative to dir.
+	rel := file
+	if resolvedDir, err := filepath.EvalSymlinks(dir); err == nil {
+		if r, err := filepath.Rel(resolvedDir, fullPath); err == nil {
+			rel = r
+		}
+	}
+
 	// TASK-651: with run_as_user set the mutate and revert writes run as the
-	// agent user (evidenceWriteFile).
-	if err := evidenceWriteFile(ctx, fullPath, []byte(mutated), 0o600); err != nil {
-		result.NotVerifiedReason = fmt.Sprintf("could not write mutated %s: %v", file, err)
+	// agent user (evidenceWriteFile). GH-6606: a failed write can have cut
+	// the file already, so it is checked and repaired too.
+	if err := mutationWriteFile(ctx, fullPath, []byte(mutated), 0o600); err != nil {
+		result.NotVerifiedReason = fmt.Sprintf("could not write mutated %s: %v", rel, err)
+		if err := restoreMutatedFile(ctx, dir, fullPath, rel, original); err != nil {
+			result.Err = err
+			result.NotVerifiedReason = err.Error()
+		}
 		return result
 	}
 
@@ -472,11 +491,20 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 
 	// Always attempt to revert, whatever the run above returned — never
 	// leave the mutated content on disk. The revert does not take the
-	// cancellation of ctx: a cancelled run still restores the file.
-	if err := evidenceWriteFile(context.WithoutCancel(ctx), fullPath, original, 0o600); err != nil {
-		result.NotVerifiedReason = fmt.Sprintf(
-			"reverting mutation to %s failed: %v (worktree may be left dirty; original content was not restored)", file, err,
-		)
+	// cancellation of ctx: a cancelled run still restores the file. GH-6606:
+	// its error is not the outcome; restoreMutatedFile reads the file back
+	// and repairs it, and a file it cannot repair stops the run.
+	_ = mutationWriteFile(context.WithoutCancel(ctx), fullPath, original, 0o600)
+	if err := restoreMutatedFile(ctx, dir, fullPath, rel, original); err != nil {
+		result.Err = err
+		result.NotVerifiedReason = err.Error()
+		return result
+	}
+
+	// GH-6606: a command the cancel of ctx or the end of the budget killed
+	// says nothing about the mutation.
+	if err := ctx.Err(); err != nil {
+		result.NotVerifiedReason = evidenceContextReason(err)
 		return result
 	}
 
@@ -513,6 +541,108 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 	}
 	result.MutationOutcome = mo
 	return result
+}
+
+// mutationRestoreTimeout bounds the check and the repair of the file of a
+// mutation line (GH-6606).
+const mutationRestoreTimeout = 2 * time.Minute
+
+// mutationWriteFile is the write of the mutate and the restore steps of a
+// mutation line; a seam for the tests of the repair (GH-6606).
+var mutationWriteFile = evidenceWriteFile
+
+// mutationGitCheckout runs `git checkout -- rel` in dir through the git route
+// of dir; a seam for the tests of the repair (GH-6606).
+var mutationGitCheckout = func(ctx context.Context, dir, rel string) error {
+	cmd := gitCommandIn(ctx, dir, append(secretpatterns.HooksOffArgs(), "checkout", "--", rel)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git checkout -- %s: %w: %s", rel, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// mutationLeftChangedError is the Err of the result of a mutation line whose
+// file could not be brought back to its first content (GH-6606): no later
+// acceptance line runs and the run stops before the pre-PR review, its fix
+// rounds and the push. File is relative to the task directory.
+type mutationLeftChangedError struct {
+	File string
+}
+
+func (e *mutationLeftChangedError) Error() string {
+	return fmt.Sprintf("acceptance evidence left %s changed; the run stops before the push", e.File)
+}
+
+// restoreMutatedFile checks the file of a mutation line after each outcome
+// (GH-6606): it reads the file again and compares it with original. When it
+// differs the first content is written again, once; when it still differs
+// `git checkout -- rel` runs for it, and the file is checked again. A file
+// still changed after that is a *mutationLeftChangedError. The check does not
+// take the cancellation of ctx (the budget context).
+func restoreMutatedFile(ctx context.Context, dir, fullPath, rel string, original []byte) error {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mutationRestoreTimeout)
+	defer cancel()
+	restored := func() bool {
+		got, err := agentReadFile(rctx, fullPath)
+		return err == nil && bytes.Equal(got, original)
+	}
+	if restored() {
+		return nil
+	}
+	if err := mutationWriteFile(rctx, fullPath, original, 0o600); err == nil && restored() {
+		return nil
+	}
+	if err := mutationGitCheckout(rctx, dir, rel); err == nil && restored() {
+		return nil
+	}
+	return &mutationLeftChangedError{File: rel}
+}
+
+// evidenceLeftChanged returns the error of the first result whose mutation
+// line left its file changed (GH-6606), or nil.
+func evidenceLeftChanged(results []AcceptanceEvidenceResult) *mutationLeftChangedError {
+	for _, res := range results {
+		var lc *mutationLeftChangedError
+		if errors.As(res.Err, &lc) {
+			return lc
+		}
+	}
+	return nil
+}
+
+// evidenceCancelledReason is the Not-verified reason of a line whose command
+// the cancel of the evidence context ended (GH-6606).
+const evidenceCancelledReason = "Not verified: evidence run cancelled"
+
+// evidenceContextReason is the Not-verified reason for the error of a done
+// evidence context: the budget ran out, or the run was cancelled.
+func evidenceContextReason(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return evidenceBudgetExhaustedReason
+	}
+	return evidenceCancelledReason
+}
+
+// relativeToTaskDir rewrites each form of dir in reason (as given, cleaned,
+// resolved) to a path relative to it (GH-6606): a reason goes into the PR
+// body and never names the workspace.
+func relativeToTaskDir(dir, reason string) string {
+	if dir == "" || reason == "" {
+		return reason
+	}
+	forms := []string{dir, filepath.Clean(dir)}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		forms = append(forms, resolved)
+	}
+	sort.Slice(forms, func(i, j int) bool { return len(forms[i]) > len(forms[j]) })
+	for _, f := range forms {
+		if f == "" || f == string(filepath.Separator) {
+			continue
+		}
+		reason = strings.ReplaceAll(reason, f+string(filepath.Separator), "")
+		reason = strings.ReplaceAll(reason, f, ".")
+	}
+	return reason
 }
 
 // appendAcceptanceEvidence appends the "## Evidence" / "## Not verified"
@@ -601,6 +731,12 @@ func (r *Runner) collectAcceptanceEvidence(ctx context.Context, task *Task, work
 			},
 		})
 		cancel()
+		if lc := evidenceLeftChanged(results); lc != nil && r.log != nil {
+			r.log.Error("Acceptance evidence left a file changed; the run stops before the push",
+				slog.String("task_id", task.ID),
+				slog.String("file", lc.File),
+			)
+		}
 	}
 
 	// GH-5466: merged into the same "## Not verified" section as the
@@ -963,6 +1099,8 @@ func runAcceptanceEvidenceItemsBudgeted(ctx context.Context, runner AcceptanceCo
 			res.NotVerifiedReason = evidenceBudgetExhaustedReason
 		}
 
+		res.NotVerifiedReason = relativeToTaskDir(dir, res.NotVerifiedReason)
+
 		for _, c := range res.Commands {
 			if c.FromQualityGate {
 				emit(evidenceEventReused, i+1)
@@ -976,6 +1114,10 @@ func runAcceptanceEvidenceItemsBudgeted(ctx context.Context, runner AcceptanceCo
 			emit(evidenceEventBudgetExhausted, i+1)
 		}
 		results = append(results, res)
+		// GH-6606: a file left changed stops the evidence; no later line runs.
+		if res.Err != nil {
+			break
+		}
 	}
 	return results
 }

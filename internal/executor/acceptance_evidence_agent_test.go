@@ -125,8 +125,8 @@ func TestEvidenceCommandRunsAsAgent(t *testing.T) {
 				t.Errorf("NotVerifiedReason = %q, want the revert to succeed", result.NotVerifiedReason)
 			}
 			calls := f.calls(t)
-			if n := len(sudoCallsWith(calls, agentReadScript)); n != 1 {
-				t.Errorf("%d reads as the agent user, want 1: %q", n, calls)
+			if n := len(sudoCallsWith(calls, agentReadScript)); n != 2 {
+				t.Errorf("%d reads as the agent user, want the first read and the check (GH-6606): %q", n, calls)
 			}
 			if n := len(sudoCallsWith(calls, agentWriteScript)); n != 2 {
 				t.Errorf("%d writes as the agent user, want the mutate and the revert: %q", n, calls)
@@ -185,7 +185,7 @@ func testEvidenceEnvContextRead(t *testing.T) {
 				}
 				return
 			}
-			if len(calls) != 1 || !strings.Contains(calls[0], agentReadScript) || !strings.HasSuffix(calls[0], " "+p) {
+			if len(calls) != 1 || !strings.Contains(calls[0], agentReadRegularScript) || !strings.HasSuffix(calls[0], " "+p) {
 				t.Errorf("sudo calls = %q, want one read of %s as the agent user", calls, p)
 			}
 		})
