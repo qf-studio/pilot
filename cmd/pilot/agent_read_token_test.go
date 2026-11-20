@@ -345,3 +345,20 @@ func TestScopedTokenChecksTheOwnerOfTheAnswer(t *testing.T) {
 		t.Errorf("provider(OWNER-B/NAME) made %d requests, want 1 (the refusal is of the answer)", n)
 	}
 }
+
+// TestAgentTokenFileProviderSetAtStartup (TASK-651): the daemon start installs
+// the read token provider that the token file of each run asks, once, built
+// from the config.
+func TestAgentTokenFileProviderSetAtStartup(t *testing.T) {
+	const line = "executor.SetAgentReadTokenProvider(agentReadTokenProvider(cfg))"
+	if body := githubFuncBody(t, "main.go", "func runPollingMode("); !strings.Contains(body, line) {
+		t.Errorf("runPollingMode does not call %s", line)
+	}
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(src), "executor.SetAgentReadTokenProvider("); n != 1 {
+		t.Errorf("SetAgentReadTokenProvider( occurs %d times in main.go, want 1", n)
+	}
+}

@@ -233,3 +233,66 @@ func TestRunGhGuard_AllowFallsBackWhenRealGhUnset(t *testing.T) {
 		t.Errorf("expected fallback-resolved gh to have run: %v", err)
 	}
 }
+
+// TestRunGhGuard_TokenFileSetsGhToken (TASK-651): with PILOT_GH_TOKEN_FILE
+// set and the file readable, the real gh gets its content, cut of white
+// space, as GH_TOKEN; with no file, an empty file or no name, no GH_TOKEN.
+func TestRunGhGuard_TokenFileSetsGhToken(t *testing.T) {
+	t.Setenv("GH_TOKEN", "")
+	if err := os.Unsetenv("GH_TOKEN"); err != nil {
+		t.Fatal(err)
+	}
+	tmpDir := t.TempDir()
+	fakeGh := filepath.Join(tmpDir, "gh")
+	if err := os.WriteFile(fakeGh, []byte("#!/bin/sh\nenv\n"), 0o755); err != nil { //nolint:gosec // fake gh must be executable
+		t.Fatal(err)
+	}
+	tokenFile := filepath.Join(tmpDir, "github-token")
+	if err := os.WriteFile(tokenFile, []byte("  test-read-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	emptyFile := filepath.Join(tmpDir, "empty-token")
+	if err := os.WriteFile(emptyFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		path string
+		want string // "" = no GH_TOKEN
+	}{
+		{"token file", tokenFile, "test-read-token"},
+		{"missing file", filepath.Join(tmpDir, "absent"), ""},
+		{"empty file", emptyFile, ""},
+		{"no name", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			vars := map[string]string{
+				"PILOT_TASK_ISSUE":  "123",
+				"PILOT_TASK_REPO":   "qf-studio/pilot",
+				"PILOT_TASK_BRANCH": "pilot/GH-123",
+				"PILOT_GH_REAL":     fakeGh,
+			}
+			if tc.path != "" {
+				vars["PILOT_GH_TOKEN_FILE"] = tc.path
+			}
+			var stdout, stderr bytes.Buffer
+			if code := runGhGuard([]string{"issue", "view", "123"}, envLookup(vars), strings.NewReader(""), &stdout, &stderr); code != 0 {
+				t.Fatalf("exit code %d (stderr: %s)", code, stderr.String())
+			}
+			var got []string
+			for _, line := range strings.Split(stdout.String(), "\n") {
+				if v, ok := strings.CutPrefix(line, "GH_TOKEN="); ok {
+					got = append(got, v)
+				}
+			}
+			switch {
+			case tc.want == "" && len(got) != 0:
+				t.Errorf("GH_TOKEN = %q, want none", got)
+			case tc.want != "" && (len(got) != 1 || got[0] != tc.want):
+				t.Errorf("GH_TOKEN = %q, want [%q]", got, tc.want)
+			}
+		})
+	}
+}
