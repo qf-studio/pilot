@@ -586,6 +586,10 @@ type AcceptanceEvidenceResult struct {
 	Commands          []AcceptanceCommandResult
 	MutationOutcome   *MutationOutcome
 	NotVerifiedReason string
+	// Err is a *mutationLeftChangedError when the file of a mutation line
+	// is still changed after the repair (GH-6606): no later line runs and
+	// the run stops before the pre-PR review, its fix rounds and the push.
+	Err error
 }
 
 // evidenceFromQualityGateMarker labels a command line whose output was

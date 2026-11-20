@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/memory/graphrecall"
 	"github.com/qf-studio/pilot/internal/text"
@@ -509,8 +510,20 @@ func renderMemoryBlock(header, footer string, memories []graphrecall.MemorySumma
 // readEnvContext reads the file as the agent user when it is on the agent
 // side (agentReadFile, TASK-651): a link the agent put there is followed with
 // the rights of the agent user only. A read error is the empty text.
+// GH-6606: with the option set the read takes a regular file only and has a
+// time limit of envContextReadTimeout: a FIFO at the path is the empty text,
+// not a wait of the full time limit of the agent file helper.
 func readEnvContext(projectPath string) string {
-	data, err := agentReadFile(context.Background(), filepath.Join(projectPath, ".pilot-env-context.txt"))
+	path := filepath.Join(projectPath, ".pilot-env-context.txt")
+	var data []byte
+	var err error
+	if runAsSettingsNow() == nil {
+		data, err = agentReadFile(context.Background(), path)
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), envContextReadTimeout)
+		data, err = agentReadRegularFile(ctx, path, agentFileReadLimit)
+		cancel()
+	}
 	if err != nil {
 		return ""
 	}
@@ -520,6 +533,10 @@ func readEnvContext(projectPath string) string {
 	}
 	return string(data)
 }
+
+// envContextReadTimeout bounds the read of the env context file with the
+// option set (GH-6606).
+const envContextReadTimeout = 5 * time.Second
 
 func (r *Runner) buildLocalModePrompt(task *Task) (prompt string) {
 	defer sanitizePromptReturn("buildLocalModePrompt", &prompt)

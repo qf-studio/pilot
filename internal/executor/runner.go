@@ -6996,6 +6996,46 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			prePREvidence = r.collectAcceptanceEvidenceForReview(ctx, task, git.ProjectPath(), result.QualityGates)
 		}
 
+		// GH-6606: a mutation line whose file the repair could not bring back
+		// stops the run before the review, the fix rounds and the push, which
+		// all work on the same tree.
+		failEvidenceLeftChanged := func(ev *AcceptanceEvidenceCollection) bool {
+			err := ev.leftChanged()
+			if err == nil {
+				return false
+			}
+			result.Success = false
+			result.Error = err.Error()
+			r.reportProgress(task.ID, "Acceptance Evidence Failed", 100, result.Error)
+			r.emitAlertEvent(AlertEvent{
+				Type:      AlertEventTypeTaskFailed,
+				TaskID:    task.ID,
+				TaskTitle: task.Title,
+				Project:   task.ProjectPath,
+				Error:     result.Error,
+				Timestamp: time.Now(),
+			})
+			r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+				TaskID:   task.ID,
+				Title:    task.Title,
+				Project:  task.ProjectPath,
+				Duration: time.Since(start),
+				Error:    result.Error,
+				Phase:    "Acceptance Evidence",
+			})
+			if recorder != nil {
+				recorder.SetModel(result.ModelName)
+				recorder.SetNavigator(state.hasNavigator)
+				if finErr := recorder.Finish("failed"); finErr != nil {
+					log.Warn("Failed to finish recording", slog.Any("error", finErr))
+				}
+			}
+			return true
+		}
+		if failEvidenceLeftChanged(prePREvidence) {
+			return result, nil
+		}
+
 		// TASK-620: pre-PR review after the gates; shadow mode only records. It is
 		// the only review pass after the gates (GH-6157 retired the self-review
 		// phase and the in-run intent judge it replaces).
@@ -7010,6 +7050,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// GH-6037: the fix moved HEAD, so the first evidence result describes a
 			// tree that is not pushed; the PR body carries the rerun instead.
 			prePREvidence = r.evidenceAfterFixRound(ctx, task, git.ProjectPath(), fix, prePREvidence)
+			if failEvidenceLeftChanged(prePREvidence) {
+				return result, nil
+			}
 		}
 
 		// Handle direct commit mode: push directly to main

@@ -30,6 +30,18 @@ func (e *AcceptanceEvidenceCollection) section() string {
 	return e.Section
 }
 
+// leftChanged is the *mutationLeftChangedError of a mutation line whose file
+// the repair could not bring back (GH-6606); nil for a nil collection.
+func (e *AcceptanceEvidenceCollection) leftChanged() error {
+	if e == nil {
+		return nil
+	}
+	if lc := evidenceLeftChanged(e.Results); lc != nil {
+		return lc
+	}
+	return nil
+}
+
 // seconds is the measured collection time in seconds; 0 for a nil collection.
 func (e *AcceptanceEvidenceCollection) seconds() float64 {
 	if e == nil {
