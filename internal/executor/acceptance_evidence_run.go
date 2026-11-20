@@ -440,6 +440,20 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 		return result
 	}
 
+	// GH-6638: the type and the permission bits of the path itself, which
+	// the check after the restore compares too. A link, a directory or a
+	// device is not mutated.
+	mode, err := agentLstatMode(ctx, fullPath)
+	if err != nil {
+		result.NotVerifiedReason = fmt.Sprintf("could not read %s to apply mutation: %v", file, err)
+		return result
+	}
+	if !mode.IsRegular() {
+		result.NotVerifiedReason = fmt.Sprintf("%s is not a regular file (%s), the mutation is not applied", file, mode.Type())
+		return result
+	}
+	perm := mode.Perm()
+
 	// TASK-651: a path on the agent side is read as the agent user.
 	original, err := agentReadFile(ctx, fullPath)
 	if err != nil {
@@ -473,32 +487,27 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 	// TASK-651: with run_as_user set the mutate and revert writes run as the
 	// agent user (evidenceWriteFile). GH-6606: a failed write can have cut
 	// the file already, so it is checked and repaired too.
-	if err := mutationWriteFile(ctx, fullPath, []byte(mutated), 0o600); err != nil {
+	if err := mutationWriteFile(ctx, fullPath, []byte(mutated), perm); err != nil {
 		result.NotVerifiedReason = fmt.Sprintf("could not write mutated %s: %v", rel, err)
-		if err := restoreMutatedFile(ctx, dir, fullPath, rel, original); err != nil {
+		if err := restoreMutatedFile(ctx, dir, fullPath, rel, original, perm); err != nil {
 			result.Err = err
 			result.NotVerifiedReason = err.Error()
 		}
 		return result
 	}
 
-	var output string
-	var testErr error
-	if reason := validateEvidenceCommand(testCmd, allowedCommands); reason == "" {
-		output, testErr = runner.RunCommand(ctx, dir, testCmd)
-	} else {
-		testErr = errors.New(reason)
-	}
-
-	// Always attempt to revert, whatever the run above returned — never
-	// leave the mutated content on disk. The revert does not take the
-	// cancellation of ctx: a cancelled run still restores the file. GH-6606:
-	// its error is not the outcome; restoreMutatedFile reads the file back
-	// and repairs it, and a file it cannot repair stops the run.
-	_ = mutationWriteFile(context.WithoutCancel(ctx), fullPath, original, 0o600)
-	if err := restoreMutatedFile(ctx, dir, fullPath, rel, original); err != nil {
-		result.Err = err
-		result.NotVerifiedReason = err.Error()
+	// Always revert, whatever the run returned — never leave the mutated
+	// content on disk. GH-6606: restoreMutatedFile reads the file back and
+	// repairs it, a file it cannot repair stops the run, and it does not
+	// take the cancellation of ctx. GH-6638: it runs in a defer, so a panic
+	// of the runner still restores the file.
+	output, testErr, restoreErr := runMutationCommand(ctx, runner, dir, testCmd, allowedCommands, func() error {
+		_ = mutationRestoreWrite(context.WithoutCancel(ctx), fullPath, original, perm, false)
+		return restoreMutatedFile(ctx, dir, fullPath, rel, original, perm)
+	})
+	if restoreErr != nil {
+		result.Err = restoreErr
+		result.NotVerifiedReason = restoreErr.Error()
 		return result
 	}
 
@@ -544,6 +553,18 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 	return result
 }
 
+// runMutationCommand runs testCmd for a mutation line and then restore, in a
+// defer (GH-6638): a panic of the runner still restores the file and goes on
+// after it.
+func runMutationCommand(ctx context.Context, runner AcceptanceCommandRunner, dir, testCmd string, allowedCommands []string, restore func() error) (output string, testErr, restoreErr error) {
+	defer func() { restoreErr = restore() }()
+	if reason := validateEvidenceCommand(testCmd, allowedCommands); reason != "" {
+		return "", errors.New(reason), nil
+	}
+	output, testErr = runner.RunCommand(ctx, dir, testCmd)
+	return output, testErr, nil
+}
+
 // mutationRestoreTimeout bounds the check and the repair of the file of a
 // mutation line (GH-6606).
 const mutationRestoreTimeout = 2 * time.Minute
@@ -552,14 +573,40 @@ const mutationRestoreTimeout = 2 * time.Minute
 // mutation line; a seam for the tests of the repair (GH-6606).
 var mutationWriteFile = evidenceWriteFile
 
+// mutationRecreateFile is the restore of a path that is no longer the regular
+// file of the first permission bits (GH-6638): it removes the path and makes a
+// new regular file, never a write through a link.
+var mutationRecreateFile = agentRecreateFile
+
+// mutationGitCommand builds a git command of the repair in dir, with the
+// hooks-off arguments and the environment of the evidence commands, never the
+// full environment of the daemon: a filter program of the repository config
+// runs with it (GH-6638).
+func mutationGitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	return gitCommandInEnv(ctx, dir, sanitizedAcceptanceEnv(), append(secretpatterns.HooksOffArgs(), args...)...)
+}
+
 // mutationGitCheckout runs `git checkout -- rel` in dir through the git route
 // of dir; a seam for the tests of the repair (GH-6606).
 var mutationGitCheckout = func(ctx context.Context, dir, rel string) error {
-	cmd := gitCommandIn(ctx, dir, append(secretpatterns.HooksOffArgs(), "checkout", "--", rel)...)
+	cmd := mutationGitCommand(ctx, dir, "checkout", "--", rel)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git checkout -- %s: %w: %s", rel, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// mutationIndexMatches reports whether the index version of rel (`git show
+// :rel`) is original (GH-6638): only then does the checkout repair keep the
+// file of the agent. An uncommitted change, or any git error, is false.
+func mutationIndexMatches(ctx context.Context, dir, rel string, original []byte) bool {
+	cmd := mutationGitCommand(ctx, dir, "show", "--no-textconv", ":"+filepath.ToSlash(rel))
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return bytes.Equal(stdout.Bytes(), original)
 }
 
 // mutationLeftChangedError is the Err of the result of a mutation line whose
@@ -576,27 +623,51 @@ func (e *mutationLeftChangedError) Error() string {
 	return fmt.Sprintf("acceptance evidence left %s changed; the run stops before the push", e.File)
 }
 
+// mutationRestoreWrite writes original back to fullPath (GH-6638): a path that
+// is no longer a regular file (a link, a directory) is never written through,
+// it is removed and made again (mutationRecreateFile). With strict set a
+// regular file whose permission bits are not perm is made again too: the
+// repair after a failed check.
+func mutationRestoreWrite(ctx context.Context, fullPath string, original []byte, perm os.FileMode, strict bool) error {
+	mode, err := agentLstatMode(ctx, fullPath)
+	if err == nil && mode.IsRegular() && (!strict || mode.Perm() == perm) {
+		return mutationWriteFile(ctx, fullPath, original, perm)
+	}
+	return mutationRecreateFile(ctx, fullPath, original, perm)
+}
+
 // restoreMutatedFile checks the file of a mutation line after each outcome
-// (GH-6606): it reads the file again and compares it with original. When it
-// differs the first content is written again, once; when it still differs
-// `git checkout -- rel` runs for it, and the file is checked again. A file
-// still changed after that is a *mutationLeftChangedError. The check does not
-// take the cancellation of ctx (the budget context).
-func restoreMutatedFile(ctx context.Context, dir, fullPath, rel string, original []byte) error {
+// (GH-6606): the path must be a regular file with the permission bits perm and
+// the content original (GH-6638). When it is not, the file is repaired once
+// (mutationRestoreWrite, strict); when it still differs and the index version
+// of the file is original, `git checkout -- rel` runs for it (and the file is
+// made again with the bits perm), and the file is checked again. A file still
+// changed after that is a *mutationLeftChangedError. The check does not take
+// the cancellation of ctx (the budget context).
+func restoreMutatedFile(ctx context.Context, dir, fullPath, rel string, original []byte, perm os.FileMode) error {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mutationRestoreTimeout)
 	defer cancel()
 	restored := func() bool {
+		mode, err := agentLstatMode(rctx, fullPath)
+		if err != nil || !mode.IsRegular() || mode.Perm() != perm {
+			return false
+		}
 		got, err := agentReadFile(rctx, fullPath)
 		return err == nil && bytes.Equal(got, original)
 	}
 	if restored() {
 		return nil
 	}
-	if err := mutationWriteFile(rctx, fullPath, original, 0o600); err == nil && restored() {
+	if err := mutationRestoreWrite(rctx, fullPath, original, perm, true); err == nil && restored() {
 		return nil
 	}
-	if err := mutationGitCheckout(rctx, dir, rel); err == nil && restored() {
-		return nil
+	if mutationIndexMatches(rctx, dir, rel, original) {
+		// git gives the new file the bits of the umask; a new file of the
+		// first content brings the first bits back.
+		if err := mutationGitCheckout(rctx, dir, rel); err == nil &&
+			(restored() || (mutationRecreateFile(rctx, fullPath, original, perm) == nil && restored())) {
+			return nil
+		}
 	}
 	return &mutationLeftChangedError{File: rel}
 }

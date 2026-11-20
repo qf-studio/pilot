@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 // GH-6606: the mutation check of the acceptance evidence never leaves a
@@ -456,10 +458,13 @@ func TestMutationLeftChangedEveryAppendCallHandlesError(t *testing.T) {
 
 // TestEvidenceCommandEnvAndDirAsAgent: with the mock sudo and the option set
 // an evidence command gets no variable of the test process outside the
-// allowlist (DAEMON_ONLY_VALUE, SSH_AUTH_SOCK), and runs in the task directory.
+// allowlist (DAEMON_ONLY_VALUE, SSH_AUTH_SOCK), no model credential (GH-6638:
+// ANTHROPIC_API_KEY, a name the allowlist of the model session keeps), and runs
+// in the task directory.
 func TestEvidenceCommandEnvAndDirAsAgent(t *testing.T) {
 	t.Setenv("DAEMON_ONLY_VALUE", "daemon-only-6606")
 	t.Setenv("SSH_AUTH_SOCK", "/tmp/fake-agent-6606.sock")
+	t.Setenv("ANTHROPIC_API_KEY", testutil.FakeAnthropicKey)
 	f := newAgentFilesFixture(t, "")
 	f.lock(t)
 	runner := shellAcceptanceCommandRunner{timeout: 10 * time.Second}
@@ -468,7 +473,7 @@ func TestEvidenceCommandEnvAndDirAsAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("env: %v: %s", err, out)
 	}
-	for _, bad := range []string{"DAEMON_ONLY_VALUE", "daemon-only-6606", "SSH_AUTH_SOCK", "fake-agent-6606"} {
+	for _, bad := range []string{"DAEMON_ONLY_VALUE", "daemon-only-6606", "SSH_AUTH_SOCK", "fake-agent-6606", "ANTHROPIC_API_KEY", testutil.FakeAnthropicKey} {
 		if strings.Contains(out, bad) {
 			t.Errorf("the environment of the evidence command has %s:\n%s", bad, out)
 		}
