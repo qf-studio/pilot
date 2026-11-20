@@ -128,7 +128,7 @@ func TestEvidenceCommandRunsAsAgent(t *testing.T) {
 			if n := len(sudoCallsWith(calls, agentReadScript)); n != 2 {
 				t.Errorf("%d reads as the agent user, want the first read and the check (GH-6606): %q", n, calls)
 			}
-			if n := len(sudoCallsWith(calls, agentWriteScript)); n != 2 {
+			if n := len(sudoCallsWith(calls, agentReplaceScript)); n != 2 {
 				t.Errorf("%d writes as the agent user, want the mutate and the revert: %q", n, calls)
 			}
 		})

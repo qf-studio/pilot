@@ -71,11 +71,19 @@ const (
 	// $1 path, $2 umask, $3 mode. Standard input is the content. The path
 	// (a file, a link or an empty directory) is removed and a new regular
 	// file is created: noclobber makes the create fail on any path that is
-	// there again, so the write never follows a link. The file gets the mode
-	// before the content.
+	// there again, so the write never follows a link. The file is created
+	// under the umask (no bit beyond the mode) and gets the mode after the
+	// content: a write clears the setuid and setgid bits (GH-6652).
 	agentRecreateScript = `if [ -d "$1" ] && [ ! -L "$1" ]; then rmdir -- "$1" || exit 1
 elif [ -e "$1" ] || [ -L "$1" ]; then rm -f -- "$1" || exit 1; fi
-umask "$2" || exit 1; set -C; { chmod -- "$3" "$1" && exec cat; } > "$1"`
+umask "$2" || exit 1; set -C; { cat && chmod -- "$3" "$1"; } > "$1"`
+	// $1 path, $2 mode. Standard input is the content. The content goes to
+	// a new file beside the path (mktemp, an exclusive create of mode 0600)
+	// that gets the mode after the content and is renamed over the path
+	// (GH-6652): a link at the path is replaced, never followed. -T (GNU) or
+	// -h (BSD) keeps mv from moving the file into a directory a link at the
+	// path names.
+	agentReplaceScript = `t=$(mktemp -- "$1.pilot-XXXXXX") || exit 1; o=-fh; mv --version >/dev/null 2>&1 && o=-fT; { cat > "$t" && chmod -- "$2" "$t" && mv "$o" -- "$t" "$1"; } || { rm -f -- "$t"; exit 1; }`
 	// $1 path, $2 umask.
 	agentMkdirScript = `umask "$2" && exec mkdir -p -- "$1"`
 	// $1 path: os.Remove, a file or an empty directory.
@@ -226,9 +234,20 @@ func agentUmask(mode os.FileMode) string {
 	return "0" + strconv.FormatUint(uint64(0o777&^mode.Perm()), 8)
 }
 
-// agentModeArg is the permission bits of mode as an octal chmod argument.
+// agentModeArg is the permission bits of mode, with the setuid, setgid and
+// sticky bits (GH-6652), as an octal chmod argument.
 func agentModeArg(mode os.FileMode) string {
-	return "0" + strconv.FormatUint(uint64(mode.Perm()), 8)
+	bits := uint64(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		bits |= 0o4000
+	}
+	if mode&os.ModeSetgid != 0 {
+		bits |= 0o2000
+	}
+	if mode&os.ModeSticky != 0 {
+		bits |= 0o1000
+	}
+	return "0" + strconv.FormatUint(bits, 8)
 }
 
 // agentWriteFile is os.WriteFile(path, data, mode), as the agent user for a
@@ -306,7 +325,9 @@ func agentLstatMode(ctx context.Context, path string) (os.FileMode, error) {
 }
 
 // parseLsMode reads the type and the permission bits from the first ten
-// characters of an `ls -l` line ("-rwxr-xr-x ...").
+// characters of an `ls -l` line ("-rwxr-xr-x ..."), with the setuid, setgid
+// and sticky bits (s or S in the user or the group execute place, t or T in
+// the other execute place; GH-6652).
 func parseLsMode(line string) (os.FileMode, bool) {
 	if len(line) < 10 {
 		return 0, false
@@ -331,6 +352,14 @@ func parseLsMode(line string) (os.FileMode, bool) {
 	}
 	for i, c := range line[1:10] {
 		bit := os.FileMode(1) << (8 - i)
+		switch {
+		case i == 2 && (c == 's' || c == 'S'):
+			mode |= os.ModeSetuid
+		case i == 5 && (c == 's' || c == 'S'):
+			mode |= os.ModeSetgid
+		case i == 8 && (c == 't' || c == 'T'):
+			mode |= os.ModeSticky
+		}
 		switch {
 		case c == '-', c == 'S', c == 'T':
 		case c == rune("rwx"[i%3]), i%3 == 2 && (c == 's' || c == 't'):
@@ -366,15 +395,56 @@ func agentRecreateFile(ctx context.Context, path string, data []byte, mode os.Fi
 	if err != nil {
 		return err
 	}
-	if err := f.Chmod(mode.Perm()); err != nil {
-		_ = f.Close()
-		return err
-	}
+	return writeThenChmod(f, data, mode)
+}
+
+// writeThenChmod writes data to f, sets the permission bits of mode with the
+// setuid, setgid and sticky bits after the content (a write clears the setuid
+// and setgid bits; GH-6652) and closes f.
+func writeThenChmod(f *os.File, data []byte, mode os.FileMode) error {
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		return err
 	}
+	if err := f.Chmod(mode & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)); err != nil {
+		_ = f.Close()
+		return err
+	}
 	return f.Close()
+}
+
+// agentReplaceFile writes data to path through a new file beside it that gets
+// the mode of mode (with the setuid, setgid and sticky bits) after the content
+// and is renamed over path (GH-6652): a link at path is replaced, never
+// followed, and a path that is missing is made. As the agent user for a path
+// inside the workspace root (agentReplaceScript), else an exclusive create of
+// the os package and os.Rename.
+func agentReplaceFile(ctx context.Context, path string, data []byte, mode os.FileMode) error {
+	agent, err := agentFileRoute(path)
+	if err != nil {
+		return err
+	}
+	if agent {
+		if data == nil {
+			data = []byte{}
+		}
+		_, err = runAgentFileScript(ctx, "replace", path, agentReplaceScript, data, path, agentModeArg(mode))
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".pilot-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	if err := writeThenChmod(f, data, mode); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // agentMkdirAll is os.MkdirAll(path, mode), as the agent user for a path
@@ -434,10 +504,10 @@ func agentRemoveDirIfEmpty(ctx context.Context, dir string) error {
 }
 
 // evidenceWriteFile is the write of the mutate and revert steps of an
-// evidence command: agentWriteFile, as the agent user for a path on the agent
-// side, else os.WriteFile.
+// evidence command: agentReplaceFile, as the agent user for a path on the
+// agent side; a link at the path is never followed (GH-6652).
 func evidenceWriteFile(ctx context.Context, path string, data []byte, mode os.FileMode) error {
-	return agentWriteFile(ctx, path, data, mode)
+	return agentReplaceFile(ctx, path, data, mode)
 }
 
 // loadRepoWorkflow is workflow.Load(executionPath). With the option set the

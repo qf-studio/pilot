@@ -441,8 +441,8 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 	}
 
 	// GH-6638: the type and the permission bits of the path itself, which
-	// the check after the restore compares too. A link, a directory or a
-	// device is not mutated.
+	// the check after the restore compares too (GH-6652: with the setuid,
+	// setgid and sticky bits). A link, a directory or a device is not mutated.
 	mode, err := agentLstatMode(ctx, fullPath)
 	if err != nil {
 		result.NotVerifiedReason = fmt.Sprintf("could not read %s to apply mutation: %v", file, err)
@@ -452,7 +452,7 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 		result.NotVerifiedReason = fmt.Sprintf("%s is not a regular file (%s), the mutation is not applied", file, mode.Type())
 		return result
 	}
-	perm := mode.Perm()
+	perm := mode & mutationModeBits
 
 	// TASK-651: a path on the agent side is read as the agent user.
 	original, err := agentReadFile(ctx, fullPath)
@@ -502,7 +502,7 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 	// take the cancellation of ctx. GH-6638: it runs in a defer, so a panic
 	// of the runner still restores the file.
 	output, testErr, restoreErr := runMutationCommand(ctx, runner, dir, testCmd, allowedCommands, func() error {
-		_ = mutationRestoreWrite(context.WithoutCancel(ctx), fullPath, original, perm, false)
+		_ = mutationRestoreWrite(context.WithoutCancel(ctx), dir, fullPath, rel, original, perm, false)
 		return restoreMutatedFile(ctx, dir, fullPath, rel, original, perm)
 	})
 	if restoreErr != nil {
@@ -578,12 +578,19 @@ var mutationWriteFile = evidenceWriteFile
 // new regular file, never a write through a link.
 var mutationRecreateFile = agentRecreateFile
 
+// mutationModeBits are the bits of the mode of the file of a mutation line
+// that are read, compared and set back: the permission bits with the setuid,
+// setgid and sticky bits (GH-6652).
+const mutationModeBits = os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky
+
 // mutationGitCommand builds a git command of the repair in dir, with the
 // hooks-off arguments and the environment of the evidence commands, never the
 // full environment of the daemon: a filter program of the repository config
-// runs with it (GH-6638).
+// runs with it (GH-6638). A path is a literal pathspec (GH-6652): a file
+// a*.go never names ab.go.
 func mutationGitCommand(ctx context.Context, dir string, args ...string) *exec.Cmd {
-	return gitCommandInEnv(ctx, dir, sanitizedAcceptanceEnv(), append(secretpatterns.HooksOffArgs(), args...)...)
+	args = append(append(secretpatterns.HooksOffArgs(), "--literal-pathspecs"), args...)
+	return gitCommandInEnv(ctx, dir, sanitizedAcceptanceEnv(), args...)
 }
 
 // mutationGitCheckout runs `git checkout -- rel` in dir through the git route
@@ -617,59 +624,111 @@ func mutationIndexMatches(ctx context.Context, dir, rel string, original []byte)
 // directory.
 type mutationLeftChangedError struct {
 	File string
+	// LeftWorkspace is set when the path of the file resolved outside the
+	// task directory at the restore (GH-6652): nothing was written through it.
+	LeftWorkspace bool
 }
 
 func (e *mutationLeftChangedError) Error() string {
-	return fmt.Sprintf("acceptance evidence left %s changed; the run stops before the push", e.File)
+	return fmt.Sprintf("acceptance evidence left %s changed%s; the run stops before the push", e.File, e.leftWorkspaceText())
 }
 
-// mutationRestoreWrite writes original back to fullPath (GH-6638): a path that
-// is no longer a regular file (a link, a directory) is never written through,
-// it is removed and made again (mutationRecreateFile). With strict set a
-// regular file whose permission bits are not perm is made again too: the
-// repair after a failed check.
-func mutationRestoreWrite(ctx context.Context, fullPath string, original []byte, perm os.FileMode, strict bool) error {
-	mode, err := agentLstatMode(ctx, fullPath)
-	if err == nil && mode.IsRegular() && (!strict || mode.Perm() == perm) {
-		return mutationWriteFile(ctx, fullPath, original, perm)
+// leftWorkspaceText is the part of the texts of e that says the path left
+// the workspace, or "".
+func (e *mutationLeftChangedError) leftWorkspaceText() string {
+	if e.LeftWorkspace {
+		return " (the path left the workspace, nothing was written through it)"
 	}
-	return mutationRecreateFile(ctx, fullPath, original, perm)
+	return ""
+}
+
+// mutationConfinedPath resolves the path of the file of a mutation line again
+// (GH-6652), with the rule of resolveWorktreeConfinedPath for its directory:
+// the command can have replaced a parent directory by a link. fullPath is the
+// path of the first resolution, rel its form relative to dir. The last
+// component is not resolved: the writes and the check never follow a link
+// there. A directory outside dir is errPathEscapesWorktree.
+func mutationConfinedPath(dir, fullPath, rel string) (string, error) {
+	parent, err := resolveWorktreeConfinedPath(dir, filepath.Dir(rel))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(fullPath)), nil
+}
+
+// mutationRestoreWrite writes original back to the file of a mutation line
+// (GH-6638), at the path mutationConfinedPath gives (GH-6652): a path outside
+// dir is an error and nothing is written. A path that is no longer a regular
+// file (a link, a directory) is never written through, it is removed and made
+// again (mutationRecreateFile). With strict set a regular file whose mode is
+// not perm is made again too: the repair after a failed check.
+func mutationRestoreWrite(ctx context.Context, dir, fullPath, rel string, original []byte, perm os.FileMode, strict bool) error {
+	path, err := mutationConfinedPath(dir, fullPath, rel)
+	if err != nil {
+		return err
+	}
+	mode, err := agentLstatMode(ctx, path)
+	if err == nil && mode.IsRegular() && (!strict || mode&mutationModeBits == perm) {
+		return mutationWriteFile(ctx, path, original, perm)
+	}
+	return mutationRecreateFile(ctx, path, original, perm)
 }
 
 // restoreMutatedFile checks the file of a mutation line after each outcome
-// (GH-6606): the path must be a regular file with the permission bits perm and
-// the content original (GH-6638). When it is not, the file is repaired once
+// (GH-6606): the path must be a regular file with the mode perm and the
+// content original (GH-6638). When it is not, the file is repaired once
 // (mutationRestoreWrite, strict); when it still differs and the index version
 // of the file is original, `git checkout -- rel` runs for it (and the file is
-// made again with the bits perm), and the file is checked again. A file still
-// changed after that is a *mutationLeftChangedError. The check does not take
-// the cancellation of ctx (the budget context).
+// made again with the mode perm), and the file is checked again. A file still
+// changed after that is a *mutationLeftChangedError. GH-6652: each check and
+// each write resolves the path again (mutationConfinedPath); a path outside
+// dir is not restored, nothing is written through it, and the error says so.
+// The check does not take the cancellation of ctx (the budget context).
 func restoreMutatedFile(ctx context.Context, dir, fullPath, rel string, original []byte, perm os.FileMode) error {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mutationRestoreTimeout)
 	defer cancel()
+	left := &mutationLeftChangedError{File: rel}
+	confined := func() (string, bool) {
+		path, err := mutationConfinedPath(dir, fullPath, rel)
+		if errors.Is(err, errPathEscapesWorktree) {
+			left.LeftWorkspace = true
+		}
+		return path, err == nil
+	}
 	restored := func() bool {
-		mode, err := agentLstatMode(rctx, fullPath)
-		if err != nil || !mode.IsRegular() || mode.Perm() != perm {
+		path, ok := confined()
+		if !ok {
 			return false
 		}
-		got, err := agentReadFile(rctx, fullPath)
+		mode, err := agentLstatMode(rctx, path)
+		if err != nil || !mode.IsRegular() || mode&mutationModeBits != perm {
+			return false
+		}
+		got, err := agentReadFile(rctx, path)
 		return err == nil && bytes.Equal(got, original)
+	}
+	recreate := func() bool {
+		path, ok := confined()
+		return ok && mutationRecreateFile(rctx, path, original, perm) == nil
 	}
 	if restored() {
 		return nil
 	}
-	if err := mutationRestoreWrite(rctx, fullPath, original, perm, true); err == nil && restored() {
+	if left.LeftWorkspace {
+		return left
+	}
+	if err := mutationRestoreWrite(rctx, dir, fullPath, rel, original, perm, true); err == nil && restored() {
 		return nil
 	}
-	if mutationIndexMatches(rctx, dir, rel, original) {
+	if _, ok := confined(); ok && mutationIndexMatches(rctx, dir, rel, original) {
 		// git gives the new file the bits of the umask; a new file of the
 		// first content brings the first bits back.
 		if err := mutationGitCheckout(rctx, dir, rel); err == nil &&
-			(restored() || (mutationRecreateFile(rctx, fullPath, original, perm) == nil && restored())) {
+			(restored() || (recreate() && restored())) {
 			return nil
 		}
 	}
-	return &mutationLeftChangedError{File: rel}
+	return left
 }
 
 // evidenceLeftChanged returns the error of the first result whose mutation
@@ -698,7 +757,7 @@ const (
 func evidenceLeftChangedAtPRCreation(err error) string {
 	var lc *mutationLeftChangedError
 	if errors.As(err, &lc) {
-		return fmt.Sprintf("acceptance evidence left %s changed; the branch is pushed, the run fails and no PR is created", lc.File)
+		return fmt.Sprintf("acceptance evidence left %s changed%s; the branch is pushed, the run fails and no PR is created", lc.File, lc.leftWorkspaceText())
 	}
 	return err.Error()
 }
