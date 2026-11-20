@@ -4,7 +4,9 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -342,6 +344,48 @@ func RestoreHookSettings(settingsPath, scriptDir string, restoreFunc func() erro
 		return fmt.Errorf("failed to remove hook script directory: %w", err)
 	}
 	return nil
+}
+
+// hookSettingsRestore wraps restore, the restore of the settings file
+// settingsPath after a session. With run_as_user empty (runAsSet false) a
+// failure is logged as a warning and the wrapper returns nil, as before. With
+// the option set (TASK-651) the file is in the workspace of the agent user and
+// the wrapper returns the failure with the path of the file: the run fails
+// (failRunOnSettingsRestore) instead of leaving the hook entries of the daemon
+// in the workspace.
+func hookSettingsRestore(log *slog.Logger, settingsPath string, runAsSet bool, restore func() error) func() error {
+	return func() error {
+		err := restore()
+		if err == nil {
+			return nil
+		}
+		if runAsSet {
+			return fmt.Errorf("restore of the claude settings file %s failed with run_as_user set: %w", settingsPath, err)
+		}
+		log.Warn("Failed to restore Claude hook settings", slog.String("path", settingsPath), slog.Any("error", err))
+		return nil
+	}
+}
+
+// failRunOnSettingsRestore makes the result of a run a failure for err, the
+// failed restore of the settings file (hookSettingsRestore): Success false,
+// the text of err in Error (after an error the run already had), and err in
+// the returned error.
+func failRunOnSettingsRestore(log *slog.Logger, taskID string, res *ExecutionResult, runErr, err error) (*ExecutionResult, error) {
+	log.Error("Claude settings restore failed with run_as_user set: the run fails",
+		slog.String("task_id", taskID),
+		slog.Any("error", err),
+	)
+	if res == nil {
+		res = &ExecutionResult{TaskID: taskID}
+	}
+	res.Success = false
+	if res.Error == "" {
+		res.Error = err.Error()
+	} else {
+		res.Error += "; " + err.Error()
+	}
+	return res, errors.Join(runErr, err)
 }
 
 // isOldHookFormat checks if the hooks map is in old format (e.g., "Stop": {"command": "..."})
