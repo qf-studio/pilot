@@ -1414,6 +1414,10 @@ type Runner struct {
 	// per-project knowledge" and leaves copy-back governed by the global
 	// navigator.copy_back switch alone. Set via SetNavigatorEnabledLookup.
 	navigatorEnabledLookup NavigatorEnabledLookup
+	// TASK-651: agentTokenRepoLookup gives the GitHub repository of the
+	// project config entry of a task path, the only repository a read token
+	// of the agent is made for. Set via SetAgentTokenRepoLookup.
+	agentTokenRepoLookup AgentTokenRepoLookup
 	// contractEvidenceFetchFn overrides getContractEvidence for testing, so
 	// tests can supply fake evidence without shelling out to the real
 	// `claude` CLI. nil uses the real getContractEvidence implementation.
@@ -1842,6 +1846,13 @@ func (r *Runner) SetContractContentFetcher(fetcher ContractContentFetcher) {
 // its clone. A nil lookup (the default) leaves copy-back enabled.
 func (r *Runner) SetNavigatorEnabledLookup(lookup NavigatorEnabledLookup) {
 	r.navigatorEnabledLookup = lookup
+}
+
+// SetAgentTokenRepoLookup sets the lookup of the repository a run_as_user run
+// gets a read token for (TASK-651). A nil lookup (the default) gives no run a
+// token.
+func (r *Runner) SetAgentTokenRepoLookup(lookup AgentTokenRepoLookup) {
+	r.agentTokenRepoLookup = lookup
 }
 
 // SetModelRouter sets the model router for complexity-based model and timeout selection.
@@ -4257,6 +4268,14 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				Error:   fmt.Sprintf("cross-project execution blocked: %v", err),
 			}, fmt.Errorf("cross-project execution blocked: %w", err)
 		}
+	}
+
+	// TASK-651: with run_as_user set the read token of the agent belongs to
+	// the run: one directory and one refresh for each backend process of the
+	// run (retries included), removed when the run ends on any path.
+	if tokenFile := r.startRunAgentTokenFile(ctx, task); tokenFile != nil {
+		defer tokenFile.Stop()
+		ctx = withAgentTokenFile(ctx, tokenFile)
 	}
 
 	// GH-3846: task spec passed its pre-execution validation gates above — record

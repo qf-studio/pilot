@@ -190,6 +190,28 @@ func agentReadTokenProvider(cfg *config.Config) executor.AgentReadTokenProvider 
 	}
 }
 
+// sweepAgentTokenDirsAtStart removes the read token directories of
+// run_as_user runs that a killed daemon left behind (TASK-651). The daemon
+// start calls it once, where it removes left worktrees, before any run; with
+// the option empty it removes nothing.
+func sweepAgentTokenDirsAtStart() int {
+	return executor.SweepAgentTokenDirs(logging.WithComponent("start"))
+}
+
+// newProjectAgentTokenRepoLookup returns the lookup of the repository a
+// run_as_user run gets a read token for (TASK-651): the "OWNER/NAME" of the
+// project config entry whose path is the project path of the task, "" for a
+// path of no entry or an entry with no GitHub owner and repo.
+func newProjectAgentTokenRepoLookup(cfg *config.Config) executor.AgentTokenRepoLookup {
+	return func(taskProjectPath string) string {
+		proj := cfg.FindProjectByPath(taskProjectPath)
+		if proj == nil || proj.GitHub == nil || proj.GitHub.Owner == "" || proj.GitHub.Repo == "" {
+			return ""
+		}
+		return proj.GitHub.Owner + "/" + proj.GitHub.Repo
+	}
+}
+
 // configuredGitHubRepos lists the "OWNER/NAME" repositories of the GitHub
 // config of the daemon: adapters.github.repo and the owner/repo of each
 // project.
@@ -1073,6 +1095,9 @@ Examples:
 				if gwTeamCleanup := wireProjectAccessChecker(gwRunner, cfg); gwTeamCleanup != nil {
 					defer gwTeamCleanup()
 				}
+
+				// TASK-651: remove the read token directories a killed daemon left.
+				sweepAgentTokenDirsAtStart()
 
 				// GH-962: Clean up orphaned worktree directories from previous crashed executions
 				if cfg.Executor != nil && cfg.Executor.EffectiveUseWorktree() {
@@ -2636,11 +2661,17 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, startPreflight func(
 	// polling mode, mirroring the dependency lookup wiring above.
 	runner.SetContractContentFetcher(newProjectContractContentFetcher(cfg))
 	runner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
+	// TASK-651: the read token of a run_as_user run is for the repository of
+	// the project config entry of the task path, next to the provider above.
+	runner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg))
 
 	// Set up team project access checker if configured (GH-635)
 	if teamCleanup := wireProjectAccessChecker(runner, cfg); teamCleanup != nil {
 		defer teamCleanup()
 	}
+
+	// TASK-651: remove the read token directories a killed daemon left.
+	sweepAgentTokenDirsAtStart()
 
 	// GH-962: Clean up orphaned worktree directories from previous crashed executions
 	if cfg.Executor != nil && cfg.Executor.EffectiveUseWorktree() {

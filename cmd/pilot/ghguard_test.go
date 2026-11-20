@@ -236,7 +236,8 @@ func TestRunGhGuard_AllowFallsBackWhenRealGhUnset(t *testing.T) {
 
 // TestRunGhGuard_TokenFileSetsGhToken (TASK-651): with PILOT_GH_TOKEN_FILE
 // set and the file readable, the real gh gets its content, cut of white
-// space, as GH_TOKEN; with no file, an empty file or no name, no GH_TOKEN.
+// space, as GH_TOKEN; with no file, an empty file, a file over 1024 bytes or
+// no name, no GH_TOKEN.
 func TestRunGhGuard_TokenFileSetsGhToken(t *testing.T) {
 	t.Setenv("GH_TOKEN", "")
 	if err := os.Unsetenv("GH_TOKEN"); err != nil {
@@ -255,6 +256,15 @@ func TestRunGhGuard_TokenFileSetsGhToken(t *testing.T) {
 	if err := os.WriteFile(emptyFile, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	maxFile := filepath.Join(tmpDir, "max-token")
+	maxToken := strings.Repeat("t", 1024)
+	if err := os.WriteFile(maxFile, []byte(maxToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	largeFile := filepath.Join(tmpDir, "large-token")
+	if err := os.WriteFile(largeFile, []byte(strings.Repeat("t", 2000)), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name string
@@ -264,6 +274,8 @@ func TestRunGhGuard_TokenFileSetsGhToken(t *testing.T) {
 		{"token file", tokenFile, "test-read-token"},
 		{"missing file", filepath.Join(tmpDir, "absent"), ""},
 		{"empty file", emptyFile, ""},
+		{"file of 1024 bytes", maxFile, maxToken},
+		{"file of 2000 bytes", largeFile, ""},
 		{"no name", "", ""},
 	}
 	for _, tc := range tests {
