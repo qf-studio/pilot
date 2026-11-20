@@ -385,8 +385,11 @@ func TestRunAsUserKillOptionEmptyIsDirect(t *testing.T) {
 func stubRunAsHost(t *testing.T, goos string, daemonUID string, users map[string]string) {
 	t.Helper()
 	pg, pu, pc, po, pd, pw, pdd := lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups, runAsWorkspaceCheck, runAsDataDirCheck
-	pf := runAsFirewallCheck
+	pf, pe := runAsFirewallCheck, runAsGetenv
 	runAsGOOS = goos
+	// The Go proxy variables of the test process are not part of the stub
+	// host (TestRunAsUserPreflightRefusesGoProxyCredentials).
+	runAsGetenv = func(string) string { return "" }
 	// The workspace root, the data directory and the firewall are host
 	// checks of their own (workspacePreflight, TestRunAsDataDirModes,
 	// firewallPreflight).
@@ -410,7 +413,7 @@ func stubRunAsHost(t *testing.T, goos string, daemonUID string, users map[string
 	daemonGroups = func() ([]int, error) { return []int{1000, 6000}, nil }
 	t.Cleanup(func() {
 		lookupGrp, lookupUser, currentUID, runAsGOOS, daemonGroups, runAsWorkspaceCheck, runAsDataDirCheck = pg, pu, pc, po, pd, pw, pdd
-		runAsFirewallCheck = pf
+		runAsFirewallCheck, runAsGetenv = pf, pe
 	})
 }
 
@@ -459,6 +462,82 @@ func TestRunAsUserPreflightFailsClosed(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunAsUserPreflightRefusesGoProxyCredentials(t *testing.T) {
+	home := t.TempDir()
+	tests := []struct {
+		name      string
+		goproxy   string
+		goflags   string
+		wantCheck string
+	}{
+		{"empty", "", "", ""},
+		{"default list", "https://proxy.golang.org,direct", "", ""},
+		{"off", "off", "", ""},
+		{"name and password", "https://test-user:fake-password@proxy.example.com", "", runAsGoProxyCheck},
+		{"second element with a name only", "https://proxy.golang.org,https://test-user@proxy.example.com,direct", "", runAsGoProxyCheck},
+		{"pipe separator", "https://proxy.golang.org|https://test-user:fake-password@proxy.example.com", "", runAsGoProxyCheck},
+		{"element that is not a URL", "https://proxy.golang.org,https://test-user@%zz,direct", "", ""},
+		{"GOFLAGS without credentials", "", "-mod=mod GOPROXY=https://proxy.golang.org,direct", ""},
+		{"GOFLAGS with credentials", "", "-mod=mod GOPROXY=https://test-user:fake-password@proxy.example.com -trimpath", runAsGoFlagsProxyCheck},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setRunAsStateForTest(t, nil, "")
+			mockSudo(t, 0)
+			stubRunAsHost(t, "linux", "1000", map[string]string{"pilot-agent": home})
+			runAsGetenv = func(name string) string {
+				switch name {
+				case "GOPROXY":
+					return tc.goproxy
+				case "GOFLAGS":
+					return tc.goflags
+				}
+				return ""
+			}
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: "pilot-agent", RunAsGroup: "pilot-agents"}, "", true, 0)
+
+			err := RunAsUserPreflightError()
+			if tc.wantCheck == "" {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			if want := "run_as_user preflight failed: " + tc.wantCheck; err == nil || err.Error() != want {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+			if !strings.Contains(err.Error(), "GOPROXY") || !strings.Contains(buf.String(), "GOPROXY") {
+				t.Errorf("the refusal does not name GOPROXY: err=%q log=%q", err, buf.String())
+			}
+			for _, part := range []string{"test-user", "fake-password", "proxy.example.com"} {
+				if strings.Contains(err.Error(), part) || strings.Contains(buf.String(), part) {
+					t.Errorf("the refusal prints %q of the value: err=%q log=%q", part, err, buf.String())
+				}
+			}
+		})
+	}
+
+	t.Run("option empty", func(t *testing.T) {
+		setRunAsStateForTest(t, nil, "")
+		prev := runAsGetenv
+		t.Cleanup(func() { runAsGetenv = prev })
+		read := false
+		runAsGetenv = func(string) string { read = true; return "https://test-user:fake-password@proxy.example.com" }
+		PreflightRunAsUser(&ClaudeCodeConfig{}, "", true, 0)
+		if read {
+			t.Error("the empty option read the Go proxy variables")
+		}
+		if err := RunAsUserPreflightError(); err != nil {
+			t.Errorf("the empty option refused: %v", err)
+		}
+	})
 }
 
 func TestRunAsUserPreflightPasses(t *testing.T) {
