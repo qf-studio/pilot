@@ -42,9 +42,10 @@ func runMutationModeEnvs(t *testing.T, test func(t *testing.T, e mutationModeEnv
 }
 
 // writeThroughEvidence is the real write of the seam: as the agent user with
-// the option set.
+// the option set. The write gives the file the mode it gets (GH-6652): 0644,
+// the mode of the seeded files.
 func writeThroughEvidence(path string, data []byte) error {
-	return evidenceWriteFile(context.Background(), path, data, 0o600)
+	return evidenceWriteFile(context.Background(), path, data, 0o644)
 }
 
 // countCheckoutForTest counts the calls of mutationGitCheckout.
