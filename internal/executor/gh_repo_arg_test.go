@@ -3,10 +3,12 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -426,5 +428,242 @@ func TestMemoryGraphCancelledContextIsTheContextError(t *testing.T) {
 	}
 	if w := logLines(logs.String(), "WARN", "memory-doc guard"); len(w) != 0 {
 		t.Errorf("Warn lines for a cancelled context %q, want none", w)
+	}
+}
+
+// mockSudoSlow puts a mock sudo first on PATH that waits delay and then hands
+// the call to the sudo that was first on PATH before (mockSudoAgent).
+func mockSudoSlow(t *testing.T, delay string) {
+	t.Helper()
+	prev, err := exec.LookPath("sudo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	body := `#!/bin/sh
+sleep ` + delay + `
+exec '` + prev + `' "$@"
+`
+	if err := os.WriteFile(filepath.Join(dir, "sudo"), []byte(body), 0o755); err != nil { //nolint:gosec // mock must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestMemoryGraphBudgetCountsOnlyFailedReads(t *testing.T) {
+	const budgetWarn = "read budget of the delivery is used up"
+
+	t.Run("good reads cost nothing", func(t *testing.T) {
+		e := newHandOverPushEnv(t)
+		writeWorkspaceGraph(t, e.ws)
+		// 1000 reads of 40 ms each are 40 s, more than the budget of 30 s.
+		mockSudoSlow(t, "0.04")
+		logs := captureLog(t)
+		path := filepath.Join(e.ws, graphJSONRelPath)
+
+		const reads, workers = 1000, 20
+		var reads0 memoryGraphReads
+		jobs := make(chan int)
+		errs := make(chan error, reads)
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := range jobs {
+					raw, err := readMemoryGraphFile(context.Background(), &reads0, path)
+					if err != nil || len(raw) == 0 {
+						errs <- fmt.Errorf("read %d = %d bytes, %v; want the content", i, len(raw), err)
+					}
+				}
+			}()
+		}
+		for i := 0; i < reads; i++ {
+			jobs <- i
+		}
+		close(jobs)
+		wg.Wait()
+		close(errs)
+		n := 0
+		for err := range errs {
+			if n++; n <= 5 {
+				t.Error(err)
+			}
+		}
+		if n > 0 {
+			t.Errorf("%d of %d good reads gave no content", n, reads)
+		}
+		if w := logLines(logs.String(), "WARN", budgetWarn); len(w) != 0 {
+			t.Errorf("budget Warn lines %q for good reads, want none", w)
+		}
+	})
+
+	t.Run("reads that end by the time limit use it up", func(t *testing.T) {
+		e := newHandOverPushEnv(t)
+		writeWorkspaceGraph(t, e.ws)
+		mockSudoBlockingGraphRead(t)
+		prevTimeout, prevBudget := memoryGraphReadTimeout, memoryGraphReadBudget
+		memoryGraphReadTimeout = 300 * time.Millisecond
+		memoryGraphReadBudget = 5 * memoryGraphReadTimeout
+		t.Cleanup(func() { memoryGraphReadTimeout, memoryGraphReadBudget = prevTimeout, prevBudget })
+		logs := captureLog(t)
+		path := filepath.Join(e.ws, graphJSONRelPath)
+
+		var reads memoryGraphReads
+		for i := 0; i < 5; i++ {
+			start := time.Now()
+			raw, err := readMemoryGraphFile(context.Background(), &reads, path)
+			if raw != nil || !os.IsNotExist(err) {
+				t.Errorf("read %d = %q, %v; want a missing file", i, raw, err)
+			}
+			if took := time.Since(start); took < memoryGraphReadTimeout {
+				t.Errorf("read %d took %s, want it to end by the time limit %s", i, took, memoryGraphReadTimeout)
+			}
+		}
+		if w := logLines(logs.String(), "WARN", budgetWarn); len(w) != 0 {
+			t.Fatalf("budget Warn lines %q after five reads, want none", w)
+		}
+		start := time.Now()
+		raw, err := readMemoryGraphFile(context.Background(), &reads, path)
+		if raw != nil || !os.IsNotExist(err) {
+			t.Errorf("sixth read = %q, %v; want a missing file", raw, err)
+		}
+		if took := time.Since(start); took >= memoryGraphReadTimeout {
+			t.Errorf("sixth read took %s, want no read once the budget is used up", took)
+		}
+		if _, err := readMemoryGraphFile(context.Background(), &reads, path); !os.IsNotExist(err) {
+			t.Errorf("seventh read = %v, want a missing file", err)
+		}
+		if w := logLines(logs.String(), "WARN", budgetWarn); len(w) != 1 {
+			t.Errorf("budget Warn lines %q, want one", w)
+		}
+	})
+
+	t.Run("a cancelled context of the delivery ends the reads", func(t *testing.T) {
+		e := newHandOverPushEnv(t)
+		writeWorkspaceGraph(t, e.ws)
+		mockSudoSlow(t, "0.04")
+		path := filepath.Join(e.ws, graphJSONRelPath)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		time.AfterFunc(500*time.Millisecond, cancel)
+		var reads memoryGraphReads
+		var err error
+		good := 0
+		for i := 0; i < 1000; i++ {
+			var raw []byte
+			if raw, err = readMemoryGraphFile(ctx, &reads, path); err != nil {
+				break
+			}
+			if len(raw) == 0 {
+				t.Fatalf("read %d gave no content", i)
+			}
+			good++
+		}
+		if !errors.Is(err, context.Canceled) || os.IsNotExist(err) {
+			t.Errorf("reads after the cancel = %v, want context.Canceled", err)
+		}
+		if good == 0 || good >= 1000 {
+			t.Errorf("good reads before the cancel = %d, want some and not all", good)
+		}
+	})
+}
+
+func TestGhHelpersFetchIssueStateLeavesTheWorkspace(t *testing.T) {
+	prev := ghCLIIssueStateShelloutInTests
+	ghCLIIssueStateShelloutInTests = true
+	t.Cleanup(func() { ghCLIIssueStateShelloutInTests = prev })
+	task := &Task{ID: "GH-7"}
+
+	t.Run("agent workspace on record", func(t *testing.T) {
+		e := newHandOverPushEnv(t)
+		wsGit(t, e.repo, "remote", "set-url", "origin", epicWorkspaceGhRemote)
+		// The agent plants a remote of another owner in the workspace.
+		wsGit(t, e.ws, "remote", "set-url", "origin", "https://github.com/attacker/evil.git")
+		ghLog := mockEpicGh(t)
+		sudoBefore := len(sudoCalls(t, e.sudoLog))
+
+		state, err := fetchIssueState(context.Background(), newSilentRunnerTask359(), task, e.ws)
+		if err != nil || state.Closed {
+			t.Fatalf("fetchIssueState = %+v, %v; want an open issue", state, err)
+		}
+		calls := sudoCalls(t, ghLog)
+		if len(calls) != 1 {
+			t.Fatalf("gh calls = %d, want 1:\n%s", len(calls), strings.Join(calls, "\n"))
+		}
+		dir, args, _ := strings.Cut(calls[0], "| ")
+		if daemonDir := resolvedTestPath(t, e.repo); dir != daemonDir {
+			t.Errorf("gh ran in %s, want the daemon's repository %s", dir, daemonDir)
+		}
+		if !strings.HasPrefix(args, "issue view 7 --repo ghe.example.com/daemon-owner/daemon-repo ") {
+			t.Errorf("gh call %s, want issue view 7 with --repo HOST/OWNER/NAME of the daemon's remote", args)
+		}
+		if strings.Contains(args, "attacker") || strings.Contains(args, "evil") {
+			t.Errorf("gh took the remote of the workspace: %s", args)
+		}
+		for _, c := range sudoCalls(t, e.sudoLog)[sudoBefore:] {
+			if strings.Contains(c, "remote") {
+				t.Errorf("the remote of the workspace was read as the agent user: %s", c)
+			}
+		}
+	})
+
+	t.Run("workspace path with no record", func(t *testing.T) {
+		e := newHandOverPushEnv(t)
+		stray := filepath.Join(e.root, "pilot-ws-no-record")
+		if err := os.MkdirAll(stray, 0o755); err != nil { //nolint:gosec // test directory
+			t.Fatal(err)
+		}
+		ghLog := mockEpicGh(t)
+
+		if _, err := fetchIssueState(context.Background(), newSilentRunnerTask359(), task, stray); err == nil {
+			t.Error("fetchIssueState with a workspace path with no record: nil error")
+		}
+		if calls := sudoCalls(t, ghLog); len(calls) != 0 {
+			t.Errorf("gh ran for a workspace path with no record:\n%s", strings.Join(calls, "\n"))
+		}
+	})
+
+	t.Run("option empty", func(t *testing.T) {
+		setRunAsStateForTest(t, nil, "")
+		repo, _ := setupTestRepoWithRemote(t)
+		wsGit(t, repo, "remote", "set-url", "origin", "https://github.com/some-owner/some-repo.git")
+		ghLog := mockEpicGh(t)
+
+		if _, err := fetchIssueState(context.Background(), newSilentRunnerTask359(), task, repo); err != nil {
+			t.Fatalf("fetchIssueState: %v", err)
+		}
+		calls := sudoCalls(t, ghLog)
+		if len(calls) != 1 {
+			t.Fatalf("gh calls = %d, want 1:\n%s", len(calls), strings.Join(calls, "\n"))
+		}
+		dir, args, _ := strings.Cut(calls[0], "| ")
+		if dir == resolvedTestPath(t, repo) {
+			t.Errorf("option empty: gh ran in the repository %s, want the directory of the daemon", dir)
+		}
+		if !strings.HasPrefix(args, "issue view 7 --repo some-owner/some-repo ") {
+			t.Errorf("option empty: gh call %s, want issue view 7 --repo some-owner/some-repo", args)
+		}
+	})
+}
+
+func TestGhHelpersGitOperationsWithNoDaemonRepoRunNoGh(t *testing.T) {
+	e := newHandOverPushEnv(t)
+	ghLog := mockEpicGh(t)
+
+	for name, g := range map[string]*GitOperations{
+		"NewGitOperations":                      NewGitOperations(e.ws),
+		"newGitOperationsForWorkspace, no repo": newGitOperationsForWorkspace(e.ws, ""),
+	} {
+		if url, err := g.FindOpenPRByBranch(context.Background(), "pilot/GH-1"); err == nil {
+			t.Errorf("%s: FindOpenPRByBranch = %q, nil; want an error", name, url)
+		}
+		if url, err := g.FindMergedPRByBranch(context.Background(), "pilot/GH-1"); err == nil {
+			t.Errorf("%s: FindMergedPRByBranch = %q, nil; want an error", name, url)
+		}
+	}
+	if calls := sudoCalls(t, ghLog); len(calls) != 0 {
+		t.Errorf("gh ran for an agent workspace with no daemon repository:\n%s", strings.Join(calls, "\n"))
 	}
 }

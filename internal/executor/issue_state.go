@@ -81,7 +81,18 @@ type IssueStateChecker interface {
 // out to `gh issue view`, the same idiom already used throughout this
 // package (epic.go's queryParentDoneViaGitHub, sideeffect_audit.go) to read
 // GitHub state without importing adapters/github.
-type ghCLIIssueStateChecker struct{}
+type ghCLIIssueStateChecker struct {
+	// dir and repoArgs (TASK-651) are the directory of the gh command and
+	// the arguments that name its repository, from ghDirForExecutionPath for
+	// an agent workspace. With repoArgs nil gh runs in the directory of the
+	// daemon with --repo owner/repo, the call of today.
+	dir      string
+	repoArgs []string
+}
+
+// ghCLIIssueStateShelloutInTests lets a test that puts a fake gh first on
+// PATH run the gh command of ghCLIIssueStateChecker.
+var ghCLIIssueStateShelloutInTests = false
 
 // GetIssueState implements IssueStateChecker via `gh issue view --repo
 // owner/repo <number> --json state,labels,body` (body added GH-5193 so the
@@ -89,16 +100,18 @@ type ghCLIIssueStateChecker struct{}
 // invocation (one GitHub API call). Never shells out during `go test` —
 // tests override fetchIssueState (or inject a fake IssueStateChecker via
 // RegisterIssueStateChecker) instead of exercising this path.
-func (ghCLIIssueStateChecker) GetIssueState(ctx context.Context, owner, repo string, number int) (IssueState, error) {
-	if testing.Testing() {
+func (c ghCLIIssueStateChecker) GetIssueState(ctx context.Context, owner, repo string, number int) (IssueState, error) {
+	if testing.Testing() && !ghCLIIssueStateShelloutInTests {
 		return IssueState{}, fmt.Errorf("ghCLIIssueStateChecker: shellout disabled under go test")
 	}
-	args := []string{
-		"issue", "view", strconv.Itoa(number),
-		"--repo", owner + "/" + repo,
-		"--json", "state,labels,body",
+	repoArgs := c.repoArgs
+	if repoArgs == nil {
+		repoArgs = []string{"--repo", owner + "/" + repo}
 	}
+	args := append([]string{"issue", "view", strconv.Itoa(number)}, repoArgs...)
+	args = append(args, "--json", "state,labels,body")
 	cmd := withGhCredentials(ctx, exec.CommandContext(ctx, "gh", args...))
+	cmd.Dir = c.dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -198,7 +211,11 @@ func resolveLiveIssueBody(ctx context.Context, runner *Runner, task *Task, proje
 // from a fresh GitHub event), else the `origin` remote at projectPath —
 // buildTaskFromExecution never populates SourceRepo (the executions table
 // has no matching column), so the dispatcher pickup site always falls
-// through to the git-remote path.
+// through to the git-remote path. TASK-651: projectPath is resolved through
+// ghDirForExecutionPath first, so for an agent workspace the remote read and
+// the gh fallback use the daemon's repository and its --repo argument, never
+// the remote of the workspace; an error of the resolve is the error of the
+// call, and no gh command runs.
 //
 // Checker resolution: the per-repo SDK-backed checker registered via
 // RegisterIssueStateChecker when one exists for "github:owner/repo", else
@@ -219,12 +236,17 @@ var fetchIssueState = func(ctx context.Context, runner *Runner, task *Task, proj
 		return IssueState{}, fmt.Errorf("fetchIssueState: parse issue number %q: %w", numStr, err)
 	}
 
+	ghDir, repoArgs, err := ghDirForExecutionPath(ctx, projectPath)
+	if err != nil {
+		return IssueState{}, fmt.Errorf("fetchIssueState: %w", err)
+	}
+
 	owner, repo := "", ""
 	if task.SourceRepo != "" {
 		owner, repo, _ = strings.Cut(task.SourceRepo, "/")
 	}
 	if owner == "" || repo == "" {
-		owner, repo, err = resolveGitRemote(ctx, projectPath)
+		owner, repo, err = resolveGitRemote(ctx, ghDir)
 		if err != nil {
 			return IssueState{}, fmt.Errorf("fetchIssueState: resolve repo: %w", err)
 		}
@@ -236,6 +258,9 @@ var fetchIssueState = func(ctx context.Context, runner *Runner, task *Task, proj
 	}
 	if checker == nil {
 		checker = ghCLIIssueStateChecker{}
+		if repoArgs != nil {
+			checker = ghCLIIssueStateChecker{dir: ghDir, repoArgs: repoArgs}
+		}
 	}
 	return checker.GetIssueState(ctx, owner, repo, num)
 }
