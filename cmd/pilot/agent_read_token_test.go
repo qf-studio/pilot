@@ -7,6 +7,11 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +19,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -566,53 +572,160 @@ func TestAgentTokenRepoLookupCanonicalPath(t *testing.T) {
 	}
 }
 
-// agentTokenStartPathExempt are the files of the package that build a Runner
-// and need neither the read token provider nor the repository lookup.
-var agentTokenStartPathExempt = map[string]string{
-	"navigator.go":   "pilot navigator bootstrap runs one session that writes .agent/ only, not a task run",
-	"interactive.go": "the interactive menu is not a start path of TASK-651; its runner sets no project lookup at all",
+// agentTokenRunnerExempt are the Runners of the package, by
+// "file:function:argument of NewRunner*", that need neither the read token
+// provider nor the repository lookup.
+var agentTokenRunnerExempt = map[string]string{
+	"navigator.go:newNavigatorBootstrapCmd:cfg.Executor": "pilot navigator bootstrap runs one session that writes .agent/ only, not a task run",
+	"commands.go:newTaskCmd:dryRunBackendCfg":            "the dry run of pilot task builds the prompt only and runs nothing",
+	"commands.go:newGitHubRunCmd:ghBackendCfg":           "the dry run of pilot github run builds the prompt only and runs nothing",
 }
 
-// TestAgentTokenProviderOnEachStartPath (TASK-651): each file of cmd/pilot that
-// builds a Runner for task runs, not on the exempt list, installs the read
-// token provider next to each call that sets the repository lookup: with no
-// provider a run_as_user run gets no token. The lookup follows the Navigator
-// lookup where a site sets one.
+// agentTokenExecutorPath is the import path of the executor package.
+const agentTokenExecutorPath = "github.com/qf-studio/pilot/internal/executor"
+
+// agentTokenRunnerProblems checks each call of NewRunner* of the executor
+// package in f (under each import name of the package): the Runner it makes
+// must get SetAgentTokenRepoLookup, and installAgentReadTokenProvider must be
+// called, later in the same block of the same function — or the Runner is on
+// exempt. It returns one problem per Runner that fails and marks each exempt
+// key it meets in seen.
+func agentTokenRunnerProblems(fset *token.FileSet, file string, f *ast.File, exempt map[string]string, seen map[string]bool) []string {
+	pkg := ""
+	for _, imp := range f.Imports {
+		if path, _ := strconv.Unquote(imp.Path.Value); path == agentTokenExecutorPath {
+			pkg = "executor"
+			if imp.Name != nil {
+				pkg = imp.Name.Name
+			}
+		}
+	}
+	if pkg == "" || pkg == "_" {
+		return nil
+	}
+	isNewRunner := func(fun ast.Expr) bool {
+		switch fn := fun.(type) {
+		case *ast.SelectorExpr:
+			x, ok := fn.X.(*ast.Ident)
+			return ok && x.Name == pkg && strings.HasPrefix(fn.Sel.Name, "NewRunner")
+		case *ast.Ident:
+			return pkg == "." && strings.HasPrefix(fn.Name, "NewRunner")
+		}
+		return false
+	}
+
+	var problems []string
+	var stack []ast.Node
+	ast.Inspect(f, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		stack = append(stack, n)
+		call, ok := n.(*ast.CallExpr)
+		if !ok || !isNewRunner(call.Fun) {
+			return true
+		}
+		pos := fset.Position(call.Pos())
+		where := fmt.Sprintf("%s:%d", file, pos.Line)
+		funcName := ""
+		var block *ast.BlockStmt
+		for _, s := range stack {
+			switch s := s.(type) {
+			case *ast.FuncDecl:
+				funcName = s.Name.Name
+			case *ast.BlockStmt:
+				block = s
+			}
+		}
+		arg := ""
+		if len(call.Args) > 0 {
+			arg = types.ExprString(call.Args[0])
+		}
+		key := file + ":" + funcName + ":" + arg
+		if _, ok := exempt[key]; ok {
+			seen[key] = true
+			return true
+		}
+		name := ""
+		switch parent := stack[len(stack)-2].(type) {
+		case *ast.AssignStmt:
+			if id, ok := parent.Lhs[0].(*ast.Ident); ok && len(parent.Rhs) == 1 {
+				name = id.Name
+			}
+		case *ast.ValueSpec:
+			name = parent.Names[0].Name
+		}
+		if name == "" || name == "_" || block == nil {
+			problems = append(problems, fmt.Sprintf("%s: %s makes a Runner that is not assigned to a name; assign it or add %q to the exempt list with a reason", where, funcName, key))
+			return true
+		}
+		lookup, install := false, false
+		ast.Inspect(block, func(n ast.Node) bool {
+			if _, ok := n.(*ast.FuncLit); ok {
+				return false // another function
+			}
+			c, ok := n.(*ast.CallExpr)
+			if !ok || c.Pos() < call.End() {
+				return true
+			}
+			switch fn := c.Fun.(type) {
+			case *ast.SelectorExpr:
+				if x, ok := fn.X.(*ast.Ident); ok && x.Name == name && fn.Sel.Name == "SetAgentTokenRepoLookup" {
+					lookup = true
+				}
+			case *ast.Ident:
+				if fn.Name == "installAgentReadTokenProvider" {
+					install = true
+				}
+			}
+			return true
+		})
+		if !lookup || !install {
+			problems = append(problems, fmt.Sprintf("%s: %s makes the Runner %s: %s.SetAgentTokenRepoLookup called %v, installAgentReadTokenProvider called %v in the same function; want both, or add %q to the exempt list with a reason",
+				where, funcName, name, name, lookup, install, key))
+		}
+		return true
+	})
+	return problems
+}
+
+// parseCmdPilotFile parses src as the file name of the package.
+func parseCmdPilotFile(t *testing.T, fset *token.FileSet, name string, src []byte) *ast.File {
+	t.Helper()
+	f, err := parser.ParseFile(fset, name, src, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", name, err)
+	}
+	return f
+}
+
+// TestAgentTokenProviderOnEachStartPath (TASK-651): each Runner that a file of
+// cmd/pilot that is not a test builds — each call of executor.NewRunner*,
+// under each import name of the executor package — gets the repository
+// lookup, and the read token provider is installed, in the same function;
+// or the Runner is on the exempt list with a reason. With no provider a
+// run_as_user run gets no token. The lookup follows the Navigator lookup
+// where a site sets one, and the provider install follows each lookup.
 func TestAgentTokenProviderOnEachStartPath(t *testing.T) {
 	const (
 		nav     = ".SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))"
 		lookup  = ".SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg))"
 		install = "installAgentReadTokenProvider(cfg)"
 	)
-	// The start paths: the polling runner, the two gateway runners and the
-	// pilot instance of the orchestrator in main.go; pilot task and pilot
-	// github run in commands.go.
-	want := map[string]int{"main.go": 4, "commands.go": 2}
+	fset := token.NewFileSet()
 	seen := map[string]bool{}
+	sources := map[string][]byte{}
 	for _, file := range cmdPilotSourceFiles(t) {
 		raw, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
 		}
-		src := string(raw)
-		if !strings.Contains(src, "executor.NewRunner") {
-			continue
+		sources[file] = raw
+		for _, p := range agentTokenRunnerProblems(fset, file, parseCmdPilotFile(t, fset, file, raw), agentTokenRunnerExempt, seen) {
+			t.Error(p)
 		}
-		if _, ok := agentTokenStartPathExempt[file]; ok {
-			seen[file] = true
-			continue
-		}
-		lookupN, installN := strings.Count(src, lookup), strings.Count(src, "\t"+install+"\n")
-		if lookupN == 0 || installN == 0 {
-			t.Errorf("%s builds a Runner: %d repository lookup calls, %d provider install calls, want both (or add it to the exempt list with a reason)", file, lookupN, installN)
-		}
-		if w, ok := want[file]; ok && lookupN != w {
-			t.Errorf("%s: %d repository lookup calls, want %d (update this test with the new runner)", file, lookupN, w)
-		}
-		if installN != lookupN {
-			t.Errorf("%s: %d provider install calls for %d repository lookup calls", file, installN, lookupN)
-		}
-		lines := strings.Split(src, "\n")
+		lines := strings.Split(string(raw), "\n")
 		for i, line := range lines {
 			trimmed := strings.TrimSpace(line)
 			next := ""
@@ -627,14 +740,65 @@ func TestAgentTokenProviderOnEachStartPath(t *testing.T) {
 			}
 		}
 	}
-	for file := range want {
-		if _, err := os.Stat(file); err != nil {
-			t.Errorf("%s: %v", file, err)
+	for key := range agentTokenRunnerExempt {
+		if !seen[key] {
+			t.Errorf("exempt Runner %s is not built: remove it from the list", key)
 		}
 	}
-	for file := range agentTokenStartPathExempt {
-		if !seen[file] {
-			t.Errorf("exempt file %s builds no Runner: remove it from the list", file)
+
+	// The check is per Runner, not per file.
+	t.Run("a second Runner in commands.go with neither call fails", func(t *testing.T) {
+		src := append(append([]byte{}, sources["commands.go"]...), []byte(`
+func agentTokenSecondRunner(cfg *config.Config) {
+	second, _ := executor.NewRunnerWithConfig(cfg.Executor)
+	_ = second
+}
+`)...)
+		fset := token.NewFileSet()
+		problems := agentTokenRunnerProblems(fset, "commands.go", parseCmdPilotFile(t, fset, "commands.go", src), agentTokenRunnerExempt, map[string]bool{})
+		if len(problems) != 1 || !strings.Contains(problems[0], "agentTokenSecondRunner") {
+			t.Errorf("problems = %q, want one for agentTokenSecondRunner", problems)
 		}
-	}
+	})
+	t.Run("each Runner of a function is checked: the dry run Runners are found without the exempt list", func(t *testing.T) {
+		fset := token.NewFileSet()
+		var problems []string
+		for _, file := range []string{"commands.go", "navigator.go"} {
+			problems = append(problems, agentTokenRunnerProblems(fset, file, parseCmdPilotFile(t, fset, file, sources[file]), nil, map[string]bool{})...)
+		}
+		if len(problems) != len(agentTokenRunnerExempt) {
+			t.Errorf("problems with no exempt list = %q, want one per exempt Runner (%d)", problems, len(agentTokenRunnerExempt))
+		}
+		for key := range agentTokenRunnerExempt {
+			found := false
+			for _, p := range problems {
+				found = found || strings.Contains(p, strconv.Quote(key))
+			}
+			if !found {
+				t.Errorf("no problem names %s", key)
+			}
+		}
+	})
+	t.Run("another import name of the executor package", func(t *testing.T) {
+		src := []byte(`package main
+
+import pexec "github.com/qf-studio/pilot/internal/executor"
+
+func agentTokenAliasedRunner() {
+	r, _ := pexec.NewRunner()
+	r.SetAgentTokenRepoLookup(nil)
+}
+
+func agentTokenAliasedRunnerWired(cfg *config.Config) {
+	r, _ := pexec.NewRunner()
+	r.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg))
+	installAgentReadTokenProvider(cfg)
+}
+`)
+		fset := token.NewFileSet()
+		problems := agentTokenRunnerProblems(fset, "alias.go", parseCmdPilotFile(t, fset, "alias.go", src), nil, map[string]bool{})
+		if len(problems) != 1 || !strings.Contains(problems[0], "agentTokenAliasedRunner makes") {
+			t.Errorf("problems = %q, want one for agentTokenAliasedRunner", problems)
+		}
+	})
 }

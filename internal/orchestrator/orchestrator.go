@@ -429,6 +429,12 @@ func (o *Orchestrator) SetAgentTokenRepoLookup(lookup executor.AgentTokenRepoLoo
 	o.runner.SetAgentTokenRepoLookup(lookup)
 }
 
+// AgentTokenRepoLookup returns the repository lookup of the read token its
+// runner asks, nil when none: the wiring tests of the callers call it.
+func (o *Orchestrator) AgentTokenRepoLookup() executor.AgentTokenRepoLookup {
+	return o.runner.AgentTokenRepoLookup()
+}
+
 // SetContractContentFetcher sets the fetcher used by the executor's
 // Contract Evidence gate (GH-5009/GH-5011/GH-5022) to independently verify
 // a citation's producer source. Mirrors SetContractDependencyLookup's

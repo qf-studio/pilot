@@ -185,6 +185,8 @@ func interactiveNewTask(cfg *config.Config) error {
 	runner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
 	// GH-4670: post-run GitHub side-effect audit — see GH-4649 incident.
 	runner.SetGithubSideEffectSearcher(executor.NewGithubSideEffectSearcher())
+	runner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
+	installAgentReadTokenProvider(cfg)
 	progress := executor.NewProgressDisplay(task.ID, taskDesc, true)
 
 	// Suppress slog progress output when visual display is active
