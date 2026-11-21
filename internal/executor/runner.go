@@ -5498,9 +5498,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		}
 		return runSettingsRestore()
 	}
-	// GH-6668: the amend of the lint fix stages every change; it leaves the
-	// settings file out while the restore has not run or did not bring the
-	// file back to its state before the run.
+	// GH-6668: the amend of the lint fix stages every change; it takes the
+	// settings file out of the index again while the restore has not run or
+	// did not bring the file back to its state before the run (GH-6676).
 	git.hookSettingsLeftChanged = func() bool {
 		if hookRestoreFunc == nil {
 			return false
@@ -7251,14 +7251,10 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 		// Pre-push lint gate (GH-1376)
 		if r.config != nil && r.config.PrePushLint != nil && *r.config.PrePushLint {
-			// GH-6668: the settings file is restored before the lint fix, whose
-			// amend stages every change, with either value of run_as_user; with
-			// the option set a failure fails the run before the push, with it
-			// empty the restore logged the warning.
-			if err := runSettingsRestore(); err != nil {
-				r.reportProgress(task.ID, "PR Failed", 100, err.Error())
-				return failRunOnSettingsRestore(log, task.ID, result, nil, err)
-			}
+			// GH-6676: no restore of the settings file here, the contract
+			// evidence session below still runs with the hook entries of the
+			// daemon; the amend of the lint fix takes the file out of the index
+			// (unstageHookSettings).
 			if !r.runPrePushLint(ctx, task, git, result, log) {
 				return result, nil
 			}
