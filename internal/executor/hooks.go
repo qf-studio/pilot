@@ -417,8 +417,9 @@ func settingsRestoreFailure(log *slog.Logger, settingsPath string, runAsSet bool
 // would hand the caller a failed task with an open PR. The failure is logged
 // as an Error and added to IntentWarning. The defer runs after the body of
 // executeWithOptions, so the completion memory the runner stores there never
-// holds it; the execution comment of the caller (buildExecutionComment in
-// cmd/pilot) shows it.
+// holds it. Only pilot github run shows it, in its execution comment
+// (buildExecutionComment in cmd/pilot, whose one caller it is); on a daemon
+// run the failure reaches only the log.
 func failRunOnSettingsRestore(log *slog.Logger, taskID string, res *ExecutionResult, runErr, err error) (*ExecutionResult, error) {
 	if res != nil && res.PRUrl != "" {
 		log.Error("Claude settings restore failed with run_as_user set after the PR was opened: the run keeps its result",

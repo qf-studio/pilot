@@ -1062,7 +1062,10 @@ type ExecutionResult struct {
 	// IntentWarning carries the unfixable pre-push lint issues, and with
 	// run_as_user set a failed restore of the settings file in the deferred
 	// cleanup of a run that has a PR it did not push (failRunOnSettingsRestore,
-	// GH-6626, GH-6661); the caller shows the warning in its execution comment.
+	// GH-6626, GH-6661). Only pilot github run shows the warning, in its
+	// execution comment (buildExecutionComment); the completion memory holds
+	// the lint issues but not the restore failure, which on a daemon run
+	// reaches only the log.
 	IntentWarning string
 	// TitleRejected indicates the task failed at the conventional-commit title
 	// guard and the runner has already posted a structured "how to fix" comment
