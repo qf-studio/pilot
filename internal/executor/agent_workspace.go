@@ -463,7 +463,7 @@ func transportWorkspaceBase(ctx context.Context, repoPath, wsPath, sha, branch, 
 		defer cancel()
 		cmd, err := agentCommand(cctx, "rm", "-f", "--", bundlePath)
 		if err == nil {
-			setAgentEnv(cmd, gitAgentBaseEnv())
+			setAgentToolEnv(cmd, gitAgentBaseEnv())
 			var out []byte
 			if out, err = cmd.CombinedOutput(); err != nil {
 				err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
@@ -488,7 +488,7 @@ func transportWorkspaceBase(ctx context.Context, repoPath, wsPath, sha, branch, 
 		_ = pw.Close()
 		return fmt.Errorf("agent workspace: store the bundle: %w", err)
 	}
-	setAgentEnv(store, gitAgentBaseEnv())
+	setAgentToolEnv(store, gitAgentBaseEnv())
 	var storeOut bytes.Buffer
 	store.Stdin, store.Stdout, store.Stderr = pr, &storeOut, &storeOut
 	if err := bundle.Start(); err != nil {
@@ -730,7 +730,7 @@ func removeAgentWorkspace(s *runAsSettings, path string) error {
 	defer cancel()
 	cmd, err := agentCommandAs(ctx, s, "rm", "-rf", "--", path)
 	if err == nil {
-		setAgentEnv(cmd, gitAgentBaseEnv())
+		setAgentToolEnv(cmd, gitAgentBaseEnv())
 		var out []byte
 		if out, err = cmd.CombinedOutput(); err != nil {
 			err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))

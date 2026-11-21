@@ -129,15 +129,21 @@ const lintProgram = "golangci-lint"
 // is read and the files of the fix are written by the agent user. A missing
 // program is read from the result of that run (lintProgramMissing) and
 // returns what the lookup in PATH returns with the option empty: no output
-// and exec.ErrNotFound.
+// and exec.ErrNotFound. A command that is not a sudo command of the agent
+// user (agentSudoCommandError) is an error and runs nothing, never a lint
+// that runs as the daemon user.
 func (g *GitOperations) runLintProgram(ctx context.Context, args ...string) ([]byte, error) {
-	if runAsSettingsNow() == nil {
+	s := runAsSettingsNow()
+	if s == nil {
 		cmd := exec.CommandContext(ctx, lintProgram, args...)
 		cmd.Dir = g.projectPath
 		return cmd.CombinedOutput()
 	}
 	cmd, err := agentCommand(ctx, lintProgram, args...)
 	if err != nil {
+		return nil, err
+	}
+	if err := agentSudoCommandError(cmd, s, "lint"); err != nil {
 		return nil, err
 	}
 	cmd.Dir = g.projectPath
@@ -150,18 +156,37 @@ func (g *GitOperations) runLintProgram(ctx context.Context, args ...string) ([]b
 }
 
 // lintProgramMissing reports whether a lint run as the agent user found no
-// lint program: exit status 127 (the shell or exec of the command), or the
-// "command not found" line with which sudo exits 1.
+// lint program: the "command not found" line with which sudo exits 1, or exit
+// status 127 (the shell or exec of the command) with no output or with only
+// the line of sudo or of the shell that says so. A present program that exits
+// 127 with other output is a lint failure with that output.
 func lintProgramMissing(output []byte, err error) bool {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
 		return false
 	}
-	if exitErr.ExitCode() == 127 {
-		return true
-	}
 	out := strings.TrimSpace(string(output))
-	return exitErr.ExitCode() == 1 && out == "sudo: "+lintProgram+": command not found"
+	switch exitErr.ExitCode() {
+	case 127:
+		return out == "" || lintNotFoundLine(out)
+	case 1:
+		return out == "sudo: "+lintProgram+": command not found"
+	}
+	return false
+}
+
+// lintNotFoundLine reports whether out is the one line of sudo or of a shell
+// that says the lint program is not found: "sudo: golangci-lint: command not
+// found", "sh: 1: golangci-lint: not found", "bash: golangci-lint: command not
+// found", "env: 'golangci-lint': No such file or directory" and the like.
+func lintNotFoundLine(out string) bool {
+	if strings.Contains(out, "\n") || !strings.Contains(out, lintProgram) {
+		return false
+	}
+	lower := strings.ToLower(out)
+	return strings.HasSuffix(lower, "command not found") ||
+		strings.HasSuffix(lower, ": not found") ||
+		strings.HasSuffix(lower, "no such file or directory")
 }
 
 // stageAndAmendCommit stages all changes and amends the last commit

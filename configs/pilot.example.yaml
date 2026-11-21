@@ -953,6 +953,7 @@ executor:
   #                                # with one Error line ("run_as_user preflight failed"). A failed
   #                                # startup check (user, sudo, home) stops every model spawn; there is no
   #                                # fallback to the daemon user.
+  #                                # With it set a gate, a hook, the lint and an evidence command get no ANTHROPIC_* and no CLAUDE_* name, so a test that calls a model API from a gate gets no key.
   #   run_as_workspace_dir: ""    # TASK-651 - root of the agent workspaces. With run_as_user set, every
   #                                # git command of the executor in a directory below this root runs as
   #                                # the agent user (sudo, allowlisted environment, no git credentials yet).

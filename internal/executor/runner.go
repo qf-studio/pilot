@@ -1060,9 +1060,9 @@ type ExecutionResult struct {
 	// mode is off. Shadow mode records it and acts on nothing.
 	PrePRReview *PrePRReviewOutcome
 	// IntentWarning carries the unfixable pre-push lint issues, and with
-	// run_as_user set a failed restore of the settings file after the PR was
-	// opened (failRunOnSettingsRestore, GH-6626); the PR is created and the
-	// caller shows the warning in its execution comment.
+	// run_as_user set a failed restore of the settings file in the deferred
+	// cleanup of a run that has a PR it did not push (failRunOnSettingsRestore,
+	// GH-6626, GH-6661); the caller shows the warning in its execution comment.
 	IntentWarning string
 	// TitleRejected indicates the task failed at the conventional-commit title
 	// guard and the runner has already posted a structured "how to fix" comment
@@ -5412,15 +5412,35 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		}
 	}
 
+	// runSettingsRestore runs hookRestoreFunc at most once: with run_as_user
+	// set the paths that reach the push run it before the push
+	// (restoreSettingsBeforePush, GH-6661), and the defer then does nothing.
+	settingsRestoreDone := false
+	runSettingsRestore := func() error {
+		if hookRestoreFunc == nil || settingsRestoreDone {
+			return nil
+		}
+		settingsRestoreDone = true
+		return hookRestoreFunc()
+	}
+	// restoreSettingsBeforePush is the restore of the settings file before a
+	// push with run_as_user set: a failure fails the run before the branch
+	// leaves the workspace (failRunOnSettingsRestore). With the option empty
+	// it does nothing and the defer restores as before.
+	restoreSettingsBeforePush := func() error {
+		if !runAsSet {
+			return nil
+		}
+		return runSettingsRestore()
+	}
+
 	// Ensure cleanup happens regardless of execution outcome
 	// TASK-651: with run_as_user set a failed restore fails the run, or adds
 	// a warning when the run already opened a PR (failRunOnSettingsRestore);
 	// with it empty the error was logged inside.
 	defer func() {
-		if hookRestoreFunc != nil {
-			if err := hookRestoreFunc(); err != nil {
-				outResult, outErr = failRunOnSettingsRestore(log, task.ID, outResult, outErr, err)
-			}
+		if err := runSettingsRestore(); err != nil {
+			outResult, outErr = failRunOnSettingsRestore(log, task.ID, outResult, outErr, err)
 		}
 	}()
 
@@ -5983,6 +6003,11 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		// unconditionally. Only reachable via the timedOut branch above —
 		// ordinary classified backend failures (rate limit, API error,
 		// refusal, ...) always fall through here exactly as before.
+		if timedOut {
+			if err := restoreSettingsBeforePush(); err != nil {
+				return failRunOnSettingsRestore(log, task.ID, result, nil, err)
+			}
+		}
 		if timedOut && r.attemptBackendTimeoutSalvage(ctx, task, git, result, executionPath, log, recorder, &preserveWorktreeOnPushFailure) {
 			return result, nil
 		}
@@ -6726,6 +6751,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					// exhausted-retries task goes through.
 					canHoldBranch := git != nil && task.Branch != "" && !task.DirectCommit && task.CreatePR
 					if taskCtxWasDone && canHoldBranch {
+						if err := restoreSettingsBeforePush(); err != nil {
+							return failRunOnSettingsRestore(log, task.ID, result, nil, err)
+						}
 						r.holdPushedBranch(ctx, task, git, result, log,
 							"quality gates failed and the task's deadline had already passed before the backend returned, so Pilot will not re-invoke Claude Code for a retry",
 							executionPath, &preserveWorktreeOnPushFailure)
@@ -7276,6 +7304,9 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		if task.DirectCommit {
 			r.reportProgress(task.ID, "Pushing", 96, "Pushing to main...")
 
+			if err := restoreSettingsBeforePush(); err != nil {
+				return failRunOnSettingsRestore(log, task.ID, result, nil, err)
+			}
 			if !r.pushDirectCommit(ctx, task, git, result, log) {
 				return result, nil
 			}
@@ -7435,6 +7466,14 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				)
 				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 				return result, nil
+			}
+
+			// GH-6661: with run_as_user set the settings file is restored
+			// before the lint fix, whose amend stages every change, and before
+			// the push; a failure fails the run with no branch on the remote.
+			if err := restoreSettingsBeforePush(); err != nil {
+				r.reportProgress(task.ID, "PR Failed", 100, err.Error())
+				return failRunOnSettingsRestore(log, task.ID, result, nil, err)
 			}
 
 			// Pre-push lint gate (GH-1376)

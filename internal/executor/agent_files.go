@@ -157,7 +157,7 @@ func runAgentFileScriptLimit(ctx context.Context, op, path, script string, stdin
 	if err != nil {
 		return nil, fmt.Errorf("run_as_user: %s %s as the agent user: %w", op, path, err)
 	}
-	setAgentEnv(cmd, gitAgentBaseEnv())
+	setAgentToolEnv(cmd, gitAgentBaseEnv())
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}

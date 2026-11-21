@@ -411,12 +411,14 @@ func settingsRestoreFailure(log *slog.Logger, settingsPath string, runAsSet bool
 // opened a PR (PRUrl set) keeps its result and its run error.
 //
 // Decision (GH-6626): a run that already opened a PR keeps its result and its
-// run error. The restore runs in the deferred cleanup, after CreatePR; a
-// failure there would hand the caller a failed task with an open PR. The
-// failure is logged as an Error and added to IntentWarning. The defer runs
-// after the body of executeWithOptions, so the completion memory the runner
-// stores there never holds it; the execution comment of the caller
-// (buildExecutionComment in cmd/pilot) shows it.
+// run error. Since GH-6661 the paths that push run the restore before the
+// push, where no PR is open yet; the deferred cleanup restores on the other
+// paths, among them a run that adopted a PR it did not push. A failure there
+// would hand the caller a failed task with an open PR. The failure is logged
+// as an Error and added to IntentWarning. The defer runs after the body of
+// executeWithOptions, so the completion memory the runner stores there never
+// holds it; the execution comment of the caller (buildExecutionComment in
+// cmd/pilot) shows it.
 func failRunOnSettingsRestore(log *slog.Logger, taskID string, res *ExecutionResult, runErr, err error) (*ExecutionResult, error) {
 	if res != nil && res.PRUrl != "" {
 		log.Error("Claude settings restore failed with run_as_user set after the PR was opened: the run keeps its result",

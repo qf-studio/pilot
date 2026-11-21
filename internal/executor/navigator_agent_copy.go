@@ -74,7 +74,7 @@ func copyNavigatorToAgentWorkspace(sourceRepo, worktreePath string) error {
 	if err != nil {
 		return fmt.Errorf("run_as_user: navigator copy into %s as the agent user: %w", worktreePath, err)
 	}
-	setAgentEnv(cmd, gitAgentBaseEnv())
+	setAgentToolEnv(cmd, gitAgentBaseEnv())
 	pr, pw := io.Pipe()
 	cmd.Stdin = pr
 	var once sync.Once
