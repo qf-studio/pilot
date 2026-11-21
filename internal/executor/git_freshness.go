@@ -87,7 +87,10 @@ func applyGhostSHAGuard(ctx context.Context, task *Task, result *ExecutionResult
 // changes. It auto-commits any stageable dirty paths (GitOperations.Commit
 // already excludes noise: .agent/, .claude/, node_modules/, lockfiles, etc.)
 // to the task branch as a wip(<task-id>) commit and pushes it, so a human or
-// a retry can pick the work up instead of it silently vanishing.
+// a retry can pick the work up instead of it silently vanishing. The exclude
+// of .claude/ keeps the settings file that holds the hook entries of the
+// daemon out of that commit, tracked or not, before the restore runs
+// (GH-6668).
 //
 // Returns preserved=false with no side effects when the tree is genuinely
 // clean, or when only excluded noise paths are dirty (GitOperations.Commit
