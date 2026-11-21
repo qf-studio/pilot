@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2196,6 +2197,32 @@ func fillDiffMetrics(ctx context.Context, task *Task, git *GitOperations, result
 	result.LinesAdded = diff.Added
 	result.LinesRemoved = diff.Removed
 	result.FilesChanged = len(diff.Files)
+}
+
+// runPrePushLint runs the pre-push lint gate (GH-1376) and puts the lint
+// issues it could not fix in IntentWarning. It returns false when the run
+// stops: a lint command refused with run_as_user set (GH-6668) fails the step
+// with the text of the refusal and one Error line; it is not a missing linter.
+func (r *Runner) runPrePushLint(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, log *slog.Logger) bool {
+	r.reportProgress(task.ID, "Linting", 95, "Running pre-push lint check...")
+	lintResult := git.autoFixLint(ctx, task.BaseBranch)
+	if lintResult.Err != nil {
+		log.Error("Pre-push lint command refused with run_as_user set: the run fails",
+			slog.String("task_id", task.ID),
+			slog.Any("error", lintResult.Err),
+		)
+		result.Success = false
+		result.Error = fmt.Sprintf("pre-push lint: %v", lintResult.Err)
+		r.reportProgress(task.ID, "Lint Failed", 100, result.Error)
+		return false
+	}
+	if !lintResult.Clean && !lintResult.FixedAll {
+		// Include unfixable lint issues in the execution result
+		if len(lintResult.Issues) > 0 {
+			result.IntentWarning = "Lint issues detected but not auto-fixable:\n" + strings.Join(lintResult.Issues, "\n")
+		}
+	}
+	return true
 }
 
 // applyGhostSHAGuardWithPreserve wraps the free applyGhostSHAGuard so a
@@ -5371,6 +5398,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		}
 	}
 
+	// GH-6668: the settings file before the daemon writes its entries into it,
+	// the state the amend of the lint fix compares with
+	// (git.hookSettingsLeftChanged below).
+	hookSettingsFile := filepath.Join(executionPath, filepath.FromSlash(hookSettingsRelPath))
+	hookSettingsBefore, hookSettingsBeforeErr := agentReadFile(ctx, hookSettingsFile)
+
 	// Setup Claude Code hooks if enabled (GH-1266)
 	var hookRestoreFunc func() error
 	if r.config != nil && r.config.Hooks != nil && r.config.Hooks.Enabled {
@@ -5464,6 +5497,22 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			return nil
 		}
 		return runSettingsRestore()
+	}
+	// GH-6668: the amend of the lint fix stages every change; it leaves the
+	// settings file out while the restore has not run or did not bring the
+	// file back to its state before the run.
+	git.hookSettingsLeftChanged = func() bool {
+		if hookRestoreFunc == nil {
+			return false
+		}
+		if !settingsRestoreDone {
+			return true
+		}
+		now, err := agentReadFile(context.Background(), hookSettingsFile)
+		if os.IsNotExist(err) && os.IsNotExist(hookSettingsBeforeErr) {
+			return false
+		}
+		return err != nil || hookSettingsBeforeErr != nil || !bytes.Equal(now, hookSettingsBefore)
 	}
 
 	// Ensure cleanup happens regardless of execution outcome
@@ -7202,13 +7251,16 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 		// Pre-push lint gate (GH-1376)
 		if r.config != nil && r.config.PrePushLint != nil && *r.config.PrePushLint {
-			r.reportProgress(task.ID, "Linting", 95, "Running pre-push lint check...")
-			lintResult := git.autoFixLint(ctx, task.BaseBranch)
-			if !lintResult.Clean && !lintResult.FixedAll {
-				// Include unfixable lint issues in the execution result
-				if len(lintResult.Issues) > 0 {
-					result.IntentWarning = "Lint issues detected but not auto-fixable:\n" + strings.Join(lintResult.Issues, "\n")
-				}
+			// GH-6668: the settings file is restored before the lint fix, whose
+			// amend stages every change, with either value of run_as_user; with
+			// the option set a failure fails the run before the push, with it
+			// empty the restore logged the warning.
+			if err := runSettingsRestore(); err != nil {
+				r.reportProgress(task.ID, "PR Failed", 100, err.Error())
+				return failRunOnSettingsRestore(log, task.ID, result, nil, err)
+			}
+			if !r.runPrePushLint(ctx, task, git, result, log) {
+				return result, nil
 			}
 		}
 
@@ -7513,13 +7565,8 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 			// Pre-push lint gate (GH-1376)
 			if r.config != nil && r.config.PrePushLint != nil && *r.config.PrePushLint {
-				r.reportProgress(task.ID, "Linting", 95, "Running pre-push lint check...")
-				lintResult := git.autoFixLint(ctx, task.BaseBranch)
-				if !lintResult.Clean && !lintResult.FixedAll {
-					// Include unfixable lint issues in the execution result
-					if len(lintResult.Issues) > 0 {
-						result.IntentWarning = "Lint issues detected but not auto-fixable:\n" + strings.Join(lintResult.Issues, "\n")
-					}
+				if !r.runPrePushLint(ctx, task, git, result, log) {
+					return result, nil
 				}
 			}
 			// Push branch — retry transient failures before declaring the work

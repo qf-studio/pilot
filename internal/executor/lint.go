@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,11 @@ type LintResult struct {
 	Linter   string
 	Issues   []string
 	FixedAll bool
+	// Err is a lint command that did not run (GH-6668): with run_as_user set
+	// a command that is not a sudo command of the agent user
+	// (lintCommandRefusedError). The caller fails the step with its text; it
+	// is neither a lint failure nor a missing program.
+	Err error
 }
 
 // defaultLintBaseRef is the ref lint compares against when no base branch
@@ -65,6 +71,9 @@ func (g *GitOperations) runLintCheck(ctx context.Context, baseBranch string) *Li
 		if err != nil {
 			result.Clean = false
 			result.Issues = []string{output}
+			if refusedLintCommand(err) {
+				result.Err = err
+			}
 		}
 	}
 	// Could extend with eslint, ruff, etc. in the future
@@ -75,13 +84,17 @@ func (g *GitOperations) runLintCheck(ctx context.Context, baseBranch string) *Li
 // autoFixLint attempts to auto-fix linting issues
 func (g *GitOperations) autoFixLint(ctx context.Context, baseBranch string) *LintResult {
 	result := g.runLintCheck(ctx, baseBranch)
-	if result.Clean {
+	if result.Clean || result.Err != nil {
 		return result
 	}
 
 	if result.Linter == "golangci-lint" {
 		// Attempt auto-fix
 		output, err := g.runLintProgram(ctx, "run", "--fix", "./...")
+		if refusedLintCommand(err) {
+			result.Err = err
+			return result
+		}
 		if err == nil {
 			// Verify fixes worked
 			verifyResult := g.runLintCheck(ctx, baseBranch)
@@ -130,8 +143,8 @@ const lintProgram = "golangci-lint"
 // program is read from the result of that run (lintProgramMissing) and
 // returns what the lookup in PATH returns with the option empty: no output
 // and exec.ErrNotFound. A command that is not a sudo command of the agent
-// user (agentSudoCommandError) is an error and runs nothing, never a lint
-// that runs as the daemon user.
+// user (agentSudoCommandError) is a lintCommandRefusedError and runs nothing,
+// never a lint that runs as the daemon user.
 func (g *GitOperations) runLintProgram(ctx context.Context, args ...string) ([]byte, error) {
 	s := runAsSettingsNow()
 	if s == nil {
@@ -141,10 +154,10 @@ func (g *GitOperations) runLintProgram(ctx context.Context, args ...string) ([]b
 	}
 	cmd, err := agentCommand(ctx, lintProgram, args...)
 	if err != nil {
-		return nil, err
+		return nil, &lintCommandRefusedError{err: err}
 	}
 	if err := agentSudoCommandError(cmd, s, "lint"); err != nil {
-		return nil, err
+		return nil, &lintCommandRefusedError{err: err}
 	}
 	cmd.Dir = g.projectPath
 	setAgentToolEnvIn(cmd, gitAgentBaseEnv(), g.projectPath)
@@ -155,11 +168,26 @@ func (g *GitOperations) runLintProgram(ctx context.Context, args ...string) ([]b
 	return output, err
 }
 
+// lintCommandRefusedError is a lint command that runLintProgram did not run with
+// run_as_user set: no command of the agent user could be built, or the one
+// built is not a sudo command of the agent user (agentSudoCommandError).
+type lintCommandRefusedError struct{ err error }
+
+func (e *lintCommandRefusedError) Error() string { return e.err.Error() }
+func (e *lintCommandRefusedError) Unwrap() error { return e.err }
+
+// refusedLintCommand reports whether err is a lintCommandRefusedError.
+func refusedLintCommand(err error) bool {
+	var refused *lintCommandRefusedError
+	return errors.As(err, &refused)
+}
+
 // lintProgramMissing reports whether a lint run as the agent user found no
 // lint program: the "command not found" line with which sudo exits 1, or exit
 // status 127 (the shell or exec of the command) with no output or with only
 // the line of sudo or of the shell that says so. A present program that exits
-// 127 with other output is a lint failure with that output.
+// 127 with other output, a "no such file or directory" line of its own among
+// them (GH-6668), is a lint failure with that output.
 func lintProgramMissing(output []byte, err error) bool {
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
@@ -178,21 +206,32 @@ func lintProgramMissing(output []byte, err error) bool {
 // lintNotFoundLine reports whether out is the one line of sudo or of a shell
 // that says the lint program is not found: "sudo: golangci-lint: command not
 // found", "sh: 1: golangci-lint: not found", "bash: golangci-lint: command not
-// found", "env: 'golangci-lint': No such file or directory" and the like.
+// found" and the like.
 func lintNotFoundLine(out string) bool {
 	if strings.Contains(out, "\n") || !strings.Contains(out, lintProgram) {
 		return false
 	}
 	lower := strings.ToLower(out)
 	return strings.HasSuffix(lower, "command not found") ||
-		strings.HasSuffix(lower, ": not found") ||
-		strings.HasSuffix(lower, "no such file or directory")
+		strings.HasSuffix(lower, ": not found")
 }
 
-// stageAndAmendCommit stages all changes and amends the last commit
+// hookSettingsRelPath is the settings file into which the daemon writes its
+// hook entries for a session, relative to the workspace.
+const hookSettingsRelPath = ".claude/settings.json"
+
+// stageAndAmendCommit stages all changes and amends the last commit. While the
+// settings file still holds the entries of the daemon (hookSettingsLeftChanged,
+// GH-6668) the stage leaves it out with a literal exclude and one Warn line.
 func (g *GitOperations) stageAndAmendCommit(ctx context.Context, message string) error {
+	addArgs := []string{"add", "-A"}
+	if g.hookSettingsLeftChanged != nil && g.hookSettingsLeftChanged() {
+		slog.Warn("lint fix: the Claude settings file differs from its state before the run; the amend leaves it out",
+			slog.String("path", filepath.Join(g.projectPath, filepath.FromSlash(hookSettingsRelPath))))
+		addArgs = append(addArgs, "--", ":/", ":(exclude,literal)"+hookSettingsRelPath)
+	}
 	// Stage all changes
-	stageCmd := g.gitCmd(ctx, "add", "-A")
+	stageCmd := g.gitCmd(ctx, addArgs...)
 	if _, err := stageCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to stage changes: %w", err)
 	}

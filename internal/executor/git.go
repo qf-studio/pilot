@@ -98,6 +98,13 @@ type GitOperations struct {
 	// graphReads is the read budget of the graph reads of this delivery
 	// (readMemoryGraphFile).
 	graphReads memoryGraphReads
+
+	// hookSettingsLeftChanged reports whether the settings file of the
+	// workspace (hookSettingsRelPath) still differs from its state before
+	// the daemon wrote its entries for the session: the restore did not run
+	// or did not bring the file back. The amend of the lint fix then leaves
+	// the file out (stageAndAmendCommit, GH-6668). nil: nothing to leave out.
+	hookSettingsLeftChanged func() bool
 }
 
 // NewGitOperations creates new git operations for a project

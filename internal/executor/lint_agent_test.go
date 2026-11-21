@@ -253,6 +253,18 @@ func TestLintExit127WithFindingsIsLintFailure(t *testing.T) {
 		t.Errorf("Issues = %q, want the output of the lint program", res.Issues)
 	}
 
+	// GH-6668: one line of the program that names it and ends with "no such
+	// file or directory" is a lint failure with that line, not a missing program.
+	const ownLine = "golangci-lint: open .golangci.yml: no such file or directory"
+	body = "#!/bin/sh\necho '" + ownLine + "'\nexit 127\n"
+	if err := os.WriteFile(filepath.Join(dir, "golangci-lint"), []byte(body), 0o755); err != nil { //nolint:gosec // mock must be executable
+		t.Fatal(err)
+	}
+	res = NewGitOperations(ws).runLintCheck(context.Background(), "main")
+	if res.Clean || !strings.Contains(strings.Join(res.Issues, "\n"), ownLine) {
+		t.Errorf("runLintCheck = %+v, want a lint failure with %q", res, ownLine)
+	}
+
 	exit := func(code int) error {
 		return exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
 	}
@@ -270,6 +282,8 @@ func TestLintExit127WithFindingsIsLintFailure(t *testing.T) {
 		{"a.go:1:1: finding", 127, false},
 		{"sh: 1: golangci-lint: not found\na.go:1:1: finding", 127, false},
 		{"sh: 1: other-tool: not found", 127, false},
+		{"golangci-lint: open .golangci.yml: no such file or directory", 127, false},
+		{"env: 'golangci-lint': No such file or directory", 127, false},
 		{"", 1, false},
 	} {
 		if got := lintProgramMissing([]byte(tc.out), exit(tc.code)); got != tc.want {
@@ -410,6 +424,84 @@ func TestSettingsRestoreFailureFailsRunThroughExecute(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("run error = %v, want one with %q", err, want)
+	}
+}
+
+// settingsBreakingCommitBackend breaks the settings file as
+// settingsBreakingBackend does and commits a file, so the run reaches the PR
+// step before the deferred restore fails. With originURL set it then points
+// the origin remote of daemonRepo at it: the workspace is already made, and
+// gh reads the repository of the PR lookup from that remote.
+type settingsBreakingCommitBackend struct {
+	settingsBreakingBackend
+	daemonRepo, originURL string
+}
+
+func (b *settingsBreakingCommitBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	if _, err := b.settingsBreakingBackend.Execute(ctx, opts); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(opts.ProjectPath, "work.go"), []byte("package work\n"), 0o600); err != nil {
+		return nil, err
+	}
+	cmd := exec.Command("git", "add", "work.go")
+	cmd.Dir = opts.ProjectPath
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("git add: %v: %s", err, out)
+	}
+	if err := gitTestCommitIn(opts.ProjectPath, "-m", "feat: work"); err != nil {
+		return nil, err
+	}
+	if b.originURL != "" {
+		if out, err := exec.Command("git", "-C", b.daemonRepo, "remote", "set-url", "origin", b.originURL).CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("git remote set-url: %v: %s", err, out)
+		}
+	}
+	return &BackendResult{Success: true, Output: "done"}, nil
+}
+
+// mutation pin: the deferred restore of executeWithOptions fails a run that already has a PR (failRunOnSettingsRestore not reached with PRUrl set) -> this test fails
+//
+// TestSettingsRestoreFailureKeepsOpenPRThroughExecute (GH-6646 item 2, back
+// in GH-6668): with the option set, a run that has a PR it did not push (the
+// merged PR of the branch that gh lists, checkAlreadyMergedBranch, so the run
+// stops before the restore before the push) keeps Success, its PR and a nil run error when the deferred
+// restore of the settings file fails; the failure reaches IntentWarning.
+func TestSettingsRestoreFailureKeepsOpenPRThroughExecute(t *testing.T) {
+	e := newAgentWorkspaceEnv(t)
+	const prURL = "https://github.com/o/r/pull/42"
+	setUpFakeGhPATH(t, []byte(`[{"url":"`+prURL+`"}]`), []byte(`[]`))
+	backend := &settingsBreakingCommitBackend{daemonRepo: e.repo, originURL: "https://github.com/o/r.git"}
+	runner := NewRunnerWithBackend(backend)
+	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.SetSkipPreflightChecks(true)
+	runner.SetRecordingEnabled(false)
+	runner.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	creator := &bodyCapturingPRCreator{}
+	runner.SetPRCreator(creator)
+	task := &Task{ID: "GH-6646", Title: "t", Description: "d", ProjectPath: e.repo, Branch: "pilot/GH-6646", CreatePR: true, BaseBranch: "main", SourceAdapter: "linear", SkipQualityGates: true}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	res, err := runner.Execute(ctx, task)
+	if len(backend.paths()) == 0 {
+		t.Fatal("the backend never ran")
+	}
+	if res == nil || res.PRUrl != prURL {
+		t.Fatalf("result = %+v, want a run with the PR %s", res, prURL)
+	}
+	if !res.Success {
+		t.Errorf("a run with a PR failed after the settings restore: Error = %q", res.Error)
+	}
+	if err != nil {
+		t.Errorf("run error = %v, want nil on a run with a PR", err)
+	}
+	const want = "restore of the claude settings file"
+	if !strings.Contains(res.IntentWarning, want) || !strings.Contains(res.IntentWarning, filepath.Join(".claude", "settings.json")) {
+		t.Errorf("IntentWarning = %q, want the restore failure naming the settings file", res.IntentWarning)
+	}
+	if strings.Contains(res.Error, want) {
+		t.Errorf("result Error = %q, want the restore failure in IntentWarning only", res.Error)
 	}
 }
 
