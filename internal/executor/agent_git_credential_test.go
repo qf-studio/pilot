@@ -452,6 +452,13 @@ func TestAgentGitRetryGateGetsTheHelperOfTheRun(t *testing.T) {
 	e := newAgentWorkspaceEnv(t)
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
+	// stackingAttemptBackend commits as the daemon user in the agent workspace,
+	// a clone with no user.name or user.email; a CI runner has no global
+	// identity either, and the commit fails there with "empty ident name".
+	t.Setenv("GIT_AUTHOR_NAME", "t")
+	t.Setenv("GIT_AUTHOR_EMAIL", "t@example.com")
+	t.Setenv("GIT_COMMITTER_NAME", "t")
+	t.Setenv("GIT_COMMITTER_EMAIL", "t@example.com")
 	p := &repoTokenProvider{}
 	setAgentReadTokenProviderForTest(t, p.provide)
 	prevBuilder := quality.CurrentCommandBuilder()
