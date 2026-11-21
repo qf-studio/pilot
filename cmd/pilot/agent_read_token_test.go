@@ -467,6 +467,12 @@ func TestAgentTokenDirsAreSweptAtStart(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "github-token"), []byte("test-read-token"), 0o640); err != nil {
 			t.Fatal(err)
 		}
+		// A directory a killed daemon left is old: the sweep keeps one younger
+		// than a minute (between its creation and its lock).
+		old := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(dir, old, old); err != nil {
+			t.Fatal(err)
+		}
 		return dir
 	}
 
