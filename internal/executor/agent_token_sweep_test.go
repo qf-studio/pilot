@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,8 +35,19 @@ func tokenLogLines(t *testing.T, logged string) []map[string]any {
 	return out
 }
 
+// backdateTokenDir sets the modification time of dir two minutes back, past
+// agentTokenSweepMinAge.
+func backdateTokenDir(t *testing.T, dir string) {
+	t.Helper()
+	old := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(dir, old, old); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // makeLeftTokenDir makes a token directory in tmp as a killed daemon leaves
-// it; with lock it also holds a lock file that no process locks.
+// it, older than agentTokenSweepMinAge; with lock it also holds a lock file
+// that no process locks.
 func makeLeftTokenDir(t *testing.T, tmp, name string, lock bool) string {
 	t.Helper()
 	dir := filepath.Join(tmp, name)
@@ -50,6 +62,7 @@ func makeLeftTokenDir(t *testing.T, tmp, name string, lock bool) string {
 			t.Fatal(err)
 		}
 	}
+	backdateTokenDir(t, dir)
 	return dir
 }
 
@@ -68,6 +81,7 @@ func TestAgentTokenSweepKeepsLiveRun(t *testing.T) {
 		t.Fatal("no token file")
 	}
 	defer f.Stop()
+	backdateTokenDir(t, f.dir)
 	noLock := makeLeftTokenDir(t, tmp, "pilot-ghtoken-nolock", false)
 	freeLock := makeLeftTokenDir(t, tmp, "pilot-ghtoken-freelock", true)
 
@@ -209,9 +223,10 @@ func TestAgentTokenRefreshRemakesLostDir(t *testing.T) {
 			t.Errorf("%s gid = %d, want %d", filepath.Base(path), gid, s.gid)
 		}
 	}
-	if !agentTokenDirLocked(f.dir) {
-		t.Error("the directory made again holds no held lock")
+	if locked, err := agentTokenDirLocked(f.dir); !locked || err != nil {
+		t.Errorf("the directory made again holds no held lock (err %v)", err)
 	}
+	backdateTokenDir(t, f.dir)
 	if n := SweepAgentTokenDirs(slog.Default()); n != 0 {
 		t.Errorf("a sweep removed %d directories, want the remade one kept", n)
 	}
@@ -364,5 +379,167 @@ func TestAgentTokenFileCreateFollowsNoLink(t *testing.T) {
 				t.Errorf("%s: the create made the link target: %q", tc.name, raw)
 			}
 		}
+	}
+}
+
+// TestAgentTokenRefreshStopsAtAForeignPath: when a link to a directory, a file
+// or a directory of another owner is at the path of the lost token directory,
+// the refresh writes no token file, logs one Error line and stops: no more
+// provider calls for the run.
+// mutation pin: write of agentTokenFile without the Lstat check before the write -> this test fails
+func TestAgentTokenRefreshStopsAtAForeignPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// put puts something at dir and returns a directory whose entries must
+		// stay as they are ("" for none).
+		put func(t *testing.T, dir string) string
+	}{
+		{"link to a directory", func(t *testing.T, dir string) string {
+			target := t.TempDir()
+			if err := os.Symlink(target, dir); err != nil {
+				t.Fatal(err)
+			}
+			return target
+		}},
+		{"file", func(t *testing.T, dir string) string {
+			if err := os.WriteFile(dir, []byte("not a directory"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return ""
+		}},
+		{"directory of another owner", func(t *testing.T, dir string) string {
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			prev := agentTokenDirOwned
+			agentTokenDirOwned = func(fi os.FileInfo) bool { return fi.Name() != filepath.Base(dir) && prev(fi) }
+			t.Cleanup(func() { agentTokenDirOwned = prev })
+			return dir
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tokenTestRunAs(t, true)
+			fire := fireAgentTokenTimer(t)
+			p := &fakeReadTokenProvider{expiry: time.Hour}
+			setAgentReadTokenProviderForTest(t, p.provide)
+			var buf syncBuffer
+			f := startAgentTokenFile(context.Background(), slog.New(slog.NewJSONHandler(&buf, nil)), "qf-studio/pilot")
+			if f == nil {
+				t.Fatal("no token file")
+			}
+			defer f.Stop()
+			if err := os.RemoveAll(f.dir); err != nil {
+				t.Fatal(err)
+			}
+			kept := tc.put(t, f.dir)
+			if !fireRefresh(fire, 5*time.Second) {
+				t.Fatal("the refresh does not wait")
+			}
+			select {
+			case <-f.done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the refresh did not stop")
+			}
+			if got := p.callCount(); got != 2 {
+				t.Errorf("provider calls = %d, want 2 (the start and the one refresh)", got)
+			}
+			if fireRefresh(fire, 50*time.Millisecond) {
+				t.Error("the refresh still waits after it stopped")
+			}
+			if kept != "" {
+				entries, err := os.ReadDir(kept)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(entries) != 0 {
+					t.Errorf("the refresh wrote into %s: %v", kept, entries)
+				}
+			}
+			var errs []map[string]any
+			for _, rec := range tokenLogLines(t, buf.String()) {
+				if rec["level"] == "ERROR" {
+					errs = append(errs, rec)
+				}
+			}
+			if len(errs) != 1 || errs[0]["dir"] != f.dir {
+				t.Errorf("error lines = %v, want one that names %s", errs, f.dir)
+			}
+		})
+	}
+}
+
+// TestAgentTokenSweepLockFileOpen: a FIFO at the lock path does not block the
+// sweep; a link at the lock path keeps the directory with one Warn line.
+// mutation pin: agentTokenDirLocked without agentTokenNonBlock -> this test fails
+func TestAgentTokenSweepLockFileOpen(t *testing.T) {
+	t.Run("FIFO", func(t *testing.T) {
+		if _, err := exec.LookPath("mkfifo"); err != nil {
+			t.Skip("mkfifo not installed")
+		}
+		_, tmp := tokenTestRunAs(t, true)
+		dir := makeLeftTokenDir(t, tmp, "pilot-ghtoken-fifo", false)
+		if out, err := exec.Command("mkfifo", filepath.Join(dir, agentTokenLockName)).CombinedOutput(); err != nil {
+			t.Fatalf("mkfifo: %v: %s", err, out)
+		}
+		backdateTokenDir(t, dir)
+		done := make(chan int, 1)
+		go func() { done <- SweepAgentTokenDirs(slog.Default()) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			// Unblock the open of the sweep so the test process can end.
+			if w, err := os.OpenFile(filepath.Join(dir, agentTokenLockName), os.O_WRONLY, 0); err == nil {
+				_ = w.Close()
+			}
+			t.Fatal("the sweep blocks on a FIFO at the lock path")
+		}
+	})
+
+	t.Run("link", func(t *testing.T) {
+		_, tmp := tokenTestRunAs(t, true)
+		dir := makeLeftTokenDir(t, tmp, "pilot-ghtoken-link", false)
+		target := filepath.Join(t.TempDir(), "lock")
+		if err := os.WriteFile(target, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(dir, agentTokenLockName)); err != nil {
+			t.Fatal(err)
+		}
+		backdateTokenDir(t, dir)
+		var buf bytes.Buffer
+		if n := SweepAgentTokenDirs(slog.New(slog.NewJSONHandler(&buf, nil))); n != 0 {
+			t.Errorf("sweep removed %d, want 0", n)
+		}
+		if _, err := os.Stat(filepath.Join(dir, agentTokenFileName)); err != nil {
+			t.Errorf("the directory with a link at its lock path was removed: %v", err)
+		}
+		var warns []map[string]any
+		for _, rec := range tokenLogLines(t, buf.String()) {
+			if rec["level"] == "WARN" {
+				warns = append(warns, rec)
+			}
+		}
+		if len(warns) != 1 || warns[0]["dir"] != dir {
+			t.Errorf("warn lines = %v, want one that names %s", warns, dir)
+		}
+	})
+}
+
+// TestAgentTokenSweepKeepsYoungDir: a token directory younger than
+// agentTokenSweepMinAge with no lock file (between its creation and its lock)
+// is kept.
+// mutation pin: sweepAgentTokenDirs without the age check -> this test fails
+func TestAgentTokenSweepKeepsYoungDir(t *testing.T) {
+	_, tmp := tokenTestRunAs(t, true)
+	dir := makeLeftTokenDir(t, tmp, "pilot-ghtoken-young", false)
+	now := time.Now()
+	if err := os.Chtimes(dir, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if n := SweepAgentTokenDirs(slog.Default()); n != 0 {
+		t.Errorf("sweep removed %d, want 0", n)
+	}
+	if _, err := os.Stat(filepath.Join(dir, agentTokenFileName)); err != nil {
+		t.Errorf("the young directory was removed: %v", err)
 	}
 }

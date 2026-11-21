@@ -106,6 +106,11 @@ const agentTokenDirPattern = "pilot-ghtoken-*"
 // os.MkdirTemp makes the token directories in. Tests replace it.
 var agentTokenSweepDir = os.TempDir
 
+// agentTokenSweepMinAge is the age (modification time) below which the sweep
+// keeps a token directory: a directory between its creation and its lock has
+// no lock file yet.
+const agentTokenSweepMinAge = 60 * time.Second
+
 // agentTokenDirOwned reports whether fi (of an Lstat) belongs to the daemon
 // user; the sweep removes no other directory. Tests replace it.
 var agentTokenDirOwned = ownedByDaemonUser
@@ -148,9 +153,11 @@ func SweepAgentTokenDirs(log *slog.Logger) int {
 // sweepAgentTokenDirs removes each directory pilot-ghtoken-* in dir that the
 // daemon user owns. It checks with Lstat: a link of that name is not
 // followed and is left alone, as is anything not owned by the daemon user. A
-// directory whose lock is held belongs to a live run of another daemon
-// process of the same user and is kept, with one Info line that names it; one
-// with no lock file or a free lock is removed.
+// directory younger than agentTokenSweepMinAge is kept. A directory whose lock
+// is held belongs to a live run of another daemon process of the same user and
+// is kept, with one Info line that names it; one whose lock file cannot be
+// opened for another reason than "not exist" (a link at the name) is kept with
+// one Warn line. One with no lock file or a free lock is removed.
 //
 // Decision: the lock is tried with no wait. The gateway start takes no daemon
 // lock, so a second daemon process of the user can run at the same time; the
@@ -167,7 +174,16 @@ func sweepAgentTokenDirs(log *slog.Logger, dir string) int {
 		if err != nil || !fi.IsDir() || !agentTokenDirOwned(fi) {
 			continue
 		}
-		if agentTokenDirLocked(m) {
+		if time.Since(fi.ModTime()) < agentTokenSweepMinAge {
+			continue
+		}
+		locked, err := agentTokenDirLocked(m)
+		if err != nil {
+			log.Warn("run_as_user: token directory kept, its lock file could not be opened",
+				slog.String("dir", m), slog.String("error", cutAgentTokenError(err)))
+			continue
+		}
+		if locked {
 			log.Info("run_as_user: token directory of a live run kept", slog.String("dir", m))
 			continue
 		}
@@ -318,10 +334,10 @@ func startAgentTokenFile(ctx context.Context, log *slog.Logger, repo string) *ag
 // refresh replaces the token agentTokenRefreshMargin before its expiry until
 // Stop cancels ctx. A failed refresh keeps the old token (valid up to its
 // expiry) and is retried after agentTokenErrorWait, doubled for each next
-// failure up to agentTokenErrorWaitMax. When the write fails because the
-// directory is gone, the directory is made again (remake); when that fails
-// too, one Error line is logged and the refresh stops: no more provider calls
-// for the run.
+// failure up to agentTokenErrorWaitMax. When the directory is gone, it is made
+// again (remake); when that fails, or a link, a file or a directory of another
+// owner is at its path, one Error line is logged and the refresh stops: no
+// more provider calls for the run.
 func (f *agentTokenFile) refresh(ctx context.Context, log *slog.Logger, provider AgentReadTokenProvider, repo string, expires time.Time) {
 	defer close(f.done)
 	var errWait time.Duration
@@ -345,9 +361,9 @@ func (f *agentTokenFile) refresh(ctx context.Context, log *slog.Logger, provider
 			return
 		}
 		if err == nil {
-			var gone bool
-			if gone, err = f.write(ctx, token); gone {
-				log.Error("run_as_user: the token directory of the run is gone and could not be made again; the refresh of the GitHub read token of the agent stops",
+			var lost bool
+			if lost, err = f.write(ctx, token); lost {
+				log.Error("run_as_user: the token directory of the run is lost (gone and not made again, or not the directory of the run at its path); the refresh of the GitHub read token of the agent stops",
 					slog.String("repo", repo), slog.String("dir", f.dir),
 					slog.String("error", cutAgentTokenError(err)))
 				return
@@ -365,31 +381,39 @@ func (f *agentTokenFile) refresh(ctx context.Context, log *slog.Logger, provider
 	}
 }
 
-// write writes token into the directory of f. When the directory is gone it
-// makes it again with the same path, mode, group, lock file and helper script
-// and writes the token there; gone is true when that failed. Nothing is
+// write writes token into the directory of f. It checks the path with Lstat
+// first: when nothing is at it, it makes the directory again with the same
+// path, mode, group, lock file and helper script and writes the token there;
+// when a link, a file or a directory of another owner is at it, nothing is
+// written. lost is true in that case and when the remake failed. Nothing is
 // written once Stop has begun.
-func (f *agentTokenFile) write(ctx context.Context, token string) (gone bool, err error) {
+//
+// Decision: the write of the token file follows a link at the path of the
+// directory (O_NOFOLLOW covers the last name only), so the check comes before
+// the write, not after a failed one.
+func (f *agentTokenFile) write(ctx context.Context, token string) (lost bool, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.stopped || ctx.Err() != nil {
 		return false, nil
 	}
-	err = writeAgentTokenFile(f.dir, token)
-	if err == nil || !errors.Is(err, fs.ErrNotExist) {
-		return false, err
+	fi, err := os.Lstat(f.dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		if err := f.remake(token); err != nil {
+			return true, err
+		}
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("agent token file: %w", err)
+	case !fi.IsDir() || !agentTokenDirOwned(fi):
+		return true, fmt.Errorf("agent token file: %s is not the token directory of the run (mode %s)", f.dir, fi.Mode())
 	}
-	if _, serr := os.Lstat(f.dir); !errors.Is(serr, fs.ErrNotExist) {
-		return false, err
-	}
-	if err := f.remake(token); err != nil {
-		return true, err
-	}
-	return false, nil
+	return false, writeAgentTokenFile(f.dir, token)
 }
 
-// remake makes the directory of f again (Mkdir refuses anything at the path,
-// a link too), locks it, sets its mode and group and writes token and the
+// remake makes the directory of f again (Mkdir, no MkdirAll: it refuses
+// anything at the path, a link too), locks it, sets its mode and group and writes token and the
 // helper script. When a step after the Mkdir fails it removes the directory it
 // made; it never removes what it did not make. The caller holds f.mu.
 func (f *agentTokenFile) remake(token string) (err error) {
@@ -447,6 +471,12 @@ func (f *agentTokenFile) Env() string {
 // in it was set by the code: the new entry takes the next index. With no
 // token file or no helper env is returned unchanged.
 //
+// Decision: the value is "!" and the path quoted for the shell. git runs the
+// value of a helper through the shell, an absolute path as it is, so a space
+// in the temporary directory of the daemon would give no token and a $(...)
+// or ; in it would run as a command of the agent user; with "!" git takes the
+// rest as a shell command, and the quoted path is one word for any name.
+//
 // Decision: the entries hold the path of the script, never the token: the
 // environment of a process can be read by other processes of the agent user
 // and lands in logs of the argv and env; the script reads the file at each
@@ -455,7 +485,7 @@ func appendAgentGitCredentialEntries(env []string, f *agentTokenFile) []string {
 	if f == nil || f.helper == "" {
 		return env
 	}
-	return appendGitConfigEntry(env, "credential."+agentGitCredentialURL+".helper", f.helper)
+	return appendGitConfigEntry(env, "credential."+agentGitCredentialURL+".helper", "!"+shellQuote(f.helper))
 }
 
 // appendGitConfigEntry adds key=value as the next config entry of env in the
@@ -556,14 +586,19 @@ func lockAgentTokenDir(dir string) (io.Closer, error) {
 }
 
 // agentTokenDirLocked reports whether another open of the lock file of the
-// token directory dir holds its lock: false when there is no lock file.
-func agentTokenDirLocked(dir string) bool {
-	lf, err := os.OpenFile(filepath.Join(dir, agentTokenLockName), os.O_RDONLY|agentTokenNoFollow, 0)
+// token directory dir holds its lock: false when there is no lock file. The
+// open does not wait (a FIFO at the name) and follows no link; an open error
+// other than "not exist" is returned.
+func agentTokenDirLocked(dir string) (bool, error) {
+	lf, err := os.OpenFile(filepath.Join(dir, agentTokenLockName), os.O_RDONLY|agentTokenNoFollow|agentTokenNonBlock, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer func() { _ = lf.Close() }()
-	return tryLockAgentTokenFile(lf) != nil
+	return tryLockAgentTokenFile(lf) != nil, nil
 }
 
 // writeAgentTokenFile writes token into dir/github-token: a Go file call only
