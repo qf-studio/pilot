@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -385,8 +386,8 @@ func (b *settingsBreakingBackend) Execute(ctx context.Context, opts ExecuteOptio
 //
 // TestSettingsRestoreFailureFailsRunThroughExecute (GH-6626 item 1): with the
 // option set, a failed restore of the settings file in the deferred cleanup of
-// executeWithOptions makes the result of the run a failure that names the
-// file, and the run error carries it.
+// executeWithOptions, reached through Execute, makes the result of the run a
+// failure that names the file, and the run error carries it.
 func TestSettingsRestoreFailureFailsRunThroughExecute(t *testing.T) {
 	e := newAgentWorkspaceEnv(t)
 	backend := &settingsBreakingBackend{}
@@ -399,7 +400,7 @@ func TestSettingsRestoreFailureFailsRunThroughExecute(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	res, err := runner.executeWithOptions(ctx, task, true)
+	res, err := runner.Execute(ctx, task)
 	if len(backend.paths()) == 0 {
 		t.Fatal("the backend never ran")
 	}
@@ -428,12 +429,13 @@ func (b *settingsDenyCommitBackend) Execute(ctx context.Context, opts ExecuteOpt
 	if err := os.WriteFile(filepath.Join(opts.ProjectPath, "work.go"), []byte("package work\n"), 0o600); err != nil {
 		return nil, err
 	}
-	for _, args := range [][]string{{"add", "work.go"}, {"-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-m", "feat: work"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = opts.ProjectPath
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("git %v: %v: %s", args, err, out)
-		}
+	cmd := exec.Command("git", "add", "work.go")
+	cmd.Dir = opts.ProjectPath
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("git add: %v: %s", err, out)
+	}
+	if err := gitTestCommitIn(opts.ProjectPath, "-m", "feat: work"); err != nil {
+		return nil, err
 	}
 	if err := os.WriteFile(b.marker, nil, 0o600); err != nil {
 		return nil, err
@@ -525,7 +527,7 @@ func TestCoAuthorSettingsRestoreKeepsLogTextThroughExecute(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	res, _ := runner.executeWithOptions(ctx, task, true)
+	res, _ := runner.Execute(ctx, task)
 	if len(backend.paths()) == 0 {
 		t.Fatal("the backend never ran")
 	}
@@ -675,6 +677,30 @@ func declDoc(t *testing.T, path, name string) string {
 	return strings.Join(strings.Fields(doc.Text()), " ")
 }
 
+// commentAbove is the text of the comment group of file (parsed from src) that
+// ends above line with only blank lines between, or "" when code or nothing
+// lies there.
+func commentAbove(fset *token.FileSet, file *ast.File, src []byte, line int) string {
+	lines := strings.Split(string(src), "\n")
+	for _, cg := range file.Comments {
+		end := fset.Position(cg.End()).Line
+		if end >= line {
+			continue
+		}
+		blank := true
+		for l := end + 1; l < line; l++ {
+			if strings.TrimSpace(lines[l-1]) != "" {
+				blank = false
+				break
+			}
+		}
+		if blank {
+			return strings.Join(strings.Fields(cg.Text()), " ")
+		}
+	}
+	return ""
+}
+
 // mutation pin: the hookSettingsRestore doc says the run fails (failRunOnSettingsRestore) with no word of a run that opened a PR -> this test fails
 //
 // TestHookSettingsRestoreDocNamesTheOpenPRCase (GH-6646 item 1): with the
@@ -703,8 +729,12 @@ func TestIntentWarningDocNamesTheSettingsRestore(t *testing.T) {
 	}
 
 	path := filepath.Join("..", "..", "cmd", "pilot", "handlers.go")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	file, err := parser.ParseFile(fset, path, src, parser.ParseComments)
 	if err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}
@@ -717,7 +747,7 @@ func TestIntentWarningDocNamesTheSettingsRestore(t *testing.T) {
 	if fn == nil {
 		t.Fatalf("%s: no buildExecutionComment", path)
 	}
-	// The comment that ends on the line above the IntentWarning check.
+	// The comment above the IntentWarning check.
 	checkLine := 0
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "IntentWarning" && checkLine == 0 {
@@ -725,12 +755,7 @@ func TestIntentWarningDocNamesTheSettingsRestore(t *testing.T) {
 		}
 		return true
 	})
-	var comment string
-	for _, cg := range file.Comments {
-		if fset.Position(cg.End()).Line == checkLine-1 {
-			comment = strings.Join(strings.Fields(cg.Text()), " ")
-		}
-	}
+	comment := commentAbove(fset, file, src, checkLine)
 	if !strings.Contains(comment, want) {
 		t.Errorf("%s: the comment above the IntentWarning line lacks %q:\n%s", path, want, comment)
 	}
@@ -768,5 +793,165 @@ func TestFailRunOnSettingsRestoreDocOpensWithBothOutcomes(t *testing.T) {
 		if !strings.Contains(first, want) {
 			t.Errorf("first paragraph of the failRunOnSettingsRestore doc lacks %q:\n%s", want, first)
 		}
+	}
+}
+
+// mutation pin: settingsDenyCommitBackend sets its commit identity inline (-c user.email=… -c user.name=…) instead of gitTestCommitIn -> this test fails
+//
+// TestCommittingBackendsUseTheSharedCommitIdentity (GH-6663 item 1): a backend
+// of this file that commits does so through gitTestCommitIn, so the identity a
+// CI runner lacks (GH-6658) is set in one place.
+func TestCommittingBackendsUseTheSharedCommitIdentity(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "lint_agent_test.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usesHelper := map[string]bool{}
+	for _, d := range file.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Recv == nil || fn.Name.Name != "Execute" {
+			continue
+		}
+		star, ok := fn.Recv.List[0].Type.(*ast.StarExpr)
+		if !ok {
+			continue
+		}
+		recv := star.X.(*ast.Ident).Name
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.BasicLit:
+				if v, _ := strconv.Unquote(x.Value); v == "commit" || strings.HasPrefix(v, "user.email=") || strings.HasPrefix(v, "user.name=") {
+					t.Errorf("%s.Execute runs git %q itself; commit with gitTestCommitIn", recv, v)
+				}
+			case *ast.CallExpr:
+				if id, ok := x.Fun.(*ast.Ident); ok && id.Name == "gitTestCommitIn" {
+					usesHelper[recv] = true
+				}
+			}
+			return true
+		})
+	}
+	if !usesHelper["settingsDenyCommitBackend"] {
+		t.Error("settingsDenyCommitBackend.Execute does not commit with gitTestCommitIn")
+	}
+}
+
+// mutation pin: commentAbove only takes a comment that ends exactly one line above the check -> this test fails
+//
+// TestCommentAboveAllowsBlankLines (GH-6663 item 2): the comment of the
+// IntentWarning check is found across a blank line, and not across code.
+func TestCommentAboveAllowsBlankLines(t *testing.T) {
+	for _, tc := range []struct {
+		name, src, want string
+	}{
+		{"adjacent", "package p\n\nfunc f() {\n\t// the doc\n\tcheck()\n}\n", "the doc"},
+		{"blank line between", "package p\n\nfunc f() {\n\t// the doc\n\n\tcheck()\n}\n", "the doc"},
+		{"code between", "package p\n\nfunc f() {\n\t// other\n\tg()\n\tcheck()\n}\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "p.go", tc.src, parser.ParseComments)
+			if err != nil {
+				t.Fatal(err)
+			}
+			line := 0
+			for i, l := range strings.Split(tc.src, "\n") {
+				if strings.Contains(l, "check()") {
+					line = i + 1
+				}
+			}
+			if got := commentAbove(fset, file, []byte(tc.src), line); got != tc.want {
+				t.Errorf("commentAbove = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// mutation pin: a Test…ThroughExecute test calls runner.executeWithOptions instead of runner.Execute -> this test fails
+//
+// TestThroughExecuteTestsCallExecute (GH-6663 item 3): a test whose name says
+// it runs through Execute calls Execute, so the prepareBilling wrapper runs.
+func TestThroughExecuteTestsCallExecute(t *testing.T) {
+	paths, err := filepath.Glob("*_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	for _, path := range paths {
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		for _, d := range file.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || !strings.HasPrefix(fn.Name.Name, "Test") || !strings.HasSuffix(fn.Name.Name, "ThroughExecute") {
+				continue
+			}
+			found++
+			calls := map[string]bool{}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if c, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := c.Fun.(*ast.SelectorExpr); ok {
+						calls[sel.Sel.Name] = true
+					}
+				}
+				return true
+			})
+			if calls["executeWithOptions"] || !calls["Execute"] {
+				t.Errorf("%s: %s calls executeWithOptions or not Execute", path, fn.Name.Name)
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("no Test…ThroughExecute test found")
+	}
+}
+
+// mutation pin: the failRunOnSettingsRestore or IntentWarning doc says the caller shows the restore warning in its execution comment -> this test fails
+//
+// TestSettingsRestoreWarningDocsNameTheOneCaller (GH-6663 item 4):
+// buildExecutionComment has one production caller, pilot github run; the docs
+// say so, and that on a daemon run the restore failure reaches only the log.
+func TestSettingsRestoreWarningDocsNameTheOneCaller(t *testing.T) {
+	hooksDoc := declDoc(t, "hooks.go", "failRunOnSettingsRestore")
+	fieldDoc := declDoc(t, "runner.go", "ExecutionResult.IntentWarning")
+	for name, doc := range map[string]string{"failRunOnSettingsRestore": hooksDoc, "IntentWarning": fieldDoc} {
+		for _, stale := range []string{"the execution comment of the caller", "the caller shows the warning"} {
+			if strings.Contains(doc, stale) {
+				t.Errorf("%s doc still says %q:\n%s", name, stale, doc)
+			}
+		}
+		for _, want := range []string{"Only pilot github run shows", "on a daemon run", "reaches only the log"} {
+			if !strings.Contains(doc, want) {
+				t.Errorf("%s doc lacks %q:\n%s", name, want, doc)
+			}
+		}
+	}
+
+	// The claim of the docs: one production caller, in cmd/pilot/commands.go.
+	paths, err := filepath.Glob(filepath.Join("..", "..", "cmd", "pilot", "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var callers []string
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok {
+				if id, ok := c.Fun.(*ast.Ident); ok && id.Name == "buildExecutionComment" {
+					callers = append(callers, filepath.Base(path))
+				}
+			}
+			return true
+		})
+	}
+	if len(callers) != 1 || callers[0] != "commands.go" {
+		t.Errorf("buildExecutionComment callers = %v, want the one in commands.go (pilot github run); update the docs", callers)
 	}
 }

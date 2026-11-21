@@ -97,9 +97,26 @@ func wsGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// gitTestIdentity is the commit identity of the test commits: a CI runner has
+// no global one, and git fails there with "empty ident name" (GH-6658).
+var gitTestIdentity = []string{"-c", "user.email=t@example.com", "-c", "user.name=T"}
+
+// gitTestCommitIn runs git commit with args in dir under gitTestIdentity, for
+// a fixture with no *testing.T such as a backend that commits (GH-6663).
+func gitTestCommitIn(dir string, args ...string) error {
+	cmd := exec.Command("git", append(append(append([]string{}, gitTestIdentity...), "commit"), args...)...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git commit %v in %s: %v: %s", args, dir, err, out)
+	}
+	return nil
+}
+
 func gitTestCommit(t *testing.T, dir, msg string) string {
 	t.Helper()
-	wsGit(t, dir, "-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "--allow-empty", "-m", msg)
+	if err := gitTestCommitIn(dir, "-q", "--allow-empty", "-m", msg); err != nil {
+		t.Fatal(err)
+	}
 	return wsGit(t, dir, "rev-parse", "HEAD")
 }
 
