@@ -32,7 +32,7 @@ func setMutationWriteForTest(t *testing.T, fn func(n int, path string, data []by
 	prev := mutationWriteFile
 	var mu sync.Mutex
 	n := 0
-	mutationWriteFile = func(_ context.Context, path string, data []byte, _ os.FileMode) error {
+	mutationWriteFile = func(_ context.Context, _, path string, data []byte, _ os.FileMode) error {
 		mu.Lock()
 		n++
 		i := n
@@ -280,7 +280,7 @@ func testMutationLeftChangedStopsExecute(t *testing.T) {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
 
-	const want = "acceptance evidence left main.go changed; the run stops before the push"
+	const want = "acceptance evidence left main.go changed; the run stops before the review and the push"
 	if result.Success || result.Error != want {
 		t.Errorf("result success=%v error=%q, want the failure %q", result.Success, result.Error, want)
 	}
@@ -343,7 +343,7 @@ func TestMutationLeftChangedAtPRCreation(t *testing.T) {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
 
-	const want = "acceptance evidence left main.go changed; the branch is pushed, the run fails and no PR is created"
+	want := "acceptance evidence left main.go changed; the branch " + e.task.Branch + " is pushed, the run fails, no PR is created"
 	if result.Success || result.Error != want {
 		t.Errorf("result success=%v error=%q, want the failure %q", result.Success, result.Error, want)
 	}

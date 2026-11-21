@@ -487,9 +487,9 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 	// TASK-651: with run_as_user set the mutate and revert writes run as the
 	// agent user (evidenceWriteFile). GH-6606: a failed write can have cut
 	// the file already, so it is checked and repaired too.
-	if err := mutationWriteFile(ctx, fullPath, []byte(mutated), perm); err != nil {
+	if err := mutationWriteFile(ctx, dir, fullPath, []byte(mutated), perm); err != nil {
 		result.NotVerifiedReason = fmt.Sprintf("could not write mutated %s: %v", rel, err)
-		if err := restoreMutatedFile(ctx, dir, fullPath, rel, original, perm); err != nil {
+		if err := restoreMutatedFile(ctx, dir, fullPath, rel, original, perm, true); err != nil {
 			result.Err = err
 			result.NotVerifiedReason = err.Error()
 		}
@@ -502,8 +502,8 @@ func runMutationItem(ctx context.Context, runner AcceptanceCommandRunner, dir st
 	// take the cancellation of ctx. GH-6638: it runs in a defer, so a panic
 	// of the runner still restores the file.
 	output, testErr, restoreErr := runMutationCommand(ctx, runner, dir, testCmd, allowedCommands, func() error {
-		_ = mutationRestoreWrite(context.WithoutCancel(ctx), dir, fullPath, rel, original, perm, false)
-		return restoreMutatedFile(ctx, dir, fullPath, rel, original, perm)
+		tried, _ := mutationRestoreWrite(context.WithoutCancel(ctx), dir, fullPath, rel, original, perm, false)
+		return restoreMutatedFile(ctx, dir, fullPath, rel, original, perm, tried)
 	})
 	if restoreErr != nil {
 		result.Err = restoreErr
@@ -570,13 +570,16 @@ func runMutationCommand(ctx context.Context, runner AcceptanceCommandRunner, dir
 const mutationRestoreTimeout = 2 * time.Minute
 
 // mutationWriteFile is the write of the mutate and the restore steps of a
-// mutation line; a seam for the tests of the repair (GH-6606).
-var mutationWriteFile = evidenceWriteFile
+// mutation line to path, a file under the task directory dir; a seam for the
+// tests of the repair (GH-6606). With the option empty the write goes through
+// the workspace root (mutationRootWriteFile, GH-6664).
+var mutationWriteFile = mutationRootWriteFile
 
 // mutationRecreateFile is the restore of a path that is no longer the regular
 // file of the first permission bits (GH-6638): it removes the path and makes a
-// new regular file, never a write through a link.
-var mutationRecreateFile = agentRecreateFile
+// new regular file, never a write through a link. With the option empty it goes
+// through the workspace root (mutationRootRecreateFile, GH-6664).
+var mutationRecreateFile = mutationRootRecreateFile
 
 // mutationModeBits are the bits of the mode of the file of a mutation line
 // that are read, compared and set back: the permission bits with the setuid,
@@ -620,26 +623,38 @@ func mutationIndexMatches(ctx context.Context, dir, rel string, original []byte)
 // file could not be brought back to its first content (GH-6606): no later
 // acceptance line runs and the run stops before the pre-PR review, its fix
 // rounds and the push; at PR creation the run fails without a PR
-// (evidenceLeftChangedAtPRCreation, GH-6617). File is relative to the task
-// directory.
+// (evidenceLeftChangedAtPRCreation, GH-6617), and a hold opens none
+// (evidenceLeftChangedOnHold). File is relative to the task directory. The
+// Error text is neutral (GH-6664): each path adds what happens there.
 type mutationLeftChangedError struct {
 	File string
 	// LeftWorkspace is set when the path of the file resolved outside the
-	// task directory at the restore (GH-6652): nothing was written through it.
+	// task directory at the restore (GH-6652).
 	LeftWorkspace bool
+	// WriteTried is set when the restore tried a write of the file before the
+	// path was found outside the task directory (GH-6664): the text then does
+	// not say that nothing was written through it.
+	WriteTried bool
+	// restore runs the check and the repair of the file again on ctx
+	// (putBackEvidenceLeftChanged); nil when there is none.
+	restore func(ctx context.Context) error
 }
 
 func (e *mutationLeftChangedError) Error() string {
-	return fmt.Sprintf("acceptance evidence left %s changed%s; the run stops before the push", e.File, e.leftWorkspaceText())
+	return fmt.Sprintf("acceptance evidence left %s changed%s", e.File, e.leftWorkspaceText())
 }
 
 // leftWorkspaceText is the part of the texts of e that says the path left
 // the workspace, or "".
 func (e *mutationLeftChangedError) leftWorkspaceText() string {
-	if e.LeftWorkspace {
+	switch {
+	case !e.LeftWorkspace:
+		return ""
+	case e.WriteTried:
+		return " (the path left the workspace)"
+	default:
 		return " (the path left the workspace, nothing was written through it)"
 	}
-	return ""
 }
 
 // mutationConfinedPath resolves the path of the file of a mutation line again
@@ -661,17 +676,18 @@ func mutationConfinedPath(dir, fullPath, rel string) (string, error) {
 // dir is an error and nothing is written. A path that is no longer a regular
 // file (a link, a directory) is never written through, it is removed and made
 // again (mutationRecreateFile). With strict set a regular file whose mode is
-// not perm is made again too: the repair after a failed check.
-func mutationRestoreWrite(ctx context.Context, dir, fullPath, rel string, original []byte, perm os.FileMode, strict bool) error {
+// not perm is made again too: the repair after a failed check. tried reports
+// whether a write was tried (GH-6664).
+func mutationRestoreWrite(ctx context.Context, dir, fullPath, rel string, original []byte, perm os.FileMode, strict bool) (tried bool, err error) {
 	path, err := mutationConfinedPath(dir, fullPath, rel)
 	if err != nil {
-		return err
+		return false, err
 	}
 	mode, err := agentLstatMode(ctx, path)
 	if err == nil && mode.IsRegular() && (!strict || mode&mutationModeBits == perm) {
-		return mutationWriteFile(ctx, path, original, perm)
+		return true, mutationWriteFile(ctx, dir, path, original, perm)
 	}
-	return mutationRecreateFile(ctx, path, original, perm)
+	return true, mutationRecreateFile(ctx, dir, path, original, perm)
 }
 
 // restoreMutatedFile checks the file of a mutation line after each outcome
@@ -683,11 +699,16 @@ func mutationRestoreWrite(ctx context.Context, dir, fullPath, rel string, origin
 // changed after that is a *mutationLeftChangedError. GH-6652: each check and
 // each write resolves the path again (mutationConfinedPath); a path outside
 // dir is not restored, nothing is written through it, and the error says so.
-// The check does not take the cancellation of ctx (the budget context).
-func restoreMutatedFile(ctx context.Context, dir, fullPath, rel string, original []byte, perm os.FileMode) error {
+// writeTried is set when the caller tried a write of the file just before
+// (GH-6664). The check does not take the cancellation of ctx (the budget
+// context).
+func restoreMutatedFile(ctx context.Context, dir, fullPath, rel string, original []byte, perm os.FileMode, writeTried bool) error {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mutationRestoreTimeout)
 	defer cancel()
-	left := &mutationLeftChangedError{File: rel}
+	left := &mutationLeftChangedError{File: rel, WriteTried: writeTried}
+	left.restore = func(ctx context.Context) error {
+		return restoreMutatedFile(ctx, dir, fullPath, rel, original, perm, false)
+	}
 	confined := func() (string, bool) {
 		path, err := mutationConfinedPath(dir, fullPath, rel)
 		if errors.Is(err, errPathEscapesWorktree) {
@@ -709,7 +730,11 @@ func restoreMutatedFile(ctx context.Context, dir, fullPath, rel string, original
 	}
 	recreate := func() bool {
 		path, ok := confined()
-		return ok && mutationRecreateFile(rctx, path, original, perm) == nil
+		if !ok {
+			return false
+		}
+		left.WriteTried = true
+		return mutationRecreateFile(rctx, dir, path, original, perm) == nil
 	}
 	if restored() {
 		return nil
@@ -717,12 +742,15 @@ func restoreMutatedFile(ctx context.Context, dir, fullPath, rel string, original
 	if left.LeftWorkspace {
 		return left
 	}
-	if err := mutationRestoreWrite(rctx, dir, fullPath, rel, original, perm, true); err == nil && restored() {
+	tried, err := mutationRestoreWrite(rctx, dir, fullPath, rel, original, perm, true)
+	left.WriteTried = left.WriteTried || tried
+	if err == nil && restored() {
 		return nil
 	}
 	if _, ok := confined(); ok && mutationIndexMatches(rctx, dir, rel, original) {
 		// git gives the new file the bits of the umask; a new file of the
 		// first content brings the first bits back.
+		left.WriteTried = true
 		if err := mutationGitCheckout(rctx, dir, rel); err == nil &&
 			(restored() || (recreate() && restored())) {
 			return nil
@@ -746,20 +774,30 @@ func evidenceLeftChanged(results []AcceptanceEvidenceResult) *mutationLeftChange
 // GH-6617: the Error line of a mutation line whose file stayed changed says
 // what the run does on its path. Before the review the run stops ahead of the
 // review and the push; at PR creation the branch is already pushed, so the run
-// fails and no PR is created.
+// fails and no PR is created; a hold (the timeout salvage, the pre-PR hold)
+// parks the task and opens no PR (GH-6664).
 const (
 	evidenceLeftChangedBeforeReviewLog = "Acceptance evidence left a file changed; the run stops before the review and the push"
-	evidenceLeftChangedAtPRCreationLog = "Acceptance evidence left a file changed; the branch is pushed, the run fails and no PR is created"
+	evidenceLeftChangedAtPRCreationLog = "Acceptance evidence left a file changed; the branch is pushed, the run fails, no PR is created"
+	evidenceLeftChangedOnHoldLog       = "Acceptance evidence left a file changed; the task is held, no PR is created"
 )
 
+// evidenceLeftChangedBeforeReview is the failure text of err before the pre-PR
+// review (GH-6664): the run stops ahead of the review and the push.
+func evidenceLeftChangedBeforeReview(err error) string {
+	return err.Error() + "; the run stops before the review and the push"
+}
+
 // evidenceLeftChangedAtPRCreation is the failure text of err on the PR creation
-// path (GH-6617): it names the file and says that the branch is pushed.
-func evidenceLeftChangedAtPRCreation(err error) string {
-	var lc *mutationLeftChangedError
-	if errors.As(err, &lc) {
-		return fmt.Sprintf("acceptance evidence left %s changed%s; the branch is pushed, the run fails and no PR is created", lc.File, lc.leftWorkspaceText())
-	}
-	return err.Error()
+// path (GH-6617): it names the file and says that branch is pushed (GH-6664).
+func evidenceLeftChangedAtPRCreation(err error, branch string) string {
+	return fmt.Sprintf("%v; the branch %s is pushed, the run fails, no PR is created", err, branch)
+}
+
+// evidenceLeftChangedOnHold is the hold reason part of err (GH-6664): the task
+// is parked under pilot-needs-human and no PR is created.
+func evidenceLeftChangedOnHold(err error) string {
+	return err.Error() + "; the task is held, no PR is created"
 }
 
 // logEvidenceLeftChanged writes the Error line msg for err, the error of a
@@ -774,6 +812,41 @@ func (r *Runner) logEvidenceLeftChanged(task *Task, err error, msg string) {
 		attrs = append(attrs, slog.String("file", lc.File))
 	}
 	r.log.Error(msg, attrs...)
+}
+
+// putBackEvidenceLeftChanged puts the file of err, a *mutationLeftChangedError,
+// back in dir (GH-6664): the epic path returns before the reset of a failed run
+// without a worktree, so a changed file would stay in the shared checkout for
+// the next task. The restore of the collection runs again on a fresh context;
+// when it fails and the file is not changed in the index, `git checkout --
+// FILE` runs with the hooks-off arguments. A path that left the workspace is
+// not touched. The error is nil once the file is back.
+func putBackEvidenceLeftChanged(dir string, err error) error {
+	var lc *mutationLeftChangedError
+	if !errors.As(err, &lc) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), mutationRestoreTimeout)
+	defer cancel()
+	if lc.restore != nil {
+		restoreErr := lc.restore(ctx)
+		if restoreErr == nil {
+			return nil
+		}
+		if errors.As(restoreErr, &lc) && lc.LeftWorkspace {
+			return restoreErr
+		}
+	}
+	if lc.LeftWorkspace {
+		return lc
+	}
+	if out, err := mutationGitCommand(ctx, dir, "diff", "--cached", "--quiet", "--", lc.File).CombinedOutput(); err != nil {
+		return fmt.Errorf("%s is changed in the index, not checked out: %w: %s", lc.File, err, strings.TrimSpace(string(out)))
+	}
+	if out, err := mutationGitCommand(ctx, dir, "checkout", "--", lc.File).CombinedOutput(); err != nil {
+		return fmt.Errorf("git checkout -- %s: %w: %s", lc.File, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // evidenceCancelledReason is the Not-verified reason of a line whose command
