@@ -1010,7 +1010,9 @@ type ExecutionResult struct {
 	CommitSHA string
 	// BranchPushed is holdPushedBranch's push result: true pushed, false the
 	// push failed, nil no push was attempted (direct-commit mode). Persisted
-	// as executions.branch_pushed. GH-5715.
+	// as executions.branch_pushed. GH-5715. GH-6664: also true when a PR
+	// creation site fails after the push (acceptance evidence left a file
+	// changed).
 	BranchPushed *bool
 	// TokensInput is the number of input tokens consumed.
 	TokensInput int64
@@ -2752,11 +2754,37 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	prBody, evidenceErr := r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, nil)
 	if evidenceErr != nil {
 		// GH-6617: the branch is pushed; a file the evidence left changed fails
-		// the run before the PR.
+		// the run before the PR. GH-6664: this path returns before the reset of
+		// a failed run without a worktree, so the file is put back here, and the
+		// failure is alerted as at the sites of Execute.
+		pushed := true
+		result.BranchPushed = &pushed
 		result.Success = false
-		result.Error = evidenceLeftChangedAtPRCreation(evidenceErr)
+		result.Error = evidenceLeftChangedAtPRCreation(evidenceErr, task.Branch)
 		r.logEvidenceLeftChanged(task, evidenceErr, evidenceLeftChangedAtPRCreationLog)
+		if putErr := putBackEvidenceLeftChanged(git.ProjectPath(), evidenceErr); putErr != nil {
+			r.log.Warn("Epic: could not put back the file the acceptance evidence left changed",
+				slog.String("task_id", task.ID),
+				slog.Any("error", putErr),
+			)
+		}
 		r.reportProgress(task.ID, "Acceptance Evidence Failed", 100, result.Error)
+		r.emitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeTaskFailed,
+			TaskID:    task.ID,
+			TaskTitle: task.Title,
+			Project:   task.ProjectPath,
+			Error:     result.Error,
+			Timestamp: time.Now(),
+		})
+		r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+			TaskID:   task.ID,
+			Title:    task.Title,
+			Project:  task.ProjectPath,
+			Duration: result.Duration,
+			Error:    result.Error,
+			Phase:    "Acceptance Evidence",
+		})
 		r.sweepEpicChildrenOnAbort(task, result.Error)
 		return
 	}
@@ -3976,11 +4004,12 @@ func (r *Runner) pushAndCreatePRAfterTimeout(ctx context.Context, task *Task, gi
 	prBody, evidenceErr := r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), prBody, nil)
 	if evidenceErr != nil {
 		// GH-6617: a file the evidence left changed fails the salvage before the
-		// PR, through the same hold as a failed PR creation.
-		r.logEvidenceLeftChanged(task, evidenceErr, evidenceLeftChangedAtPRCreationLog)
+		// PR, through the same hold as a failed PR creation. GH-6664: the Error
+		// line follows the push of the hold.
 		r.holdPushedBranch(ctx, task, git, result, log,
-			"timeout salvage: "+evidenceLeftChangedAtPRCreation(evidenceErr),
+			"timeout salvage: "+evidenceLeftChangedOnHold(evidenceErr),
 			executionPath, preserveWorktree)
+		r.logEvidenceLeftChanged(task, evidenceErr, evidenceLeftChangedOnHoldLog)
 		return
 	}
 	// GH-5867: evidence runs on its own budget ctx, so the task deadline may have
@@ -7105,16 +7134,19 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		// stops the run before the review, the fix rounds and the push, which
 		// all work on the same tree. GH-6617: at PR creation (atPRCreation) the
 		// branch is already pushed; the run fails there and no PR is created.
+		// GH-6664: the result then names the branch and records it pushed.
 		failEvidenceLeftChanged := func(err error, atPRCreation bool) bool {
 			if err == nil {
 				return false
 			}
 			result.Success = false
 			if atPRCreation {
-				result.Error = evidenceLeftChangedAtPRCreation(err)
+				pushed := true
+				result.BranchPushed = &pushed
+				result.Error = evidenceLeftChangedAtPRCreation(err, task.Branch)
 				r.logEvidenceLeftChanged(task, err, evidenceLeftChangedAtPRCreationLog)
 			} else {
-				result.Error = err.Error()
+				result.Error = evidenceLeftChangedBeforeReview(err)
 				r.logEvidenceLeftChanged(task, err, evidenceLeftChangedBeforeReviewLog)
 			}
 			r.reportProgress(task.ID, "Acceptance Evidence Failed", 100, result.Error)

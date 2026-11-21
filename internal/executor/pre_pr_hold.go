@@ -88,12 +88,13 @@ func (r *Runner) holdPrePRReview(ctx context.Context, task *Task, git *GitOperat
 	evidenceBody, evidenceErr := r.appendAcceptanceEvidence(ctx, task, git.ProjectPath(), "", result.QualityGates, evidence)
 	if evidenceErr != nil {
 		// GH-6617: the hold opens no PR either; the reason names the file.
-		r.logEvidenceLeftChanged(task, evidenceErr, evidenceLeftChangedAtPRCreationLog)
-		reason = reason + "; " + evidenceLeftChangedAtPRCreation(evidenceErr)
+		reason = reason + "; " + evidenceLeftChangedOnHold(evidenceErr)
 	}
 	evidenceBlock := strings.TrimSpace(evidenceBody)
 
 	r.holdPushedBranch(ctx, task, git, result, log, reason, executionPath, preserveWorktree)
+	// GH-6664: the Error line follows the push of the hold.
+	r.logEvidenceLeftChanged(task, evidenceErr, evidenceLeftChangedOnHoldLog)
 
 	blocking, _ := review.defectCounts()
 	fixStatus, regateStatus := PrePRFixNone, "none"

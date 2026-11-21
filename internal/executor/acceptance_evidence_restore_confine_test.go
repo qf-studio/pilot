@@ -22,12 +22,12 @@ func setMutationWriteModeForTest(t *testing.T, fn func(n int, path string, data 
 	prev := mutationWriteFile
 	var mu sync.Mutex
 	n := 0
-	mutationWriteFile = func(ctx context.Context, path string, data []byte, mode os.FileMode) error {
+	mutationWriteFile = func(ctx context.Context, dir, path string, data []byte, mode os.FileMode) error {
 		mu.Lock()
 		n++
 		i := n
 		mu.Unlock()
-		return fn(i, path, data, mode, func() error { return prev(ctx, path, data, mode) })
+		return fn(i, path, data, mode, func() error { return prev(ctx, dir, path, data, mode) })
 	}
 	t.Cleanup(func() { mutationWriteFile = prev })
 }
