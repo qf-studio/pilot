@@ -12,6 +12,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -136,6 +137,13 @@ var runAsAllowedEnv = map[string]bool{
 	"GOCACHE": true, "GOMODCACHE": true, "GOFLAGS": true, "GOTOOLCHAIN": true,
 	"GOPROXY": true, "GONOSUMDB": true, "GOPRIVATE": true,
 	"NODE_OPTIONS": true, "PILOT_EXECUTOR": true,
+}
+
+// agentGitConfigFileEnv lists the names of git that point it at config files
+// or carry config entries of the daemon process; none of them reaches a
+// command of the agent user (setAgentEnvWith).
+var agentGitConfigFileEnv = map[string]bool{
+	"GIT_CONFIG_GLOBAL": true, "GIT_CONFIG_SYSTEM": true, "GIT_CONFIG_NOSYSTEM": true, "GIT_CONFIG_PARAMETERS": true,
 }
 
 // runAsCodeSetEnv lists the names only the code sets: the task id and the
@@ -1294,7 +1302,8 @@ func (s *runAsSettings) agentEnvFor(env []string) []string {
 // setAgentEnv sets cmd.Env for a command made by agentCommand. With the option
 // empty (or cmd built without sudo) it assigns env unchanged. With the option
 // set it assigns the allowlisted env plus the git identity of the agent user
-// for the directory cmd.Dir (agentGitIdentityFor), plus, when the context of
+// for the directory cmd.Dir (agentGitIdentityFor) and GIT_TERMINAL_PROMPT=0,
+// with no name of agentGitConfigFileEnv, plus, when the context of
 // agentCommand carried the token file of the run, the config entries of the
 // git credential helper of github.com (appendAgentGitCredentialEntries), and
 // writes the names of those entries into the --preserve-env flag.
@@ -1395,6 +1404,13 @@ func setAgentEnvWith(cmd *exec.Cmd, env []string, dir string, dropDaemon, tool b
 	}
 	// After the allowlist: an inherited GIT_CONFIG_* never passes it, so the
 	// entries of the credential helper are the only config entries of git.
+	// The config files of the daemon never reach git of the agent side, and
+	// git of the agent side never waits for a prompt.
+	out = slices.DeleteFunc(out, func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return agentGitConfigFileEnv[name]
+	})
+	out = lastEnvWins(append(out, "GIT_TERMINAL_PROMPT=0"))
 	out = appendAgentGitCredentialEntries(out, snap.tokenFile)
 	cmd.Env = out
 	setPreserveEnvNames(cmd, out)

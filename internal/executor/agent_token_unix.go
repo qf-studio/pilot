@@ -13,6 +13,10 @@ import (
 // link at its name.
 const agentTokenNoFollow = unix.O_NOFOLLOW
 
+// agentTokenNonBlock makes the open of a lock file by the sweep return at once
+// when a FIFO is at its name.
+const agentTokenNonBlock = unix.O_NONBLOCK
+
 // ownedByDaemonUser reports whether fi (of an Lstat) belongs to the effective
 // user of the daemon.
 func ownedByDaemonUser(fi os.FileInfo) bool {

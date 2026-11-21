@@ -84,7 +84,7 @@ var gateEnvAllowed = map[string]bool{
 	"GOPROXY": true, "GONOSUMDB": true, "GOPRIVATE": true, "NODE_OPTIONS": true, "PILOT_EXECUTOR": true,
 	"HOME": true, "CLAUDE_CONFIG_DIR": true, "GOPATH": true,
 	"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true,
-	"PILOT_CHANGED_PACKAGES": true, "PILOT_CHANGED_FULL": true, "PILOT_CHANGED_REASON": true,
+	"GIT_TERMINAL_PROMPT": true, "PILOT_CHANGED_PACKAGES": true, "PILOT_CHANGED_FULL": true, "PILOT_CHANGED_REASON": true,
 	"PWD": true, "OLDPWD": true, "SHLVL": true, "_": true,
 }
 
