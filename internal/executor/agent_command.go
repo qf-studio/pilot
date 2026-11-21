@@ -635,7 +635,7 @@ func checkRunAsWorkspaceRoot(s *runAsSettings) string {
 		if err != nil {
 			return err
 		}
-		setAgentEnv(cmd, gitAgentBaseEnv())
+		setAgentToolEnv(cmd, gitAgentBaseEnv())
 		return cmd.Run()
 	}
 	const probeCheck = "daemon user can list a directory the agent user creates in the workspace root"
@@ -1046,7 +1046,7 @@ func agentDialAs(s *runAsSettings, addr string, timeout time.Duration) agentDial
 		return agentDialNotRun
 	}
 	cmd.WaitDelay = runAsProbeWaitDelay
-	setAgentEnv(cmd, gitAgentBaseEnv())
+	setAgentToolEnv(cmd, gitAgentBaseEnv())
 	var out probeOutput
 	cmd.Stdout = &out
 	err = cmd.Run()
@@ -1343,6 +1343,13 @@ func agentToolEnvDenied(name string) bool {
 		}
 	}
 	return false
+}
+
+// setAgentToolEnv is setAgentEnv for a tool command (agentToolEnv): the file
+// helpers of the agent side, the preflight probes, the workspace bundle
+// commands and the tar copy of the navigator docs (GH-6661).
+func setAgentToolEnv(cmd *exec.Cmd, env []string) {
+	setAgentToolEnvIn(cmd, env, cmd.Dir)
 }
 
 // setAgentToolEnvIn is setAgentEnvIn for a tool command (agentToolEnv): the

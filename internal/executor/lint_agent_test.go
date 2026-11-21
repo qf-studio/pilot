@@ -198,6 +198,127 @@ func TestAutoFixLintRunsAsAgent(t *testing.T) {
 	})
 }
 
+// mutation pin: runLintProgram does not call agentSudoCommandError -> this test fails
+//
+// TestLintProgramRefusesPlainCommand (GH-6661 item 2): with the option set and
+// a command builder that gives a plain command (agentCommand off Linux), the
+// lint does not run and the error names the cause.
+func TestLintProgramRefusesPlainCommand(t *testing.T) {
+	stubRunAsGOOS(t)
+	root, ws := lintWorkspace(t)
+	out := mockLint(t)
+	sudoLog := mockSudoAgent(t, "", "")
+	setRunAsStateForTest(t, gitRouteSettings(t, root), "")
+	runAsGOOS = "darwin" // agentCommand builds a plain command; stubRunAsGOOS restores
+
+	output, err := NewGitOperations(ws).runLintProgram(context.Background(), goLintArgs("main")...)
+	if err == nil || !strings.Contains(err.Error(), "is not a sudo command of the agent user") {
+		t.Errorf("runLintProgram error = %v, want the refusal of a command that is not a sudo command", err)
+	}
+	if len(output) != 0 {
+		t.Errorf("runLintProgram output = %q, want none", output)
+	}
+	if _, statErr := os.Stat(filepath.Join(out, "check.pwd")); statErr == nil {
+		t.Error("the lint program ran as the daemon user")
+	}
+	if calls := sudoCalls(t, sudoLog); len(calls) != 0 {
+		t.Errorf("sudo ran: %q", calls)
+	}
+}
+
+// mutation pin: lintProgramMissing reads every exit status 127 as a missing program -> this test fails
+//
+// TestLintExit127WithFindingsIsLintFailure (GH-6661 item 3): with the option
+// set, a lint program that is present, prints findings and exits 127 gives a
+// lint failure with its output; only an empty output or the one line of sudo
+// or the shell that says the command is not found is a missing program.
+func TestLintExit127WithFindingsIsLintFailure(t *testing.T) {
+	stubRunAsGOOS(t)
+	root, ws := lintWorkspace(t)
+	dir := t.TempDir()
+	body := "#!/bin/sh\necho 'a.go:1:1: finding of the lint'\nexit 127\n"
+	if err := os.WriteFile(filepath.Join(dir, "golangci-lint"), []byte(body), 0o755); err != nil { //nolint:gosec // mock must be executable
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	_ = mockSudoAgent(t, "", "")
+	setRunAsStateForTest(t, gitRouteSettings(t, root), "")
+
+	res := NewGitOperations(ws).runLintCheck(context.Background(), "main")
+	if res.Clean {
+		t.Fatalf("runLintCheck = %+v, want a lint failure", res)
+	}
+	if !strings.Contains(strings.Join(res.Issues, "\n"), "a.go:1:1: finding of the lint") {
+		t.Errorf("Issues = %q, want the output of the lint program", res.Issues)
+	}
+
+	exit := func(code int) error {
+		return exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	}
+	for _, tc := range []struct {
+		out  string
+		code int
+		want bool
+	}{
+		{"", 127, true},
+		{"sudo: golangci-lint: command not found", 127, true},
+		{"sh: 1: golangci-lint: not found", 127, true},
+		{"/tmp/x/sudo: 60: exec: golangci-lint: not found", 127, true},
+		{"bash: line 1: golangci-lint: command not found", 127, true},
+		{"sudo: golangci-lint: command not found", 1, true},
+		{"a.go:1:1: finding", 127, false},
+		{"sh: 1: golangci-lint: not found\na.go:1:1: finding", 127, false},
+		{"sh: 1: other-tool: not found", 127, false},
+		{"", 1, false},
+	} {
+		if got := lintProgramMissing([]byte(tc.out), exit(tc.code)); got != tc.want {
+			t.Errorf("lintProgramMissing(%q, exit %d) = %v, want %v", tc.out, tc.code, got, tc.want)
+		}
+	}
+}
+
+// mutation pin: runAgentFileScriptLimit sets the environment with setAgentEnv instead of setAgentToolEnv -> this test fails
+//
+// TestAgentToolEnvOfFileHelperAndGateProbe (GH-6661 item 5): with the option
+// set, a file helper of the agent side and the gate tool probe get no name
+// with the prefix ANTHROPIC_ or CLAUDE_.
+func TestAgentToolEnvOfFileHelperAndGateProbe(t *testing.T) {
+	setLintDaemonEnv(t)
+	t.Setenv("ANTHROPIC_BASE_URL", "https://example.test")
+	dumps := t.TempDir()
+	denied := func(t *testing.T, path string) {
+		t.Helper()
+		env := readTestFile(t, path)
+		if strings.TrimSpace(env) == "" {
+			t.Fatalf("%s is empty", path)
+		}
+		for _, line := range strings.Split(env, "\n") {
+			if name, _, _ := strings.Cut(line, "="); strings.HasPrefix(name, "ANTHROPIC_") || strings.HasPrefix(name, "CLAUDE_") {
+				t.Errorf("%s: the environment has %s", filepath.Base(path), name)
+			}
+		}
+	}
+
+	t.Run("file helper", func(t *testing.T) {
+		helperEnv := filepath.Join(dumps, "helper.env")
+		f := newAgentFilesFixture(t, "env > '"+helperEnv+"'")
+		f.lock(t)
+		if err := agentWriteFile(t.Context(), filepath.Join(f.ws, "x.txt"), []byte("x"), 0o644); err != nil {
+			t.Fatalf("agentWriteFile: %v", err)
+		}
+		denied(t, helperEnv)
+	})
+
+	t.Run("gate tool probe", func(t *testing.T) {
+		probeEnv := filepath.Join(dumps, "probe.env")
+		_ = mockSudoAgent(t, "", "env > '"+probeEnv+"'")
+		if msg := checkRunAsGateTools(testRunAsSettings(t)); msg != "" {
+			t.Fatalf("checkRunAsGateTools = %q", msg)
+		}
+		denied(t, probeEnv)
+	})
+}
+
 // TestRestoreHookSettingsFailureFailsRunAsAgent: with the option set a restore
 // that fails makes the result of the run a failure that names the file; with
 // it empty the warning of before stays and the result is untouched.
@@ -291,15 +412,17 @@ func TestSettingsRestoreFailureFailsRunThroughExecute(t *testing.T) {
 	}
 }
 
-// settingsBreakingCommitBackend breaks the settings file as
-// settingsBreakingBackend does and commits a file, so the run reaches the PR
-// creation before the deferred restore fails.
-type settingsBreakingCommitBackend struct {
-	settingsBreakingBackend
+// settingsDenyCommitBackend commits a file in the directory it runs in and
+// then makes the marker file, from which on the mock sudo of
+// TestSettingsRestoreFailureStopsBeforeThePush fails each command on the
+// settings file: the restore of the settings file after the backend ran.
+type settingsDenyCommitBackend struct {
+	retryPathRecordingBackend
+	marker string
 }
 
-func (b *settingsBreakingCommitBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
-	if _, err := b.settingsBreakingBackend.Execute(ctx, opts); err != nil {
+func (b *settingsDenyCommitBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	if _, err := b.retryPathRecordingBackend.Execute(ctx, opts); err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(filepath.Join(opts.ProjectPath, "work.go"), []byte("package work\n"), 0o600); err != nil {
@@ -312,18 +435,33 @@ func (b *settingsBreakingCommitBackend) Execute(ctx context.Context, opts Execut
 			return nil, fmt.Errorf("git %v: %v: %s", args, err, out)
 		}
 	}
+	if err := os.WriteFile(b.marker, nil, 0o600); err != nil {
+		return nil, err
+	}
 	return &BackendResult{Success: true, Output: "done"}, nil
 }
 
-// mutation pin: the deferred restore of executeWithOptions fails a run that already opened a PR (failRunOnSettingsRestore not reached with PRUrl set) -> this test fails
+// mutation pin: executeWithOptions does not call restoreSettingsBeforePush before the pre-push lint and the push -> this test fails
 //
-// TestSettingsRestoreFailureKeepsOpenPRThroughExecute (GH-6646 item 2): with
-// the option set, a run that opened a PR keeps Success, its PR and a nil run
-// error when the deferred restore of the settings file fails; the failure
-// reaches IntentWarning.
-func TestSettingsRestoreFailureKeepsOpenPRThroughExecute(t *testing.T) {
-	e := newAgentWorkspaceEnv(t)
-	backend := &settingsBreakingCommitBackend{}
+// TestSettingsRestoreFailureStopsBeforeThePush (GH-6661 item 1): with the
+// option set, a restore of the settings file that fails after the backend
+// committed fails the run before the push: the branch is not on the remote
+// and no PR is created.
+func TestSettingsRestoreFailureStopsBeforeThePush(t *testing.T) {
+	stubRunAsGOOS(t)
+	repo, remote := setupTestRepoWithRemote(t)
+	t.Cleanup(func() { _ = os.RemoveAll(repo); _ = os.RemoveAll(remote) })
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "backend-ran")
+	sudoLog := mockSudoAgent(t, repo, fmt.Sprintf(`if [ -f '%s' ]; then
+  case "$*" in *settings.json*) echo "mock sudo: write of the settings file denied" >&2; exit 1 ;; esac
+fi`, marker))
+	setRunAsStateForTest(t, gitRouteSettings(t, root), "")
+
+	backend := &settingsDenyCommitBackend{marker: marker}
 	runner := NewRunnerWithBackend(backend)
 	runner.config = &BackendConfig{SkipSelfReview: true}
 	runner.SetSkipPreflightChecks(true)
@@ -331,30 +469,38 @@ func TestSettingsRestoreFailureKeepsOpenPRThroughExecute(t *testing.T) {
 	runner.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	creator := &bodyCapturingPRCreator{}
 	runner.SetPRCreator(creator)
-	task := &Task{ID: "GH-6646", Title: "t", Description: "d", ProjectPath: e.repo, Branch: "pilot/GH-6646", CreatePR: true, BaseBranch: "main", SourceAdapter: "linear", SkipQualityGates: true}
+	const branch = "pilot/GH-6661"
+	task := &Task{ID: "GH-6661", Title: "t", Description: "d", ProjectPath: repo, Branch: branch, CreatePR: true, BaseBranch: "main", SourceAdapter: "linear", SkipQualityGates: true}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	res, err := runner.executeWithOptions(ctx, task, true)
+	res, runErr := runner.executeWithOptions(ctx, task, true)
 	if len(backend.paths()) == 0 {
 		t.Fatal("the backend never ran")
 	}
-	if res == nil || res.PRUrl == "" {
-		t.Fatalf("result = %+v, want a run that opened a PR", res)
-	}
-	creator.only(t)
-	if !res.Success {
-		t.Errorf("a run with an open PR failed after the settings restore: Error = %q", res.Error)
-	}
-	if err != nil {
-		t.Errorf("run error = %v, want nil on a run with an open PR", err)
+	if !strings.Contains(strings.Join(sudoCalls(t, sudoLog), "\n"), "settings.json") {
+		t.Fatalf("no command on the settings file went through sudo:\n%s", strings.Join(sudoCalls(t, sudoLog), "\n"))
 	}
 	const want = "restore of the claude settings file"
-	if !strings.Contains(res.IntentWarning, want) || !strings.Contains(res.IntentWarning, filepath.Join(".claude", "settings.json")) {
-		t.Errorf("IntentWarning = %q, want the restore failure naming the settings file", res.IntentWarning)
+	if res == nil || res.Success || !strings.Contains(res.Error, want) || !strings.Contains(res.Error, filepath.Join(".claude", "settings.json")) {
+		t.Errorf("result = %+v, want a failure whose Error names the settings file (%q)", res, want)
 	}
-	if strings.Contains(res.Error, want) {
-		t.Errorf("result Error = %q, want the restore failure in IntentWarning only", res.Error)
+	if runErr == nil || !strings.Contains(runErr.Error(), want) {
+		t.Errorf("run error = %v, want one with %q", runErr, want)
+	}
+	if res != nil && res.PRUrl != "" {
+		t.Errorf("PRUrl = %q, want none", res.PRUrl)
+	}
+	creator.mu.Lock()
+	prCalls := len(creator.bodies)
+	creator.mu.Unlock()
+	if prCalls != 0 {
+		t.Errorf("CreatePR called %d times, want none", prCalls)
+	}
+	if out, err := exec.Command("git", "--git-dir", remote, "for-each-ref", "refs/heads/"+branch).CombinedOutput(); err != nil {
+		t.Fatalf("for-each-ref: %v: %s", err, out)
+	} else if strings.TrimSpace(string(out)) != "" {
+		t.Errorf("the branch is on the remote after a failed restore: %s", out)
 	}
 }
 
