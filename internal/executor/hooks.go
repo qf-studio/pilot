@@ -355,9 +355,11 @@ func RestoreHookSettings(settingsPath, scriptDir string, restoreFunc func() erro
 // settingsPath after a session. With run_as_user empty (runAsSet false) a
 // failure is logged as a warning and the wrapper returns nil, as before. With
 // the option set (TASK-651) the file is in the workspace of the agent user and
-// the wrapper returns the failure with the path of the file: the run fails
-// (failRunOnSettingsRestore) instead of leaving the hook entries of the daemon
-// in the workspace.
+// the wrapper returns the failure with the path of the file instead of leaving
+// the hook entries of the daemon in the workspace unreported. The caller hands
+// it to failRunOnSettingsRestore: a run with no PR fails; a run that already
+// opened a PR (PRUrl set) keeps its result, and the failure goes to the log and
+// to IntentWarning.
 func hookSettingsRestore(log *slog.Logger, settingsPath string, runAsSet bool, restore func() error) func() error {
 	return func() error {
 		if err := restore(); err != nil {
@@ -402,16 +404,19 @@ func settingsRestoreFailure(log *slog.Logger, settingsPath string, runAsSet bool
 	return nil
 }
 
-// failRunOnSettingsRestore makes the result of a run a failure for err, the
-// failed restore of the settings file (hookSettingsRestore): Success false,
-// the text of err in Error (after an error the run already had), and err in
-// the returned error.
+// failRunOnSettingsRestore is the outcome of a run for err, the failed restore
+// of the settings file (hookSettingsRestore). A run with no PR (PRUrl empty)
+// becomes a failure: Success false, the text of err in Error (after an error
+// the run already had), and err in the returned error. A run that already
+// opened a PR (PRUrl set) keeps its result and its run error.
 //
-// Decision (GH-6626): a run that already opened a PR (PRUrl set) keeps its
-// result and its run error. The restore runs in the deferred cleanup, after
-// CreatePR; a failure there would hand the caller a failed task with an open
-// PR. The failure is logged as an Error and added to IntentWarning, which the
-// completion message shows.
+// Decision (GH-6626): a run that already opened a PR keeps its result and its
+// run error. The restore runs in the deferred cleanup, after CreatePR; a
+// failure there would hand the caller a failed task with an open PR. The
+// failure is logged as an Error and added to IntentWarning. The defer runs
+// after the body of executeWithOptions, so the completion memory the runner
+// stores there never holds it; the execution comment of the caller
+// (buildExecutionComment in cmd/pilot) shows it.
 func failRunOnSettingsRestore(log *slog.Logger, taskID string, res *ExecutionResult, runErr, err error) (*ExecutionResult, error) {
 	if res != nil && res.PRUrl != "" {
 		log.Error("Claude settings restore failed with run_as_user set after the PR was opened: the run keeps its result",
