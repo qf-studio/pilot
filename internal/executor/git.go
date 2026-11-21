@@ -102,8 +102,9 @@ type GitOperations struct {
 	// hookSettingsLeftChanged reports whether the settings file of the
 	// workspace (hookSettingsRelPath) still differs from its state before
 	// the daemon wrote its entries for the session: the restore did not run
-	// or did not bring the file back. The amend of the lint fix then leaves
-	// the file out (stageAndAmendCommit, GH-6668). nil: nothing to leave out.
+	// or did not bring the file back. The amend of the lint fix and Commit
+	// then take the file out of the index after the stage
+	// (unstageHookSettings, GH-6676). nil: nothing to leave out.
 	hookSettingsLeftChanged func() bool
 }
 
@@ -684,6 +685,11 @@ func (g *GitOperations) Commit(ctx context.Context, message string) (string, err
 	addCmd := g.gitCmd(ctx, addArgs...)
 	if output, err := addCmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("failed to stage changes: %w: %s", err, output)
+	}
+	// GH-6676: the add above never stages .claude/, but a stage of the
+	// session can have left the settings file in the index.
+	if err := g.unstageHookSettings(ctx); err != nil {
+		return "", err
 	}
 
 	// Commit

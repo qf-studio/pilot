@@ -221,19 +221,17 @@ func lintNotFoundLine(out string) bool {
 const hookSettingsRelPath = ".claude/settings.json"
 
 // stageAndAmendCommit stages all changes and amends the last commit. While the
-// settings file still holds the entries of the daemon (hookSettingsLeftChanged,
-// GH-6668) the stage leaves it out with a literal exclude and one Warn line.
+// settings file still holds the entries of the daemon (hookSettingsLeftChanged)
+// the file is taken out of the index again after the stage
+// (unstageHookSettings, GH-6676).
 func (g *GitOperations) stageAndAmendCommit(ctx context.Context, message string) error {
-	addArgs := []string{"add", "-A"}
-	if g.hookSettingsLeftChanged != nil && g.hookSettingsLeftChanged() {
-		slog.Warn("lint fix: the Claude settings file differs from its state before the run; the amend leaves it out",
-			slog.String("path", filepath.Join(g.projectPath, filepath.FromSlash(hookSettingsRelPath))))
-		addArgs = append(addArgs, "--", ":/", ":(exclude,literal)"+hookSettingsRelPath)
-	}
 	// Stage all changes
-	stageCmd := g.gitCmd(ctx, addArgs...)
+	stageCmd := g.gitCmd(ctx, "add", "-A")
 	if _, err := stageCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to stage changes: %w", err)
+	}
+	if err := g.unstageHookSettings(ctx); err != nil {
+		return err
 	}
 
 	// Amend commit
@@ -242,6 +240,28 @@ func (g *GitOperations) stageAndAmendCommit(ctx context.Context, message string)
 		return fmt.Errorf("failed to amend commit: %w", err)
 	}
 
+	return nil
+}
+
+// unstageHookSettings takes the settings file (hookSettingsRelPath) out of the
+// index again while it still holds the entries of the daemon
+// (hookSettingsLeftChanged), with one Debug line: the index then holds the
+// file of HEAD, or no file. A path that git does not know (.claude/ ignored,
+// .claude a symlink or a submodule) is not an error of the reset.
+//
+// Decision: a reset after the stage, not a pathspec exclude in the stage
+// (GH-6676): git add exits 1 with an exclude when .claude/ is ignored and 128
+// when .claude is a symlink or a submodule, and the commit then lacks the fix.
+func (g *GitOperations) unstageHookSettings(ctx context.Context) error {
+	if g.hookSettingsLeftChanged == nil || !g.hookSettingsLeftChanged() {
+		return nil
+	}
+	resetCmd := g.gitCmd(ctx, "--literal-pathspecs", "reset", "-q", "--", hookSettingsRelPath)
+	if output, err := resetCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to take %s out of the index: %w: %s", hookSettingsRelPath, err, output)
+	}
+	slog.Debug("the Claude settings file holds the hook entries of the daemon; the commit keeps it out",
+		slog.String("path", filepath.Join(g.projectPath, filepath.FromSlash(hookSettingsRelPath))))
 	return nil
 }
 

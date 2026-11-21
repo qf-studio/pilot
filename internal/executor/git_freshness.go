@@ -90,7 +90,8 @@ func applyGhostSHAGuard(ctx context.Context, task *Task, result *ExecutionResult
 // a retry can pick the work up instead of it silently vanishing. The exclude
 // of .claude/ keeps the settings file that holds the hook entries of the
 // daemon out of that commit, tracked or not, before the restore runs
-// (GH-6668).
+// (GH-6668); Commit takes the file out of the index again when a stage of
+// the session left it there (unstageHookSettings, GH-6676).
 //
 // Returns preserved=false with no side effects when the tree is genuinely
 // clean, or when only excluded noise paths are dirty (GitOperations.Commit
