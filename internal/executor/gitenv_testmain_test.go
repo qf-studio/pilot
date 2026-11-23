@@ -20,18 +20,7 @@ import (
 // real repo's core.bare, fixture commits land on real branches, and
 // fixture pushes hit the real GitHub remote. This was the root cause of 5
 // core.bare-flip incidents (GH-5063). See testutil.UnsetLeakedGitEnv.
-//
-// TASK-651: the run_as_user refusal of the preflight (runAsIncompleteRefusal)
-// is off for the tests of the package; TestRunAsUserPreflightRefusal
-// switches it on. The declared value is kept in runAsIncompleteRefusalDefault
-// first: TestRunAsUserPreflightRefusalDefaultOn pins it.
-// runAsIncompleteRefusalDefault is the value of runAsIncompleteRefusal as
-// declared, before TestMain switches the refusal off.
-var runAsIncompleteRefusalDefault bool
-
 func TestMain(m *testing.M) {
 	testutil.UnsetLeakedGitEnv()
-	runAsIncompleteRefusalDefault = runAsIncompleteRefusal
-	runAsIncompleteRefusal = false
 	os.Exit(m.Run())
 }

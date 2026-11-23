@@ -341,9 +341,9 @@ func resolveRunAs(userName, group string) (*runAsSettings, string) {
 // seconds, the agent gets no terminal from sudo, and the home of the user
 // exists. After the worktree checks below, the agent user with the
 // environment of a gate finds sh, git, and make and go when the daemon finds
-// them, and can make a file in its temporary directory (checkRunAsGateTools). Before all of them the refusal of runAsIncompleteRefusal fails
-// every host, and before that a daemon start (RunAsGatewayRequired) with a
-// gateway port of 0 or below is refused (runAsGatewayPortCheck). Then the workspace (TASK-651 4.2): use_worktree is true,
+// them, and can make a file in its temporary directory (checkRunAsGateTools). Before all of them a daemon
+// start (RunAsGatewayRequired) with a gateway port of 0 or below is refused
+// (runAsGatewayPortCheck). Then the workspace (TASK-651 4.2): use_worktree is true,
 // worktree_pool_size is 0, the workspace root is not /, the home of the daemon
 // user, the data directory of the daemon or a parent of one of them, and the
 // host checks of checkRunAsWorkspaceRoot pass. Last, the modes of the data
@@ -411,13 +411,10 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 	switch {
 	case blank != "":
 		failed = blank
-	// Decision: a config check, so it comes before the general refusal and
-	// the host checks: the daemon start names this cause on every host
-	// (GH-6480).
+	// Decision: a config check, so it comes before the host checks: the
+	// daemon start names this cause on every host (GH-6480).
 	case gatewayRequired && gatewayPort <= 0:
 		failed = runAsGatewayPortCheck
-	case runAsIncompleteRefusal:
-		failed = runAsIncompleteCheck
 	case !validRunAsName(userName) || userName == "root":
 		failed = "run_as_user name is not valid"
 	case group == "":
@@ -483,22 +480,10 @@ func PreflightRunAsUser(cfg *ClaudeCodeConfig, backendType string, useWorktree b
 	runAsMu.Unlock()
 }
 
-// runAsIncompleteRefusal makes PreflightRunAsUser fail for every host while
-// the option is set. Until the hand-over leg and the gates leg of TASK-651
-// merge, processes of the daemon user still run inside the agent-owned
-// workspace: the workflow hooks and quality gates of the runner, the gate
-// commands of internal/quality and its inline git command (scope.go). The
-// gates leg removes the refusal. Tests of the package switch it off
-// (TestMain).
-var runAsIncompleteRefusal = true
-
 // runAsGatewayPortCheck is the failed check of a daemon start with run_as_user
 // set and a gateway port of 0 or below: the firewall probe cannot check the
 // gateway port (GH-6480).
 const runAsGatewayPortCheck = "run_as_user needs a gateway port for the firewall probe"
-
-// runAsIncompleteCheck is the failed check of the refusal.
-const runAsIncompleteCheck = "run_as_user cannot be set yet: the hand-over leg and the gates leg of TASK-651 are not merged"
 
 // runAsGetenv is os.Getenv for the Go proxy check of the preflight; tests
 // replace it.

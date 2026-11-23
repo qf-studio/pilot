@@ -710,7 +710,7 @@ func checkAgentWorkspacePath(s *runAsSettings, path string) error {
 // deleted: the daemon's repository never got the task branch, and a local
 // branch with the same name belongs to another flow. While the preflight
 // flag is set it starts no process and logs one Warn line: the settings then
-// hold names the preflight did not check (runAsIncompleteRefusal fails before
+// hold names the preflight did not check (the gateway port check fails before
 // the name check).
 func removeAgentWorkspace(s *runAsSettings, path string) error {
 	if err := runAsSpawnError(); err != nil {
