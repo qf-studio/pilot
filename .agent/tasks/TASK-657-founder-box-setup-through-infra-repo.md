@@ -1,6 +1,6 @@
 # TASK-657: Founder box set-up through the infra repository — host script run for the agent user, GitHub App credentials
 
-**Status**: 📋 **Planned 2026-11-23 (research done the same day). Phase 1 has three legs for the infra repository (A1 → A2 → A3), not dispatched yet: one founder decision is open (how the infrastructure owner reviews a pull request that the daemon merges on its own).** Phase 2 (GitHub App and secrets) has its hand steps listed; its legs are written after a read of the start script of the box with the values masked.
+**Status**: 🚀 **Phase 1 dispatched 2026-11-23 16:05Z on the founder's "go": A1 [infra#25](https://github.com/qf-studio/aws-infrastructure-pilot/issues/25) → A2 [infra#26](https://github.com/qf-studio/aws-infrastructure-pilot/issues/26) → A3 [infra#27](https://github.com/qf-studio/aws-infrastructure-pilot/issues/27), each with the labels `pilot` and `no-decompose`; A2 and A3 wait for the ticket before them (a Depends-on line).** Founder decision 11-23: the daemon merges the three pull requests on its own; the infrastructure owner reviews them after the merge and before the first workflow run (nothing runs at a merge). Phase 2 (GitHub App and secrets): the founder has the steps for the App; its legs are written after a read of the start script of the box with the values masked (founder word open). Phase 3 (first run with the option on) needs only phase 1 for a test in the public Pilot repository.
 **Created**: 2026-11-23
 **Assignee**: Pilot for each leg; the founder for each step that needs the live box, AWS credentials or org owner rights; the infrastructure owner reviews each pull request in the infra repository.
 
@@ -45,10 +45,10 @@ The founder box is ready for agent sessions under a second Unix user. The host s
 ## Route
 
 ### Phase 1: The host script runs through the infra repository
-- [ ] 1. The infra repository gets a copy of the host set-up script, pinned by a hash, and the lint covers the new directory
-- [ ] 2. A wrapper removes the daemon user from the group wheel and then starts the script (needs 1)
-- [ ] 3. A workflow on demand sends the wrapper to the box through SSM, with a dry run mode (needs 2)
-- [ ] 4. The infrastructure owner reviews the three pull requests (operator)
+- [ ] 1. The infra repository gets a copy of the host set-up script, pinned by a hash, and the lint covers the new directory (qf-studio/aws-infrastructure-pilot#25)
+- [ ] 2. A wrapper removes the daemon user from the group wheel and then starts the script (qf-studio/aws-infrastructure-pilot#26, needs 1)
+- [ ] 3. A workflow on demand sends the wrapper to the box through SSM, with a dry run mode (qf-studio/aws-infrastructure-pilot#27, needs 2)
+- [ ] 4. The infrastructure owner reviews the three merged pull requests, before the first run (operator, needs 3)
 - [ ] 5. Dry run on the box, wheel removal, second dry run, then the apply run in a window with no active task (operator, needs 3, 4)
 
 ### Phase 2: GitHub App and secrets
@@ -58,15 +58,17 @@ The founder box is ready for agent sessions under a second Unix user. The host s
 - [ ] 9. Full restart of the daemon with the App config; check of the token source, a poll, an action after one hour (operator, needs 8)
 
 ### Phase 3: First run with the option on
-- [ ] 10. The four `run_as_` values go into the daemon config; full restart with a new tmux server (operator, needs 5, 9)
-- [ ] 11. One small ticket runs as the agent user; the session reads the daemon log and the process list (operator, needs 10)
+- [ ] 10. The four `run_as_` values go into the daemon config; full restart with a new tmux server (operator, needs 5)
+- [ ] 11. One small ticket in the public Pilot repository runs as the agent user; the session reads the daemon log and the process list (operator, needs 10)
+- [ ] 12. The option stays on for the private repositories only after the GitHub App works (operator, needs 9, 11)
 
 ### Side tracks
 - [ ] The box image gets the override for the group wheel and the sudo line (infrastructure owner, their step 4)
 - [ ] Chromium for the UI tests in the box image (answer to the infrastructure owner: system libraries from the package tool, the browser from Playwright)
 
 ### Waits for you
-- [ ] How the infrastructure owner reviews: after the merge and before the first run (recommended), or a required review on the main branch of the infra repository
+- [x] How the infrastructure owner reviews: after the merge and before the first run (founder "go", 11-23)
+- [ ] A message to the infrastructure owner that the three pull requests wait for the review (a Slack draft for the founder)
 - [ ] The word for a read of the start script of the box with each value masked (needed for step 8)
 - [ ] The GitHub App creation (step 6)
 
@@ -114,6 +116,8 @@ The founder box is ready for agent sessions under a second Unix user. The host s
 
 The read-only token for each run asks for Contents, Issues, Pull requests and Metadata at read level for one repository; the list above contains them. Organization permission "Projects" only when a project board is in use (not verified). No webhook: the daemon polls.
 
+**Discovery of 11-23:** the org has no GitHub App for Pilot yet (the installation list shows one other App), so step 6 starts from zero. The infra repository has no branch protection and no CI for script paths, so a pull request there merges about one minute after it opens. The first test of phase 3 needs no App: the Pilot repository is public, so the agent user can fetch it without a credential (its `gh` has no token until the App works).
+
 **Not known yet (needs the masked read of the start script):** the current shape of the start script, the instance role of the box, the names of the seven literal keys in the config. The legs B1 (role statement for the Parameter Store path) and B2 (start script in the infra repository with an install workflow) are written after that read.
 
 ### Phase 3: first run
@@ -139,7 +143,7 @@ The four values that the apply run prints go into the daemon config; the gateway
 | How the script reaches the box | inline in the SSM command; S3; a fetch on the box from the public Pilot repository by commit with a hash check | fetch by commit with the hash check; the small wrapper inline as base64 | the script is too large for an SSM command; the box role for S3 is unknown; the hash is the same one that the reviewed copy has |
 | Wheel removal | inside the apply run; a separate mode | a separate mode | the dry run refuses while the rule exists, so a dry run with exit 0 is possible only after the removal; each change of the box is one visible run |
 | Who runs the box steps | Pilot ticket; the founder through the workflow | the founder through the workflow | mem-300; the run needs a window and the admin runner |
-| Review of the infra pull requests | a draft; a required review; a review after the merge and before the first run | open (founder) | the daemon merges on its own and the founder ended draft holds; nothing runs at a merge, the workflow starts only on demand |
+| Review of the infra pull requests | a draft; a required review; a review after the merge and before the first run | a review after the merge and before the first run (founder, 11-23) | the daemon merges on its own and the founder ended draft holds; nothing runs at a merge, the workflow starts only on demand |
 
 ---
 
@@ -284,7 +288,9 @@ A start of the workflow. Any call of the real aws command in a test. A change of
 - TASK-461 (`.agent/tasks/TASK-461-app-cutover-sdk-token-wiring.md`): operator steps of the GitHub App cutover.
 - Design: `.agent/system/agent-isolation-design.md`.
 - Dispatch SOP: `.agent/sops/development/dispatch-task-legs-to-pilot.md`. Infra repository checkout for the dispatch script: a clone outside this repository (`--checkout qf-studio/aws-infrastructure-pilot=PATH`).
-- (filled by the dispatch script)
+- A1 → https://github.com/qf-studio/aws-infrastructure-pilot/issues/25
+- A2 → https://github.com/qf-studio/aws-infrastructure-pilot/issues/26
+- A3 → https://github.com/qf-studio/aws-infrastructure-pilot/issues/27
 
 ---
 

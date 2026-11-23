@@ -3378,7 +3378,7 @@
       "TASK-657": {
         "path": ".agent/tasks/TASK-657-founder-box-setup-through-infra-repo.md",
         "title": "Founder box set-up through the infra repository \u2014 host script run for the agent user, GitHub App credentials",
-        "status": "planned",
+        "status": "dispatched",
         "concepts": [
           "theory of mind",
           "testing",
@@ -3388,6 +3388,11 @@
           "authentication",
           "workflow",
           "api"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/aws-infrastructure-pilot/issues/25",
+          "https://github.com/qf-studio/aws-infrastructure-pilot/issues/26",
+          "https://github.com/qf-studio/aws-infrastructure-pilot/issues/27"
         ]
       }
     },
