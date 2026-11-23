@@ -9542,6 +9542,31 @@
         ],
         "created": "2026-11-20",
         "last_validated": "2026-11-20"
+      },
+      "mem-333": {
+        "type": "decision",
+        "summary": "Founder decision 2026-11-23: no draft holds. The delivery of Pilot is autonomous, so a session never converts a pull request of Pilot to a draft and never asks the founder for a merge word; a review comes after the merge and its findings go into follow-up tickets. This ends the one exception of 2026-11-19 (the pull request that removed the preflight refusal of run_as_user was held as a draft, PR 6684; the founder released it the same day and asked to stop the practice). Fact behind it: the daemon has no path that opens or makes a draft; it only refuses to merge one (handleMerging, GH-5263), and the dashboard shows such a hold as the stage merging, which reads as a stuck merge.",
+        "path": "memories/decisions/mem-333.md",
+        "confidence": 0.9,
+        "concepts": [
+          "workflow-discipline",
+          "review",
+          "autopilot"
+        ],
+        "created": "2026-11-23",
+        "last_validated": "2026-11-23"
+      },
+      "mem-334": {
+        "type": "pitfall",
+        "summary": "A long uptime of the daemon process on the box is no sign of old code: the self-upgrade restarts by exec and keeps the process ID. Read the running version from the build metric (pilot_build_info) or the line 'upgrade verified complete' of the daemon log before a restart is proposed. On 2026-11-23 a session marker said the daemon did not run the merges of two days before and listed a restart as a founder decision; the daemon had upgraded itself 28 minutes after the last merge. The same session found that an answer of the infrastructure owner had been in the founder's Slack for five days while the records said 'no answer': search the message channel before a record repeats 'no answer'.",
+        "path": "memories/pitfalls/mem-334.md",
+        "confidence": 0.9,
+        "concepts": [
+          "operations",
+          "workflow-discipline"
+        ],
+        "created": "2026-11-23",
+        "last_validated": "2026-11-23"
       }
     }
   },
@@ -13950,6 +13975,16 @@
       "from": "mem-332",
       "to": "TASK-651",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-333",
+      "to": "TASK-651",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-334",
+      "to": "TASK-651",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -14325,7 +14360,8 @@
       "mem-307",
       "mem-320",
       "mem-322",
-      "mem-323"
+      "mem-323",
+      "mem-333"
     ],
     "aws": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -16217,7 +16253,9 @@
       "mem-325",
       "mem-327",
       "mem-328",
-      "mem-330"
+      "mem-330",
+      "mem-333",
+      "mem-334"
     ],
     "worktree": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -16332,10 +16370,12 @@
       "mem-322",
       "mem-328",
       "mem-329",
-      "mem-331"
+      "mem-331",
+      "mem-333"
     ],
     "operations": [
-      "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid"
+      "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid",
+      "mem-334"
     ],
     "deploy-gates": [],
     "env-flags": [],
@@ -16700,11 +16740,11 @@
       "mem-326"
     ]
   },
-  "last_updated": "2026-11-20T08:18:44.689787+00:00",
+  "last_updated": "2026-11-23T15:35:31.036514+00:00",
   "stats": {
-    "total_nodes": 816,
-    "total_edges": 881,
-    "memory_count": 457
+    "total_nodes": 818,
+    "total_edges": 883,
+    "memory_count": 459
   },
   "metadata": {
     "last_updated": null
