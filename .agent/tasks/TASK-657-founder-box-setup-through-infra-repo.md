@@ -1,6 +1,6 @@
 # TASK-657: Founder box set-up through the infra repository — host script run for the agent user, GitHub App credentials
 
-**Status**: 🚀 **Phase 1 dispatched 2026-11-23 16:05Z on the founder's "go": A1 [infra#25](https://github.com/qf-studio/aws-infrastructure-pilot/issues/25) → A2 [infra#26](https://github.com/qf-studio/aws-infrastructure-pilot/issues/26) → A3 [infra#27](https://github.com/qf-studio/aws-infrastructure-pilot/issues/27), each with the labels `pilot` and `no-decompose`; A2 and A3 wait for the ticket before them (a Depends-on line).** Founder decision 11-23: the daemon merges the three pull requests on its own; the infrastructure owner reviews them after the merge and before the first workflow run (nothing runs at a merge). Phase 2 (GitHub App and secrets): the founder has the steps for the App; its legs are written after a read of the start script of the box with the values masked (founder word open). Phase 3 (first run with the option on) needs only phase 1 for a test in the public Pilot repository.
+**Status**: ⏸ **Blocker found 16:12Z (box config and daemon log read through SSM): the daemon does not poll the infra repository.** The active config has no project for it (the config backups up to the end of September have one; the last run there was GH-18 on 09-26; its checkout is still on the box). So no ticket there starts until the project is in the config again (a config change of the box and a full restart: founder word), or a person writes the three changes. **Phase 1 filed 2026-11-23 16:05Z on the founder's "go": A1 [infra#25](https://github.com/qf-studio/aws-infrastructure-pilot/issues/25) → A2 [infra#26](https://github.com/qf-studio/aws-infrastructure-pilot/issues/26) → A3 [infra#27](https://github.com/qf-studio/aws-infrastructure-pilot/issues/27), each with the labels `pilot` and `no-decompose`; A2 and A3 wait for the ticket before them (a Depends-on line).** Founder decision 11-23: the daemon merges the three pull requests on its own; the infrastructure owner reviews them after the merge and before the first workflow run (nothing runs at a merge). Phase 2 (GitHub App and secrets): the founder has the steps for the App; its legs are written after a read of the start script of the box with the values masked (founder word open). Phase 3 (first run with the option on) needs only phase 1 for a test in the public Pilot repository.
 **Created**: 2026-11-23
 **Assignee**: Pilot for each leg; the founder for each step that needs the live box, AWS credentials or org owner rights; the infrastructure owner reviews each pull request in the infra repository.
 
@@ -68,6 +68,7 @@ The founder box is ready for agent sessions under a second Unix user. The host s
 
 ### Waits for you
 - [x] How the infrastructure owner reviews: after the merge and before the first run (founder "go", 11-23)
+- [ ] The infra repository as a project of the daemon again (config change and full restart on the box), or another author for the three changes
 - [ ] A message to the infrastructure owner that the three pull requests wait for the review (a Slack draft for the founder)
 - [ ] The word for a read of the start script of the box with each value masked (needed for step 8)
 - [ ] The GitHub App creation (step 6)
@@ -78,7 +79,7 @@ The founder box is ready for agent sessions under a second Unix user. The host s
 
 ### Phase 1: host script through the infra repository
 
-**Assignees**: legs A1, A2, A3 = Pilot (the infra repository is a Pilot project since 2026-08-03). Review = the infrastructure owner. Runs on the box = the founder starts the workflow (or gives the word and the session starts it with `gh workflow run` and reads the output).
+**Assignees**: legs A1, A2, A3 = Pilot (the infra repository was a Pilot project from 2026-08-03; **on 11-23 the active daemon config has no project for it**, see the status line). Review = the infrastructure owner. Runs on the box = the founder starts the workflow (or gives the word and the session starts it with `gh workflow run` and reads the output).
 
 **Facts from the research (2026-11-23, infra repository at its main branch):**
 - Each workflow there runs on the self-hosted runner with the labels `self-hosted` and `aws-infra-admin` (the management instance, administrator role). No OIDC. So a workflow can send an SSM command to the box with no IAM change.
