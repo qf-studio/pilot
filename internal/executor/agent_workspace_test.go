@@ -1152,58 +1152,66 @@ func TestCleanupOrphanedWorktreesKeepAgentWorkspaces(t *testing.T) {
 	}
 }
 
-// TestRunAsUserPreflightRefusal is item 1: until the hand-over leg and the
-// gates leg merge, the preflight fails for every host, a host that passes
-// every check included, with one Error line naming the legs, and no git
-// command in the workspace root runs.
-func TestRunAsUserPreflightRefusal(t *testing.T) {
+// TestRunAsUserPreflightPassesWhenAllChecksPass: with each check of the
+// option met in the fixture the preflight passes; with one check not met at a
+// time it refuses with one Error line naming that check, and no git command
+// in the workspace root is built.
+func TestRunAsUserPreflightPassesWhenAllChecksPass(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("file owners")
 	}
 	me := strconv.Itoa(os.Getuid())
 	tests := []struct {
-		name    string
-		refusal bool
-		root    func(t *testing.T) string
-		wantErr string // empty: passes
+		name      string
+		user      string
+		group     string
+		home      func(home string) string
+		firewall  string // the result of the firewall probe
+		wantCheck string // empty: passes
 	}{
-		{"refusal on, a host that passes every check", true, func(t *testing.T) string { return t.TempDir() }, runAsIncompleteCheck},
-		{"refusal on, a host without the root", true, func(t *testing.T) string { return filepath.Join(t.TempDir(), "gone") }, runAsIncompleteCheck},
-		{"refusal off, a host that passes every check", false, func(t *testing.T) string { return t.TempDir() }, ""},
+		{"every check met", "pilot-agent", "pilot-agents", func(h string) string { return h }, "", ""},
+		{"no group", "pilot-agent", "", func(h string) string { return h }, "", "run_as_group is required with run_as_user"},
+		{"a root user", "root", "pilot-agents", func(h string) string { return h }, "", "run_as_user name is not valid"},
+		{"a missing home", "pilot-agent", "pilot-agents", func(h string) string { return filepath.Join(h, "gone") }, "", "home exists"},
+		{"the firewall probe refused", "pilot-agent", "pilot-agents", func(h string) string { return h }, "firewall: stub refusal", "firewall: stub refusal"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			prev := runAsIncompleteRefusal
-			runAsIncompleteRefusal = tc.refusal
-			t.Cleanup(func() { runAsIncompleteRefusal = prev })
-			root := tc.root(t)
+			setRunAsStateForTest(t, nil, "")
+			root := t.TempDir()
+			home := tc.home(t.TempDir())
 			_ = mockSudoAgent(t, "", "")
-			buf, err := workspacePreflight(t, root, me, nil, true, 0)
-			if tc.wantErr == "" {
+			stubRunAsHost(t, "linux", "1000", nil)
+			runAsWorkspaceCheck = checkRunAsWorkspaceRoot
+			runAsFirewallCheck = func(*runAsSettings) string { return tc.firewall }
+			// The agent user has the uid of the test user (the owner of the
+			// temporary root); the daemon then needs another one.
+			currentUID = func() (string, error) { return "daemon-uid-stub", nil }
+			lookupUser = func(name string) (*user.User, error) {
+				if name != tc.user {
+					return nil, fmt.Errorf("unknown user %s", name)
+				}
+				return &user.User{Uid: me, HomeDir: home}, nil
+			}
+			buf := captureLog(t)
+			PreflightRunAsUser(&ClaudeCodeConfig{RunAsUser: tc.user, RunAsGroup: tc.group, RunAsWorkspaceDir: root}, "", true, 0)
+			err := RunAsUserPreflightError()
+			if tc.wantCheck == "" {
 				if err != nil || strings.Contains(buf.String(), "level=ERROR") {
 					t.Fatalf("preflight failed: %v\n%s", err, buf.String())
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("preflight error = %v, want one naming %q", err, tc.wantErr)
+			if err == nil || !strings.Contains(err.Error(), tc.wantCheck) {
+				t.Fatalf("preflight error = %v, want one naming %q", err, tc.wantCheck)
 			}
-			if n := strings.Count(buf.String(), "level=ERROR"); n != 1 || !strings.Contains(buf.String(), "hand-over leg and the gates leg") {
-				t.Errorf("want one Error line naming the legs, got:\n%s", buf.String())
+			if n := strings.Count(buf.String(), "level=ERROR"); n != 1 || !strings.Contains(buf.String(), tc.wantCheck) {
+				t.Errorf("want one Error line naming %q, got:\n%s", tc.wantCheck, buf.String())
 			}
 			if cmd := gitCommandIn(context.Background(), root, "status"); cmd.Err == nil {
 				t.Errorf("a git command in the workspace root was built after the refusal: %q", cmd.Args)
 			}
 		})
-	}
-}
-
-// TestRunAsUserPreflightRefusalDefaultOn pins the production default of the
-// refusal: TestMain switches it off for every test of the package, so only
-// the value kept before that switch shows the declaration.
-func TestRunAsUserPreflightRefusalDefaultOn(t *testing.T) {
-	if !runAsIncompleteRefusalDefault {
-		t.Fatal("runAsIncompleteRefusal is declared false: run_as_user would pass the preflight before the hand-over leg and the gates leg of TASK-651 merge")
 	}
 }
 
@@ -1228,9 +1236,6 @@ func TestAgentWorkspaceSweepWaitsForThePreflight(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			stubRunAsGOOS(t)
-			prev := runAsIncompleteRefusal
-			runAsIncompleteRefusal = tc.refusal
-			t.Cleanup(func() { runAsIncompleteRefusal = prev })
 			root, err := filepath.EvalSymlinks(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
@@ -1245,7 +1250,9 @@ func TestAgentWorkspaceSweepWaitsForThePreflight(t *testing.T) {
 			wsGit(t, repo, "update-ref", "refs/remotes/origin/main", "HEAD")
 			wsGit(t, root, "clone", "-q", "--shared", repo, ws)
 			logPath := mockSudoAgent(t, "", "")
-			if _, err := workspacePreflight(t, root, me, nil, true, 0); (err != nil) != tc.refusal {
+			// A refused preflight: a daemon start without a gateway port.
+			cfg := &ClaudeCodeConfig{RunAsGatewayRequired: tc.refusal}
+			if _, err := workspacePreflight(t, root, me, cfg, true, 0); (err != nil) != tc.refusal {
 				t.Fatalf("preflight error = %v, want refused = %v", err, tc.refusal)
 			}
 			_ = os.Remove(logPath) // the probes of the preflight

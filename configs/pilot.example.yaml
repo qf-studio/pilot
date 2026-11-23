@@ -947,12 +947,12 @@ executor:
   #                                # separate uid is the real fix. Set false only to debug.
   #   run_as_user: ""             # TASK-651 - start every model process as this Unix user through
   #   run_as_group: ""            # `sudo -n -u <user> [-g <group>]` (run_as_group also owns the run guard
-  #                                # files). Empty (default) = run as the daemon user. Linux only. Leave it
-  #                                # empty: until the hand-over leg and the gates leg of TASK-651 merge, the
-  #                                # startup check refuses this option on every host, and a run then fails
-  #                                # with one Error line ("run_as_user preflight failed"). A failed
-  #                                # startup check (user, sudo, home) stops every model spawn; there is no
-  #                                # fallback to the daemon user.
+  #                                # files). Empty (default) = run as the daemon user. Linux only. Run
+  #                                # scripts/box/setup-agent-user.sh on the host first: it creates the user,
+  #                                # the group, the firewall, the sudo rule and the workspace root. A
+  #                                # failed startup check (user, sudo, home) logs one Error line
+  #                                # ("run_as_user preflight failed") and stops every model spawn; there
+  #                                # is no fallback to the daemon user.
   #                                # With it set a gate, a hook, the lint and an evidence command get no ANTHROPIC_* and no CLAUDE_* name, so a test that calls a model API from a gate gets no key.
   #   run_as_workspace_dir: ""    # TASK-651 - root of the agent workspaces. With run_as_user set, every
   #                                # git command of the executor in a directory below this root runs as
