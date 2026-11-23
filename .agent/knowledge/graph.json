@@ -3374,6 +3374,26 @@
           "api",
           "testing"
         ]
+      },
+      "TASK-657": {
+        "path": ".agent/tasks/TASK-657-founder-box-setup-through-infra-repo.md",
+        "title": "Founder box set-up through the infra repository \u2014 host script run for the agent user, GitHub App credentials",
+        "status": "dispatched",
+        "concepts": [
+          "theory of mind",
+          "testing",
+          "context",
+          "skills",
+          "deployment",
+          "authentication",
+          "workflow",
+          "api"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/aws-infrastructure-pilot/issues/25",
+          "https://github.com/qf-studio/aws-infrastructure-pilot/issues/26",
+          "https://github.com/qf-studio/aws-infrastructure-pilot/issues/27"
+        ]
       }
     },
     "memories": {
@@ -13985,6 +14005,41 @@
       "from": "mem-334",
       "to": "TASK-651",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-657",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-657",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-657",
+      "to": "skills",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-657",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-657",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-657",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-657",
+      "to": "api",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -14178,7 +14233,8 @@
       "mem-312",
       "mem-313",
       "TASK-654",
-      "TASK-656"
+      "TASK-656",
+      "TASK-657"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -14266,7 +14322,8 @@
       "TASK-633",
       "TASK-649",
       "TASK-651",
-      "TASK-650"
+      "TASK-650",
+      "TASK-657"
     ],
     "auto-merge": [
       "mem-103",
@@ -14608,7 +14665,8 @@
       "mem-317",
       "TASK-654",
       "TASK-655",
-      "TASK-656"
+      "TASK-656",
+      "TASK-657"
     ],
     "conversational-bot": [
       "mem-036",
@@ -14921,7 +14979,8 @@
       "mem-317",
       "TASK-654",
       "TASK-655",
-      "TASK-656"
+      "TASK-656",
+      "TASK-657"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -15807,7 +15866,8 @@
       "TASK-581",
       "TASK-646",
       "TASK-651",
-      "TASK-650"
+      "TASK-650",
+      "TASK-657"
     ],
     "social-engineering": [
       "mem-125"
@@ -16044,7 +16104,8 @@
       "TASK-654",
       "TASK-655",
       "TASK-656",
-      "mem-329"
+      "mem-329",
+      "TASK-657"
     ],
     "testing-quality": [
       "TASK-384",
@@ -16204,7 +16265,8 @@
       "TASK-650",
       "TASK-651",
       "mem-318",
-      "TASK-656"
+      "TASK-656",
+      "TASK-657"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -16304,7 +16366,8 @@
       "TASK-653",
       "mem-315",
       "mem-316",
-      "mem-317"
+      "mem-317",
+      "TASK-657"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -16740,10 +16803,10 @@
       "mem-326"
     ]
   },
-  "last_updated": "2026-11-23T15:35:31.036514+00:00",
+  "last_updated": "2026-11-23T16:02:05.182574+00:00",
   "stats": {
-    "total_nodes": 818,
-    "total_edges": 883,
+    "total_nodes": 819,
+    "total_edges": 890,
     "memory_count": 459
   },
   "metadata": {
