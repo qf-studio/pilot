@@ -1325,6 +1325,11 @@
         "name": "Founder-Box",
         "aliases": [],
         "domain": "general"
+      },
+      "agent-uid-isolation": {
+        "name": "Agent-Uid-Isolation",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -3395,7 +3400,8 @@
           "https://github.com/qf-studio/aws-infrastructure-pilot/issues/27",
           "https://github.com/qf-studio/aws-infrastructure-pilot/issues/33",
           "https://github.com/qf-studio/pilot/issues/6693",
-          "https://github.com/qf-studio/pilot/issues/6694"
+          "https://github.com/qf-studio/pilot/issues/6694",
+          "https://github.com/qf-studio/pilot/issues/6698"
         ]
       }
     },
@@ -9642,6 +9648,32 @@
         ],
         "created": "2026-11-24",
         "last_validated": "2026-11-24"
+      },
+      "mem-339": {
+        "type": "learning",
+        "summary": "run_as_user works end to end on a Linux host (founder box, 2026-11-24 22:06Z, v2.327.1, issue 6698, PR 6699): workspace, agent session, commit and the three quality gates as the agent user, then hand-over, push and pull request by the daemon, 9 minutes 28 seconds for a two-line test change. The path to it: host script through a workflow of the infra repository (wheel removal, modes record, eight chmods, apply), golangci-lint in /usr/local/bin, four config keys under executor.claude_code (run_as_user pilot-agent, run_as_group pilot, run_as_workspace_dir /var/lib/pilot/agent/workspaces, run_as_data_dir /var/lib/pilot), a full restart. The option is one switch for all projects and the agent has no GitHub credential without a GitHub App, so it stays off until private repositories have the read-only token. Not proven yet: a private repository, two runs at once, an epic, a retry after a failed gate.",
+        "path": "memories/learnings/mem-339.md",
+        "confidence": 0.9,
+        "concepts": [
+          "operations",
+          "security",
+          "agent-uid-isolation"
+        ],
+        "created": "2026-11-24",
+        "last_validated": "2026-11-24"
+      },
+      "mem-340": {
+        "type": "pitfall",
+        "summary": "A ticket parked at the repick cap (five failed re-picks, execution row stalled) does not start again from a label change: the poller dispatches it, the dispatcher drops it with 'dispatch claim lost ... already terminal', and the issue keeps the label pilot-in-progress with no run (issue 6693, 2026-11-24; 16 minutes of a test window lost). To run the same work again, file a fresh issue with the same body and both labels at creation, and close the old one as replaced.",
+        "path": "memories/pitfalls/mem-340.md",
+        "confidence": 0.9,
+        "concepts": [
+          "dispatch",
+          "operations",
+          "autopilot"
+        ],
+        "created": "2026-11-24",
+        "last_validated": "2026-11-24"
       }
     }
   },
@@ -14115,6 +14147,16 @@
       "from": "mem-338",
       "to": "TASK-657",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-339",
+      "to": "TASK-657",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-340",
+      "to": "TASK-657",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -14493,7 +14535,8 @@
       "mem-320",
       "mem-322",
       "mem-323",
-      "mem-333"
+      "mem-333",
+      "mem-340"
     ],
     "aws": [
       "absolute-state-paths-bypass-cutover-shim",
@@ -15095,7 +15138,8 @@
       "mem-328",
       "mem-330",
       "mem-331",
-      "mem-336"
+      "mem-336",
+      "mem-340"
     ],
     "dispatcher": [
       "alert-engine-counts-operator-cancels",
@@ -15909,7 +15953,8 @@
       "mem-327",
       "mem-329",
       "mem-331",
-      "mem-338"
+      "mem-338",
+      "mem-339"
     ],
     "ship-test": [],
     "shipped-check": [
@@ -16524,7 +16569,9 @@
       "mem-334",
       "mem-335",
       "mem-336",
-      "mem-337"
+      "mem-337",
+      "mem-339",
+      "mem-340"
     ],
     "deploy-gates": [],
     "env-flags": [],
@@ -16888,13 +16935,16 @@
     ],
     "founder-box": [
       "mem-326"
+    ],
+    "agent-uid-isolation": [
+      "mem-339"
     ]
   },
-  "last_updated": "2026-11-24T20:26:39.378595+00:00",
+  "last_updated": "2026-11-24T22:10:32.452853+00:00",
   "stats": {
-    "total_nodes": 823,
-    "total_edges": 894,
-    "memory_count": 463
+    "total_nodes": 826,
+    "total_edges": 896,
+    "memory_count": 465
   },
   "metadata": {
     "last_updated": null
