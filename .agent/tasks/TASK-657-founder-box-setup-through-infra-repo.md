@@ -1,6 +1,6 @@
 # TASK-657: Founder box set-up through the infra repository — host script run for the agent user, GitHub App credentials
 
-**Status**: 🚀 **State 2026-11-23 16:55Z: the infra repository is a project of the daemon again, so Pilot can take the three tickets.** On the founder's word ("put it back if needed") the session restored the project block from the config backup of 09-28 (file `config.yaml.bak-0929-projects` on the box), added an empty list of required checks (the repository has no CI check named test or lint; the global list would hold each pull request), and did a full restart at 16:52Z and 16:53Z with no active task; two config backups of 11-23 are on the box; the daemon runs v2.326.0 with one process. The reason why the project left the config at the end of September is not recorded. The old ticket infra#23 (AMI refresh, filed 10-20) lost its label `pilot` before the restore, so that it does not start by surprise: the founder decides on it. **The infrastructure owner is notified in Slack (16:54Z): the three tickets, the merge by the daemon, no workflow start before their OK, the config change, the run order, and the question for the Parameter Store path of the App key.** **Phase 1 filed 2026-11-23 16:05Z on the founder's "go": A1 [infra#25](https://github.com/qf-studio/aws-infrastructure-pilot/issues/25) → A2 [infra#26](https://github.com/qf-studio/aws-infrastructure-pilot/issues/26) → A3 [infra#27](https://github.com/qf-studio/aws-infrastructure-pilot/issues/27), each with the labels `pilot` and `no-decompose`; A2 and A3 wait for the ticket before them (a Depends-on line).** Founder decision 11-23: the daemon merges the three pull requests on its own; the infrastructure owner reviews them after the merge and before the first workflow run (nothing runs at a merge). Phase 2 (GitHub App and secrets): the founder has the steps for the App; its legs are written after a read of the start script of the box with the values masked (founder word open). Phase 3 (first run with the option on) needs only phase 1 for a test in the public Pilot repository.
+**Status**: 🚀 **State 2026-11-24 10:45Z: phase 1 is merged in the infra repository — PR 28 (pinned copy; held 16 hours by the size check of the daemon, more than 500 new lines, until the founder approved), PR 29 (wrapper), PR 30 (send script and workflow), and PR 32 (minors that the daemon filed from its own review of PR 30). The session read the merged state: the hash of the copy is correct, the lint and both mock tests pass on a clean clone, no blocker for a first dry run; comments are on PR 28 and PR 30. The workflow was NOT started.** **Next: the OK of the infrastructure owner and a window (asked in Slack on 11-23 and 11-24, no answer yet), then the runs: dry-run, remove-wheel, dry-run, apply.** The infra repository is a project of the daemon again since 11-23 16:53Z (founder word); the old ticket 23 there (AMI refresh) has no label `pilot` until the founder decides. **GitHub App (phase 2): not on the path to the first run** (the first run is in the public Pilot repository). The founder asked on 11-24 whether this App or the App of Pilot Cloud is the right one: see "Which GitHub App" in phase 2; no App is created until the founder decides.
 **Created**: 2026-11-23
 **Assignee**: Pilot for each leg; the founder for each step that needs the live box, AWS credentials or org owner rights; the infrastructure owner reviews each pull request in the infra repository.
 
@@ -45,9 +45,9 @@ The founder box is ready for agent sessions under a second Unix user. The host s
 ## Route
 
 ### Phase 1: The host script runs through the infra repository
-- [ ] 1. The infra repository gets a copy of the host set-up script, pinned by a hash, and the lint covers the new directory (qf-studio/aws-infrastructure-pilot#25)
-- [ ] 2. A wrapper removes the daemon user from the group wheel and then starts the script (qf-studio/aws-infrastructure-pilot#26, needs 1)
-- [ ] 3. A workflow on demand sends the wrapper to the box through SSM, with a dry run mode (qf-studio/aws-infrastructure-pilot#27, needs 2)
+- [x] 1. The infra repository gets a copy of the host set-up script, pinned by a hash, and the lint covers the new directory (qf-studio/aws-infrastructure-pilot#25)
+- [x] 2. A wrapper removes the daemon user from the group wheel and then starts the script (qf-studio/aws-infrastructure-pilot#26, needs 1)
+- [x] 3. A workflow on demand sends the wrapper to the box through SSM, with a dry run mode (qf-studio/aws-infrastructure-pilot#27, needs 2)
 - [ ] 4. The infrastructure owner reviews the three merged pull requests, before the first run (operator, needs 3)
 - [ ] 5. Dry run on the box, wheel removal, second dry run, then the apply run in a window with no active task (operator, needs 3, 4)
 
@@ -73,7 +73,7 @@ The founder box is ready for agent sessions under a second Unix user. The host s
 - [ ] The old ticket infra#23 (AMI refresh): label `pilot` back, or close it
 - [ ] The OK of the infrastructure owner before the first workflow run
 - [ ] The word for a read of the start script of the box with each value masked (needed for step 8)
-- [ ] The GitHub App creation (step 6)
+- [ ] Which GitHub App serves the founder box: a private one now, or the Pilot Cloud path later (see phase 2); nothing is created before this decision
 
 ---
 
@@ -118,6 +118,8 @@ The founder box is ready for agent sessions under a second Unix user. The host s
 | Metadata | Read | automatic |
 
 The read-only token for each run asks for Contents, Issues, Pull requests and Metadata at read level for one repository; the list above contains them. Organization permission "Projects" only when a project board is in use (not verified). No webhook: the daemon polls.
+
+**Which GitHub App (question of the founder, 11-24):** two different Apps exist in the plans, and neither exists on GitHub yet. (1) The App of Pilot Cloud (console plan TASK-652 in the console repository, planned only): public, each customer installs it, its private key lives only in the control plane, and a box gets hourly tokens with no key on it. (2) An App for the founder box: private to the org, the daemon on the box mints its own tokens, so the private key is a file on the box. The daemon code of today supports only form (2): the key is read from a file on the host. The key of the Pilot Cloud App must never go onto the founder box: it can mint a token for each customer installation, and the box runs agent code. So the choices for the private repositories are: a small private App for the founder box now (recommended when the option must stay on for private repositories; about 15 minutes, no code change), or wait until the token path of the console plan exists and treat the founder box as one more box of it (no key on the box; needs that plan built). With the option off, or for the public Pilot repository, no App is needed.
 
 **Discovery of 11-23:** the org has no GitHub App for Pilot yet (the installation list shows one other App), so step 6 starts from zero. The infra repository has no branch protection and no CI for script paths, so a pull request there merges about one minute after it opens. The first test of phase 3 needs no App: the Pilot repository is public, so the agent user can fetch it without a credential (its `gh` has no token until the App works).
 
