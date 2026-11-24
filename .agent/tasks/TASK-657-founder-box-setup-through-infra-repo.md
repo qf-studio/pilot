@@ -1,6 +1,6 @@
 # TASK-657: Founder box set-up through the infra repository — host script run for the agent user, GitHub App credentials
 
-**Status**: ✅ **State 2026-11-24 12:27Z: the host set-up of the agent user is applied on the founder box (TASK-651 step O4), on the founder's word "run the changes", ahead of the review of the infrastructure owner.** Workflow runs of the infra repository, 11-24 12:22Z to 12:26Z, each after a check for no active task: remove-wheel (run 45392953868, exit 0) → apply (45393076556, exit 1 as planned: the modes record written, the stop at the eight open directories, each later step skipped) → close-daemon-dirs (45393197548, exit 0, eight chmod commands) → dry-run (45393340885, exit 0) → apply (45393441133, exit 0, each step done). Checked on the box after it (read-only, through SSM): user `pilot-agent` (uid 992), group `pilot` (gid 991) with the daemon user as a member; the daemon user has no general sudo (`sudo -n true` fails) and can run commands as the agent user; the chain PILOT_AGENT_EGRESS is in place for IPv4 and IPv6 and its unit is enabled; the data directory is at mode 711 and the seven entries have no bit for others; the agent root has `home` (750) and `workspaces` (2770). The cloud-init sudoers step was skipped (nothing left to comment out). The daemon was not restarted and its config is unchanged: the option is still off. This is the first run of the host script on a real Linux host. The infrastructure owner has the full report in Slack (five messages on 11-23 and 11-24, no answer yet); the undo mode and the modes record are ready. **Found for the first run with the option on:** as the agent user, with the PATH of the daemon, `sh`, `git`, `make`, `go` (in /usr/local/bin), `gh`, `node`, `claude` and `mktemp` are found; **`golangci-lint` is NOT found** (it lives in the home of the daemon user, which is closed), so the lint gate of a Go project fails as the agent user until the tool is in a system directory. The option is one switch for all projects, and the agent user has no GitHub credential yet, so with the option on each private repository fails at its fetch: the first run is a short test window (option on, one ticket in the public Pilot repository, option off), not a permanent switch, until the GitHub App question is decided. Phase 1 legs: PR 28, 29, 30, 32, 34 of the infra repository, each read by the session. The old ticket 23 there (AMI refresh) has no label `pilot` until the founder decides. **GitHub App (phase 2): not on the path to the first run** (the first run is in the public Pilot repository). The founder asked on 11-24 whether this App or the App of Pilot Cloud is the right one: see "Which GitHub App" in phase 2; no App is created until the founder decides.
+**Status**: ⏳ **State 2026-11-24 14:38Z: the host is ready; the first test of the option failed at the start check and was rolled back in 80 seconds; the test waits for the next release.** Founder word "go" for the test window (11-24). 14:35Z: `golangci-lint` copied to /usr/local/bin (the agent user finds it now). 14:36Z: the four `run_as_` values under `executor.claude_code`, full restart; **the start check refused: the box runs v2.326.0 (tag of 11-21), and the removal of the preflight refusal (PR#6684, merged 11-23 15:34Z) is in no release yet** — the session did not check that before the test. From 14:36:15Z to 14:37:06Z the daemon could start no model process; no task was active or queued. 14:37Z: the four lines removed (the config is byte-identical to the backup before the test), full restart, daemon healthy, no error line. Good result of the restart: the daemon process now has the group `pilot`. **Next: when the release with PR#6684 runs on the box (the release train runs about 15:04Z), repeat the window: option on, restart, read the start check, ticket T1 below in the public Pilot repository, option off.** **Founder decisions 11-24:** the GitHub App for the agent comes through the Pilot Cloud work (its own session), so no private App for the founder box, and the option stays off for private repositories until that path exists; the Chromium answer to the infrastructure owner is "the Playwright way" (sent); the old ticket 23 of the infra repository runs again (label `pilot` back at 14:38Z). ⏳ **Host set-up state of 2026-11-24 12:27Z: the host set-up of the agent user is applied on the founder box (TASK-651 step O4), on the founder's word "run the changes", ahead of the review of the infrastructure owner.** Workflow runs of the infra repository, 11-24 12:22Z to 12:26Z, each after a check for no active task: remove-wheel (run 45392953868, exit 0) → apply (45393076556, exit 1 as planned: the modes record written, the stop at the eight open directories, each later step skipped) → close-daemon-dirs (45393197548, exit 0, eight chmod commands) → dry-run (45393340885, exit 0) → apply (45393441133, exit 0, each step done). Checked on the box after it (read-only, through SSM): user `pilot-agent` (uid 992), group `pilot` (gid 991) with the daemon user as a member; the daemon user has no general sudo (`sudo -n true` fails) and can run commands as the agent user; the chain PILOT_AGENT_EGRESS is in place for IPv4 and IPv6 and its unit is enabled; the data directory is at mode 711 and the seven entries have no bit for others; the agent root has `home` (750) and `workspaces` (2770). The cloud-init sudoers step was skipped (nothing left to comment out). The daemon was not restarted and its config is unchanged: the option is still off. This is the first run of the host script on a real Linux host. The infrastructure owner has the full report in Slack (five messages on 11-23 and 11-24, no answer yet); the undo mode and the modes record are ready. Phase 1 legs: PR 28, 29, 30, 32, 34 of the infra repository, each read by the session. The old ticket 23 there (AMI refresh) has no label `pilot` until the founder decides. **GitHub App (phase 2): decided 11-24 — through Pilot Cloud; see "Which GitHub App" in phase 2.**
 **Created**: 2026-11-23
 **Assignee**: Pilot for each leg; the founder for each step that needs the live box, AWS credentials or org owner rights; the infrastructure owner reviews each pull request in the infra repository.
 
@@ -59,8 +59,9 @@ The founder box is ready for agent sessions under a second Unix user. The host s
 - [ ] 9. Full restart of the daemon with the App config; check of the token source, a poll, an action after one hour (operator, needs 8)
 
 ### Phase 3: First run with the option on
-- [ ] 14. `golangci-lint` in a system directory, so that the agent user finds it (operator, needs 5)
-- [ ] 10. A test window: the four `run_as_` values go into the daemon config; full restart with a new tmux server (operator, needs 5, 14)
+- [x] 14. `golangci-lint` in a system directory, so that the agent user finds it (operator, needs 5)
+- [ ] 16. A release with the removal of the preflight refusal runs on the box
+- [ ] 10. A test window: the four `run_as_` values go into the daemon config; full restart with a new tmux server (operator, needs 5, 14, 16)
 - [ ] 11. One small ticket in the public Pilot repository runs as the agent user; the session reads the daemon log and the process list (operator, needs 10)
 - [ ] 15. The option goes off again after the test, with a full restart (operator, needs 11)
 - [ ] 12. The option stays on for the private repositories only after the GitHub App works (operator, needs 9, 11)
@@ -73,10 +74,10 @@ The founder box is ready for agent sessions under a second Unix user. The host s
 - [x] How the infrastructure owner reviews: after the merge and before the first run (founder "go", 11-23)
 - [x] The infra repository as a project of the daemon again (done 11-23 16:53Z on the founder's word)
 - [x] A message to the infrastructure owner (sent 11-23 on the founder's word; the links of the merged pull requests follow)
-- [ ] The old ticket infra#23 (AMI refresh): label `pilot` back, or close it
+- [x] The old ticket infra#23 (AMI refresh): label `pilot` back (founder, 11-24)
 - [ ] The OK of the infrastructure owner before the first workflow run
 - [ ] The word for a read of the start script of the box with each value masked (needed for step 8)
-- [ ] Which GitHub App serves the founder box: a private one now, or the Pilot Cloud path later (see phase 2); nothing is created before this decision
+- [x] Which GitHub App serves the founder box: the Pilot Cloud path (founder, 11-24); no private App
 
 ---
 
@@ -332,6 +333,36 @@ Any edit of the copied host script. A chmod that the host script did not print. 
 ## Refs
 
 - Navigator TASK-657 of qf-studio/pilot (plan) · the first dry run on the founder box of 2026-11-24
+
+### LEG T1 — repo: qf-studio/pilot — title: test(executor): run_as_user name check — cases for a non-ASCII letter, a slash, a colon, a newline and a trailing hyphen
+
+probe: present qf-studio/pilot func[[:space:]]TestRunAsUserValidName\(
+probe: present qf-studio/pilot func[[:space:]]validRunAsName\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-657. The function validRunAsName (`internal/executor/agent_command.go`) accepts a Unix user or group name for the option run_as_user: lower-case ASCII letters and underscore at each place, digits and hyphen after the first place, at most 32 bytes. Its table test TestRunAsUserValidName (`internal/executor/agent_command_cancel_test.go`) has no case for a byte outside ASCII, a slash, a colon, a newline or a trailing hyphen. This issue adds those cases. It is a small test-only change; it is also the first ticket that runs with the option set on the founder box.
+
+## Scope
+
+1. In the table of TestRunAsUserValidName add these cases: a name with a non-ASCII letter (for example "agént") is refused; "a/b" is refused; "a:b" is refused; a name with a newline inside ("a\nb") is refused; a name that ends with a newline ("agent\n") is refused; "agent-" is accepted (a hyphen is allowed after the first place).
+2. No change of validRunAsName. When a new case fails, do not change the function: report the case in the PR body and leave it out of the table.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run TestRunAsUserValidName` passes; paste the output into the PR body.
+- [ ] The diff touches one file, the test file named above.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+Any change of non-test code. Other tests. The host script.
+
+## Refs
+
+- Navigator TASK-657 in this repo
 
 ## Refs
 

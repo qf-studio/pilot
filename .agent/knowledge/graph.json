@@ -9588,6 +9588,32 @@
         ],
         "created": "2026-11-23",
         "last_validated": "2026-11-23"
+      },
+      "mem-335": {
+        "type": "pitfall",
+        "summary": "A merged pull request is not on the box until a release holds it: the release train runs once a day (about 15:04Z) and only when a non-docs commit is on main. On 2026-11-24 a session set run_as_user on the founder box while the daemon ran v2.326.0 (tag of 11-21); the removal of the preflight refusal (PR 6684, merged 11-23 15:34Z, after the train of that day) was in no release, so the start check refused and the daemon could start no model process for 51 seconds until the rollback. Before a box test of a code change run: git tag --contains COMMIT, and compare with the version of the build metric on the box.",
+        "path": "memories/pitfalls/mem-335.md",
+        "confidence": 0.9,
+        "concepts": [
+          "operations",
+          "release",
+          "workflow-discipline"
+        ],
+        "created": "2026-11-24",
+        "last_validated": "2026-11-24"
+      },
+      "mem-336": {
+        "type": "pitfall",
+        "summary": "Three facts that a plan for another repository must check on the live box first (TASK-657, 2026-11-23/24): (1) the daemon config may have no project for that repository (the infra repository had left the config in September; three tickets waited until the project block came back with an empty required-checks list); (2) the size check holds a pull request with more than 500 new lines in the stage awaiting_approval until the founder approves in Slack (a 1,821-line script copy waited 16 hours); (3) the host script setup-agent-user.sh changes no directory mode itself: its first step prints chmod lines for an operator and fails, and it never removes a group membership, so a wrapper needs one mode for each of those steps.",
+        "path": "memories/pitfalls/mem-336.md",
+        "confidence": 0.9,
+        "concepts": [
+          "dispatch",
+          "operations",
+          "infra"
+        ],
+        "created": "2026-11-24",
+        "last_validated": "2026-11-24"
       }
     }
   },
@@ -14041,6 +14067,16 @@
       "from": "TASK-657",
       "to": "api",
       "type": "implements"
+    },
+    {
+      "from": "mem-335",
+      "to": "TASK-657",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-336",
+      "to": "TASK-657",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -15020,7 +15056,8 @@
       "mem-323",
       "mem-328",
       "mem-330",
-      "mem-331"
+      "mem-331",
+      "mem-336"
     ],
     "dispatcher": [
       "alert-engine-counts-operator-cancels",
@@ -15757,7 +15794,8 @@
       "release-tick-retry-with-backoff-and-alert",
       "goreleaser-rerun-on-published-tag-fails-422-push-formula-by-hand",
       "tag-push-runs-full-pre-push-gate",
-      "mem-281"
+      "mem-281",
+      "mem-335"
     ],
     "repo-onboarding-x": [
       "config-env-expansion-eats-dollar-vars-in-commands",
@@ -16318,7 +16356,8 @@
       "mem-328",
       "mem-330",
       "mem-333",
-      "mem-334"
+      "mem-334",
+      "mem-335"
     ],
     "worktree": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -16439,7 +16478,9 @@
     ],
     "operations": [
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid",
-      "mem-334"
+      "mem-334",
+      "mem-335",
+      "mem-336"
     ],
     "deploy-gates": [],
     "env-flags": [],
@@ -16701,7 +16742,8 @@
       "autopilot-selfclose-handoff-leaves-original-task-repickable"
     ],
     "infra": [
-      "infra-repicks-bypass-hard-cap-backoff-and-identical-failure-streak"
+      "infra-repicks-bypass-hard-cap-backoff-and-identical-failure-streak",
+      "mem-336"
     ],
     "co-author": [
       "rev-list-without-topo-order-breaks-oldest-first-reparent"
@@ -16804,11 +16846,11 @@
       "mem-326"
     ]
   },
-  "last_updated": "2026-11-23T16:02:05.182574+00:00",
+  "last_updated": "2026-11-24T14:39:09.116511+00:00",
   "stats": {
-    "total_nodes": 819,
-    "total_edges": 890,
-    "memory_count": 459
+    "total_nodes": 821,
+    "total_edges": 892,
+    "memory_count": 461
   },
   "metadata": {
     "last_updated": null
