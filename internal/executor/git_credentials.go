@@ -184,10 +184,22 @@ var (
 )
 
 // gitAskpassHelperPath lazily writes the (secret-free, static) askpass
-// helper script to a temp file once per process and returns its path.
+// helper script once per process and returns its path.
+//
+// Decision (GH-6694): the script goes into a private directory made by
+// os.MkdirTemp (mode 0700), never to a fixed name in the shared temp
+// directory. A fixed name broke a second Unix user on the same host (the
+// file of the daemon user cannot be rewritten) and let another local user
+// plant the program that git runs with the token in its environment.
+// There is no fallback to a fixed name on error.
 func gitAskpassHelperPath() (string, error) {
 	gitAskpassOnce.Do(func() {
-		path := filepath.Join(os.TempDir(), "pilot-git-askpass.sh")
+		dir, err := os.MkdirTemp("", "pilot-askpass-")
+		if err != nil {
+			gitAskpassErr = fmt.Errorf("creating git askpass helper directory: %w", err)
+			return
+		}
+		path := filepath.Join(dir, "git-askpass.sh")
 		if err := os.WriteFile(path, []byte(gitAskpassScript), 0o700); err != nil {
 			gitAskpassErr = fmt.Errorf("writing git askpass helper: %w", err)
 			return

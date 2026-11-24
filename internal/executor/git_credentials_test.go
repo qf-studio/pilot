@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -170,6 +171,60 @@ func TestGitAskpassHelperPath_ScriptContainsNoSecret(t *testing.T) {
 	}
 	if strings.Contains(gitAskpassScript, testutil.FakeGitHubToken) {
 		t.Error("askpass script must never contain literal token material — it should only read PILOT_GIT_TOKEN from the environment")
+	}
+}
+
+// resetGitAskpassHelper clears the once-state of the askpass helper for the
+// test, so the next gitAskpassHelperPath call writes a new helper, and puts
+// the state of the process back after the test.
+func resetGitAskpassHelper(t *testing.T) {
+	t.Helper()
+	savedPath, savedErr := gitAskpassPath, gitAskpassErr
+	gitAskpassOnce, gitAskpassPath, gitAskpassErr = sync.Once{}, "", nil
+	t.Cleanup(func() {
+		gitAskpassOnce, gitAskpassPath, gitAskpassErr = sync.Once{}, "", nil
+		if savedPath != "" || savedErr != nil {
+			gitAskpassOnce.Do(func() { gitAskpassPath, gitAskpassErr = savedPath, savedErr })
+		}
+	})
+}
+
+// GH-6694: an entry with the old fixed name in the shared temp directory —
+// here a directory, so a write to that name must fail — does not stop the
+// helper: it is written into a private directory of the process.
+func TestGitAskpassHelperPathIgnoresAForeignFileWithTheOldName(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	if err := os.Mkdir(filepath.Join(tmp, "pilot-git-askpass.sh"), 0o755); err != nil {
+		t.Fatalf("creating the foreign entry: %v", err)
+	}
+	resetGitAskpassHelper(t)
+
+	path, err := gitAskpassHelperPath()
+	if err != nil {
+		t.Fatalf("gitAskpassHelperPath() error = %v", err)
+	}
+	dir := filepath.Dir(path)
+	if filepath.Dir(dir) != tmp {
+		t.Errorf("helper %q is not in a directory directly below TMPDIR %q", path, tmp)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat helper directory: %v", err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Errorf("helper directory %q mode = %v, want a directory with mode 0700", dir, info.Mode())
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading helper: %v", err)
+	}
+	if string(content) != gitAskpassScript {
+		t.Errorf("helper content = %q, want the askpass script", content)
+	}
+	again, err := gitAskpassHelperPath()
+	if err != nil || again != path {
+		t.Errorf("second gitAskpassHelperPath() = %q, %v; want the same path %q", again, err, path)
 	}
 }
 
