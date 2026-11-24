@@ -3393,7 +3393,9 @@
           "https://github.com/qf-studio/aws-infrastructure-pilot/issues/25",
           "https://github.com/qf-studio/aws-infrastructure-pilot/issues/26",
           "https://github.com/qf-studio/aws-infrastructure-pilot/issues/27",
-          "https://github.com/qf-studio/aws-infrastructure-pilot/issues/33"
+          "https://github.com/qf-studio/aws-infrastructure-pilot/issues/33",
+          "https://github.com/qf-studio/pilot/issues/6693",
+          "https://github.com/qf-studio/pilot/issues/6694"
         ]
       }
     },
@@ -9614,6 +9616,32 @@
         ],
         "created": "2026-11-24",
         "last_validated": "2026-11-24"
+      },
+      "mem-337": {
+        "type": "pitfall",
+        "summary": "A test window on the box needs its own clock, not only a watcher for the ticket: on 2026-11-24 a session set run_as_user for a planned 30 minutes and waited for 'issue closed or parked'; the test gate failed, the daemon retried the ticket six times (about 44 minutes each), and the option stayed on for 4 hours 49 minutes until the ticket was parked. For each temporary state of the box (an option on, a label removed, a config test) start a second watcher with a hard time limit that reports when the limit passes, and look at the first gate result of the first attempt (about 15 minutes) before the wait goes on. A failed quality gate with should_retry is the signal to stop the window, since the retry cannot pass an environment fault.",
+        "path": "memories/pitfalls/mem-337.md",
+        "confidence": 0.9,
+        "concepts": [
+          "operations",
+          "workflow-discipline",
+          "testing"
+        ],
+        "created": "2026-11-24",
+        "last_validated": "2026-11-24"
+      },
+      "mem-338": {
+        "type": "pitfall",
+        "summary": "A helper file at a fixed name in the shared temporary directory breaks under a second Unix user: gitAskpassHelperPath wrote os.TempDir()/pilot-git-askpass.sh; on the founder box the daemon user owned that file, so the package tests of internal/executor, run by the agent user in the test gate (run_as_user set), got 'permission denied' and 19 tests failed (first run on a Linux host, 2026-11-24, issue 6694). The same pattern lets another local user make the file first. Use os.MkdirTemp for each process, and search for other fixed names below the temporary directory before a host gets a second user. A macOS run with a mock sudo cannot show this class: both sides are the same user there.",
+        "path": "memories/pitfalls/mem-338.md",
+        "confidence": 0.9,
+        "concepts": [
+          "security",
+          "testing",
+          "executor"
+        ],
+        "created": "2026-11-24",
+        "last_validated": "2026-11-24"
       }
     }
   },
@@ -14077,6 +14105,16 @@
       "from": "mem-336",
       "to": "TASK-657",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-337",
+      "to": "TASK-657",
+      "type": "learned-from"
+    },
+    {
+      "from": "mem-338",
+      "to": "TASK-657",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -15216,7 +15254,8 @@
       "mem-300",
       "TASK-650",
       "mem-326",
-      "mem-332"
+      "mem-332",
+      "mem-338"
     ],
     "external-contributor": [
       "external-fork-pr-sweeps-stale-agent-state"
@@ -15869,7 +15908,8 @@
       "mem-324",
       "mem-327",
       "mem-329",
-      "mem-331"
+      "mem-331",
+      "mem-338"
     ],
     "ship-test": [],
     "shipped-check": [
@@ -16144,7 +16184,9 @@
       "TASK-655",
       "TASK-656",
       "mem-329",
-      "TASK-657"
+      "TASK-657",
+      "mem-337",
+      "mem-338"
     ],
     "testing-quality": [
       "TASK-384",
@@ -16357,7 +16399,8 @@
       "mem-330",
       "mem-333",
       "mem-334",
-      "mem-335"
+      "mem-335",
+      "mem-337"
     ],
     "worktree": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -16480,7 +16523,8 @@
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid",
       "mem-334",
       "mem-335",
-      "mem-336"
+      "mem-336",
+      "mem-337"
     ],
     "deploy-gates": [],
     "env-flags": [],
@@ -16846,11 +16890,11 @@
       "mem-326"
     ]
   },
-  "last_updated": "2026-11-24T14:39:09.116511+00:00",
+  "last_updated": "2026-11-24T20:26:39.378595+00:00",
   "stats": {
-    "total_nodes": 821,
-    "total_edges": 892,
-    "memory_count": 461
+    "total_nodes": 823,
+    "total_edges": 894,
+    "memory_count": 463
   },
   "metadata": {
     "last_updated": null

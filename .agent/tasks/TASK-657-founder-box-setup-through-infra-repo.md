@@ -1,6 +1,6 @@
 # TASK-657: Founder box set-up through the infra repository — host script run for the agent user, GitHub App credentials
 
-**Status**: ⏳ **State 2026-11-24 14:38Z: the host is ready; the first test of the option failed at the start check and was rolled back in 80 seconds; the test waits for the next release.** Founder word "go" for the test window (11-24). 14:35Z: `golangci-lint` copied to /usr/local/bin (the agent user finds it now). 14:36Z: the four `run_as_` values under `executor.claude_code`, full restart; **the start check refused: the box runs v2.326.0 (tag of 11-21), and the removal of the preflight refusal (PR#6684, merged 11-23 15:34Z) is in no release yet** — the session did not check that before the test. From 14:36:15Z to 14:37:06Z the daemon could start no model process; no task was active or queued. 14:37Z: the four lines removed (the config is byte-identical to the backup before the test), full restart, daemon healthy, no error line. Good result of the restart: the daemon process now has the group `pilot`. **Next: when the release with PR#6684 runs on the box (the release train runs about 15:04Z), repeat the window: option on, restart, read the start check, ticket T1 below in the public Pilot repository, option off.** **Founder decisions 11-24:** the GitHub App for the agent comes through the Pilot Cloud work (its own session), so no private App for the founder box, and the option stays off for private repositories until that path exists; the Chromium answer to the infrastructure owner is "the Playwright way" (sent); the old ticket 23 of the infra repository runs again (label `pilot` back at 14:38Z). ⏳ **Host set-up state of 2026-11-24 12:27Z: the host set-up of the agent user is applied on the founder box (TASK-651 step O4), on the founder's word "run the changes", ahead of the review of the infrastructure owner.** Workflow runs of the infra repository, 11-24 12:22Z to 12:26Z, each after a check for no active task: remove-wheel (run 45392953868, exit 0) → apply (45393076556, exit 1 as planned: the modes record written, the stop at the eight open directories, each later step skipped) → close-daemon-dirs (45393197548, exit 0, eight chmod commands) → dry-run (45393340885, exit 0) → apply (45393441133, exit 0, each step done). Checked on the box after it (read-only, through SSM): user `pilot-agent` (uid 992), group `pilot` (gid 991) with the daemon user as a member; the daemon user has no general sudo (`sudo -n true` fails) and can run commands as the agent user; the chain PILOT_AGENT_EGRESS is in place for IPv4 and IPv6 and its unit is enabled; the data directory is at mode 711 and the seven entries have no bit for others; the agent root has `home` (750) and `workspaces` (2770). The cloud-init sudoers step was skipped (nothing left to comment out). The daemon was not restarted and its config is unchanged: the option is still off. This is the first run of the host script on a real Linux host. The infrastructure owner has the full report in Slack (five messages on 11-23 and 11-24, no answer yet); the undo mode and the modes record are ready. Phase 1 legs: PR 28, 29, 30, 32, 34 of the infra repository, each read by the session. The old ticket 23 there (AMI refresh) has no label `pilot` until the founder decides. **GitHub App (phase 2): decided 11-24 — through Pilot Cloud; see "Which GitHub App" in phase 2.**
+**Status**: 🚀 **State 2026-11-24 20:26Z: the isolation works on the box up to the quality gates; one defect of Pilot blocks the test gate; the fix F1 [#6694](https://github.com/qf-studio/pilot/issues/6694) is with Pilot (dispatched 20:25Z on the founder's word); the founder asked for a release with the fix as soon as it is merged (a tag push, not the daily train).** **First run with the option on, 11-24:** v2.327.0 (with PR#6684) reached the box at 15:14Z. Option on and full restart at 15:15Z: **the start check passed on a real Linux host.** Test ticket T1 [#6693](https://github.com/qf-studio/pilot/issues/6693), taken 15:18Z: the workspace was made by the agent user (a bundle, then a clone below the workspace root), the agent session ran as `pilot-agent` (seen in the process list, with `go test` below it), the agent made its commit in 2 minutes, and the quality gates ran as the agent user. **The test gate failed** (`make test-changed`, package `internal/executor`, 19 failed tests, each attempt): the askpass helper of git is written to one fixed name in the shared temporary directory (`pilot-git-askpass.sh`, function gitAskpassHelperPath); the daemon user owns that file on the box, so the tests, run by the agent user, cannot write it ("permission denied"; found by a run of the package tests as the agent user in a kept workspace). The push and the pull request by the daemon were not reached. **Session error:** the window was planned for 30 minutes and stayed open until 20:05Z (4 hours 49 minutes): the watcher waited for "closed or parked" with no time limit, and the daemon ran six attempts before it parked the ticket. Only T1 ran in that time; no ticket of another repository started. 20:05Z: option off, restart, config byte-identical to the backup. 20:25Z: the six kept workspaces removed on the founder's word (each held the one test commit). Left on the box: test directories of the agent user below /tmp and its caches (1.6 GB below the agent root). **Next:** F1 merged → tag for the next patch release → the box upgrades itself → the test window again with a hard limit of 30 minutes (re-arm T1: remove and add the label `pilot`). Earlier on 11-24: `golangci-lint` copied to /usr/local/bin (14:35Z); a first try of the option at 14:36Z failed at the start check because the box still ran v2.326.0, rolled back in 80 seconds (mem-335). **Founder decisions 11-24:** the GitHub App for the agent comes through the Pilot Cloud work (its own session), so no private App for the founder box, and the option stays off for private repositories until that path exists; the Chromium answer to the infrastructure owner is "the Playwright way" (sent); the old ticket 23 of the infra repository runs again (label `pilot` back at 14:38Z). ⏳ **Host set-up state of 2026-11-24 12:27Z: the host set-up of the agent user is applied on the founder box (TASK-651 step O4), on the founder's word "run the changes", ahead of the review of the infrastructure owner.** Workflow runs of the infra repository, 11-24 12:22Z to 12:26Z, each after a check for no active task: remove-wheel (run 45392953868, exit 0) → apply (45393076556, exit 1 as planned: the modes record written, the stop at the eight open directories, each later step skipped) → close-daemon-dirs (45393197548, exit 0, eight chmod commands) → dry-run (45393340885, exit 0) → apply (45393441133, exit 0, each step done). Checked on the box after it (read-only, through SSM): user `pilot-agent` (uid 992), group `pilot` (gid 991) with the daemon user as a member; the daemon user has no general sudo (`sudo -n true` fails) and can run commands as the agent user; the chain PILOT_AGENT_EGRESS is in place for IPv4 and IPv6 and its unit is enabled; the data directory is at mode 711 and the seven entries have no bit for others; the agent root has `home` (750) and `workspaces` (2770). The cloud-init sudoers step was skipped (nothing left to comment out). The daemon was not restarted and its config is unchanged: the option is still off. This is the first run of the host script on a real Linux host. The infrastructure owner has the full report in Slack (five messages on 11-23 and 11-24, no answer yet); the undo mode and the modes record are ready. Phase 1 legs: PR 28, 29, 30, 32, 34 of the infra repository, each read by the session. The old ticket 23 there (AMI refresh) has no label `pilot` until the founder decides. **GitHub App (phase 2): decided 11-24 — through Pilot Cloud; see "Which GitHub App" in phase 2.**
 **Created**: 2026-11-23
 **Assignee**: Pilot for each leg; the founder for each step that needs the live box, AWS credentials or org owner rights; the infrastructure owner reviews each pull request in the infra repository.
 
@@ -60,10 +60,12 @@ The founder box is ready for agent sessions under a second Unix user. The host s
 
 ### Phase 3: First run with the option on
 - [x] 14. `golangci-lint` in a system directory, so that the agent user finds it (operator, needs 5)
-- [ ] 16. A release with the removal of the preflight refusal runs on the box
-- [ ] 10. A test window: the four `run_as_` values go into the daemon config; full restart with a new tmux server (operator, needs 5, 14, 16)
-- [ ] 11. One small ticket in the public Pilot repository runs as the agent user; the session reads the daemon log and the process list (operator, needs 10)
-- [ ] 15. The option goes off again after the test, with a full restart (operator, needs 11)
+- [x] 16. A release with the removal of the preflight refusal runs on the box
+- [ ] 10. A test window: the four `run_as_` values go into the daemon config; full restart with a new tmux server (operator, needs 5, 14, 16, 18; first try 11-24 15:15Z: the start check passed)
+- [ ] 11. One small ticket in the public Pilot repository runs as the agent user up to its pull request (#6693; first try 11-24: session, commit and gates as the agent user, the test gate failed; needs 10)
+- [ ] 17. The askpass helper of git gets a private directory, so that the test gate passes as the agent user (#6694)
+- [ ] 18. A release with that fix runs on the box (operator: a tag push; needs 17)
+- [ ] 15. The option goes off again after the test, with a full restart; the window has a hard limit of 30 minutes (operator, needs 11)
 - [ ] 12. The option stays on for the private repositories only after the GitHub App works (operator, needs 9, 11)
 
 ### Side tracks
@@ -364,6 +366,46 @@ Any change of non-test code. Other tests. The host script.
 
 - Navigator TASK-657 in this repo
 
+### LEG F1 — repo: qf-studio/pilot — title: fix(executor): the git askpass helper is written into a private directory of the process, not to a fixed name in the shared temporary directory
+
+probe: present qf-studio/pilot func[[:space:]]gitAskpassHelperPath\(
+probe: present qf-studio/pilot pilot-git-askpass\.sh
+probe: absent  qf-studio/pilot func[[:space:]]TestGitAskpassHelperPathIgnoresAForeignFileWithTheOldName\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-657. The function gitAskpassHelperPath (`internal/executor/git_credentials.go`) writes the askpass helper script once for each process to one fixed name in the shared temporary directory: the file name pilot-git-askpass.sh below os.TempDir(). Two things are wrong with a fixed name in a directory that each user of the host can write to.
+
+First, found on 2026-11-24 on a Linux host: the daemon runs as one Unix user and owns that file. With run_as_user set, the quality gates run as a second Unix user. The tests of this package then try to write the same file, the system refuses ("open /tmp/pilot-git-askpass.sh: permission denied"), the error is kept for the process, and 19 tests of the package fail (TestGitAskpassHelperPath_ScriptContainsNoSecret, TestWithGitCredentials_InstallsAskpassEnv, TestTokenCommandsRunNoConfigProgram, TestTokenCommandsRunNoTransportProgram, TestDaemonGitEnvDropsInheritedGitNames and others). So this repository cannot pass its own test gate as the agent user on a host where a daemon runs.
+
+Second, a fixed name in a shared directory is a known weak pattern: another local user can make a file with that name first. Then the daemon cannot write its helper, or it uses a file that another user controls as the program that git calls with the token in its environment.
+
+## Scope
+
+1. gitAskpassHelperPath makes a new private directory for the process with os.MkdirTemp (mode 0700, a name prefix such as pilot-askpass-) and writes the helper script into it with mode 0700. It still does this once for each process and returns the same path on each later call. The script text does not change.
+2. When the directory or the file cannot be made, the function returns the error as today; it never falls back to the fixed name.
+3. Search this package and `internal/quality` for each other write to a fixed file name directly below os.TempDir() or /tmp (not a name from os.MkdirTemp or os.CreateTemp). Do not change them in this issue: list each one, with file and line, in the PR body. When there is none, say so.
+4. Tests, in the test file of the credentials (`internal/executor/git_credentials_test.go`):
+   - a new test TestGitAskpassHelperPathIgnoresAForeignFileWithTheOldName: with TMPDIR set to a new directory that holds a directory named pilot-git-askpass.sh (so a write to the old fixed name must fail), the helper path is made with no error, the file is below a directory with mode 0700, and its content is the script. The test must reset the once-state of the helper for its run and put it back after (a small test helper in the test file is fine).
+   - the existing tests of the helper keep their meaning; adapt only what names the old fixed path.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'Askpass|WithGitCredentials|TokenCommands|DaemonGitEnv'` passes; paste the output into the PR body.
+- [ ] `git grep -n 'pilot-git-askpass.sh' internal/` finds the name only in test code that builds the foreign entry, or nothing.
+- [ ] The PR body holds the list of item 3.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The removal of helper directories of earlier processes. The gh credentials. The git credential helper of the agent side. Any change of the script text. Any other fixed name that item 3 finds.
+
+## Refs
+
+- Navigator TASK-657 in this repo · the first run with run_as_user on a Linux host, 2026-11-24
+
 ## Refs
 
 - TASK-651 (`.agent/tasks/TASK-651-agent-uid-isolation.md`): operator steps O2, O3, O4; the box facts of 11-18; the answer of the infrastructure owner of 11-18.
@@ -374,6 +416,8 @@ Any change of non-test code. Other tests. The host script.
 - A2 → https://github.com/qf-studio/aws-infrastructure-pilot/issues/26
 - A3 → https://github.com/qf-studio/aws-infrastructure-pilot/issues/27
 - A4 → https://github.com/qf-studio/aws-infrastructure-pilot/issues/33
+- T1 → https://github.com/qf-studio/pilot/issues/6693
+- F1 → https://github.com/qf-studio/pilot/issues/6694
 
 ---
 
