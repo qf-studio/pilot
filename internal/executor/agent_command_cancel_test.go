@@ -242,6 +242,8 @@ func TestRunAsUserValidName(t *testing.T) {
 		{strings.Repeat("a", 32), true}, {strings.Repeat("a", 33), false},
 		{"", false}, {"-u root", false}, {"-agent", false}, {"a b", false}, {"#0", false},
 		{"1agent", false}, {"Agent", false}, {"a.b", false}, {"a$b", false}, {"a,b", false},
+		{"agént", false}, {"a/b", false}, {"a:b", false}, {"a\nb", false}, {"agent\n", false},
+		{"agent-", true},
 	}
 	for _, tc := range tests {
 		if got := validRunAsName(tc.name); got != tc.want {
