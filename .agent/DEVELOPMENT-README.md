@@ -159,6 +159,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 - `research/ai-coding-agent-products-price-extra/report.md` — Cost-plus 1-4% per ticket loses money; keep Pilot's flat plan (47 sources, 2026-10-13)
 - `research/many-software-development-agencies-3-15/report.md` — Small software agencies: founder-bought tools, cheap seats, consent-gated agent adoption (45 sources, 2026-10-22)
+- `research/should-autonomous-coding-agent-product-pilot/report.md` — Support Forgejo in the daemon as a community adapter, not Console yet (36 sources, 2026-11-25)
 
 ## Current State
 

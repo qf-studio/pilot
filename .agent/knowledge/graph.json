@@ -1335,6 +1335,26 @@
         "name": "Github-App",
         "aliases": [],
         "domain": "general"
+      },
+      "plane": {
+        "name": "Plane",
+        "aliases": [],
+        "domain": "general"
+      },
+      "sdk": {
+        "name": "Sdk",
+        "aliases": [],
+        "domain": "general"
+      },
+      "webhook": {
+        "name": "Webhook",
+        "aliases": [],
+        "domain": "general"
+      },
+      "pagination": {
+        "name": "Pagination",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -9692,6 +9712,146 @@
         ],
         "created": "2026-11-25",
         "last_validated": "2026-11-25"
+      },
+      "mem-342": {
+        "type": "decision",
+        "summary": "Ship Forgejo/Gitea as one community-tier adapter in the open-source Pilot daemon and keep it out of Pilot Console until a paying customer needs it. [https://blog.jetbrains.com/teamcity/2026/11/top-version-control-tools/ (fetched 2026-11-25, sha256 00f1130e6359), https://github.com/OpenHands/OpenHands/issues/9354 (fetched 2026-11-25, sha256 e6b167d9ef3b), https://docs.coderabbit.ai/platforms/overview (fetched 2026-11-25, sha256 fca4f6b72697)]",
+        "path": "memories/decisions/mem-342.md",
+        "confidence": 0.7,
+        "concepts": [
+          "deployment"
+        ],
+        "created": "2026-11-25",
+        "last_validated": "2026-11-25"
+      },
+      "mem-343": {
+        "type": "pattern",
+        "summary": "Tools that support Forgejo or Gitea are open-source, platform-neutral projects such as Renovate and OpenHands, while hosted commercial agents list only GitHub, GitLab, Bitbucket and Azure DevOps. [https://docs.renovatebot.com/modules/platform/ (fetched 2026-11-25, sha256 f9d8c4979a4c), https://github.com/OpenHands/OpenHands/issues/9354 (fetched 2026-11-25, sha256 e6b167d9ef3b), https://docs.coderabbit.ai/platforms/overview (fetched 2026-11-25, sha256 fca4f6b72697), https://docs.openhands.dev/enterprise/integrations/overview (fetched 2026-11-25, sha256 e7b8dcf38b9e)]",
+        "path": "memories/patterns/mem-343.md",
+        "confidence": 0.7,
+        "concepts": [
+          "deployment"
+        ],
+        "created": "2026-11-25",
+        "last_validated": "2026-11-25"
+      },
+      "mem-344": {
+        "type": "pattern",
+        "summary": "Tiered support with an explicit capability matrix, as in Sourcegraph Tier 1/2, Terraform's official/partner/community badges and Renovate's experimental platforms, is the standard way to cap adapter cost. [https://sourcegraph.com/docs/admin/code-hosts (fetched 2026-11-25, sha256 13e0b1a56fc0), https://developer.hashicorp.com/terraform/registry/providers (fetched 2026-11-25, sha256 6bdbdc0cbb40), https://docs.renovatebot.com/modules/platform/ (fetched 2026-11-25, sha256 f9d8c4979a4c)]",
+        "path": "memories/patterns/mem-344.md",
+        "confidence": 0.7,
+        "concepts": [
+          "deployment"
+        ],
+        "created": "2026-11-25",
+        "last_validated": "2026-11-25"
+      },
+      "mem-345": {
+        "type": "learning",
+        "summary": "Forgejo and Gitea are close enough that OpenHands' Forgejo adapter is reported to work on Gitea, but the 2024 hard fork and the Gitea 1.22 upgrade cutoff make API drift likely. [https://github.com/OpenHands/OpenHands/issues/9354 (fetched 2026-11-25, sha256 e6b167d9ef3b), https://forgejo.org/2024-12-gitea-compatibility/ (fetched 2026-11-25, sha256 dad71b46c69a), https://forgejo.org/2024-10-monthly-update/ (fetched 2026-11-25, sha256 a7f182f38977)]",
+        "path": "memories/learnings/mem-345.md",
+        "confidence": 0.7,
+        "concepts": [
+          "api"
+        ],
+        "created": "2026-11-25",
+        "last_validated": "2026-11-25"
+      },
+      "mem-346": {
+        "type": "pitfall",
+        "summary": "Forgejo has no GitHub-App-style installation: its OAuth2 provider supports only the authorization-code grant and instance-wide apps get admin rights, so integrations run as a bot account with a scoped PAT. [https://forgejo.org/docs/latest/user/authentication/oauth2-provider/ (fetched 2026-11-25, sha256 fe2c6823e853), https://forgejo.org/docs/latest/user/token-scope/ (fetched 2026-11-25, sha256 c508543d5262), https://docs.renovatebot.com/modules/platform/forgejo/ (fetched 2026-11-25, sha256 fe4940244efe)]",
+        "path": "memories/pitfalls/mem-346.md",
+        "confidence": 0.7,
+        "concepts": [
+          "authentication",
+          "code-style",
+          "testing"
+        ],
+        "created": "2026-11-25",
+        "last_validated": "2026-11-25"
+      },
+      "mem-347": {
+        "type": "pitfall",
+        "summary": "Forgejo Actions ignores job-level `permissions` and `continue-on-error` and lacks some `github` context keys, so CI-watch logic copied from GitHub Actions can misread results. [https://forgejo.org/docs/v15.0/user/actions/github-actions/ (fetched 2026-11-25, sha256 353d57c5305f)]",
+        "path": "memories/pitfalls/mem-347.md",
+        "confidence": 0.7,
+        "concepts": [
+          "deployment"
+        ],
+        "created": "2026-11-25",
+        "last_validated": "2026-11-25"
+      },
+      "mem-348": {
+        "type": "learning",
+        "summary": "Self-hosted demand is real at 34.9% of workplace answers but concentrated on GitLab, whose self-managed lines were 63.3% of revenue in the July-2026 quarter, though SaaS grew faster (35.5% vs 14.3% for self-managed subscriptions). [https://blog.jetbrains.com/teamcity/2026/11/top-version-control-tools/ (fetched 2026-11-25, sha256 00f1130e6359), https://safeguard.sh/resources/blog/source-code-hosting-market-share-2026 (fetched 2026-11-25, sha256 758c113bcca3)]",
+        "path": "memories/learnings/mem-348.md",
+        "confidence": 0.7,
+        "concepts": [
+          "deployment"
+        ],
+        "created": "2026-11-25",
+        "last_validated": "2026-11-25"
+      },
+      "mem-349": {
+        "type": "pattern",
+        "summary": "Hosted products reach private forges through outbound-only connectivity or an in-network agent and gate it to enterprise plans, as CodeRabbit does at 500+ seats. [https://docs.coderabbit.ai/self-hosted/overview (fetched 2026-11-25, sha256 412224ea2a4b), https://mergerequests.dev/blog/self-hosted-ai-code-review-coderabbit-and-qodo-per-their-docs/ (fetched 2026-11-25, sha256 c711d7b1669b), https://context7.com/guides/self-hosted-gitlab-ai-coding-agents (fetched 2026-11-25, sha256 8e80ed8c6a5c)]",
+        "path": "memories/patterns/mem-349.md",
+        "confidence": 0.7,
+        "concepts": [
+          "general"
+        ],
+        "created": "2026-11-25",
+        "last_validated": "2026-11-25"
+      },
+      "mem-350": {
+        "type": "pitfall",
+        "summary": "Platform-native automerge on Forgejo requires v10.0.0 or later and token scopes vary by version, so a Forgejo adapter must detect the instance version. [https://docs.renovatebot.com/modules/platform/forgejo/ (fetched 2026-11-25, sha256 fe4940244efe), https://forgejo.org/2024-12-gitea-compatibility/ (fetched 2026-11-25, sha256 dad71b46c69a)]",
+        "path": "memories/pitfalls/mem-350.md",
+        "confidence": 0.7,
+        "concepts": [
+          "general"
+        ],
+        "created": "2026-11-25",
+        "last_validated": "2026-11-25"
+      },
+      "mem-351": {
+        "type": "learning",
+        "summary": "Forgejo's momentum is institutional (Fedora, the Dutch government, Zig moving to Codeberg) rather than workplace volume, where it sits near 0.1%. [https://communityblog.fedoraproject.org/fedora-chooses-forgejo/ (fetched 2026-11-25, sha256 9956f328fb45), https://interoperable-europe.ec.europa.eu/collection/open-source-observatory-osor/news/dutch-alternative-sharing-public-code (fetched 2026-11-25, sha256 71696b9d49e5), https://en.wikipedia.org/wiki/Codeberg (fetched 2026-11-25, sha256 8fb6dc7be9c6), https://blog.jetbrains.com/teamcity/2026/11/top-version-control-tools/ (fetched 2026-11-25, sha256 00f1130e6359)]",
+        "path": "memories/learnings/mem-351.md",
+        "confidence": 0.7,
+        "concepts": [
+          "deployment"
+        ],
+        "created": "2026-11-25",
+        "last_validated": "2026-11-25"
+      },
+      "mem-352": {
+        "type": "pitfall",
+        "summary": "Plane has two copies of its code and production uses the SDK one: polling intake, state changes and comments run through studio-sdk (cmd/pilot/poller_plane.go), while internal/adapters/plane is live only for the config type and the webhook handler (its Client, Poller and Notifier have no production caller). On 2026-11-25 an outside pull request (6510) that made the internal Priority type accept text values was merged on the founder's approval BEFORE the code research ran; the research then showed the fix was in the copy that no poller decodes into, and the SDK at v0.38.7 still has 'type Priority int' with no decoder, so a Plane server that sends priority as text (the documented API form: none, urgent, high, medium, low) makes each page of work items fail to decode and Pilot takes no ticket, with a Warn each poll. Rule: for an adapter fix, find the production caller of the changed type before a merge; research first, merge second.",
+        "path": "memories/pitfalls/mem-352.md",
+        "confidence": 0.85,
+        "concepts": [
+          "review",
+          "testing-quality",
+          "plane",
+          "sdk"
+        ],
+        "created": "2026-11-25",
+        "last_validated": "2026-11-25"
+      },
+      "mem-353": {
+        "type": "pitfall",
+        "summary": "Plane integration gaps found 2026-11-25 (code read, not yet fixed): one undecodable work item fails the whole page; only the first page of work items is read (no cursor; the API pages at 100); the internal webhook compares the configured label NAME with label UUIDs, so it never matches by default (internal/adapters/plane/webhook.go); every Plane project maps to one repository (the repo resolver has a TODO for Plane); the work item moves to the completed state when the pull request opens, not when it merges; docs/content/integrations/plane.mdx names a task ID format and a webhook behaviour that the code does not have.",
+        "path": "memories/pitfalls/mem-353.md",
+        "confidence": 0.85,
+        "concepts": [
+          "plane",
+          "documentation",
+          "webhook",
+          "pagination"
+        ],
+        "created": "2026-11-25",
+        "last_validated": "2026-11-25"
       }
     }
   },
@@ -14374,7 +14534,8 @@
       "mem-313",
       "TASK-654",
       "TASK-656",
-      "TASK-657"
+      "TASK-657",
+      "mem-345"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -14463,7 +14624,8 @@
       "TASK-649",
       "TASK-651",
       "TASK-650",
-      "TASK-657"
+      "TASK-657",
+      "mem-346"
     ],
     "auto-merge": [
       "mem-103",
@@ -15121,7 +15283,13 @@
       "TASK-654",
       "TASK-655",
       "TASK-656",
-      "TASK-657"
+      "TASK-657",
+      "mem-342",
+      "mem-343",
+      "mem-344",
+      "mem-347",
+      "mem-348",
+      "mem-351"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -16254,7 +16422,8 @@
       "mem-329",
       "TASK-657",
       "mem-337",
-      "mem-338"
+      "mem-338",
+      "mem-346"
     ],
     "testing-quality": [
       "TASK-384",
@@ -16269,7 +16438,8 @@
       "mem-163",
       "mem-164",
       "mem-165",
-      "unwired-config-field-validated-but-dead"
+      "unwired-config-field-validated-but-dead",
+      "mem-352"
     ],
     "theory-of-mind": [
       "TASK-394",
@@ -16586,7 +16756,8 @@
       "mem-328",
       "mem-329",
       "mem-331",
-      "mem-333"
+      "mem-333",
+      "mem-352"
     ],
     "operations": [
       "ebs-volume-swap-runbook-xfs-nouuid-and-fstab-by-uuid",
@@ -16823,7 +16994,9 @@
       "mem-240",
       "mem-241",
       "mem-243",
-      "mem-257"
+      "mem-257",
+      "mem-349",
+      "mem-350"
     ],
     "test-fakes": [],
     "usage-ledger": [],
@@ -16870,7 +17043,8 @@
       "gh5468-unlisted-check-failure-blocks-gate-but-evidence-still-allowlist-scoped"
     ],
     "code-style": [
-      "mem-252"
+      "mem-252",
+      "mem-346"
     ],
     "pricing": [
       "mem-265",
@@ -16955,7 +17129,8 @@
     ],
     "documentation": [
       "mem-325",
-      "mem-330"
+      "mem-330",
+      "mem-353"
     ],
     "founder-box": [
       "mem-326"
@@ -16966,13 +17141,26 @@
     ],
     "github-app": [
       "mem-341"
+    ],
+    "plane": [
+      "mem-352",
+      "mem-353"
+    ],
+    "sdk": [
+      "mem-352"
+    ],
+    "webhook": [
+      "mem-353"
+    ],
+    "pagination": [
+      "mem-353"
     ]
   },
-  "last_updated": "2026-11-25T10:50:07.643269+00:00",
+  "last_updated": "2026-11-25T14:16:38.959103+00:00",
   "stats": {
-    "total_nodes": 828,
+    "total_nodes": 844,
     "total_edges": 897,
-    "memory_count": 466
+    "memory_count": 478
   },
   "metadata": {
     "last_updated": null
