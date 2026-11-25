@@ -1,7 +1,7 @@
 # Roadmap: Plane integration — it works with a current Plane server, then it is robust, then it routes
 
 **Source plan**: `.agent/tasks/TASK-658-plane-integration-works-with-current-plane.md`
-**Owner**: founder · **Created**: 2026-11-25 · **Status**: 2026-11-25 — the run is started on the founder's word; the merge of the SDK fix and the dispatch of five tickets wait for GitHub (an outage of GitHub Issues and Pull Requests since 15:54Z)
+**Owner**: founder · **Created**: 2026-11-25 · **Status**: 2026-11-25 16:28Z — the SDK fix is merged; five tickets are filed and NOT dispatched; the founder gives the word to pick up this roadmap
 **Why**: an outside user ran Pilot with Plane on 2026-11-18 and Pilot took no ticket. The research of 2026-11-25 found the cause and six more gaps.
 
 ## Status Legend
@@ -22,9 +22,9 @@ A user with a current Plane server sets an API key, a workspace, the project IDs
 
 | # | Item | Status | Where | Ticket |
 |---|------|--------|-------|--------|
-| 1.1 | The SDK accepts the priority as text (`none`, `urgent`, `high`, `medium`, `low`), as the Plane API sends it | ⏳ outside pull request, reviewed, CI green; the merge waits for GitHub | studio-sdk | studio-sdk PR 160 |
-| 1.2 | One work item that does not decode is skipped with a Warn; the page is not lost | 🎫 | studio-sdk | leg K1 |
-| 1.3 | The work item list follows the cursor; each page is read | 🎫 needs 1.2 | studio-sdk | leg K2 |
+| 1.1 | The SDK accepts the priority as text (`none`, `urgent`, `high`, `medium`, `low`), as the Plane API sends it | ✅ merged 2026-11-25 16:05Z (outside pull request, reviewed, CI green) | studio-sdk | studio-sdk PR 160 |
+| 1.2 | One work item that does not decode is skipped with a Warn; the page is not lost | 🎫 filed, not dispatched | studio-sdk | [studio-sdk#163](https://github.com/qf-studio/studio-sdk/issues/163) |
+| 1.3 | The work item list follows the cursor; each page is read | 🎫 filed, not dispatched; needs 1.2 | studio-sdk | [studio-sdk#164](https://github.com/qf-studio/studio-sdk/issues/164) |
 | 1.4 | An SDK release holds 1.1 to 1.3 | ⏳ needs 1.1, 1.2, 1.3 | studio-sdk | operator step |
 | 1.5 | Pilot pins that SDK release; a test runs the poller against a fake Plane server with a text priority and sees one dispatched task | ⏳ needs 1.4 | pilot | leg K4 (held) |
 
@@ -34,8 +34,8 @@ A user with a current Plane server sets an API key, a workspace, the project IDs
 
 | # | Item | Status | Where | Ticket |
 |---|------|--------|-------|--------|
-| 2.1 | The webhook accepts the Pilot label by its name (today it compares the name with label IDs and never matches) | 🎫 | pilot | leg K3 |
-| 2.2 | The Plane documentation page matches the code (task ID, webhook events, the label precondition) | 🎫 | pilot | leg K5 |
+| 2.1 | The webhook accepts the Pilot label by its name (today it compares the name with label IDs and never matches) | 🎫 filed, not dispatched | pilot | [#6705](https://github.com/qf-studio/pilot/issues/6705) |
+| 2.2 | The Plane documentation page matches the code (task ID, webhook events, the label precondition) | 🎫 filed, not dispatched | pilot | [#6706](https://github.com/qf-studio/pilot/issues/6706) |
 | 2.3 | The unused internal Plane client, poller and notifier are removed | ⏳ needs 2.1 | pilot | leg K6 (held) |
 
 **Exit**: a webhook event with the default config starts a task in a test; the page is correct.
@@ -44,7 +44,7 @@ A user with a current Plane server sets an API key, a workspace, the project IDs
 
 | # | Item | Status | Where | Ticket |
 |---|------|--------|-------|--------|
-| 3.1 | A project entry of the config can name its Plane project ID; the poller routes each ticket to that repository | 🎫 | pilot | leg K7 |
+| 3.1 | A project entry of the config can name its Plane project ID; the poller routes each ticket to that repository | 🎫 filed, not dispatched | pilot | [#6707](https://github.com/qf-studio/pilot/issues/6707) |
 | 3.2 | The same routing for the webhook path | 📋 after 2.1 and 3.1 | pilot | — |
 
 ## Milestone 4 — Behaviour that needs a founder decision first
@@ -68,4 +68,5 @@ A user with a current Plane server sets an API key, a workspace, the project IDs
 
 ## Log
 
-- 2026-11-25: research, plan TASK-658, this roadmap; founder: "plan to tickets all that, create a roadmap, run it".
+- 2026-11-25: research, plan TASK-658, this roadmap; founder: "plan to tickets all that, create a roadmap, run it"; SDK pull request 160 merged 16:05Z; then founder: "create tickets, do not dispatch them" — five tickets filed 16:27Z with no label `pilot`.
+- To pick up this roadmap: add the label `pilot` to studio-sdk#163 and #164 and to pilot #6705, #6706 and #6707 (#164 waits for #163 by its Depends-on line).
