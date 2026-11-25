@@ -1330,6 +1330,11 @@
         "name": "Agent-Uid-Isolation",
         "aliases": [],
         "domain": "general"
+      },
+      "github-app": {
+        "name": "Github-App",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -9674,6 +9679,19 @@
         ],
         "created": "2026-11-24",
         "last_validated": "2026-11-24"
+      },
+      "mem-341": {
+        "type": "learning",
+        "summary": "Correction to mem-339 (2026-11-25): run_as_user does NOT need a GitHub App to run in a private repository. The daemon fills the agent workspace from its own repository through a git bundle piped to the agent user (transportWorkspaceBase), takes the commit back, pushes and opens the pull request with its own credential; with no read token the run goes on with one Warn line (startRunAgentTokenFile). Without the App the agent only lacks gh and a fetch from GitHub inside its session, and a gate that downloads a private dependency as the agent user fails. A session repeated 'private repositories fail without the App' for two days from one line of a task document ('no gh and no fetch of a private repository') without a read of the code, and the founder kept the option off on that claim. Before a report names a blocker, read the code path that would fail.",
+        "path": "memories/learnings/mem-341.md",
+        "confidence": 0.9,
+        "concepts": [
+          "agent-uid-isolation",
+          "workflow-discipline",
+          "github-app"
+        ],
+        "created": "2026-11-25",
+        "last_validated": "2026-11-25"
       }
     }
   },
@@ -14157,6 +14175,11 @@
       "from": "mem-340",
       "to": "TASK-657",
       "type": "learned-from"
+    },
+    {
+      "from": "mem-341",
+      "to": "TASK-651",
+      "type": "learned-from"
     }
   ],
   "concept_index": {
@@ -16445,7 +16468,8 @@
       "mem-333",
       "mem-334",
       "mem-335",
-      "mem-337"
+      "mem-337",
+      "mem-341"
     ],
     "worktree": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -16937,14 +16961,18 @@
       "mem-326"
     ],
     "agent-uid-isolation": [
-      "mem-339"
+      "mem-339",
+      "mem-341"
+    ],
+    "github-app": [
+      "mem-341"
     ]
   },
-  "last_updated": "2026-11-24T22:10:32.452853+00:00",
+  "last_updated": "2026-11-25T10:50:07.643269+00:00",
   "stats": {
-    "total_nodes": 826,
-    "total_edges": 896,
-    "memory_count": 465
+    "total_nodes": 828,
+    "total_edges": 897,
+    "memory_count": 466
   },
   "metadata": {
     "last_updated": null
