@@ -3432,13 +3432,18 @@
       "TASK-658": {
         "path": ".agent/tasks/TASK-658-plane-integration-works-with-current-plane.md",
         "title": "Plane integration works with a current Plane server \u2014 text priority on the SDK path, no lost tickets, webhook label match",
-        "status": "planned",
+        "status": "dispatched",
         "concepts": [
           "authentication",
           "deployment",
           "context",
           "api",
           "testing"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6705",
+          "https://github.com/qf-studio/pilot/issues/6706",
+          "https://github.com/qf-studio/pilot/issues/6707"
         ]
       }
     },
