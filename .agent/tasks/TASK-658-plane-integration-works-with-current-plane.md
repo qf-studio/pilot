@@ -33,7 +33,7 @@ A user with a current Plane server gets each ticket with the Pilot label picked 
 ## Known Pitfalls & Patterns
 
 - **PITFALL** (mem-352): for an adapter fix, find the production caller of the changed type before a merge; research first, merge second. → Each leg below names the production call site that it changes.
-- **PITFALL** (mem-353): the list of the Plane gaps of 2026-11-25. → Legs K1 to K5 and the "later" list.
+- **PITFALL** (mem-353): the list of the Plane gaps of 2026-11-25. → Legs K1 to K7 and the two design points of the roadmap document.
 - **PITFALL** (`merged-feature-dead-callback-not-bridged-onprcreated`): a feature that hangs on the pull request lifecycle must be traced from the tracker event to the call site for that task family. → The "done at merge" item is not a leg yet: it needs that trace first.
 - **LEARNING** (`operator-issue-bodies-must-pass-base-presence-check-before-filing`): backticked paths must exist on the main branch of the target repository. → New files are named in plain text.
 - **PITFALL** (mem-335): a merged change is not in use until a release holds it. → The held leg K4 pins the SDK release; the Pilot change reaches users with the next Pilot release.
@@ -64,14 +64,17 @@ A user with a current Plane server gets each ticket with the Pilot label picked 
 - [ ] 7. The Plane documentation page matches the code
 - [ ] 8. The unused internal Plane client, poller and notifier are removed (needs 6)
 
+### Phase 3: Several Plane projects
+- [ ] 9. A project entry can name its Plane project, and the poller routes each ticket to that repository
+
 ### Side tracks
-- [ ] One repository for each Plane project (needs a design: a pairing key in the project config)
 - [ ] The work item is set to done at the merge, not at the pull request (needs a trace of the pull request lifecycle for Plane tasks)
 - [ ] One comment for each event in Plane (verify the three writers first)
 
 ### Waits for you
-- [ ] The merge of the outside SDK pull request 160 (step 1)
-- [ ] The go for the dispatch of steps 2, 3, 6, 7
+- [x] The merge of the outside SDK pull request 160 (step 1; founder, 11-25: "run it")
+- [x] The go for the plan, the roadmap and the run (founder, 11-25)
+- [ ] A decision on "done at the merge" and on the comments in Plane (two design points; see the roadmap document)
 
 ---
 
@@ -89,7 +92,7 @@ Order: K1 and K2 touch the same function, so K2 depends on K1. Step 1 (the outsi
 
 ### Later (no leg yet)
 
-The three side tracks need a decision or a trace first; each gets its own leg after that.
+The two side tracks need a decision first; each gets its own leg after that. The roadmap document `.agent/system/plane-integration-roadmap.md` holds the proposal for each.
 
 ---
 
@@ -261,6 +264,41 @@ Navigator TASK-658. The documentation page of the Plane integration (`docs/conte
 ## Out of scope
 
 Code. Other documentation pages. The feature matrix.
+
+## Refs
+
+- Navigator TASK-658 in this repo
+
+### LEG K7 — repo: qf-studio/pilot — title: feat(plane): one repository for each Plane project — a project entry can name its Plane project ID, and the poller routes the task there
+
+probe: present qf-studio/pilot func[[:space:]]\(c[[:space:]]\*Config\)[[:space:]]GetProjectByLinearID\(
+probe: present qf-studio/pilot func[[:space:]]planePollerRegistration\(
+probe: absent  qf-studio/pilot func[[:space:]]\(c[[:space:]]\*Config\)[[:space:]]GetProjectByPlaneID\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-658. The Plane poller (`cmd/pilot/poller_plane.go`, planePollerRegistration) hands every work item to handlePlaneIssueWithResult (`cmd/pilot/handlers.go`) with one project path for the whole adapter (deps.ProjectPath: the default project). The adapter config can list several Plane project IDs, so work items of two Plane projects land in one repository. Linear already has the pairing that Plane lacks: a project entry of the config can carry a linear block with a project_id, and GetProjectByLinearID (`internal/config/config.go`) finds the project entry for an event. The SDK event of a Plane work item carries the Plane project UUID in its ProjectID field.
+
+## Scope
+
+1. Config (`internal/config/config.go`): a new type ProjectPlaneConfig with one field ProjectID (yaml project_id), a new optional field Plane on ProjectConfig (yaml plane, omitempty), and a new method GetProjectByPlaneID that mirrors GetProjectByLinearID.
+2. Validation at load: two project entries with the same plane.project_id are an error that names both entries; an empty project_id in a plane block is an error.
+3. The poller wiring (`cmd/pilot/poller_plane.go`): for each event, the project path is the path of the project entry whose plane.project_id is equal to the ProjectID of the event; when no entry matches, the path is deps.ProjectPath as today. One Info line for each task names the work item, the Plane project ID and the chosen project name; when the fallback is used and at least one project entry has a plane block, the line is a Warn.
+4. The base branch and each other value that the handler derives from the project path must follow the chosen path (the handler already takes the path as an argument; check that the wiring passes the chosen one to each call).
+5. The example config (`configs/pilot.example.yaml`): two comment lines in the projects part that show the plane block. The documentation page (`docs/content/integrations/plane.mdx`): a short section "Several Plane projects".
+6. Tests: a config test for GetProjectByPlaneID and the two validation errors; a test in the Plane poller test file (`cmd/pilot/poller_plane_test.go`) that two events with two Plane project IDs get two project paths, and that an unknown ID gets the default path.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/config/ ./cmd/pilot/ -run 'Plane'` passes; paste the output into the PR body.
+- [ ] The PR body says what a config with no plane block does (the behaviour of today).
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The webhook path. The SDK. The repository resolver stub in the sdkshim package. A change of the adapter-level project ID list.
 
 ## Refs
 
