@@ -3428,6 +3428,18 @@
           "https://github.com/qf-studio/pilot/issues/6694",
           "https://github.com/qf-studio/pilot/issues/6698"
         ]
+      },
+      "TASK-658": {
+        "path": ".agent/tasks/TASK-658-plane-integration-works-with-current-plane.md",
+        "title": "Plane integration works with a current Plane server \u2014 text priority on the SDK path, no lost tickets, webhook label match",
+        "status": "dispatched",
+        "concepts": [
+          "authentication",
+          "deployment",
+          "context",
+          "api",
+          "testing"
+        ]
       }
     },
     "memories": {
@@ -14340,6 +14352,31 @@
       "from": "mem-341",
       "to": "TASK-651",
       "type": "learned-from"
+    },
+    {
+      "from": "TASK-658",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-658",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-658",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-658",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-658",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -14535,7 +14572,8 @@
       "TASK-654",
       "TASK-656",
       "TASK-657",
-      "mem-345"
+      "mem-345",
+      "TASK-658"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -14625,7 +14663,8 @@
       "TASK-651",
       "TASK-650",
       "TASK-657",
-      "mem-346"
+      "mem-346",
+      "TASK-658"
     ],
     "auto-merge": [
       "mem-103",
@@ -14969,7 +15008,8 @@
       "TASK-654",
       "TASK-655",
       "TASK-656",
-      "TASK-657"
+      "TASK-657",
+      "TASK-658"
     ],
     "conversational-bot": [
       "mem-036",
@@ -15289,7 +15329,8 @@
       "mem-344",
       "mem-347",
       "mem-348",
-      "mem-351"
+      "mem-351",
+      "TASK-658"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -16423,7 +16464,8 @@
       "TASK-657",
       "mem-337",
       "mem-338",
-      "mem-346"
+      "mem-346",
+      "TASK-658"
     ],
     "testing-quality": [
       "TASK-384",
@@ -17156,10 +17198,10 @@
       "mem-353"
     ]
   },
-  "last_updated": "2026-11-25T14:16:38.959103+00:00",
+  "last_updated": "2026-11-25T14:20:10.785587+00:00",
   "stats": {
-    "total_nodes": 844,
-    "total_edges": 897,
+    "total_nodes": 845,
+    "total_edges": 902,
     "memory_count": 478
   },
   "metadata": {
