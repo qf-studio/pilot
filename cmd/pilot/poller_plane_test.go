@@ -146,3 +146,38 @@ func itoa(n int) string {
 	}
 	return result
 }
+
+// TestResolvePlaneProjectPath verifies the GH-6707 routing: each work item goes
+// to the project entry paired with its Plane project; an unknown Plane project
+// (or a config with no plane block) gets the default path.
+func TestResolvePlaneProjectPath(t *testing.T) {
+	const defaultPath = "/srv/default"
+	paired := &config.Config{Projects: []*config.ProjectConfig{
+		{Name: "default", Path: defaultPath},
+		{Name: "web", Path: "/srv/web", Plane: &config.ProjectPlaneConfig{ProjectID: "plane-proj-web"}},
+		{Name: "api", Path: "/srv/api", Plane: &config.ProjectPlaneConfig{ProjectID: "plane-proj-api"}},
+	}}
+	unpaired := &config.Config{Projects: []*config.ProjectConfig{
+		{Name: "default", Path: defaultPath},
+	}}
+
+	tests := []struct {
+		name      string
+		cfg       *config.Config
+		projectID string
+		want      string
+	}{
+		{name: "first plane project", cfg: paired, projectID: "plane-proj-web", want: "/srv/web"},
+		{name: "second plane project", cfg: paired, projectID: "plane-proj-api", want: "/srv/api"},
+		{name: "unknown plane project falls back", cfg: paired, projectID: "plane-proj-other", want: defaultPath},
+		{name: "no plane block keeps the default", cfg: unpaired, projectID: "plane-proj-web", want: defaultPath},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := sdkcore.IssueEvent{IssueID: "uuid-" + tt.projectID, SequenceID: "PLANE-7", ProjectID: tt.projectID}
+			if got := resolvePlaneProjectPath(tt.cfg, ev, defaultPath); got != tt.want {
+				t.Errorf("resolvePlaneProjectPath(%q) = %q, want %q", tt.projectID, got, tt.want)
+			}
+		})
+	}
+}

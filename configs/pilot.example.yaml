@@ -1220,6 +1220,8 @@ projects:
     #   4. Otherwise the issue is skipped (WARN with the issue identifier).
     # linear:
     #   project_id: "proj-abc123"   # Linear project UUID
+    # plane:
+    #   project_id: "plane-project-uuid"   # GH-6707: polled Plane work items of this Plane project go to this project (else default_project)
     # Per-project quality gates (GH-3716) - overrides the top-level `quality:`
     # block above for this project only. Useful when a deployment's global
     # gates (e.g. Go/Makefile) don't fit a project on a different stack

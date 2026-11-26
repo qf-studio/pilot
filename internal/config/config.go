@@ -393,6 +393,11 @@ type ProjectConfig struct {
 	// to `gh pr create`. Mutually exclusive with GitHub.
 	GitLab *ProjectGitLabConfig `yaml:"gitlab,omitempty"`
 	Linear *ProjectLinearConfig `yaml:"linear,omitempty"`
+	// Plane pairs this project with one Plane project (GH-6707): the Plane
+	// poller routes a work item whose Plane project UUID equals
+	// plane.project_id to this project's path. Without any plane block every
+	// work item goes to the default project.
+	Plane *ProjectPlaneConfig `yaml:"plane,omitempty"`
 	// Quality overrides the global quality gate config for this project
 	// (GH-3716). Takes precedence over the top-level Config.Quality — lets a
 	// pnpm/yarn/bun or other non-Go project define its own build/test/lint
@@ -532,6 +537,37 @@ func (c *Config) validateProjectGitLab() error {
 // ProjectLinearConfig holds Linear-specific project configuration for project pairing.
 type ProjectLinearConfig struct {
 	ProjectID string `yaml:"project_id"`
+}
+
+// ProjectPlaneConfig holds Plane-specific project configuration for project pairing (GH-6707).
+type ProjectPlaneConfig struct {
+	ProjectID string `yaml:"project_id"`
+}
+
+// validateProjectPlane checks every projects[].plane block (GH-6707):
+// plane.project_id must be set, and no two projects may claim the same
+// Plane project — the poller could only route the work item to one of them.
+func (c *Config) validateProjectPlane() error {
+	seen := make(map[string]string, len(c.Projects))
+	for i, p := range c.Projects {
+		if p == nil || p.Plane == nil {
+			continue
+		}
+		name := p.Name
+		if name == "" {
+			name = fmt.Sprintf("#%d", i)
+		}
+		id := strings.TrimSpace(p.Plane.ProjectID)
+		if id == "" {
+			return fmt.Errorf("projects[%d] (%s): plane.project_id must not be empty", i, name)
+		}
+		entry := fmt.Sprintf("projects[%d] (%s)", i, name)
+		if other, ok := seen[id]; ok {
+			return fmt.Errorf("%s and %s: both set plane.project_id %q; a Plane project maps to one project entry", other, entry, id)
+		}
+		seen[id] = entry
+	}
+	return nil
 }
 
 // FindProjectByRepo returns the ProjectConfig whose GitHub owner/repo matches
@@ -1676,6 +1712,11 @@ func (c *Config) Validate() error {
 		return err
 	}
 
+	// GH-6707: Validate each project's plane block.
+	if err := c.validateProjectPlane(); err != nil {
+		return err
+	}
+
 	// Validate quality on_failure max_retries in [0, 10]
 	if c.Quality != nil && (c.Quality.OnFailure.MaxRetries < 0 || c.Quality.OnFailure.MaxRetries > 10) {
 		return fmt.Errorf("quality.on_failure.max_retries must be in range [0, 10], got %d", c.Quality.OnFailure.MaxRetries)
@@ -1790,6 +1831,20 @@ func (c *Config) GetProjectByName(name string) *ProjectConfig {
 func (c *Config) GetProjectByLinearID(linearProjectID string) *ProjectConfig {
 	for _, project := range c.Projects {
 		if project.Linear != nil && project.Linear.ProjectID == linearProjectID {
+			return project
+		}
+	}
+	return nil
+}
+
+// GetProjectByPlaneID returns the project matching a Plane project UUID (GH-6707).
+// Returns nil if no project has a matching plane.project_id configured.
+func (c *Config) GetProjectByPlaneID(planeProjectID string) *ProjectConfig {
+	if planeProjectID == "" {
+		return nil
+	}
+	for _, project := range c.Projects {
+		if project != nil && project.Plane != nil && strings.TrimSpace(project.Plane.ProjectID) == planeProjectID {
 			return project
 		}
 	}
