@@ -270,6 +270,20 @@ pilot start --github
 open http://localhost:8090/dashboard
 ```
 
+### Browser retest recordings
+
+A web deployment can opt in to video playback in History. Serve a same-origin
+`/dashboard/videos/manifest.json` containing a JSON array of execution UUIDs, and
+an `MP4` at `/dashboard/videos/<execution-uuid>.mp4` for each listed execution.
+Use the History entry's `id`, not its issue ID, so retries do not inherit old
+recordings. Serve media with `Content-Type: video/mp4` and byte-range support.
+
+Keep both the manifest and media behind the same access policy as the dashboard.
+Publish only reviewed test videos from isolated environments. Do not expose the
+recordings directory, worktrees, traces, or authentication state. Pilot replay
+logs are not videos, and this feature does not automatically capture browser
+sessions or require a video for documentation-only changes.
+
 ### REST API Endpoints
 
 The following REST endpoints are available under `/api/v1/`:
