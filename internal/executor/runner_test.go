@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/replay"
 )
 
 func TestNewRunner(t *testing.T) {
@@ -90,6 +91,37 @@ func TestNewRunnerWithConfigInvalid(t *testing.T) {
 	_, err := NewRunnerWithConfig(config)
 	if err == nil {
 		t.Error("expected error for invalid backend type")
+	}
+}
+
+// TestNewRunnerWithConfig_RecordingsPath pins executor.recordings_path: when
+// set, the runner writes recordings there instead of ~/.pilot/recordings; when
+// empty, the default is kept so existing deployments are unaffected.
+func TestNewRunnerWithConfig_RecordingsPath(t *testing.T) {
+	base := func() *BackendConfig {
+		return &BackendConfig{
+			UseWorktree: boolPtr(false),
+			Type:        BackendTypeOpenCode,
+			OpenCode:    &OpenCodeConfig{ServerURL: "http://localhost:5000"},
+		}
+	}
+
+	configured := base()
+	configured.RecordingsPath = "/custom/recordings"
+	runner, err := NewRunnerWithConfig(configured)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := runner.getRecordingsPath(); got != "/custom/recordings" {
+		t.Errorf("getRecordingsPath() = %q, want the configured path", got)
+	}
+
+	unset, err := NewRunnerWithConfig(base())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := unset.getRecordingsPath(), replay.DefaultRecordingsPath(); got != want {
+		t.Errorf("getRecordingsPath() = %q, want default %q when RecordingsPath is empty", got, want)
 	}
 }
 

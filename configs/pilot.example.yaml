@@ -156,6 +156,19 @@ adapters:
       interval: 30m
       threshold: 1h
 
+  # Forgejo - ONE explicit instance (TASK-657). Disabled by default.
+  # Standby posture: no polling block exists for forgejo; issues arrive by
+  # signed webhook only. Requires https:// (plain http only for 127.0.0.1,
+  # ::1 or localhost), a token, and a webhook_secret. Repos are mapped under
+  # projects[].forgejo.repo (owner/name); unmapped repos are never admitted.
+  # Cannot be enabled together with adapters.github.app.
+  # forgejo:
+  #   enabled: false
+  #   base_url: "https://forgejo.example.com"   # required, no credentials/query/fragment
+  #   token: "${FORGEJO_TOKEN}"
+  #   webhook_secret: "${FORGEJO_WEBHOOK_SECRET}"
+  #   pilot_label: "pilot"                      # default "pilot"
+
   # Azure DevOps - Work item polling and PR creation
   azure_devops:
     enabled: false
@@ -781,6 +794,11 @@ executor:
                                # false = direct mode: tasks edit the project clone in place, and the
                                # daemon logs at startup: "executor.use_worktree is false: tasks edit the project clone in place; a killed phase can leave the clone dirty and block later tasks (set use_worktree: true or remove the key)"
 
+  # Execution recordings (stream.jsonl, diffs, summary.md) - default: ~/.pilot/recordings.
+  # Set this when several Pilot instances share a host so one project's
+  # recordings never land beside another's (pair it with memory.path).
+  # recordings_path: "/home/you/.local/state/pilot-<project>/recordings"
+
   # Effort routing (Opus 4.6) - controls how thoroughly Claude reasons per complexity
   # effort_routing:
   #   enabled: true
@@ -1206,6 +1224,12 @@ projects:
     # gitlab:
     #   project: "my-group/my-app"                # namespace/path (required)
     #   base_url: "https://gitlab.example.com"    # optional; default adapters.gitlab.base_url, then https://gitlab.com
+    # Forgejo-hosted repository (TASK-657) - mutually exclusive with `github:`
+    # and `gitlab:`. owner/name, case-sensitive, mapped to exactly one project.
+    # No per-project base_url: the instance is adapters.forgejo.base_url, and
+    # adapters.forgejo.token must be set.
+    # forgejo:
+    #   repo: "my-owner/my-app"
     # Linear project pairing (GH-1684) - maps Linear project to this Pilot project
     # Precedence: project-level linear.project_id > workspace-level > default_project
     # Polled Linear issues are dispatched to exactly one project, never to
