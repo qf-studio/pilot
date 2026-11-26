@@ -18,6 +18,7 @@ func TestAdapterPollerRegistrations_CoverAllAdapterTypes(t *testing.T) {
 	// GitHub gained one in M7 4b (flag-gated on use_sdk_poller; default repo only).
 	excluded := map[string]bool{
 		"GitLab":   true, // webhook-based, no poller
+		"Forgejo":  true, // TASK-657: signed webhook plus one startup scan (forgejo_service.go), never polled
 		"Slack":    true, // notification channel + socket mode, not a task source poller
 		"Telegram": true, // bot adapter, not a task source poller
 		"Chat":     true, // GH-4835: operator chat HTTP transport, not a task source poller

@@ -974,6 +974,12 @@ Examples:
 			// Splash screen removed — caused alt-screen flicker between
 			// splash exit and dashboard start (GH-2459 follow-up).
 
+			// TASK-657: Forgejo intake is webhook-driven, so it cannot run
+			// without the gateway.
+			if err := validateForgejoStartup(cfg, noGateway); err != nil {
+				return err
+			}
+
 			hasPollingAdapter := hasTelegram || hasGithubPolling
 			if noGateway || hasPollingAdapter {
 				return runPollingMode(cmd, cfg, startPreflight, projectPath, replace, dashboardMode, noGateway, allowArchived, bootReconcile)
@@ -1041,7 +1047,8 @@ Examples:
 				(githubFlagSet && hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 					cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled) ||
 				(slackFlagSet && hasSlack) ||
-				adapterPollerEnabled
+				adapterPollerEnabled ||
+				forgejoEnabled(cfg) // TASK-657: Forgejo needs the runner, store and durable dispatcher
 			// GH-4843 (D1): chat is an HTTP endpoint, not a polling adapter, so
 			// it must NOT gate on needsPollingInfra the way Telegram/Slack/GitHub
 			// polling do — a webhooks-only gateway daemon with chat enabled and
@@ -1055,6 +1062,7 @@ Examples:
 			var gwRunner *executor.Runner
 			var gwStore *memory.Store
 			var gwDispatcher *executor.Dispatcher
+			var gwForgejo *forgejoRuntime // TASK-657
 			var gwMonitor *executor.Monitor
 			var gwProgram *tea.Program
 			var gwAutopilotController *autopilot.Controller
@@ -1111,6 +1119,13 @@ Examples:
 				gwRunner.SetNavigatorEnabledLookup(newProjectNavigatorEnabledLookup(cfg))
 				gwRunner.SetAgentTokenRepoLookup(newProjectAgentTokenRepoLookup(cfg)) // TASK-651
 				installAgentReadTokenProvider(cfg)
+
+				// TASK-657: register the per-project Forgejo PR creators before the
+				// dispatcher starts, so a recovered task never falls back to gh.
+				var fjErr error
+				if gwForgejo, fjErr = newForgejoRuntime(cfg, gwRunner); fjErr != nil {
+					return fjErr
+				}
 
 				// Set up team project access checker if configured (GH-635)
 				if gwTeamCleanup := wireProjectAccessChecker(gwRunner, cfg); gwTeamCleanup != nil {
@@ -1877,8 +1892,23 @@ Examples:
 				}
 			}
 
+			if gwForgejo != nil {
+				if gwDispatcher == nil {
+					return errors.New("adapters.forgejo.enabled requires the durable task dispatcher, which did not start")
+				}
+				p.Gateway().RegisterHandler(forgejoWebhookPath, gwForgejo.Handler())
+			}
+
 			if err := p.Start(); err != nil {
 				return fmt.Errorf("failed to start Pilot: %w", err)
+			}
+
+			// TASK-657: recovery has run (dispatcher started above); bind the
+			// webhook service and launch the one catch-up scan.
+			if gwForgejo != nil {
+				if err := gwForgejo.Start(context.Background(), gwDispatcher, gwStore); err != nil {
+					return err
+				}
 			}
 
 			// GH-6268: runtime leak scan in gateway-only mode too, when an
@@ -2660,6 +2690,13 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, startPreflight func(
 	// TASK-286 / GH-3027: refuse sub-issue creation on unmanaged repos.
 	runner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
 
+	// TASK-657: register the per-project Forgejo PR creators before the
+	// dispatcher starts, so a recovered task never falls back to gh.
+	forgejoRT, err := newForgejoRuntime(cfg, runner)
+	if err != nil {
+		return err
+	}
+
 	// GH-4670: post-run GitHub side-effect audit — detective backstop for the
 	// GH-4649 incident class (a session mutating a sibling issue mid-run).
 	// auditGithubSideEffects no-ops for non-GitHub tasks and fails open on
@@ -3393,6 +3430,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, startPreflight func(
 				pilot.NewSlackInteractionHandler(cfg.Adapters.Slack, slackApprovalHandlerImpl))
 			slackHTTPRoute = true
 		}
+		// TASK-657: mount the signed Forgejo webhook before the gateway starts;
+		// it answers 503 until the dispatcher is up and the service is bound.
+		if forgejoRT != nil {
+			gwServer.RegisterHandler(forgejoWebhookPath, forgejoRT.Handler())
+		}
 		go func() {
 			addr := fmt.Sprintf("%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
 			logging.WithComponent("gateway").Info("gateway started in background", "addr", addr)
@@ -3720,6 +3762,21 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, startPreflight func(
 		} else {
 			logging.WithComponent("start").Info("Task dispatcher started")
 			wireBillingChip(dispatcher, program) // GH-6053
+		}
+	}
+
+	// TASK-657: recovery has run; bind the Forgejo webhook service and launch
+	// the one catch-up scan. Forgejo needs the gateway route and the durable
+	// dispatcher, so neither being absent is fatal.
+	if forgejoRT != nil {
+		if gwServer == nil {
+			return errors.New("adapters.forgejo.enabled requires the HTTP gateway for its webhook")
+		}
+		if dispatcher == nil {
+			return errors.New("adapters.forgejo.enabled requires the durable task dispatcher, which did not start")
+		}
+		if err := forgejoRT.Start(ctx, dispatcher, store); err != nil {
+			return err
 		}
 	}
 

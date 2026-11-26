@@ -239,11 +239,15 @@ type BotVoiceConfig struct {
 // AdaptersConfig holds configuration for external service adapters.
 // Each adapter connects Pilot to a different service (Linear, Slack, GitHub, GitLab, etc.).
 type AdaptersConfig struct {
-	Linear      *linear.Config      `yaml:"linear"`
-	Slack       *slack.Config       `yaml:"slack"`
-	Telegram    *telegram.Config    `yaml:"telegram"`
-	GitHub      *github.Config      `yaml:"github"`
-	GitLab      *gitlab.Config      `yaml:"gitlab"`
+	Linear   *linear.Config   `yaml:"linear"`
+	Slack    *slack.Config    `yaml:"slack"`
+	Telegram *telegram.Config `yaml:"telegram"`
+	GitHub   *github.Config   `yaml:"github"`
+	GitLab   *gitlab.Config   `yaml:"gitlab"`
+	// Forgejo configures the single explicit Forgejo instance (TASK-657 F1).
+	// Disabled by default. Declared in this package so config never imports
+	// the forgejo adapter package.
+	Forgejo     *ForgejoConfig      `yaml:"forgejo"`
 	AzureDevOps *azuredevops.Config `yaml:"azure_devops"`
 	Jira        *jira.Config        `yaml:"jira"`
 	Asana       *asana.Config       `yaml:"asana"`
@@ -392,7 +396,11 @@ type ProjectConfig struct {
 	// source adapter (e.g. Linear) opens a GitLab MR instead of falling through
 	// to `gh pr create`. Mutually exclusive with GitHub.
 	GitLab *ProjectGitLabConfig `yaml:"gitlab,omitempty"`
-	Linear *ProjectLinearConfig `yaml:"linear,omitempty"`
+	// Forgejo marks this project's repository as Forgejo-hosted (TASK-657 F1).
+	// The set of these blocks is the trusted repo-to-project map for the one
+	// adapters.forgejo instance; there is no per-project base_url.
+	Forgejo *ProjectForgejoConfig `yaml:"forgejo,omitempty"`
+	Linear  *ProjectLinearConfig  `yaml:"linear,omitempty"`
 	// Quality overrides the global quality gate config for this project
 	// (GH-3716). Takes precedence over the top-level Config.Quality — lets a
 	// pnpm/yarn/bun or other non-Go project define its own build/test/lint
@@ -774,6 +782,7 @@ func DefaultConfig() *Config {
 			Telegram:    telegram.DefaultConfig(),
 			GitHub:      github.DefaultConfig(),
 			GitLab:      gitlab.DefaultConfig(),
+			Forgejo:     DefaultForgejoConfig(),
 			AzureDevOps: azuredevops.DefaultConfig(),
 			Jira:        jira.DefaultConfig(),
 			Asana:       asana.DefaultConfig(),
@@ -1669,6 +1678,13 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("projects[%d].contract_dependencies[%d]: %w", i, j, err)
 			}
 		}
+	}
+
+	// TASK-657 F1: Validate adapters.forgejo and each project's forgejo block.
+	// Runs before the gitlab check so a project mixing forge blocks gets the
+	// forge-conflict error rather than a gitlab token complaint.
+	if err := c.validateForgejo(); err != nil {
+		return err
 	}
 
 	// GH-5583: Validate each project's gitlab block.

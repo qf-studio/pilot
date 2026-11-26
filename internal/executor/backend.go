@@ -509,6 +509,13 @@ type BackendConfig struct {
 	// Read through EffectiveUseWorktree(), never the raw field.
 	UseWorktree *bool `yaml:"use_worktree,omitempty"`
 
+	// RecordingsPath overrides where execution recordings (stream.jsonl, diffs,
+	// summary.md) are written. Empty keeps the shared default ~/.pilot/recordings.
+	// Set it whenever several Pilot instances share a host, so one project's
+	// recordings never land beside another's. The directory is created on
+	// first use with the recorder's usual 0700 mode.
+	RecordingsPath string `yaml:"recordings_path,omitempty"`
+
 	// WorktreePoolSize sets the number of pre-created worktrees to pool.
 	// When > 0, worktrees are reused across tasks in sequential mode, saving 500ms-2s per task.
 	// Pool paths: /tmp/pilot-worktree-pool-N/

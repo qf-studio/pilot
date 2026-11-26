@@ -1545,6 +1545,12 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 		return nil, err
 	}
 	runner := NewRunnerWithBackend(backend)
+	// executor.recordings_path: applied here for the same reason as
+	// env_passthrough above, so every runner-construction path (daemon, `pilot
+	// task`, orchestrator) honours it without a per-call-site Set call.
+	if config.RecordingsPath != "" {
+		runner.SetRecordingsPath(config.RecordingsPath)
+	}
 	runner.config = config
 	runner.acceptanceClassifier = newAcceptanceClassifier(config, runner.log)
 	runner.basePresenceClassifier = newBasePresenceClassifier(config, runner.log)

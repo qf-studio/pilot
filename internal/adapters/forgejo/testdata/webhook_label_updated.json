@@ -1,0 +1,1 @@
+{"action":"label_updated","number":3,"issue":{"id":11,"number":3,"title":"Fix the thing","state":"open","pull_request":null,"labels":[{"id":1,"name":"pilot"}]},"repository":{"id":1,"name":"pilot-fixture","full_name":"fixturebot/pilot-fixture","default_branch":"main"},"sender":{"id":2,"login":"fixturebot"}}
