@@ -51,14 +51,17 @@ func TestPlaneDocTaskIDNamesWebhookTaskID(t *testing.T) {
 	}
 }
 
-// mutation pin: the Priority section says "Pilot maps it to the task priority" with no qualifier -> this test fails
-func TestPlaneDocPriorityIsNotMapped(t *testing.T) {
+// mutation pin: the Priority section says that no path maps the text priority, or does not say that the webhook path does not read it -> this test fails
+func TestPlaneDocPollPathMapsTextPriorityWebhookDoesNotRead(t *testing.T) {
 	sec := planeDocSection(t, readPlaneDoc(t), "### Priority")
-	if strings.Contains(sec, "Pilot maps it to the task priority.") {
-		t.Error("Priority section says Pilot maps the text priority; no path maps it (the pinned SDK cannot decode it, the webhook path does not read it)")
+	if strings.Contains(sec, "no path maps the text priority") {
+		t.Error("Priority section says no path maps the text priority; the poll path maps it (studio-sdk Priority.UnmarshalJSON, sdkshim.PriorityFromSDK)")
 	}
-	if !strings.Contains(sec, "no path maps the text priority") {
-		t.Error("Priority section does not say that no path maps the text priority")
+	if !strings.Contains(sec, "The poll path maps the text priority to the task priority") {
+		t.Error("Priority section does not say that the poll path maps the text priority to the task priority")
+	}
+	if !strings.Contains(sec, "The webhook path does not read the priority") {
+		t.Error("Priority section does not say that the webhook path does not read the priority")
 	}
 }
 

@@ -92,17 +92,13 @@ Issues are processed oldest-first by creation date. Parallel execution is suppor
 
 ### Label Lookup at Start
 
-On start, the poller reads the labels of the configured projects and looks up the Pilot label and the status labels by name (case-insensitive). If no configured project has a label with the name of `pilot_label`, the poller does not start: the log says `pilot label "pilot" not found in any configured project`, and Pilot retries the start with a backoff.
+On start, the poller reads the labels of each configured project and looks up the Pilot label and the status labels by name (case-insensitive). Plane labels belong to one project, so each project gets its own label IDs, and the work item list of each project asks for the Pilot label ID of that project.
 
-The poller takes the labels from the first configured project that has the Pilot label, and uses those label IDs for every project. Plane labels belong to one project, so with several projects, check in the logs that work items of each project are picked up.
+A project with no label of the name of `pilot_label` is skipped: the log says `Pilot label not found in project; project is skipped` with the project ID, and the poller looks up the labels of that project again at each poll, so a label added later is picked up without a restart. The start fails only when no configured project has the label: the log says `pilot label "pilot" not found in any configured project`, and Pilot retries the start with a backoff.
 
 ### Priority
 
-Plane sends the priority as text: `none`, `urgent`, `high`, `medium` or `low`. In this release no path maps the text priority to the task priority: the poll path cannot decode it (see the warning below), and the webhook path does not read the priority.
-
-<Callout type="warning">
-In this release the poll path still decodes the priority only as a number. With a Plane server that sends the priority as text, the list of work items of a project fails to decode: Pilot logs `Failed to fetch work items` at each poll and picks up no work item of that project. This applies to each Pilot release that pins `github.com/qf-studio/studio-sdk` v0.38.7 (see `go.mod`): that SDK version has no decoder for the text priority. The fix is merged in the SDK but is not in an SDK release yet; the warning stops applying with the first Pilot release that pins an SDK release after v0.38.7.
-</Callout>
+Plane sends the priority as text: `none`, `urgent`, `high`, `medium` or `low`. The poll path maps the text priority to the task priority (`none` gives no priority). The webhook path does not read the priority.
 
 ### Crash-Safe Deduplication
 
