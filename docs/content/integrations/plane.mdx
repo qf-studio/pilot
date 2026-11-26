@@ -98,10 +98,10 @@ The poller takes the labels from the first configured project that has the Pilot
 
 ### Priority
 
-Plane sends the priority as text: `none`, `urgent`, `high`, `medium` or `low`. Pilot maps it to the task priority.
+Plane sends the priority as text: `none`, `urgent`, `high`, `medium` or `low`. In this release no path maps the text priority to the task priority: the poll path cannot decode it (see the warning below), and the webhook path does not read the priority.
 
 <Callout type="warning">
-In this release the poll path still decodes the priority only as a number. With a Plane server that sends the priority as text, the list of work items of a project fails to decode: Pilot logs `Failed to fetch work items` at each poll and picks up no work item of that project. The fix is merged in the Plane SDK and reaches Pilot with a later release.
+In this release the poll path still decodes the priority only as a number. With a Plane server that sends the priority as text, the list of work items of a project fails to decode: Pilot logs `Failed to fetch work items` at each poll and picks up no work item of that project. This applies to each Pilot release that pins `github.com/qf-studio/studio-sdk` v0.38.7 (see `go.mod`): that SDK version has no decoder for the text priority. The fix is merged in the SDK but is not in an SDK release yet; the warning stops applying with the first Pilot release that pins an SDK release after v0.38.7.
 </Callout>
 
 ### Crash-Safe Deduplication
@@ -187,9 +187,10 @@ On the poll path, Pilot applies labels to track issue status:
 
 ## Task ID Format
 
-Plane issues are converted to Pilot tasks with the format `PLANE-{sequence number}`, on both paths. The sequence number is the number of the work item in its project; the Plane project identifier is not used:
-- Work item `WEB-42` (sequence number 42) → Task ID `PLANE-42`
-- Branch name: `pilot/PLANE-42`
+The task ID is built from the sequence number of the work item, the number of the work item in its project; the Plane project identifier is not used. The two paths give different task IDs:
+- Poll path: work item `WEB-42` (sequence number 42) → Task ID `PLANE-42`
+- Webhook path: work item `WEB-42` (sequence number 42) → Task ID `TASK-PLANE-42`
+- Branch name, on both paths: `pilot/PLANE-42`
 
 ## Autopilot Integration
 
