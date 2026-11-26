@@ -1,6 +1,6 @@
 # TASK-658: Plane integration works with a current Plane server — text priority on the SDK path, no lost tickets, webhook label match
 
-**Status**: 🎫 **State 2026-11-25 16:28Z: five tickets are FILED and NOT dispatched (no label `pilot`): studio-sdk [#163](https://github.com/qf-studio/studio-sdk/issues/163) and [#164](https://github.com/qf-studio/studio-sdk/issues/164), pilot [#6705](https://github.com/qf-studio/pilot/issues/6705), [#6706](https://github.com/qf-studio/pilot/issues/6706) and [#6707](https://github.com/qf-studio/pilot/issues/6707). Founder, 11-25: "Create tickets, do not dispatch them ... I'll tell you to pick up this roadmap." The dispatch (the label `pilot` on each ticket) waits for the founder's word.** Done: the outside SDK pull request 160 (the priority as text on the SDK path) is merged, 16:05Z, on the founder's "run it" of the same day. Held legs, not written: K4 (Pilot pins a new SDK release, with a poller test) and K6 (removal of the unused internal Plane code). Roadmap document: `.agent/system/plane-integration-roadmap.md`. Two design decisions wait for the founder (done at the merge; one comment for each event).
+**Status**: 🚀 **State 2026-11-26 15:16Z: the five tickets are DISPATCHED (label `pilot` added at 15:16Z; founder, 11-26: "let's ship the Plane roadmap"): studio-sdk#163 and #164 (#164 waits for #163 by its Depends-on line), pilot #6705, #6706 and #6707. These are also the first runs with the option `run_as_user` on (TASK-651); the session reads each run and reviews each pull request after its merge.** **State 2026-11-25 16:28Z: five tickets are FILED and NOT dispatched (no label `pilot`): studio-sdk [#163](https://github.com/qf-studio/studio-sdk/issues/163) and [#164](https://github.com/qf-studio/studio-sdk/issues/164), pilot [#6705](https://github.com/qf-studio/pilot/issues/6705), [#6706](https://github.com/qf-studio/pilot/issues/6706) and [#6707](https://github.com/qf-studio/pilot/issues/6707). Founder, 11-25: "Create tickets, do not dispatch them ... I'll tell you to pick up this roadmap." The dispatch (the label `pilot` on each ticket) waits for the founder's word.** Done: the outside SDK pull request 160 (the priority as text on the SDK path) is merged, 16:05Z, on the founder's "run it" of the same day. Held legs, not written: K4 (Pilot pins a new SDK release, with a poller test) and K6 (removal of the unused internal Plane code). Roadmap document: `.agent/system/plane-integration-roadmap.md`. Two design decisions wait for the founder (done at the merge; one comment for each event).
 **Created**: 2026-11-25
 **Assignee**: Pilot for each leg; the founder for the merge of the outside SDK pull request and for an SDK release.
 
@@ -74,7 +74,7 @@ A user with a current Plane server gets each ticket with the Pilot label picked 
 ### Waits for you
 - [x] The merge of the outside SDK pull request 160 (step 1; founder, 11-25: "run it")
 - [x] The go for the plan and the roadmap (founder, 11-25)
-- [ ] The word to pick up the roadmap: then the label `pilot` goes on the five tickets (founder, 11-25: tickets only, no dispatch)
+- [x] The word to pick up the roadmap (founder, 11-26: "let's ship the Plane roadmap"); the label `pilot` is on the five tickets since 15:16Z
 - [ ] A decision on "done at the merge" and on the comments in Plane (two design points; see the roadmap document)
 
 ---
