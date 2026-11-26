@@ -1,7 +1,7 @@
 # Roadmap: Plane integration — it works with a current Plane server, then it is robust, then it routes
 
 **Source plan**: `.agent/tasks/TASK-658-plane-integration-works-with-current-plane.md`
-**Owner**: founder · **Created**: 2026-11-25 · **Status**: 2026-11-26 17:18Z — the SDK release v0.39.2 holds each SDK fix; the unused internal code is removed; the pin of that release in Pilot (#6722) is in work
+**Owner**: founder · **Created**: 2026-11-25 · **Status**: 2026-11-26 17:53Z — milestones 1 to 3 are merged (the SDK release v0.39.2 is pinned in Pilot); not in a Pilot release yet; milestone 4 (two founder decisions) is open; no run against a live Plane server yet
 **Why**: an outside user ran Pilot with Plane on 2026-11-18 and Pilot took no ticket. The research of 2026-11-25 found the cause and six more gaps.
 
 ## Status Legend
@@ -26,7 +26,7 @@ A user with a current Plane server sets an API key, a workspace, the project IDs
 | 1.2 | One work item that does not decode is skipped with a Warn; the page is not lost | ✅ merged 11-26 15:23Z (PR 165; follow-up studio-sdk#166, PR 168) | studio-sdk | [studio-sdk#163](https://github.com/qf-studio/studio-sdk/issues/163) |
 | 1.3 | The work item list follows the cursor; each page is read | ✅ merged 11-26 15:30Z (PR 167) | studio-sdk | [studio-sdk#164](https://github.com/qf-studio/studio-sdk/issues/164) |
 | 1.4 | An SDK release holds 1.1 to 1.3 | ✅ v0.39.2, 11-26 17:17Z (cut by hand on the founder's word) | studio-sdk | operator step |
-| 1.5 | Pilot pins that SDK release; a test runs the poller against a fake Plane server with a text priority and sees one dispatched task | 🚀 dispatched 11-26 17:18Z | pilot | [#6722](https://github.com/qf-studio/pilot/issues/6722) |
+| 1.5 | Pilot pins that SDK release; a test runs the poller against a fake Plane server with a text priority and sees one dispatched task | ✅ merged 11-26 17:52Z (PR#6723) | pilot | [#6722](https://github.com/qf-studio/pilot/issues/6722) |
 
 **Exit**: the test of 1.5 passes on main, and a Pilot release holds it.
 
@@ -70,6 +70,7 @@ A user with a current Plane server sets an API key, a workspace, the project IDs
 
 - 2026-11-25: research, plan TASK-658, this roadmap; founder: "plan to tickets all that, create a roadmap, run it"; SDK pull request 160 merged 16:05Z; then founder: "create tickets, do not dispatch them" — five tickets filed 16:27Z with no label `pilot`.
 - 2026-11-26 15:16Z: founder: "let's ship the Plane roadmap" — the label `pilot` added to studio-sdk#163 and #164 and to pilot #6705, #6706 and #6707 (#164 waits for #163 by its Depends-on line).
+- 2026-11-26 17:52Z: the pin ticket #6722 merged (PR#6723); each ticket of milestones 1 to 3 is merged and reviewed. Next: a Pilot release that holds them; the two founder decisions of milestone 4; a check against a live Plane server.
 - 2026-11-26 17:18Z: studio-sdk#171 merged (17:16Z); the SDK release v0.39.2 cut by hand (17:17Z, on the founder's word); #6719 merged (17:14Z); the pin ticket [#6722](https://github.com/qf-studio/pilot/issues/6722) dispatched.
 - 2026-11-26 17:08Z: studio-sdk#169 merged (SDK pull request 170, 17:04Z); follow-up [studio-sdk#171](https://github.com/qf-studio/studio-sdk/issues/171) dispatched from the reviews (the daemon's own follow-up was skipped by its daily cap); the SDK release waits for it.
 - 2026-11-26 16:54Z: founder: "go labels and release updates in sdk" — [studio-sdk#169](https://github.com/qf-studio/studio-sdk/issues/169) dispatched (the SDK poller looks up the labels for each Plane project; the condition for 3.1 on the poll path); the SDK release follows its merge, then the pin ticket (1.5).
