@@ -1,13 +1,17 @@
 package plane
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
+	"time"
 )
 
 func computeSignature(secret string, payload []byte) string {
@@ -446,12 +450,126 @@ func TestHasPilotLabel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := NewWebhookHandler("", tt.pilotLabel, nil)
-			got := h.hasPilotLabel(tt.labelIDs)
+			got := h.hasPilotLabel(context.Background(), "proj-1", tt.labelIDs)
 			if got != tt.want {
 				t.Errorf("hasPilotLabel() = %v, want %v", got, tt.want)
 			}
 		})
 	}
+}
+
+// GH-6705: the configured pilot label is a NAME; events carry label UUIDs.
+func TestWebhookAcceptsTheLabelByName(t *testing.T) {
+	const labelUUID = "11111111-2222-3333-4444-555555555555"
+
+	type call struct{ projectID, name string }
+	newHandler := func(t *testing.T, pilotLabel string, resolve func(projectID, name string) (string, error)) (*WebhookHandler, *[]call, *int, *bytes.Buffer) {
+		t.Helper()
+		h := NewWebhookHandler("", pilotLabel, nil)
+		var calls []call
+		h.SetLabelResolver(func(_ context.Context, projectID, name string) (string, error) {
+			calls = append(calls, call{projectID, name})
+			return resolve(projectID, name)
+		})
+		accepted := 0
+		h.OnWorkItem(func(context.Context, *WebhookWorkItemData) error {
+			accepted++
+			return nil
+		})
+		var buf bytes.Buffer
+		h.logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		return h, &calls, &accepted, &buf
+	}
+	send := func(t *testing.T, h *WebhookHandler, projectID string, labels []string) {
+		t.Helper()
+		payload := makePayload(t, "issue", "created", WebhookWorkItemData{
+			ID: "wi-1", Name: "Task", ProjectID: projectID, LabelIDs: labels,
+		})
+		if err := h.Handle(context.Background(), payload, ""); err != nil {
+			t.Fatalf("Handle: %v", err)
+		}
+	}
+	mapPilot := func(_, name string) (string, error) {
+		if name == "pilot" {
+			return labelUUID, nil
+		}
+		return "", nil
+	}
+
+	t.Run("name resolves to the UUID of the event", func(t *testing.T) {
+		h, calls, accepted, _ := newHandler(t, "pilot", mapPilot)
+		send(t, h, "proj-1", []string{"other", labelUUID})
+		if *accepted != 1 {
+			t.Fatalf("event with the pilot label UUID: accepted = %d, want 1", *accepted)
+		}
+		send(t, h, "proj-1", []string{"other", "bug"})
+		if *accepted != 1 {
+			t.Fatalf("event without the pilot label UUID: accepted = %d, want 1", *accepted)
+		}
+		if len(*calls) != 1 || (*calls)[0] != (call{"proj-1", "pilot"}) {
+			t.Errorf("resolver calls = %v, want one call for proj-1/pilot", *calls)
+		}
+	})
+
+	t.Run("UUID in config matches with no resolver call", func(t *testing.T) {
+		h, calls, accepted, _ := newHandler(t, labelUUID, mapPilot)
+		send(t, h, "proj-1", []string{labelUUID})
+		if *accepted != 1 {
+			t.Fatalf("accepted = %d, want 1", *accepted)
+		}
+		if len(*calls) != 0 {
+			t.Errorf("resolver calls = %v, want none", *calls)
+		}
+	})
+
+	t.Run("resolver is called once per project within the TTL", func(t *testing.T) {
+		h, calls, accepted, _ := newHandler(t, "pilot", mapPilot)
+		now := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
+		h.now = func() time.Time { return now }
+		send(t, h, "proj-1", []string{labelUUID})
+		send(t, h, "proj-1", []string{labelUUID})
+		if *accepted != 2 {
+			t.Fatalf("accepted = %d, want 2", *accepted)
+		}
+		if len(*calls) != 1 {
+			t.Fatalf("resolver calls = %d, want 1 for two events of one project", len(*calls))
+		}
+		send(t, h, "proj-2", []string{labelUUID})
+		if len(*calls) != 2 {
+			t.Fatalf("resolver calls = %d, want 2 after an event of another project", len(*calls))
+		}
+		now = now.Add(labelCacheTTL)
+		send(t, h, "proj-1", []string{labelUUID})
+		if len(*calls) != 3 {
+			t.Errorf("resolver calls = %d, want 3 after the cache entry expired", len(*calls))
+		}
+	})
+
+	t.Run("failed resolver refuses the event with one Warn", func(t *testing.T) {
+		failures := 0
+		h, calls, accepted, buf := newHandler(t, "pilot", func(_, name string) (string, error) {
+			failures++
+			if failures == 1 {
+				return "", errors.New("plane api down")
+			}
+			return "", nil // no label with that name
+		})
+		send(t, h, "proj-1", []string{labelUUID})
+		send(t, h, "proj-1", []string{labelUUID})
+		if *accepted != 0 {
+			t.Fatalf("accepted = %d, want 0", *accepted)
+		}
+		if len(*calls) != 2 {
+			t.Errorf("resolver calls = %d, want 2 (a failed lookup is not cached)", len(*calls))
+		}
+		out := buf.String()
+		if n := strings.Count(out, "level=WARN"); n != 1 {
+			t.Fatalf("warn lines = %d, want 1:\n%s", n, out)
+		}
+		if !strings.Contains(out, "project_id=proj-1") || !strings.Contains(out, "label=pilot") {
+			t.Errorf("warn line does not name the project and the label:\n%s", out)
+		}
+	})
 }
 
 func TestWebhookPayload_Unmarshal(t *testing.T) {

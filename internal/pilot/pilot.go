@@ -7,8 +7,11 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
+
+	planeSDK "github.com/qf-studio/studio-sdk/sdk/integrations/plane"
 
 	"github.com/qf-studio/pilot/internal/adapters/asana"
 	"github.com/qf-studio/pilot/internal/adapters/azuredevops"
@@ -548,6 +551,10 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			pilotLabel = "pilot"
 		}
 		p.planeWH = plane.NewWebhookHandler(cfg.Adapters.Plane.WebhookSecret, pilotLabel, cfg.Adapters.Plane.ProjectIDs)
+		// GH-6705: resolve the pilot label name to the per-project label UUID.
+		if resolve := planeLabelResolver(cfg.Adapters.Plane); resolve != nil {
+			p.planeWH.SetLabelResolver(resolve)
+		}
 		p.planeWH.OnWorkItem(p.handlePlaneWorkItem)
 	}
 
@@ -1492,6 +1499,29 @@ func (p *Pilot) handleAsanaTask(ctx context.Context, task *asana.Task) error {
 }
 
 // handlePlaneWorkItem handles a new Plane work item (GH-2044)
+// planeLabelResolver returns a label resolver backed by the SDK Plane client
+// (the same client the poller uses for the label list), or nil when the
+// adapter has no API key. Label names match case-insensitively, as in the poller.
+func planeLabelResolver(cfg *plane.Config) plane.LabelResolver {
+	if cfg == nil || cfg.APIKey == "" {
+		return nil
+	}
+	client := planeSDK.NewClient(cfg.BaseURL, cfg.APIKey)
+	workspace := cfg.WorkspaceSlug
+	return func(ctx context.Context, projectID, labelName string) (string, error) {
+		labels, err := client.ListLabels(ctx, workspace, projectID)
+		if err != nil {
+			return "", err
+		}
+		for _, l := range labels {
+			if strings.EqualFold(l.Name, labelName) {
+				return l.ID, nil
+			}
+		}
+		return "", nil
+	}
+}
+
 func (p *Pilot) handlePlaneWorkItem(ctx context.Context, item *plane.WebhookWorkItemData) error {
 	logging.WithComponent("pilot").Info("Received Plane work item",
 		slog.String("id", item.ID),

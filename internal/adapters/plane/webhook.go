@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/text"
@@ -39,12 +41,34 @@ type WebhookWorkItemData struct {
 	SequenceID int      `json:"sequence_id"`
 }
 
+// LabelResolver returns the UUID of the label with the given name in a project.
+// It returns "" (or an error) when the project has no label with that name.
+type LabelResolver func(ctx context.Context, projectID, labelName string) (string, error)
+
+// labelCacheTTL is how long a resolved label UUID (and a resolve-failure warning)
+// is kept for a project.
+const labelCacheTTL = 10 * time.Minute
+
+type cachedLabel struct {
+	id string
+	at time.Time
+}
+
 // WebhookHandler handles Plane.so webhooks.
 type WebhookHandler struct {
 	secret     string
 	pilotLabel string
 	projectIDs []string
 	onWorkItem func(context.Context, *WebhookWorkItemData) error
+
+	// GH-6705: pilotLabel is usually a label NAME, while events carry label
+	// UUIDs. The resolver maps the name to the UUID for each project.
+	resolveLabel LabelResolver
+	labelMu      sync.Mutex
+	labelCache   map[string]cachedLabel // projectID → resolved pilot label
+	labelWarned  map[string]time.Time   // projectID → time of last resolve-failure warning
+	now          func() time.Time
+	logger       *slog.Logger // nil → logging.WithComponent("plane")
 }
 
 // NewWebhookHandler creates a new Plane webhook handler.
@@ -54,6 +78,17 @@ func NewWebhookHandler(secret, pilotLabel string, projectIDs []string) *WebhookH
 		pilotLabel: pilotLabel,
 		projectIDs: projectIDs,
 	}
+}
+
+// SetLabelResolver sets the resolver used to map the configured pilot label
+// name to the label UUID of the event's project. Without a resolver the
+// configured value must be the label UUID itself.
+func (h *WebhookHandler) SetLabelResolver(resolve LabelResolver) {
+	h.labelMu.Lock()
+	defer h.labelMu.Unlock()
+	h.resolveLabel = resolve
+	h.labelCache = make(map[string]cachedLabel)
+	h.labelWarned = make(map[string]time.Time)
 }
 
 // OnWorkItem sets the callback for when a pilot-labeled work item event is received.
@@ -76,7 +111,7 @@ func VerifySignature(secret string, payload []byte, signature string) bool {
 
 // Handle processes a Plane webhook payload.
 func (h *WebhookHandler) Handle(ctx context.Context, payload []byte, signature string) error {
-	log := logging.WithComponent("plane")
+	log := h.log()
 
 	// Verify signature
 	if !VerifySignature(h.secret, payload, signature) {
@@ -112,7 +147,7 @@ func (h *WebhookHandler) Handle(ctx context.Context, payload []byte, signature s
 	}
 
 	// Check pilot label
-	if !h.hasPilotLabel(data.LabelIDs) {
+	if !h.hasPilotLabel(ctx, data.ProjectID, data.LabelIDs) {
 		log.Debug("Work item does not have pilot label, skipping",
 			slog.String("work_item_id", data.ID))
 		return nil
@@ -155,15 +190,78 @@ func (h *WebhookHandler) isAllowedProject(projectID string) bool {
 	return false
 }
 
-// hasPilotLabel checks if any of the label UUIDs match the configured pilot label UUID.
-func (h *WebhookHandler) hasPilotLabel(labelIDs []string) bool {
+// hasPilotLabel checks if any of the label UUIDs match the configured pilot label.
+// A configured UUID matches directly; otherwise, when a resolver is set, the
+// configured name is resolved to the UUID of the label in the event's project.
+func (h *WebhookHandler) hasPilotLabel(ctx context.Context, projectID string, labelIDs []string) bool {
 	if h.pilotLabel == "" {
 		return false
 	}
+	if containsLabel(labelIDs, h.pilotLabel) {
+		return true
+	}
+	if h.resolveLabel == nil || len(labelIDs) == 0 {
+		return false
+	}
+	id, ok := h.resolvePilotLabel(ctx, projectID)
+	return ok && containsLabel(labelIDs, id)
+}
+
+// resolvePilotLabel returns the UUID of the pilot label in the project, cached
+// for labelCacheTTL. A failed lookup is not cached and warns at most once per
+// project per labelCacheTTL.
+func (h *WebhookHandler) resolvePilotLabel(ctx context.Context, projectID string) (string, bool) {
+	now := h.clock()
+
+	h.labelMu.Lock()
+	if c, ok := h.labelCache[projectID]; ok && now.Sub(c.at) < labelCacheTTL {
+		h.labelMu.Unlock()
+		return c.id, true
+	}
+	resolve := h.resolveLabel
+	h.labelMu.Unlock()
+
+	id, err := resolve(ctx, projectID, h.pilotLabel)
+
+	h.labelMu.Lock()
+	defer h.labelMu.Unlock()
+	if err == nil && id != "" {
+		h.labelCache[projectID] = cachedLabel{id: id, at: now}
+		return id, true
+	}
+	if last, warned := h.labelWarned[projectID]; !warned || now.Sub(last) >= labelCacheTTL {
+		h.labelWarned[projectID] = now
+		attrs := []any{
+			slog.String("project_id", projectID),
+			slog.String("label", h.pilotLabel),
+		}
+		if err != nil {
+			attrs = append(attrs, slog.Any("error", err))
+		}
+		h.log().Warn("Plane pilot label not resolved for project; webhook events are not accepted", attrs...)
+	}
+	return "", false
+}
+
+func containsLabel(labelIDs []string, want string) bool {
 	for _, id := range labelIDs {
-		if id == h.pilotLabel {
+		if id == want {
 			return true
 		}
 	}
 	return false
+}
+
+func (h *WebhookHandler) clock() time.Time {
+	if h.now != nil {
+		return h.now()
+	}
+	return time.Now()
+}
+
+func (h *WebhookHandler) log() *slog.Logger {
+	if h.logger != nil {
+		return h.logger
+	}
+	return logging.WithComponent("plane")
 }
