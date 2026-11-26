@@ -9,6 +9,16 @@ import { Callout } from 'nextra/components'
 
 Pilot integrates with [Plane](https://plane.so) to receive work items and automatically implement them. It supports both Plane Cloud and self-hosted instances, with polling and webhook modes for issue detection.
 
+Polling is the main path. The poller picks up each work item with the Pilot label, moves it through the Plane states, sets the status labels and writes the result as a comment. The webhook path only queues the work item for execution; see [Webhook Mode](#webhook-mode).
+
+## Before You Start
+
+- **The Pilot label** in each Plane project: a label with the name of `pilot_label` (default `pilot`). The poller does not start without it.
+- **The status labels** (optional): `pilot-in-progress`, `pilot-done` and `pilot-failed`. When a label is missing, Pilot skips that step.
+- **An API key** for the workspace.
+- **The workspace slug**.
+- **The project IDs** (UUIDs) of the projects to watch.
+
 ## Setup
 
 ### 1. Create a Plane API Key
@@ -45,13 +55,13 @@ Always set a `webhook_secret` in production. When empty, signature verification 
 adapters:
   plane:
     enabled: true
-    base_url: "https://api.plane.so"   # Or self-hosted URL
+    base_url: "https://api.plane.so"   # Or self-hosted URL e.g. "https://plane.mycompany.com"
     api_key: "${PLANE_API_KEY}"
     webhook_secret: "${PLANE_WEBHOOK_SECRET}"
-    workspace_slug: "my-team"
-    project_ids:
+    workspace_slug: "my-team"          # Your Plane workspace slug
+    project_ids:                       # Projects to poll for pilot-labeled issues
       - "project-uuid-1"
-    pilot_label: "pilot"
+    pilot_label: "pilot"               # Issues with this label are picked up
     polling:
       enabled: true
       interval: 30s
@@ -67,7 +77,7 @@ adapters:
 | `webhook_secret` | string | — | HMAC-SHA256 secret for webhook verification |
 | `workspace_slug` | string | required | Your Plane workspace slug |
 | `project_ids` | []string | required | Project UUIDs to monitor |
-| `pilot_label` | string | `"pilot"` | Label name that triggers Pilot |
+| `pilot_label` | string | `"pilot"` | Label name that triggers Pilot (case-insensitive) |
 | `polling.enabled` | bool | `false` | Enable polling for new issues |
 | `polling.interval` | duration | `30s` | Poll interval |
 
@@ -80,6 +90,20 @@ When polling is enabled, Pilot periodically queries Plane for issues matching:
 
 Issues are processed oldest-first by creation date. Parallel execution is supported with configurable concurrency.
 
+### Label Lookup at Start
+
+On start, the poller reads the labels of the configured projects and looks up the Pilot label and the status labels by name (case-insensitive). If no configured project has a label with the name of `pilot_label`, the poller does not start: the log says `pilot label "pilot" not found in any configured project`, and Pilot retries the start with a backoff.
+
+The poller takes the labels from the first configured project that has the Pilot label, and uses those label IDs for every project. Plane labels belong to one project, so with several projects, check in the logs that work items of each project are picked up.
+
+### Priority
+
+Plane sends the priority as text: `none`, `urgent`, `high`, `medium` or `low`. Pilot maps it to the task priority.
+
+<Callout type="warning">
+In this release the poll path still decodes the priority only as a number. With a Plane server that sends the priority as text, the list of work items of a project fails to decode: Pilot logs `Failed to fetch work items` at each poll and picks up no work item of that project. The fix is merged in the Plane SDK and reaches Pilot with a later release.
+</Callout>
+
 ### Crash-Safe Deduplication
 
 Pilot uses a `ProcessedStore` backed by SQLite to track which issues have been handled. This prevents re-dispatching issues after a restart or hot upgrade — no configuration required.
@@ -87,6 +111,8 @@ Pilot uses a `ProcessedStore` backed by SQLite to track which issues have been h
 ## Webhook Mode
 
 For real-time issue detection, configure Plane webhooks to notify Pilot when issues are created or updated.
+
+A work item from a webhook goes to the task queue only. Pilot does not set the status labels, does not change the state and does not write a comment for it, and it does not record the work item as processed. The webhook path does not read the priority.
 
 ### Endpoint
 
@@ -96,7 +122,7 @@ POST /webhooks/plane
 
 ### Signature Verification
 
-Plane signs webhook payloads with HMAC-SHA256. Pilot verifies the signature using the configured `webhook_secret`.
+Plane signs webhook payloads with HMAC-SHA256 and sends the signature in the `X-Plane-Signature` header. Pilot verifies the signature using the configured `webhook_secret`.
 
 <Callout type="info">
 If `webhook_secret` is empty, signature verification is skipped. This is intended for development only.
@@ -104,14 +130,22 @@ If `webhook_secret` is empty, signature verification is skipped. This is intende
 
 ### Supported Events
 
-| Event | Behavior |
-|-------|----------|
-| Issue created | Process if issue has the pilot label |
-| Issue updated (label added) | Process if the pilot label was just added |
+Pilot reads the `event` and `action` fields of the payload:
+
+| Event | Action | Behavior |
+|-------|--------|----------|
+| `issue` | `created` | Process if the work item has the Pilot label |
+| `issue` | `updated` | Same as `created`: process if the work item has the Pilot label |
+| `issue` | Any other (for example `deleted`) | Ignored |
+| Any other | — | Ignored |
+
+An `updated` event is not checked for a label change. Every update of a work item that has the Pilot label queues the work item again.
+
+The work item must also belong to one of the `project_ids` (all projects when the list is empty). The event carries label UUIDs; Pilot looks up the UUID of the label with the name of `pilot_label` in the project of the event through the Plane API, and keeps it for 10 minutes. Without an `api_key`, `pilot_label` must be the label UUID itself.
 
 ## State Transitions
 
-Pilot updates issue state groups as it works:
+On the poll path, Pilot updates issue state groups as it works:
 
 | Event | State Group |
 |-------|-------------|
@@ -121,7 +155,7 @@ Pilot updates issue state groups as it works:
 
 ### Labels Applied
 
-Pilot applies labels to track issue status:
+On the poll path, Pilot applies labels to track issue status:
 
 | Label | When |
 |-------|------|
@@ -131,9 +165,9 @@ Pilot applies labels to track issue status:
 
 ## Task ID Format
 
-Plane issues are converted to Pilot tasks with the format `PLANE-{first 8 chars of UUID}`:
-- Issue `a1b2c3d4-e5f6-...` → Task ID `PLANE-a1b2c3d4`
-- Branch name: `pilot/PLANE-a1b2c3d4`
+Plane issues are converted to Pilot tasks with the format `PLANE-{sequence number}`, on both paths. The sequence number is the number of the work item in its project; the Plane project identifier is not used:
+- Work item `WEB-42` (sequence number 42) → Task ID `PLANE-42`
+- Branch name: `pilot/PLANE-42`
 
 ## Autopilot Integration
 
@@ -152,7 +186,7 @@ This starts the Plane adapter alongside the GitHub adapter for PR creation.
 ### Issues Not Picked Up
 
 1. Verify the project UUID matches exactly (check the URL in Plane)
-2. Confirm the label name matches `pilot_label` (case-sensitive)
+2. Confirm each project has a label with the name of `pilot_label` (case-insensitive); look for `pilot label ... not found in any configured project` in the logs
 3. Check that `polling.enabled` is `true` or webhooks are configured
 4. Look for polling activity in Pilot logs
 
