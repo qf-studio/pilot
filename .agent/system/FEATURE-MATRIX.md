@@ -126,7 +126,7 @@
 | Parallel GitHub polling | ✅ | adapters/github | - | `orchestrator.max_concurrent` | Goroutines + semaphore for concurrent issue processing (v0.26.1) |
 | Multi-repo polling | ✅ | adapters/github | - | `projects[].github` | Poll issues from all projects with GitHub config (v0.54.0) |
 | Asana adapter | ✅ | adapters/asana | `pilot start --asana` | `adapters.asana` | Task polling, state transitions on success (v0.4.x) |
-| Plane.so adapter | ✅ | adapters/plane | `pilot start --plane` | `adapters.plane` | REST client, polling, webhooks, HMAC-SHA256 (v2.25.0) |
+| Plane.so adapter | ✅ | studio-sdk plane (cmd/pilot) + adapters/plane | `pilot start --plane` | `adapters.plane` | REST client and polling in the studio-sdk Plane integration (`cmd/pilot/poller_plane.go`); webhooks with HMAC-SHA256 in adapters/plane (v2.25.0; internal client/poller/notifier removed, GH-6719) |
 | Discord adapter | ✅ | adapters/discord | `pilot start --discord` | `adapters.discord` | Gateway WebSocket, bot commands, progress embeds (v2.25.0) |
 | Linear ProcessedStore | ✅ | adapters/linear | - | - | Persistent dedup across restarts (v1.11.0, GH-1351) |
 | Linear parallel execution | ✅ | adapters/linear | - | - | Goroutines + semaphore for concurrent processing (v1.11.0, GH-1355) |
@@ -139,9 +139,9 @@
 | GitHub Projects V2 Board Source | ✅ | adapters/github | - | `adapters.github.project_board.source_enabled` | Pull work FROM a board column (FindIssuesFromProject); opt-in via source_enabled/source_status (GH-3228) |
 | Common Adapter Registry | ✅ | adapters | - | - | Unified Adapter interface, generic ProcessedStore table (v2.30.0, PR #1845) |
 | Linear workspace mode | ✅ | adapters/linear | - | `adapters.linear.projects` | Project-scoped routing via project_ids mapping for multi-project setups |
-| Plane.so state transitions | ✅ | adapters/plane | - | - | State transitions and PR comments on Plane.so issues (v2.25.0, PR #1843) |
+| Plane.so state transitions | ✅ | studio-sdk plane (cmd/pilot) | - | - | State transitions and PR comments on Plane.so issues via the SDK notifier (v2.25.0, PR #1843) |
 | Plane.so webhooks | ✅ | adapters/plane | - | - | Webhook handler with HMAC-SHA256 signature verification (v2.25.0, PR #1842) |
-| Plane.so ProcessedStore | ✅ | adapters/plane | - | - | Persistent dedup for Plane.so in autopilot StateStore (v2.25.0, PR #1839) |
+| Plane.so ProcessedStore | ✅ | studio-sdk plane (cmd/pilot) | - | - | Persistent dedup for Plane.so in autopilot StateStore, passed to the SDK poller (v2.25.0, PR #1839) |
 | Plane.so project pairing | ✅ | cmd/pilot + config | - | `projects[].plane.project_id` | Polled Plane work items route to the project entry paired with their Plane project; unknown ID → default project (WARN when any plane block exists); duplicate/empty IDs fail at load; PR registered with the matching repo's autopilot controller (v2.316.x, GH-6707) |
 | Discord adapter wiring | ✅ | main | `--discord` | `adapters.discord` | Wire Discord poller, config, and CLI flag in main.go (v2.30.0, PR #1882) |
 | Asana CompleteTask callback | ✅ | adapters/asana | - | - | Wire Asana CompleteTask on successful PR creation (v2.10.0, PR #1720) |
