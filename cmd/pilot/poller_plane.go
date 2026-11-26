@@ -62,7 +62,10 @@ func planePollerRegistration() PollerRegistration {
 						)
 					}
 
-					result, err := handlePlaneIssueWithResult(issueCtx, deps.Cfg, planeClient, ev, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+					// GH-6707: route the work item to the project entry paired with its Plane project.
+					projectPath := resolvePlaneProjectPath(deps.Cfg, ev, deps.ProjectPath)
+
+					result, err := handlePlaneIssueWithResult(issueCtx, deps.Cfg, planeClient, ev, projectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
 
 					// GH-2132: Link PR via notifier
 					if result != nil && result.PRNumber > 0 {
@@ -84,7 +87,14 @@ func planePollerRegistration() PollerRegistration {
 			if deps.Cfg.Orchestrator.MaxConcurrent > 0 {
 				pollerDeps.MaxConcurrent = deps.Cfg.Orchestrator.MaxConcurrent
 			}
-			if deps.AutopilotController != nil {
+			if planeHasProjectPairing(deps.Cfg) {
+				// GH-6707: work items can land in several repos, so the PR is
+				// registered with the controller of the repo it was opened in
+				// (same routing as Linear, GH-5584), not the default repo's.
+				if deps.AutopilotController != nil || len(deps.AutopilotControllers) > 0 {
+					pollerDeps.OnPRCreated = newRoutedOnPRCreated("plane", deps.Cfg, deps.AutopilotController, deps.AutopilotControllers)
+				}
+			} else if deps.AutopilotController != nil {
 				ctrl := deps.AutopilotController
 				pollerDeps.OnPRCreated = func(prEv sdkcore.PRCreatedEvent) {
 					ctrl.OnPRCreated(prEv.PRNumber, prEv.PRURL, 0, prEv.HeadSHA, prEv.BranchName, "")
@@ -104,4 +114,50 @@ func planePollerRegistration() PollerRegistration {
 			})
 		},
 	}
+}
+
+// resolvePlaneProjectPath picks the project path for a polled Plane work item
+// (GH-6707): the path of the project entry whose plane.project_id equals the
+// event's Plane project UUID, else defaultPath (the daemon's default project,
+// the behaviour before GH-6707). It logs one line per task naming the work
+// item, the Plane project ID and the chosen project; the line is a Warn when
+// the fallback is taken although some project entry has a plane block.
+func resolvePlaneProjectPath(cfg *config.Config, ev sdkcore.IssueEvent, defaultPath string) string {
+	log := logging.WithComponent("plane")
+
+	if proj := cfg.GetProjectByPlaneID(ev.ProjectID); proj != nil && proj.Path != "" {
+		log.Info("Plane work item routed to project",
+			slog.String("work_item", ev.SequenceID),
+			slog.String("plane_project_id", ev.ProjectID),
+			slog.String("project", proj.Name),
+		)
+		return proj.Path
+	}
+
+	projectName := ""
+	if proj := cfg.FindProjectByPath(defaultPath); proj != nil {
+		projectName = proj.Name
+	}
+	attrs := []any{
+		slog.String("work_item", ev.SequenceID),
+		slog.String("plane_project_id", ev.ProjectID),
+		slog.String("project", projectName),
+	}
+	if planeHasProjectPairing(cfg) {
+		log.Warn("No project entry has this plane.project_id; using the default project", attrs...)
+		return defaultPath
+	}
+	log.Info("Plane work item routed to the default project", attrs...)
+	return defaultPath
+}
+
+// planeHasProjectPairing reports whether at least one project entry has a
+// plane block (GH-6707).
+func planeHasProjectPairing(cfg *config.Config) bool {
+	for _, p := range cfg.Projects {
+		if p != nil && p.Plane != nil {
+			return true
+		}
+	}
+	return false
 }

@@ -108,6 +108,28 @@ In this release the poll path still decodes the priority only as a number. With 
 
 Pilot uses a `ProcessedStore` backed by SQLite to track which issues have been handled. This prevents re-dispatching issues after a restart or hot upgrade — no configuration required.
 
+## Several Plane projects
+
+By default, every work item goes to the default project, whichever Plane project it comes from. To send the work items of each Plane project to its own repository, give the project entry a `plane` block with the UUID of its Plane project:
+
+```yaml
+projects:
+  - name: web
+    path: /srv/repos/web
+    plane:
+      project_id: "project-uuid-1"
+  - name: api
+    path: /srv/repos/api
+    plane:
+      project_id: "project-uuid-2"
+```
+
+- For each work item, the poller takes the project entry whose `plane.project_id` is the Plane project of the work item. The branch, the base branch and the pull request follow that project.
+- A work item whose Plane project matches no entry goes to the default project. When at least one entry has a `plane` block, the log line for that task is a warning.
+- Two entries with the same `plane.project_id`, or a `plane` block with an empty `project_id`, make the config fail to load; the error names the entries.
+- Each Plane project still has to be listed in `adapters.plane.project_ids` to be polled.
+- Only the polling path routes by Plane project. The webhook path sends every work item to the default project.
+
 ## Webhook Mode
 
 For real-time issue detection, configure Plane webhooks to notify Pilot when issues are created or updated.
