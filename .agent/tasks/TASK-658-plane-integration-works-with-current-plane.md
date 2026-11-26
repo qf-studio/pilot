@@ -1,6 +1,6 @@
 # TASK-658: Plane integration works with a current Plane server — text priority on the SDK path, no lost tickets, webhook label match
 
-**Status**: 🚀 **State 2026-11-26 15:16Z: the five tickets are DISPATCHED (label `pilot` added at 15:16Z; founder, 11-26: "let's ship the Plane roadmap"): studio-sdk#163 and #164 (#164 waits for #163 by its Depends-on line), pilot #6705, #6706 and #6707. These are also the first runs with the option `run_as_user` on (TASK-651); the session reads each run and reviews each pull request after its merge.** **State 2026-11-25 16:28Z: five tickets are FILED and NOT dispatched (no label `pilot`): studio-sdk [#163](https://github.com/qf-studio/studio-sdk/issues/163) and [#164](https://github.com/qf-studio/studio-sdk/issues/164), pilot [#6705](https://github.com/qf-studio/pilot/issues/6705), [#6706](https://github.com/qf-studio/pilot/issues/6706) and [#6707](https://github.com/qf-studio/pilot/issues/6707). Founder, 11-25: "Create tickets, do not dispatch them ... I'll tell you to pick up this roadmap." The dispatch (the label `pilot` on each ticket) waits for the founder's word.** Done: the outside SDK pull request 160 (the priority as text on the SDK path) is merged, 16:05Z, on the founder's "run it" of the same day. Held legs, not written: K4 (Pilot pins a new SDK release, with a poller test) and K6 (removal of the unused internal Plane code). Roadmap document: `.agent/system/plane-integration-roadmap.md`. Two design decisions wait for the founder (done at the merge; one comment for each event).
+**Status**: 🚀 **State 2026-11-26 16:46Z: the five tickets of the dispatch are MERGED, each reviewed by the session after its merge with no blocking finding (comment on each pull request):** studio-sdk#163 (PR 165), studio-sdk#164 (PR 167), pilot #6705 (PR#6714), #6706 (PR#6715), #6707 (PR#6717). The daemon's own reviews filed and merged two follow-ups: studio-sdk#166 (PR 168: a nil logger keeps the default, a response with no results is an empty list, the host logger reaches the Plane client) and pilot #6716 (PR#6718: three text fixes of the Plane page, with `internal/adapters/plane/plane_doc_test.go`). **In work: [#6719](https://github.com/qf-studio/pilot/issues/6719), the removal of the unused internal Plane client, poller and notifier (dispatched 16:45Z).** **Held: the pin of the new SDK release with a poller test (needs an SDK release after PR 168; the last release v0.39.1 is older). That ticket must also remove the priority warning of the Plane page and adjust `plane_doc_test.go`, which pins the text about the pinned SDK.** **Found by the reviews, not in the plan (founder decision open, word "labels"):** the SDK poller takes the Pilot label ID from the first configured project and filters each project by it (cacheLabelIDs); Plane labels belong to one project, so with two or more Plane projects only one is picked up on the poll path, and the routing of #6707 has one project to route. All these runs went with the option `run_as_user` on (TASK-651), with no failure. **State 2026-11-26 15:16Z: the five tickets are DISPATCHED (label `pilot` added at 15:16Z; founder, 11-26: "let's ship the Plane roadmap"): studio-sdk#163 and #164 (#164 waits for #163 by its Depends-on line), pilot #6705, #6706 and #6707. These are also the first runs with the option `run_as_user` on (TASK-651); the session reads each run and reviews each pull request after its merge.** **State 2026-11-25 16:28Z: five tickets are FILED and NOT dispatched (no label `pilot`): studio-sdk [#163](https://github.com/qf-studio/studio-sdk/issues/163) and [#164](https://github.com/qf-studio/studio-sdk/issues/164), pilot [#6705](https://github.com/qf-studio/pilot/issues/6705), [#6706](https://github.com/qf-studio/pilot/issues/6706) and [#6707](https://github.com/qf-studio/pilot/issues/6707). Founder, 11-25: "Create tickets, do not dispatch them ... I'll tell you to pick up this roadmap." The dispatch (the label `pilot` on each ticket) waits for the founder's word.** Done: the outside SDK pull request 160 (the priority as text on the SDK path) is merged, 16:05Z, on the founder's "run it" of the same day. Held legs, not written: K4 (Pilot pins a new SDK release, with a poller test) and K6 (removal of the unused internal Plane code). Roadmap document: `.agent/system/plane-integration-roadmap.md`. Two design decisions wait for the founder (done at the merge; one comment for each event).
 **Created**: 2026-11-25
 **Assignee**: Pilot for each leg; the founder for the merge of the outside SDK pull request and for an SDK release.
 
@@ -54,18 +54,18 @@ A user with a current Plane server gets each ticket with the Pilot label picked 
 
 ### Phase 1: Tickets from a current Plane server are picked up
 - [x] 1. The SDK accepts the priority as text (the outside pull request 160 of the SDK repository) (operator)
-- [ ] 2. One broken work item no longer blocks the page; the poller logs it and goes on (qf-studio/studio-sdk#163)
-- [ ] 3. The SDK reads each page of work items (qf-studio/studio-sdk#164, needs 2)
+- [x] 2. One broken work item no longer blocks the page; the poller logs it and goes on (qf-studio/studio-sdk#163)
+- [x] 3. The SDK reads each page of work items (qf-studio/studio-sdk#164, needs 2)
 - [ ] 4. A new SDK release holds 1 to 3 (operator, needs 1, 2, 3)
 - [ ] 5. Pilot uses that SDK release, with a test of the poller against a fake Plane server (needs 4)
 
 ### Phase 2: The webhook path and the documentation
-- [ ] 6. The webhook accepts the Pilot label by its name (#6705)
-- [ ] 7. The Plane documentation page matches the code (#6706)
-- [ ] 8. The unused internal Plane client, poller and notifier are removed (needs 6)
+- [x] 6. The webhook accepts the Pilot label by its name (#6705)
+- [x] 7. The Plane documentation page matches the code (#6706)
+- [ ] 8. The unused internal Plane client, poller and notifier are removed (#6719, dispatched 11-26)
 
 ### Phase 3: Several Plane projects
-- [ ] 9. A project entry can name its Plane project, and the poller routes each ticket to that repository (#6707)
+- [x] 9. A project entry can name its Plane project, and the poller routes each ticket to that repository (#6707)
 
 ### Side tracks
 - [ ] The work item is set to done at the merge, not at the pull request (needs a trace of the pull request lifecycle for Plane tasks)
@@ -354,6 +354,7 @@ The webhook handler. The SDK. The config fields of the Plane adapter. The poller
 - K3 → https://github.com/qf-studio/pilot/issues/6705
 - K5 → https://github.com/qf-studio/pilot/issues/6706
 - K7 → https://github.com/qf-studio/pilot/issues/6707
+- K6 → https://github.com/qf-studio/pilot/issues/6719
 
 ---
 
