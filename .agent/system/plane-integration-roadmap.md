@@ -44,7 +44,7 @@ A user with a current Plane server sets an API key, a workspace, the project IDs
 
 | # | Item | Status | Where | Ticket |
 |---|------|--------|-------|--------|
-| 3.1 | A project entry of the config can name its Plane project ID; the poller routes each ticket to that repository | ✅ merged 11-26 16:34Z (PR#6717); on the poll path it needs a label lookup for each project in the SDK poller (not planned yet) | pilot | [#6707](https://github.com/qf-studio/pilot/issues/6707) |
+| 3.1 | A project entry of the config can name its Plane project ID; the poller routes each ticket to that repository | ✅ merged 11-26 16:34Z (PR#6717); on the poll path it needs a label lookup for each project in the SDK poller ([studio-sdk#169](https://github.com/qf-studio/studio-sdk/issues/169), dispatched 11-26 16:54Z) | pilot | [#6707](https://github.com/qf-studio/pilot/issues/6707) |
 | 3.2 | The same routing for the webhook path | 📋 after 2.1 and 3.1 | pilot | — |
 
 ## Milestone 4 — Behaviour that needs a founder decision first
@@ -70,4 +70,5 @@ A user with a current Plane server sets an API key, a workspace, the project IDs
 
 - 2026-11-25: research, plan TASK-658, this roadmap; founder: "plan to tickets all that, create a roadmap, run it"; SDK pull request 160 merged 16:05Z; then founder: "create tickets, do not dispatch them" — five tickets filed 16:27Z with no label `pilot`.
 - 2026-11-26 15:16Z: founder: "let's ship the Plane roadmap" — the label `pilot` added to studio-sdk#163 and #164 and to pilot #6705, #6706 and #6707 (#164 waits for #163 by its Depends-on line).
+- 2026-11-26 16:54Z: founder: "go labels and release updates in sdk" — [studio-sdk#169](https://github.com/qf-studio/studio-sdk/issues/169) dispatched (the SDK poller looks up the labels for each Plane project; the condition for 3.1 on the poll path); the SDK release follows its merge, then the pin ticket (1.5).
 - 2026-11-26 16:45Z: the five tickets are merged (15:23Z to 16:34Z), each reviewed after its merge; the removal ticket #6719 is dispatched. Found: the SDK poller uses the label IDs of the first project for each project, so a second Plane project is not picked up on the poll path (founder decision open).

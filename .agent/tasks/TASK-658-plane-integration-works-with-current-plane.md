@@ -1,6 +1,6 @@
 # TASK-658: Plane integration works with a current Plane server — text priority on the SDK path, no lost tickets, webhook label match
 
-**Status**: 🚀 **State 2026-11-26 16:46Z: the five tickets of the dispatch are MERGED, each reviewed by the session after its merge with no blocking finding (comment on each pull request):** studio-sdk#163 (PR 165), studio-sdk#164 (PR 167), pilot #6705 (PR#6714), #6706 (PR#6715), #6707 (PR#6717). The daemon's own reviews filed and merged two follow-ups: studio-sdk#166 (PR 168: a nil logger keeps the default, a response with no results is an empty list, the host logger reaches the Plane client) and pilot #6716 (PR#6718: three text fixes of the Plane page, with `internal/adapters/plane/plane_doc_test.go`). **In work: [#6719](https://github.com/qf-studio/pilot/issues/6719), the removal of the unused internal Plane client, poller and notifier (dispatched 16:45Z).** **Held: the pin of the new SDK release with a poller test (needs an SDK release after PR 168; the last release v0.39.1 is older). That ticket must also remove the priority warning of the Plane page and adjust `plane_doc_test.go`, which pins the text about the pinned SDK.** **Found by the reviews, not in the plan (founder decision open, word "labels"):** the SDK poller takes the Pilot label ID from the first configured project and filters each project by it (cacheLabelIDs); Plane labels belong to one project, so with two or more Plane projects only one is picked up on the poll path, and the routing of #6707 has one project to route. All these runs went with the option `run_as_user` on (TASK-651), with no failure. **State 2026-11-26 15:16Z: the five tickets are DISPATCHED (label `pilot` added at 15:16Z; founder, 11-26: "let's ship the Plane roadmap"): studio-sdk#163 and #164 (#164 waits for #163 by its Depends-on line), pilot #6705, #6706 and #6707. These are also the first runs with the option `run_as_user` on (TASK-651); the session reads each run and reviews each pull request after its merge.** **State 2026-11-25 16:28Z: five tickets are FILED and NOT dispatched (no label `pilot`): studio-sdk [#163](https://github.com/qf-studio/studio-sdk/issues/163) and [#164](https://github.com/qf-studio/studio-sdk/issues/164), pilot [#6705](https://github.com/qf-studio/pilot/issues/6705), [#6706](https://github.com/qf-studio/pilot/issues/6706) and [#6707](https://github.com/qf-studio/pilot/issues/6707). Founder, 11-25: "Create tickets, do not dispatch them ... I'll tell you to pick up this roadmap." The dispatch (the label `pilot` on each ticket) waits for the founder's word.** Done: the outside SDK pull request 160 (the priority as text on the SDK path) is merged, 16:05Z, on the founder's "run it" of the same day. Held legs, not written: K4 (Pilot pins a new SDK release, with a poller test) and K6 (removal of the unused internal Plane code). Roadmap document: `.agent/system/plane-integration-roadmap.md`. Two design decisions wait for the founder (done at the merge; one comment for each event).
+**Status**: 🚀 **State 2026-11-26 16:54Z: founder: "go labels and release updates in sdk". Dispatched 16:54Z: [studio-sdk#169](https://github.com/qf-studio/studio-sdk/issues/169), the SDK poller looks up the labels for each Plane project (leg K8, new in the plan). Order: #169 merges → one SDK release by a tag (it holds the SDK pull requests 165, 167, 168 and the one of #169) → the ticket in which Pilot pins that release (poller test, the priority warning of the Plane page removed, `plane_doc_test.go` adjusted).** **State 2026-11-26 16:46Z: the five tickets of the dispatch are MERGED, each reviewed by the session after its merge with no blocking finding (comment on each pull request):** studio-sdk#163 (PR 165), studio-sdk#164 (PR 167), pilot #6705 (PR#6714), #6706 (PR#6715), #6707 (PR#6717). The daemon's own reviews filed and merged two follow-ups: studio-sdk#166 (PR 168: a nil logger keeps the default, a response with no results is an empty list, the host logger reaches the Plane client) and pilot #6716 (PR#6718: three text fixes of the Plane page, with `internal/adapters/plane/plane_doc_test.go`). **In work: [#6719](https://github.com/qf-studio/pilot/issues/6719), the removal of the unused internal Plane client, poller and notifier (dispatched 16:45Z).** **Held: the pin of the new SDK release with a poller test (needs an SDK release after PR 168; the last release v0.39.1 is older). That ticket must also remove the priority warning of the Plane page and adjust `plane_doc_test.go`, which pins the text about the pinned SDK.** **Found by the reviews, not in the plan (founder decision open, word "labels"):** the SDK poller takes the Pilot label ID from the first configured project and filters each project by it (cacheLabelIDs); Plane labels belong to one project, so with two or more Plane projects only one is picked up on the poll path, and the routing of #6707 has one project to route. All these runs went with the option `run_as_user` on (TASK-651), with no failure. **State 2026-11-26 15:16Z: the five tickets are DISPATCHED (label `pilot` added at 15:16Z; founder, 11-26: "let's ship the Plane roadmap"): studio-sdk#163 and #164 (#164 waits for #163 by its Depends-on line), pilot #6705, #6706 and #6707. These are also the first runs with the option `run_as_user` on (TASK-651); the session reads each run and reviews each pull request after its merge.** **State 2026-11-25 16:28Z: five tickets are FILED and NOT dispatched (no label `pilot`): studio-sdk [#163](https://github.com/qf-studio/studio-sdk/issues/163) and [#164](https://github.com/qf-studio/studio-sdk/issues/164), pilot [#6705](https://github.com/qf-studio/pilot/issues/6705), [#6706](https://github.com/qf-studio/pilot/issues/6706) and [#6707](https://github.com/qf-studio/pilot/issues/6707). Founder, 11-25: "Create tickets, do not dispatch them ... I'll tell you to pick up this roadmap." The dispatch (the label `pilot` on each ticket) waits for the founder's word.** Done: the outside SDK pull request 160 (the priority as text on the SDK path) is merged, 16:05Z, on the founder's "run it" of the same day. Held legs, not written: K4 (Pilot pins a new SDK release, with a poller test) and K6 (removal of the unused internal Plane code). Roadmap document: `.agent/system/plane-integration-roadmap.md`. Two design decisions wait for the founder (done at the merge; one comment for each event).
 **Created**: 2026-11-25
 **Assignee**: Pilot for each leg; the founder for the merge of the outside SDK pull request and for an SDK release.
 
@@ -343,6 +343,43 @@ The webhook handler. The SDK. The config fields of the Plane adapter. The poller
 - Navigator TASK-658 in this repo
 - Pull request 6510 (the outside fix that changed the unused type)
 
+### LEG K8 — repo: qf-studio/studio-sdk — title: fix(plane): the poller looks up the labels for each Plane project — a second project is picked up, and the status labels get the IDs of the project of the work item
+
+probe: present qf-studio/studio-sdk func[[:space:]]\(p[[:space:]]\*Poller\)[[:space:]]cacheLabelIDs\(
+probe: present qf-studio/studio-sdk func[[:space:]]\(p[[:space:]]\*Poller\)[[:space:]]cacheStateIDs\(
+
+## Context
+
+This issue is for this repository (qf-studio/studio-sdk); the code is in the working tree.
+
+The Plane poller (`sdk/integrations/plane/poller.go`) keeps four label IDs in single fields: pilotLabelID, inProgressLabelID, doneLabelID and failedLabelID. cacheLabelIDs reads the labels of the configured projects in order and stops at the first project that has the Pilot label. Each later step uses those four IDs for every project: the list filter in checkForNewIssues, the orphan recovery in recoverOrphanedIssues, the status labels in processIssueAsync, and hasStatusLabel. A Plane label belongs to one project, and the same label name has another UUID in each project. So with two or more configured projects, the list of each other project is filtered by a label ID that does not exist there and is empty, with no log line; and a status label of another project would be set on the work item. The state IDs do not have this defect: cacheStateIDs keeps them in a map by project ID.
+
+## Scope
+
+1. Keep the label IDs for each project: a map from the project ID to a set of the four IDs (Pilot, in progress, done, failed), in the style of the state maps of cacheStateIDs. Remove the four single fields.
+2. cacheLabelIDs reads the labels of each configured project (it no longer stops at the first match) and fills the set of that project. A project with no label of the Pilot name gets one Warn with the project ID and the label name. The start still fails, with the error text of today, only when no configured project has the Pilot label.
+3. checkForNewIssues and recoverOrphanedIssues use the set of the project of the loop. A project with no Pilot label ID is skipped in the poll (no list request with an empty filter, which would return every work item of the project).
+4. A project with no set, because its label list failed at the start or it had no Pilot label, is looked up again at each poll before the list request. The first failure of a project is a Warn; a repeat for the same project is a Debug line. When the lookup works, one Info line names the project.
+5. processIssueAsync and hasStatusLabel use the set of the project of the work item (its ProjectID field). When that set has no ID for a status label, the step is skipped, as today for an empty ID.
+6. The maps are read and written under the mutex that the poller already has for its state, or under a new one; a poll and a running task can use them at the same time.
+7. Tests in a new test file for the poller (name it poller_test.go, beside `sdk/integrations/plane/poller.go`), with a fake Plane server (httptest) in the style of the client test file: a new test TestPollerLooksUpLabelsForEachProject — two projects whose labels have different UUIDs, one labelled work item in each: the handler gets both work items; the list request of each project carries the Pilot label ID of that project; the in-progress and the done label requests of each work item carry the label IDs of its project. A project with no Pilot label is skipped with one Warn, the other project still works, and no list request without a label filter is sent. No project has the label: Start returns the error. A project whose label list fails at the start is picked up after a later poll in which the list works.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./sdk/integrations/plane/...` passes; paste the output into the PR body.
+- [ ] Use the label set of the first project for each project -> the test with two projects fails.
+- [ ] Send the list request of a project with no Pilot label ID -> its test fails.
+- [ ] The PR body says how many label list requests the start makes for one, two and three projects, and how many a poll makes when each project has its set (none).
+
+## Out of scope
+
+The client (`client.go`). The webhook. The states. The label names. A change of the Config type. Rate limit handling.
+
+## Refs
+
+- Navigator TASK-658 of the Pilot repository
+- Review comment on pull request 6717 of the Pilot repository (the routing by Plane project needs this)
+
 ## Refs
 
 - Research of 2026-11-25: code research of the Plane paths (session report); Plane API reference (introduction: authentication, rate limits, pagination; work item object: `priority` is a string).
@@ -355,6 +392,7 @@ The webhook handler. The SDK. The config fields of the Plane adapter. The poller
 - K5 → https://github.com/qf-studio/pilot/issues/6706
 - K7 → https://github.com/qf-studio/pilot/issues/6707
 - K6 → https://github.com/qf-studio/pilot/issues/6719
+- K8 → https://github.com/qf-studio/studio-sdk/issues/169
 
 ---
 
