@@ -1,10 +1,18 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sort"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
+	planeSDK "github.com/qf-studio/studio-sdk/sdk/integrations/plane"
 
 	"github.com/qf-studio/pilot/internal/adapters/plane"
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
@@ -179,5 +187,191 @@ func TestResolvePlaneProjectPath(t *testing.T) {
 				t.Errorf("resolvePlaneProjectPath(%q) = %q, want %q", tt.projectID, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestPlanePollerAgainstFakePlaneServer runs the SDK Plane poller, built with
+// the config mapping of planePollerRegistration, against a fake Plane server
+// with two projects (GH-6722): the label of each project is looked up, the
+// work item list of the first project follows the cursor to its second page,
+// the text priority decodes, and the one work item that does not decode is
+// skipped instead of failing its page.
+func TestPlanePollerAgainstFakePlaneServer(t *testing.T) {
+	const (
+		workspace   = "test-workspace"
+		projA       = "proj-a"
+		projB       = "proj-b"
+		labelA      = "label-uuid-a"
+		labelB      = "label-uuid-b"
+		cursorPage2 = "cursor-page-2"
+	)
+	pilotLabel := map[string]string{projA: labelA, projB: labelB}
+
+	labelsBody := map[string]string{
+		projA: `{"results":[{"id":"` + labelA + `","name":"pilot"},{"id":"other-a","name":"bug"}]}`,
+		projB: `{"results":[{"id":"other-b","name":"bug"},{"id":"` + labelB + `","name":"Pilot"}]}`,
+	}
+	// Page 1 of project A: the text priority and a work item whose
+	// sequence_id has the wrong type.
+	projAPage1 := `{"results":[
+		{"id":"a-text-priority","sequence_id":1,"name":"Text priority","priority":"high","labels":["` + labelA + `"],"project":"` + projA + `","created_at":"2026-11-01T10:00:00Z"},
+		{"id":"a-broken","sequence_id":"not-a-number","name":"Broken","priority":2,"labels":["` + labelA + `"],"project":"` + projA + `","created_at":"2026-11-01T10:01:00Z"},
+		{"id":"a-page1-int","sequence_id":3,"name":"Int priority","priority":3,"labels":["` + labelA + `"],"project":"` + projA + `","created_at":"2026-11-01T10:02:00Z"}
+	],"next_page_results":true,"next_cursor":"` + cursorPage2 + `"}`
+	projAPage2 := `{"results":[
+		{"id":"a-page2","sequence_id":4,"name":"Second page","priority":4,"labels":["` + labelA + `"],"project":"` + projA + `","created_at":"2026-11-01T10:03:00Z"}
+	],"next_page_results":false,"next_cursor":""}`
+	projBPage := `{"results":[
+		{"id":"b-item","sequence_id":1,"name":"Project B","priority":1,"labels":["` + labelB + `"],"project":"` + projB + `","created_at":"2026-11-01T10:04:00Z"}
+	],"next_page_results":false,"next_cursor":""}`
+
+	var (
+		reqMu       sync.Mutex
+		listLabels  = map[string][]string{} // project → label query of each work item list request
+		listCursors = map[string][]string{} // project → cursor query of each work item list request
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		prefix := "/api/v1/workspaces/" + workspace + "/projects/"
+		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, prefix) {
+			http.NotFound(w, r)
+			return
+		}
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, prefix), "/"), "/")
+		if len(parts) != 2 {
+			http.NotFound(w, r)
+			return
+		}
+		project, resource := parts[0], parts[1]
+		if _, ok := pilotLabel[project]; !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch resource {
+		case "labels":
+			_, _ = w.Write([]byte(labelsBody[project]))
+		case "states":
+			_, _ = w.Write([]byte(`{"results":[]}`))
+		case "work-items":
+			label, cursor := r.URL.Query().Get("label"), r.URL.Query().Get("cursor")
+			reqMu.Lock()
+			listLabels[project] = append(listLabels[project], label)
+			listCursors[project] = append(listCursors[project], cursor)
+			reqMu.Unlock()
+			if label != pilotLabel[project] {
+				_, _ = w.Write([]byte(`{"results":[]}`))
+				return
+			}
+			switch {
+			case project == projB:
+				_, _ = w.Write([]byte(projBPage))
+			case cursor == cursorPage2:
+				_, _ = w.Write([]byte(projAPage2))
+			default:
+				_, _ = w.Write([]byte(projAPage1))
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	sdkCfg, interval := planeSDKConfig(&plane.Config{
+		Enabled:       true,
+		BaseURL:       srv.URL,
+		APIKey:        "fake-api-key",
+		WorkspaceSlug: workspace,
+		ProjectIDs:    []string{projA, projB},
+		Polling:       &plane.PollingConfig{Enabled: true, Interval: time.Hour},
+	})
+	if interval != time.Hour {
+		t.Fatalf("planeSDKConfig interval = %v, want %v", interval, time.Hour)
+	}
+	if sdkCfg.TriggerLabel != "pilot" {
+		t.Fatalf("planeSDKConfig TriggerLabel = %q, want the default %q", sdkCfg.TriggerLabel, "pilot")
+	}
+
+	want := []string{"a-page1-int", "a-page2", "a-text-priority", "b-item"}
+	var (
+		evMu   sync.Mutex
+		events = map[string]sdkcore.IssueEvent{}
+	)
+	allSeen := make(chan struct{})
+	handler := sdkcore.IssueHandlerFunc(func(_ context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
+		evMu.Lock()
+		defer evMu.Unlock()
+		events[ev.IssueID] = ev
+		seen := 0
+		for _, id := range want {
+			if _, ok := events[id]; ok {
+				seen++
+			}
+		}
+		if seen == len(want) {
+			select {
+			case <-allSeen:
+			default:
+				close(allSeen)
+			}
+		}
+		return &sdkcore.IssueResult{Success: true}, nil
+	})
+
+	poller := planeSDK.New(sdkCfg).NewPoller(sdkcore.PollerDeps{Handler: handler})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	startErr := make(chan error, 1)
+	go func() { startErr <- poller.Start(ctx) }()
+
+	select {
+	case <-allSeen:
+		cancel()
+	case err := <-startErr:
+		t.Fatalf("poller Start returned before every work item reached the handler: %v", err)
+	case <-ctx.Done():
+	}
+	if err := <-startErr; err != nil {
+		t.Fatalf("poller Start: %v", err)
+	}
+
+	evMu.Lock()
+	got := make([]string, 0, len(events))
+	for id := range events {
+		got = append(got, id)
+	}
+	textPriority, hasTextPriority := events["a-text-priority"]
+	evMu.Unlock()
+	sort.Strings(got)
+
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("handler got work items %v, want %v", got, want)
+	}
+	for _, id := range got {
+		if id == "a-broken" {
+			t.Errorf("the work item that does not decode reached the handler")
+		}
+	}
+	if !hasTextPriority {
+		t.Errorf("the work item with the text priority did not reach the handler")
+	} else if p := sdkshim.PriorityFromSDK(textPriority.Priority); p != sdkshim.PilotPriorityHigh {
+		t.Errorf("text priority \"high\": PriorityFromSDK(%q) = %d, want %d", textPriority.Priority, p, sdkshim.PilotPriorityHigh)
+	}
+
+	reqMu.Lock()
+	defer reqMu.Unlock()
+	for _, project := range []string{projA, projB} {
+		labels := listLabels[project]
+		if len(labels) == 0 {
+			t.Errorf("no work item list request for project %s", project)
+		}
+		for _, label := range labels {
+			if label != pilotLabel[project] {
+				t.Errorf("work item list of project %s asked for label %q, want %q", project, label, pilotLabel[project])
+			}
+		}
+	}
+	if !containsString(listCursors[projA], cursorPage2) {
+		t.Errorf("work item list of project %s did not ask for the second page (cursors %q)", projA, listCursors[projA])
 	}
 }

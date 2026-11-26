@@ -8,6 +8,7 @@ import (
 	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
 	planeSDK "github.com/qf-studio/studio-sdk/sdk/integrations/plane"
 
+	"github.com/qf-studio/pilot/internal/adapters/plane"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/logging"
 )
@@ -20,30 +21,7 @@ func planePollerRegistration() PollerRegistration {
 				cfg.Adapters.Plane.Polling != nil && cfg.Adapters.Plane.Polling.Enabled
 		},
 		CreateAndStart: func(ctx context.Context, deps *PollerDeps) {
-			// Determine interval
-			interval := 30 * time.Second
-			if deps.Cfg.Adapters.Plane.Polling.Interval > 0 {
-				interval = deps.Cfg.Adapters.Plane.Polling.Interval
-			}
-
-			// Map internal config → SDK config (field names differ: PilotLabel vs TriggerLabel).
-			pilotLabel := deps.Cfg.Adapters.Plane.PilotLabel
-			if pilotLabel == "" {
-				pilotLabel = "pilot"
-			}
-			sdkCfg := &planeSDK.Config{
-				Enabled:       deps.Cfg.Adapters.Plane.Enabled,
-				BaseURL:       deps.Cfg.Adapters.Plane.BaseURL,
-				APIKey:        deps.Cfg.Adapters.Plane.APIKey,
-				WebhookSecret: deps.Cfg.Adapters.Plane.WebhookSecret,
-				WorkspaceSlug: deps.Cfg.Adapters.Plane.WorkspaceSlug,
-				ProjectIDs:    deps.Cfg.Adapters.Plane.ProjectIDs,
-				TriggerLabel:  pilotLabel,
-				Polling: &planeSDK.PollingConfig{
-					Enabled:  true,
-					Interval: interval,
-				},
-			}
+			sdkCfg, interval := planeSDKConfig(deps.Cfg.Adapters.Plane)
 
 			// Separate client for notifier calls (adapter creates its own internally).
 			planeClient := planeSDK.NewClient(
@@ -114,6 +92,33 @@ func planePollerRegistration() PollerRegistration {
 			})
 		},
 	}
+}
+
+// planeSDKConfig maps the internal Plane config to the SDK config (field
+// names differ: PilotLabel vs TriggerLabel) and returns the poll interval.
+func planeSDKConfig(cfg *plane.Config) (*planeSDK.Config, time.Duration) {
+	interval := 30 * time.Second
+	if cfg.Polling != nil && cfg.Polling.Interval > 0 {
+		interval = cfg.Polling.Interval
+	}
+
+	pilotLabel := cfg.PilotLabel
+	if pilotLabel == "" {
+		pilotLabel = "pilot"
+	}
+	return &planeSDK.Config{
+		Enabled:       cfg.Enabled,
+		BaseURL:       cfg.BaseURL,
+		APIKey:        cfg.APIKey,
+		WebhookSecret: cfg.WebhookSecret,
+		WorkspaceSlug: cfg.WorkspaceSlug,
+		ProjectIDs:    cfg.ProjectIDs,
+		TriggerLabel:  pilotLabel,
+		Polling: &planeSDK.PollingConfig{
+			Enabled:  true,
+			Interval: interval,
+		},
+	}, interval
 }
 
 // resolvePlaneProjectPath picks the project path for a polled Plane work item
