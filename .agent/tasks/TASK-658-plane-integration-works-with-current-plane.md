@@ -305,6 +305,44 @@ The webhook path. The SDK. The repository resolver stub in the sdkshim package. 
 
 - Navigator TASK-658 in this repo
 
+### LEG K6 — repo: qf-studio/pilot — title: refactor(plane): remove the internal Plane client, poller and notifier that no code path uses — the SDK owns the poll path
+
+probe: present qf-studio/pilot func[[:space:]]sanitizeWorkItemInPlace\(
+probe: present qf-studio/pilot func[[:space:]]NewNotifier\(client[[:space:]]\*Client,[[:space:]]workspaceSlug
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-658. The package `internal/adapters/plane` holds two things. One is in use: the adapter config (Config, PollingConfig, DefaultConfig in `internal/adapters/plane/types.go`) and the webhook handler (`internal/adapters/plane/webhook.go`). The other is not: an HTTP client (`client.go`), a poller (`poller.go`), a notifier (`notifier.go`) and a sanitize helper (`sanitize.go`). The daemon polls Plane through the SDK (`cmd/pilot/poller_plane.go` builds the SDK adapter; `internal/pilot/pilot.go` uses the SDK client for the label lookup). No file outside the package calls NewClient, NewPoller or NewNotifier of the internal package. The unused copy misleads: an outside fix (pull request 6510) changed its Priority type, and the poll path did not change, because it uses the SDK type.
+
+## Scope
+
+1. Delete `internal/adapters/plane/client.go`, `poller.go`, `notifier.go` and `sanitize.go`, and the test files that test only them: `client_test.go`, `client_canary_test.go`, `notifier_test.go`.
+2. In `internal/adapters/plane/types.go` keep Config, PollingConfig and DefaultConfig. Remove each other type, constant and function of the file that has no use left in the repository after step 1 (WorkItem, State, Label, Comment, Priority and its decoder, PriorityName, the response wrappers, StateGroup). Before each removal, search the whole repository for the name; keep a name that a file outside the deleted set still uses, and say so in the PR body. Adjust `types_test.go` to what stays; delete it when nothing of it stays.
+3. `webhook.go`, `webhook_test.go`, `plane_doc_test.go` and the webhook data type stay as they are. Do not change their behaviour.
+4. Every importer of the package must still build: `cmd/pilot/main.go`, `cmd/pilot/wiring_test.go`, `cmd/pilot/poller_plane_test.go`, `internal/config/config.go`, `internal/pilot/pilot.go`, `internal/pilot/plane_label_resolver_test.go`, `internal/pilot/webhook_handlers_test.go`, `internal/orchestrator/orchestrator.go`.
+5. The canary gate (`scripts/check-adapter-canary-tests.sh`) asks for a credential leak test only in an adapter directory whose non-test files use http.Client or http.NewRequest. After step 1 the package has no HTTP client, so the gate must pass with the canary test deleted. Run the script and paste its output.
+6. Comments and documents that name the removed code: correct the line in `internal/adapters/sdkshim/doc.go` when it refers to the internal Plane client; correct the Plane rows of `.agent/system/FEATURE-MATRIX.md` that name `adapters/plane` for the poller, the client or the notifier (the path is the SDK now). Do not change `docs/content/integrations/plane.mdx`.
+
+## Acceptance
+
+- [ ] `go build ./...` and `go vet ./internal/adapters/plane/ ./internal/pilot/ ./internal/config/ ./internal/orchestrator/ ./cmd/pilot/` pass; paste the output into the PR body.
+- [ ] `go test -race -count=1 ./internal/adapters/plane/ ./internal/pilot/ ./internal/config/ -run 'Plane|Webhook'` passes; paste the output into the PR body.
+- [ ] `bash scripts/check-adapter-canary-tests.sh` passes; paste the output into the PR body.
+- [ ] The PR body lists each deleted file, and each name of `types.go` that was kept with the file that still uses it.
+- [ ] No new code: the change only deletes code and corrects comments and documents. If a removal needs new code to keep the build, stop and say so in the PR body.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The webhook handler. The SDK. The config fields of the Plane adapter. The poller wiring in `cmd/pilot/poller_plane.go`. The Plane documentation page.
+
+## Refs
+
+- Navigator TASK-658 in this repo
+- Pull request 6510 (the outside fix that changed the unused type)
+
 ## Refs
 
 - Research of 2026-11-25: code research of the Plane paths (session report); Plane API reference (introduction: authentication, rate limits, pagination; work item object: `priority` is a string).
