@@ -3482,7 +3482,8 @@
           "https://github.com/qf-studio/pilot/issues/6719",
           "https://github.com/qf-studio/studio-sdk/issues/169",
           "https://github.com/qf-studio/studio-sdk/issues/171",
-          "https://github.com/qf-studio/pilot/issues/6722"
+          "https://github.com/qf-studio/pilot/issues/6722",
+          "https://github.com/qf-studio/studio-sdk/issues/187"
         ]
       },
       "TASK-659": {
@@ -3506,6 +3507,53 @@
           "https://github.com/qf-studio/studio-sdk/issues/181",
           "https://github.com/qf-studio/studio-sdk/issues/184",
           "https://github.com/qf-studio/pilot/issues/6727"
+        ]
+      },
+      "TASK-660": {
+        "path": ".agent/tasks/TASK-660-test-leftovers-in-temp-directory.md",
+        "title": "Test leftovers in the temporary directory \u2014 the Pilot tests remove what they create, and the box is cleaned one time",
+        "status": "dispatched",
+        "concepts": [
+          "testing",
+          "deployment",
+          "context",
+          "knowledge"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6733"
+        ]
+      },
+      "TASK-661": {
+        "path": ".agent/tasks/TASK-661-first-run-commands-know-plane-and-agent-user.md",
+        "title": "First-run commands \u2014 the Telegram check stops its own conflict, and `pilot onboard`, `pilot doctor` and the config check know Plane and the agent user option",
+        "status": "dispatched",
+        "concepts": [
+          "deployment",
+          "testing",
+          "knowledge",
+          "context",
+          "authentication",
+          "theory of mind",
+          "workflow",
+          "markers",
+          "api"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/pilot/issues/6734",
+          "https://github.com/qf-studio/pilot/issues/6735",
+          "https://github.com/qf-studio/pilot/issues/6736"
+        ]
+      },
+      "TASK-662": {
+        "path": ".agent/tasks/TASK-662-agent-user-in-private-repository.md",
+        "title": "The agent user in a private repository \u2014 prove the run, then decide if the agent needs a read token",
+        "status": "backlog",
+        "concepts": [
+          "theory of mind",
+          "testing",
+          "context",
+          "api",
+          "deployment"
         ]
       }
     },
@@ -9962,7 +10010,7 @@
       },
       "mem-356": {
         "type": "pitfall",
-        "summary": "Go tests of Pilot leave directories in the temporary directory of the host (found 2026-11-27 on the founder box): about 5,700 top-level entries in one month, with the prefixes worktree-local-, worktree-remote- and wire-fields, plus the set-up script test; about 70 new entries each day from the quality gate runs, owned by the daemon user and since 11-26 by the agent user. On the box the temporary directory is tmpfs, so the leftovers use memory. A hand clean-up removed the entries older than 24 hours; the cause (tests that make a directory with os.MkdirTemp and do not remove it, where t.TempDir removes it) has no ticket yet. About 1,280 worktree directories of one old ticket (GH-5399) are a second, different leftover: daemon worktrees, not test output.",
+        "summary": "Go tests of Pilot leave directories in the temporary directory of the host (found 2026-11-27 on the founder box): about 5,700 top-level entries in one month, with the prefixes worktree-local-, worktree-remote- and wire-fields, plus the set-up script test; about 70 new entries each day from the quality gate runs, owned by the daemon user and since 11-26 by the agent user. On the box the temporary directory is tmpfs, so the leftovers use memory. A hand clean-up removed the entries older than 24 hours; the cause (tests that make a directory with os.MkdirTemp and do not remove it, where t.TempDir removes it) is in TASK-660 (pilot#6733). Correction 11-27: the about 1,280 directories with the prefix pilot-worktree-GH-5399 are test output too (one test keeps its worktree and never removes it), not daemon worktrees. Fix: TASK-660.",
         "path": "memories/pitfalls/mem-356.md",
         "confidence": 0.85,
         "concepts": [
@@ -14516,6 +14564,86 @@
       "from": "TASK-659",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-660",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-660",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-660",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-660",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-661",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-661",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-661",
+      "to": "knowledge",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-661",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-661",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-661",
+      "to": "workflow",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-661",
+      "to": "markers",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-661",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-662",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-662",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-662",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-662",
+      "to": "deployment",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -14713,7 +14841,9 @@
       "TASK-657",
       "mem-345",
       "TASK-658",
-      "TASK-659"
+      "TASK-659",
+      "TASK-661",
+      "TASK-662"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -14805,7 +14935,8 @@
       "TASK-657",
       "mem-346",
       "TASK-658",
-      "TASK-659"
+      "TASK-659",
+      "TASK-661"
     ],
     "auto-merge": [
       "mem-103",
@@ -15152,7 +15283,10 @@
       "TASK-656",
       "TASK-657",
       "TASK-658",
-      "TASK-659"
+      "TASK-659",
+      "TASK-660",
+      "TASK-661",
+      "TASK-662"
     ],
     "conversational-bot": [
       "mem-036",
@@ -15474,7 +15608,10 @@
       "mem-348",
       "mem-351",
       "TASK-658",
-      "TASK-659"
+      "TASK-659",
+      "TASK-660",
+      "TASK-661",
+      "TASK-662"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -16013,7 +16150,9 @@
       "mem-316",
       "mem-317",
       "TASK-651",
-      "TASK-656"
+      "TASK-656",
+      "TASK-660",
+      "TASK-661"
     ],
     "labels": [
       "mem-100",
@@ -16089,7 +16228,8 @@
       "TASK-651",
       "TASK-650",
       "TASK-656",
-      "TASK-659"
+      "TASK-659",
+      "TASK-661"
     ],
     "memory": [
       "TASK-358",
@@ -16611,7 +16751,10 @@
       "mem-338",
       "mem-346",
       "TASK-658",
-      "TASK-659"
+      "TASK-659",
+      "TASK-660",
+      "TASK-661",
+      "TASK-662"
     ],
     "testing-quality": [
       "TASK-384",
@@ -16773,7 +16916,8 @@
       "TASK-651",
       "mem-318",
       "TASK-656",
-      "TASK-657"
+      "TASK-657",
+      "TASK-661"
     ],
     "workflow-discipline": [
       "TASK-359",
@@ -16877,7 +17021,9 @@
       "mem-315",
       "mem-316",
       "mem-317",
-      "TASK-657"
+      "TASK-657",
+      "TASK-661",
+      "TASK-662"
     ],
     "stage-semantics": [
       "stagefailed-conflates-healthy-handoff-with-terminal-failure"
@@ -17369,10 +17515,10 @@
       "mem-356"
     ]
   },
-  "last_updated": "2026-11-27T14:02:58.516693+00:00",
+  "last_updated": "2026-11-27T16:11:05.372269+00:00",
   "stats": {
-    "total_nodes": 856,
-    "total_edges": 908,
+    "total_nodes": 859,
+    "total_edges": 924,
     "memory_count": 481
   },
   "metadata": {
