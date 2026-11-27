@@ -1,6 +1,6 @@
 # TASK-661: First-run commands — the Telegram check stops its own conflict, and `pilot onboard`, `pilot doctor` and the config check know Plane and the agent user option
 
-**Status**: 🚀 **State 2026-11-27 19:46Z: `pilot onboard` offers Plane ([pilot#6755](https://github.com/qf-studio/pilot/issues/6755) → PR#6763, 19:44Z; reviewed after the merge, no finding). Next ticket written: the wizard pairs the polled Plane projects with the repositories (F7). After it only the agent user option in `pilot doctor` is left (steps 8 and 9).** **State 2026-11-27 19:15Z: the gateway port flag of the host script merged ([pilot#6748](https://github.com/qf-studio/pilot/issues/6748) → PR#6759, 18:55Z; reviewed: 923 script tests pass, a mutation fails four of them) and the two minors of the Plane doctor rows merged ([pilot#6754](https://github.com/qf-studio/pilot/issues/6754) → PR#6757, 18:31Z; reviewed). In the queue: Plane in `pilot onboard` ([pilot#6755](https://github.com/qf-studio/pilot/issues/6755)).** **State 2026-11-27 18:21Z: the daemon's review of PR#6750 found two minors that the session's review did not find (a project list of only blank entries passes the config row; a key of only spaces gives two rows); its ticket [pilot#6754](https://github.com/qf-studio/pilot/issues/6754) has the open PR#6757. In work: the gateway port flag of the host script ([pilot#6748](https://github.com/qf-studio/pilot/issues/6748)); in the queue: Plane in `pilot onboard` ([pilot#6755](https://github.com/qf-studio/pilot/issues/6755)).** **State 2026-11-27 17:56Z: the Plane rows of `pilot doctor` merged ([pilot#6745](https://github.com/qf-studio/pilot/issues/6745) → PR#6750, 17:53Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot onboard` offers Plane and tests the key (F6).** **State 2026-11-27 17:25Z: the documentation page of the agent user option merged ([pilot#6736](https://github.com/qf-studio/pilot/issues/6736) → PR#6744, 17:23Z; reviewed against the code, no finding in the page). The page states a product gap: the host script rejects the fixed TCP port 9091, and the default gateway port of the config is 9090, so a host with the default port fails the startup check of the option. A ticket (F5) gives the script a flag for the port.** **State 2026-11-27 17:15Z: the Plane key check merged ([pilot#6735](https://github.com/qf-studio/pilot/issues/6735) → PR#6743, 17:12Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot doctor` shows the Plane key check and the errors of the Plane block (F4).** **State 2026-11-27 16:55Z: the Telegram check merged ([pilot#6734](https://github.com/qf-studio/pilot/issues/6734) → PR#6738, 16:43Z; reviewed after the merge with two mutations, no finding; CheckSingleton has no change). It is not released yet; after the release, read the box log for three days.** Earlier state: **F1, F2, F3 DISPATCHED 2026-11-27 16:10Z (`pilot` + `no-decompose`): the Telegram check asks for the bot identity → [pilot#6734](https://github.com/qf-studio/pilot/issues/6734); the daemon checks the Plane key → [pilot#6735](https://github.com/qf-studio/pilot/issues/6735); the documentation page of the agent user option → [pilot#6736](https://github.com/qf-studio/pilot/issues/6736).** Held, written when the step before is merged: the Plane row of `pilot doctor`, the config check of the Plane block, Plane in `pilot onboard` (two steps), the agent user option in `pilot doctor` (two steps).
+**Status**: 🚀 **State 2026-11-27 20:19Z: the last ticket of the plan is written (F8): `pilot doctor` shows a row for the agent user option. Steps 8 and 9 are joined into it: the daemon reaches the preflight through a wrapper in the command package (setReadGuardConfig), and the doctor command can call the same wrapper and read the result, so no change of the preflight is necessary.** **State 2026-11-27 19:46Z: `pilot onboard` offers Plane ([pilot#6755](https://github.com/qf-studio/pilot/issues/6755) → PR#6763, 19:44Z; reviewed after the merge, no finding). Next ticket written: the wizard pairs the polled Plane projects with the repositories (F7). After it only the agent user option in `pilot doctor` is left (steps 8 and 9).** **State 2026-11-27 19:15Z: the gateway port flag of the host script merged ([pilot#6748](https://github.com/qf-studio/pilot/issues/6748) → PR#6759, 18:55Z; reviewed: 923 script tests pass, a mutation fails four of them) and the two minors of the Plane doctor rows merged ([pilot#6754](https://github.com/qf-studio/pilot/issues/6754) → PR#6757, 18:31Z; reviewed). In the queue: Plane in `pilot onboard` ([pilot#6755](https://github.com/qf-studio/pilot/issues/6755)).** **State 2026-11-27 18:21Z: the daemon's review of PR#6750 found two minors that the session's review did not find (a project list of only blank entries passes the config row; a key of only spaces gives two rows); its ticket [pilot#6754](https://github.com/qf-studio/pilot/issues/6754) has the open PR#6757. In work: the gateway port flag of the host script ([pilot#6748](https://github.com/qf-studio/pilot/issues/6748)); in the queue: Plane in `pilot onboard` ([pilot#6755](https://github.com/qf-studio/pilot/issues/6755)).** **State 2026-11-27 17:56Z: the Plane rows of `pilot doctor` merged ([pilot#6745](https://github.com/qf-studio/pilot/issues/6745) → PR#6750, 17:53Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot onboard` offers Plane and tests the key (F6).** **State 2026-11-27 17:25Z: the documentation page of the agent user option merged ([pilot#6736](https://github.com/qf-studio/pilot/issues/6736) → PR#6744, 17:23Z; reviewed against the code, no finding in the page). The page states a product gap: the host script rejects the fixed TCP port 9091, and the default gateway port of the config is 9090, so a host with the default port fails the startup check of the option. A ticket (F5) gives the script a flag for the port.** **State 2026-11-27 17:15Z: the Plane key check merged ([pilot#6735](https://github.com/qf-studio/pilot/issues/6735) → PR#6743, 17:12Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot doctor` shows the Plane key check and the errors of the Plane block (F4).** **State 2026-11-27 16:55Z: the Telegram check merged ([pilot#6734](https://github.com/qf-studio/pilot/issues/6734) → PR#6738, 16:43Z; reviewed after the merge with two mutations, no finding; CheckSingleton has no change). It is not released yet; after the release, read the box log for three days.** Earlier state: **F1, F2, F3 DISPATCHED 2026-11-27 16:10Z (`pilot` + `no-decompose`): the Telegram check asks for the bot identity → [pilot#6734](https://github.com/qf-studio/pilot/issues/6734); the daemon checks the Plane key → [pilot#6735](https://github.com/qf-studio/pilot/issues/6735); the documentation page of the agent user option → [pilot#6736](https://github.com/qf-studio/pilot/issues/6736).** Held, written when the step before is merged: the Plane row of `pilot doctor`, the config check of the Plane block, Plane in `pilot onboard` (two steps), the agent user option in `pilot doctor` (two steps).
 **Created**: 2026-11-27
 **Assignee**: Pilot (one ticket at a time)
 
@@ -53,8 +53,8 @@ The daemon check of Telegram makes no conflict. A user can set up Plane in the w
 
 ### Phase 3: The agent user option in `pilot doctor`
 - [x] 7a. The host script takes the gateway port as a flag; the firewall rule, the boot unit and the printed config follow it (F5) — pilot#6748, merged 11-27 18:55Z
-- [ ] 8. The preflight of the option becomes a function with a result and no package state (needs a read of its production caller first)
-- [ ] 9. `pilot doctor` shows a row for the option (needs 8)
+- [x] 8. The preflight of the option becomes a function with a result — not necessary (11-27): the doctor command calls the preflight through the wrapper of the daemon and reads its stored result; the package state of a doctor process ends with the process
+- [ ] 9. `pilot doctor` shows a row for the option (F8)
 
 ### Side tracks
 - [ ] The wizard tests the credential of Linear, Jira, GitLab, Azure DevOps and Asana (one ticket for each; not planned yet)
@@ -425,6 +425,50 @@ The project stage of the wizard. Names of Plane projects from the server (the wi
 
 - Navigator TASK-661 in this repo
 
+### LEG F8 — repo: qf-studio/pilot — title: feat(doctor): pilot doctor shows a row for run_as_user — it runs the start check of the option and names the check that failed
+
+probe: present qf-studio/pilot func[[:space:]]setReadGuardConfig\(execCfg[[:space:]]\*executor\.BackendConfig
+probe: present qf-studio/pilot func[[:space:]]RunAsUserPreflightError\(\)[[:space:]]error
+probe: present qf-studio/pilot var[[:space:]]preflightRunAsUser[[:space:]]=[[:space:]]executor\.PreflightRunAsUser
+probe: absent  qf-studio/pilot func[[:space:]]doctorRunAsUserCheck\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-661. The option run_as_user of the executor (config block claude_code of the executor section) starts each model process as a second Unix user. Before a process can start, a preflight tests the host: PreflightRunAsUser in `internal/executor/agent_command.go` (the user and the group exist, sudo works with no password, the workspace root and the data directory have safe modes, the firewall of the agent user rejects the metadata address and the gateway port, and more). It logs one Error line with the name of the failed check ("run_as_user preflight failed") and keeps the result in package state; RunAsUserPreflightError in the same file returns the error that each model spawn gets, or nil.
+
+Each entry point of the daemon reaches the preflight through a wrapper in `cmd/pilot/main.go`: setReadGuardConfig takes the executor config, the config path, the gateway port and host and a flag for a daemon start, sets the read guard config, and returns a function that runs the preflight (through the package variable preflightRunAsUser, which tests replace).
+
+The command `pilot doctor` (`cmd/pilot/doctor.go`) loads the config, calls RunChecks of `internal/health/health.go`, and prints the rows of the report (a name, a status, a message, a Fix text). It shows nothing for run_as_user. An operator who set the option learns of a failed check only from the daemon log, after each run was refused. The documentation page is `docs/content/deployment/agent-isolation.mdx`.
+
+## Scope
+
+1. `cmd/pilot/doctor.go`: a new function doctorRunAsUserCheck. It takes the loaded config and returns nil when the option is empty (or the executor block is absent). In the other case it runs the preflight through setReadGuardConfig, with the config path of the loaded config, the gateway port and host of the config, and the daemon start flag false, and then reads RunAsUserPreflightError through a package variable (so that a test can give a fake). It returns one row with the name run_as_user:
+   - status OK with a message that names the agent user and says that the start check passed;
+   - status Error with the error text (it names the failed check) and a Fix text that names the host set-up script `scripts/box/setup-agent-user.sh` and the documentation page of the option.
+2. The doctor command adds the row to the configuration rows of the report before it prints them, so that the row counts in the totals and in the exit result as the other configuration rows do.
+3. The row must not print a secret: it holds only the user name and the text of the check.
+4. The Error line that the preflight logs for a failed check must not confuse the output of `pilot doctor`: when the logger of the command prints it to the terminal, keep it; do not add a second copy of the text.
+5. Tests in the directory of `cmd/pilot/doctor.go` (a new test file, name it doctor_run_as_test.go), with fakes for the preflight variable and for the error read; no test may need Linux, sudo or a second user: TestDoctorRunAsUserCheck with the cases: the option empty (nil, the preflight is not called); the option set and the preflight passes (status OK, the message holds the user name); the option set and the preflight fails (status Error, the message holds the name of the check, the Fix text names the script); the values that reach the preflight (the user, the group, the gateway port of the config, the daemon start flag false).
+6. `docs/content/deployment/agent-isolation.mdx`: one short part says that `pilot doctor` runs the start check and shows the row.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./cmd/pilot/ -run 'TestDoctorRunAsUserCheck'` passes; paste the output into the PR body.
+- [ ] `go build ./...` passes; paste the output into the PR body.
+- [ ] Return nil also when the option is set -> TestDoctorRunAsUserCheck fails
+- [ ] Give the status OK when the error read returns an error -> TestDoctorRunAsUserCheck fails
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The preflight and its checks. The daemon start. The wizard. A row in RunChecks of the health package (the row is built in the command package, which already holds the wrapper). The host script.
+
+## Refs
+
+- Navigator TASK-661 in this repo
+
 ## Refs
 
 - F1 → https://github.com/qf-studio/pilot/issues/6734
@@ -434,6 +478,7 @@ The project stage of the wizard. Names of Plane projects from the server (the wi
 - F5 → https://github.com/qf-studio/pilot/issues/6748
 - F6 → https://github.com/qf-studio/pilot/issues/6755
 - F7 → https://github.com/qf-studio/pilot/issues/6764
+- F8 → https://github.com/qf-studio/pilot/issues/6767
 
 - Research of 2026-11-27 (session): the first-run commands (`cmd/pilot/onboard.go`, `cmd/pilot/onboard_ticket.go`, `cmd/pilot/doctor.go`, `internal/health/health.go`), the callers of each Telegram getUpdates request, the box log of the 409 lines by day.
 - TASK-658 (Plane integration), TASK-651 (agent isolation), TASK-379 (doctor live probes, archived).
