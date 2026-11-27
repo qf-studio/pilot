@@ -498,9 +498,7 @@ func main() {
 
 	// GH-6261: every entrypoint, not only `pilot start`, tells the helper
 	// spawns which config the read guard follows.
-	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
-		applyReadGuardConfigFromFile(cfgFile)
-	}
+	rootCmd.PersistentPreRun = rootPersistentPreRun
 
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is ~/.pilot/config.yaml)")
 	rootCmd.PersistentFlags().BoolVarP(&quietMode, "quiet", "q", false, "Suppress non-essential output")
@@ -674,11 +672,24 @@ func waitAddrsFree(addrs []string, limit time.Duration) bool {
 	}
 }
 
+// rootPersistentPreRun runs before every subcommand that sets no
+// PersistentPreRun of its own.
+func rootPersistentPreRun(cmd *cobra.Command, args []string) {
+	applyReadGuardConfigFromFile(cfgFile)
+}
+
 // applyReadGuardConfigFromFile is applyReadGuardConfig for entrypoints that do
 // not load the full config: it reads only executor.claude_code from the file,
 // without env expansion, validation or warnings. An unreadable or unparsable
 // file leaves the defaults (guard on) with the path still protected.
 func applyReadGuardConfigFromFile(cfgPath string) {
+	setReadGuardConfigFromFile(cfgPath)()
+}
+
+// setReadGuardConfigFromFile is applyReadGuardConfigFromFile without the
+// run_as_user preflight: it sets the read guard config and returns the
+// preflight (GH-6772).
+func setReadGuardConfigFromFile(cfgPath string) (preflight func()) {
 	if cfgPath == "" {
 		cfgPath = config.DefaultConfigPath()
 	}
@@ -698,7 +709,7 @@ func applyReadGuardConfigFromFile(cfgPath string) {
 		execCfg = &executor.BackendConfig{Type: e.Type, ClaudeCode: e.ClaudeCode, UseWorktree: e.UseWorktree, WorktreePoolSize: e.WorktreePoolSize}
 	}
 	// GH-6455: no gateway port: a running daemon holds it.
-	applyReadGuardConfig(execCfg, cfgPath, 0, "")
+	return setReadGuardConfig(execCfg, cfgPath, 0, "", false)
 }
 
 // gatewayChatNeedsOwnRunner reports whether gateway mode must build a
