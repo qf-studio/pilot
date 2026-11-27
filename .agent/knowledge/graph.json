@@ -3453,7 +3453,7 @@
       "TASK-659": {
         "path": ".agent/tasks/TASK-659-sdk-credential-leak-tests.md",
         "title": "SDK credential leak hardening \u2014 a leak test for each adapter HTTP client of the SDK, a redact helper, the Telegram token out of error text, a CI gate",
-        "status": "planned",
+        "status": "dispatched",
         "concepts": [
           "authentication",
           "deployment",
@@ -3461,6 +3461,9 @@
           "context",
           "markers",
           "testing"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/studio-sdk/issues/173"
         ]
       }
     },

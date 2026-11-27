@@ -1,6 +1,6 @@
 # TASK-659: SDK credential leak hardening — a leak test for each adapter HTTP client of the SDK, a redact helper, the Telegram token out of error text, a CI gate
 
-**Status**: 📋 **Planned 2026-11-27. Nothing is filed and nothing is dispatched: the founder sees the plan first.** Four legs for the SDK repository are written (C1 to C4); one leg for Pilot is held (C5: pin of the SDK release).
+**Status**: 🚀 **State 2026-11-27 09:31Z: founder: "dispatch". The first ticket is with Pilot: [studio-sdk#173](https://github.com/qf-studio/studio-sdk/issues/173) (the helpers, the redact package and the Telegram fix; leg C1; labels `pilot` and `no-decompose`).** Order: after its merge the two test tickets together (C2, C3), then the gate (C4), then an SDK release by hand, then the pin in Pilot (C5, held, not written). The probes of C2 to C4 hold the order: they fail the dispatch pre-flight until the leg before them is merged. Box check of 11-27 (counts only): the daemon log has no line with a raw Telegram token and 92 lines with a masked one, so the log redaction of the daemon covers the log.
 **Created**: 2026-11-27
 **Assignee**: Pilot (one leg at a time) + one operator step (SDK release)
 **Parent**: TASK-650 (secret exposure hardening), leg L3 (the canary tests of Pilot's own adapter clients)
@@ -45,7 +45,7 @@ Each HTTP client of the SDK has a test that drives it with a marker credential t
 ## Route
 
 ### Phase 1: The tools and the real leak
-- [ ] 1. The SDK gets the leak test helpers and a redact helper; the Telegram token is masked in each error of the Telegram client, with its leak test (C1)
+- [ ] 1. The SDK gets the leak test helpers and a redact helper; the Telegram token is masked in each error of the Telegram client, with its leak test (qf-studio/studio-sdk#173)
 
 ### Phase 2: A leak test for each client
 - [ ] 2. Leak tests for the Asana, Azure DevOps, GitLab, Jira and Plane clients; a leak that a test finds is fixed in the same change (C2, needs 1)
@@ -57,7 +57,7 @@ Each HTTP client of the SDK has a test that drives it with a marker credential t
 - [ ] 6. Pilot pins that SDK release (C5, held; needs 5)
 
 ### Waits for you
-- [ ] The go for the plan, and the order: step 1 first and alone (it holds the real leak), then 2 and 3 together
+- [x] The go for the plan, and the order: step 1 first and alone (it holds the real leak), then 2 and 3 together (founder, 11-27: "dispatch")
 
 ---
 
@@ -263,3 +263,7 @@ A change of a client or of a leak test. The secret pattern check. Go analyzers.
 ---
 
 **Last Updated**: 2026-11-27
+
+## Refs
+
+- C1 → https://github.com/qf-studio/studio-sdk/issues/173
