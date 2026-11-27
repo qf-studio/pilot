@@ -1,6 +1,6 @@
 # TASK-659: SDK credential leak hardening — a leak test for each adapter HTTP client of the SDK, a redact helper, the Telegram token out of error text, a CI gate
 
-**Status**: 🚀 **State 2026-11-27 10:12Z. With Pilot: [studio-sdk#178](https://github.com/qf-studio/studio-sdk/issues/178) (the Discord, Linear and Slack clients mask a response body in an error; leak tests for them and the GitHub client; in work) and [studio-sdk#179](https://github.com/qf-studio/studio-sdk/issues/179) (the As method of the masked error gives out no secret; in the queue).** Done: [studio-sdk#173](https://github.com/qf-studio/studio-sdk/issues/173) → SDK pull request 174 (09:39Z); [studio-sdk#175](https://github.com/qf-studio/studio-sdk/issues/175) → pull request 176 (09:57Z); [studio-sdk#177](https://github.com/qf-studio/studio-sdk/issues/177) → pull request 180 (10:10Z: leak tests for the Asana, Azure DevOps, GitLab, Jira and Plane clients; each request helper masks the transport error and the response text; the Jira error types are masked where they are built). The review by the session of pull request 180 (comment on the PR; the tests with the race detector and one mutation on the Plane client run on the merge commit) has no finding. The As defect of pull request 176 (the method masks only a `*url.Error`): the daemon's review found it too and filed #179; the session added the second case (an error type that holds the secret), the rule for the fix and three tests to the body of #179 before its start. The session writes no leg of its own for it. **Next, in this order, on the founder's "dispatch" of 11-27 (no new word needed):** (1) after the merge of #178 and of #179: a review of each; (2) the gate leg C4 (its probe needs the socket mode test of #178); (3) an SDK release by hand (the next free patch number after v0.39.2); (4) write and dispatch the pin leg in Pilot (C5, held).
+**Status**: 🚀 **State 2026-11-27 10:24Z. With Pilot: [studio-sdk#184](https://github.com/qf-studio/studio-sdk/issues/184) (the CI gate that refuses an integration package with an HTTP client and no leak test; dispatched 10:24Z), [studio-sdk#179](https://github.com/qf-studio/studio-sdk/issues/179) (the As method of the masked error gives out no secret; from the daemon's review of pull request 176) and [studio-sdk#181](https://github.com/qf-studio/studio-sdk/issues/181) (small points from the daemon's review of pull request 180).** Done, each with a review comment by the session on its pull request: [studio-sdk#173](https://github.com/qf-studio/studio-sdk/issues/173) → 174 (09:39Z); [studio-sdk#175](https://github.com/qf-studio/studio-sdk/issues/175) → 176 (09:57Z); [studio-sdk#177](https://github.com/qf-studio/studio-sdk/issues/177) → 180 (10:10Z); [studio-sdk#178](https://github.com/qf-studio/studio-sdk/issues/178) → 182 (10:21Z: the Discord, Linear, Slack and GitHub clients mask the transport error at each of nine request sites and each response text in an error; the GitHub error types are masked where they are built). The reviews of pull requests 180 and 182 (tests with the race detector and three mutations on the merge commits) have no finding. Each of the ten integration packages now has a leak test. **Next, in this order, on the founder's "dispatch" of 11-27 (no new word needed):** (1) after each merge of #184, #179 and #181: a review; (2) an SDK release by hand when the three are merged and the CI of the main head is green (the next free patch number after v0.39.2); (3) write and dispatch the pin leg in Pilot (C5, held).
 **Created**: 2026-11-27
 **Assignee**: Pilot (one leg at a time) + one operator step (SDK release)
 **Parent**: TASK-650 (secret exposure hardening), leg L3 (the canary tests of Pilot's own adapter clients)
@@ -51,11 +51,12 @@ Each HTTP client of the SDK has a test that drives it with a marker credential t
 
 ### Phase 2: A leak test for each client
 - [x] 3. Leak tests for the Asana, Azure DevOps, GitLab, Jira and Plane clients; a leak that a test finds is fixed in the same change (qf-studio/studio-sdk#177, needs 2)
-- [ ] 4. Leak tests for the Discord, Linear, Slack and GitHub clients; the three response bodies in errors are masked (qf-studio/studio-sdk#178, needs 2)
+- [x] 4. Leak tests for the Discord, Linear, Slack and GitHub clients; the three response bodies in errors are masked (qf-studio/studio-sdk#178, needs 2)
+- [ ] 9. Small points from the daemon's review of the first leak test ticket: a test for the rate limit error of the Jira client, the HTTP client option for the config constructor of the Azure DevOps client, no mask for an empty token (qf-studio/studio-sdk#181, filed by the daemon's review; needs 3)
 
 ### Phase 3: The gate and the release
-- [ ] 5. A CI gate of the SDK refuses an integration package with an HTTP client and no leak test (needs 3, 4)
-- [ ] 6. An SDK release holds 1 to 5 and 8 (operator, needs 5, 8)
+- [ ] 5. A CI gate of the SDK refuses an integration package with an HTTP client and no leak test (qf-studio/studio-sdk#184, needs 3, 4)
+- [ ] 6. An SDK release holds 1 to 5, 8 and 9 (operator, needs 5, 8, 9)
 - [ ] 7. Pilot pins that SDK release (needs 6)
 
 ### Waits for you
@@ -309,3 +310,4 @@ A change of a client or of a leak test. The secret pattern check. Go analyzers.
 - C6 → https://github.com/qf-studio/studio-sdk/issues/175
 - C2 → https://github.com/qf-studio/studio-sdk/issues/177
 - C3 → https://github.com/qf-studio/studio-sdk/issues/178
+- C4 → https://github.com/qf-studio/studio-sdk/issues/184
