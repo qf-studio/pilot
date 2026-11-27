@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/plane"
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
 	"github.com/qf-studio/pilot/internal/approval"
@@ -318,6 +319,83 @@ func checkSlackTokenLive(cfg *config.Config, newClient func(token string) verify
 var newTelegramVerifier = func(token string) verify.Verifiable { return telegram.NewClient(token) }
 var newSlackVerifier = func(token string) verify.Verifiable { return slack.NewClient(token) }
 
+// checkPlaneLive makes one live labels request for the first polled Plane
+// project to confirm the key, the workspace slug and the project ID work
+// together, mirroring checkTelegramTokenLive for the Plane adapter (GH-6745).
+// Returns nil when Plane isn't enabled or has no key — checkPlaneConfig
+// already reports an empty key.
+func checkPlaneLive(cfg *config.Config, newClient func(pc *plane.Config) verify.Verifiable) *ConfigCheck {
+	if cfg.Adapters == nil || cfg.Adapters.Plane == nil || !cfg.Adapters.Plane.Enabled {
+		return nil
+	}
+	if cfg.Adapters.Plane.APIKey == "" {
+		return nil
+	}
+	check := checkAdapterVerify("plane.key.live", "", newClient(cfg.Adapters.Plane))
+	return &check
+}
+
+// newPlaneVerifier builds the real live-probe client for checkPlaneLive.
+// Injectable so tests can substitute a fake verify.Verifiable.
+var newPlaneVerifier = func(pc *plane.Config) verify.Verifiable { return plane.NewVerifier(pc) }
+
+// checkPlaneConfig reports the errors of the adapters.plane block that make
+// the poller find nothing without a clear message (GH-6745): an empty key,
+// slug or project list, and a project entry paired with a Plane project that
+// is not polled. Returns nil when Plane isn't enabled.
+//
+// Decision: these are doctor rows, not Config.Validate errors — a daemon whose
+// config loads today must keep starting.
+func checkPlaneConfig(cfg *config.Config) *ConfigCheck {
+	if cfg.Adapters == nil || cfg.Adapters.Plane == nil || !cfg.Adapters.Plane.Enabled {
+		return nil
+	}
+	pc := cfg.Adapters.Plane
+
+	var problems []string
+	if strings.TrimSpace(pc.APIKey) == "" {
+		problems = append(problems, "api_key is empty")
+	}
+	if strings.TrimSpace(pc.WorkspaceSlug) == "" {
+		problems = append(problems, "workspace_slug is empty")
+	}
+	if len(pc.ProjectIDs) == 0 {
+		problems = append(problems, "project_ids is empty")
+	}
+	polled := make(map[string]bool, len(pc.ProjectIDs))
+	for _, id := range pc.ProjectIDs {
+		polled[strings.TrimSpace(id)] = true
+	}
+	for i, p := range cfg.Projects {
+		if p == nil || p.Plane == nil {
+			continue
+		}
+		id := strings.TrimSpace(p.Plane.ProjectID)
+		if id == "" || polled[id] {
+			continue
+		}
+		name := p.Name
+		if name == "" {
+			name = fmt.Sprintf("#%d", i)
+		}
+		problems = append(problems, fmt.Sprintf("projects[%d] (%s) sets plane.project_id %q, which is not in project_ids", i, name, id))
+	}
+
+	if len(problems) > 0 {
+		return &ConfigCheck{
+			Name:    "plane.config",
+			Status:  StatusError,
+			Message: strings.Join(problems, "; "),
+			Fix:     "Set adapters.plane.api_key, adapters.plane.workspace_slug and adapters.plane.project_ids; add each projects[].plane.project_id to adapters.plane.project_ids",
+		}
+	}
+	return &ConfigCheck{
+		Name:    "plane.config",
+		Status:  StatusOK,
+		Message: fmt.Sprintf("workspace %s, %d polled project(s)", pc.WorkspaceSlug, len(pc.ProjectIDs)),
+	}
+}
+
 // checkBrewTapHealth checks whether the last release.yml run failed at a
 // homebrew step, which indicates that HOMEBREW_TAP_GITHUB_TOKEN has expired.
 // Uses unauthenticated GitHub API calls (public repo, 60 req/hour limit).
@@ -544,6 +622,12 @@ func RunChecks(cfg *config.Config, currentVersion string) *HealthReport {
 		configChecks = append(configChecks, *liveCheck)
 	}
 	if liveCheck := checkSlackTokenLive(cfg, newSlackVerifier); liveCheck != nil {
+		configChecks = append(configChecks, *liveCheck)
+	}
+	if planeCheck := checkPlaneConfig(cfg); planeCheck != nil {
+		configChecks = append(configChecks, *planeCheck)
+	}
+	if liveCheck := checkPlaneLive(cfg, newPlaneVerifier); liveCheck != nil {
 		configChecks = append(configChecks, *liveCheck)
 	}
 	if currentVersion != "" {
@@ -792,7 +876,7 @@ func checkIssueSourceAdapter(cfg *config.Config) ConfigCheck {
 			Name:    "adapters",
 			Status:  StatusWarning,
 			Message: "no issue source enabled",
-			Fix:     "Enable at least one of: github, gitlab, linear, jira, asana, azure_devops, plane. Run 'pilot setup'.",
+			Fix:     "Enable at least one of: github, gitlab, linear, jira, asana, azure_devops, plane. Run 'pilot onboard'.",
 		}
 	}
 	return ConfigCheck{
