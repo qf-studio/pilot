@@ -8,6 +8,7 @@ export default {
   aws: "AWS",
   "google-cloud": "Google Cloud",
   azure: "Azure",
+  "agent-isolation": "Agent Isolation",
   monitoring: "Monitoring",
   "networking": "Networking & Tunnels"
 }

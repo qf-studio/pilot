@@ -1,0 +1,240 @@
+---
+title: "Agent isolation: run model processes as a second Unix user"
+description: "Start the coding agent and the quality gates as a Unix user that holds no keys with executor.claude_code.run_as_user: host set-up script, config keys, startup checks and limits."
+---
+
+import { Callout } from 'nextra/components'
+
+# Agent Isolation (run_as_user)
+
+Start every model process as a second Unix user that holds no keys of the daemon.
+
+---
+
+## What the Option Does
+
+With `executor.claude_code.run_as_user` set, every model process starts as that Unix user through
+`sudo -n -u <user> -g <group>`: the coding agent session, the quality gates, the workflow hooks, the
+lint program, the evidence commands and every git command in the workspace of the agent.
+
+The daemon stays the daemon user and keeps every credential: the adapter tokens, the GitHub token,
+the config file and the Pilot home. The agent user cannot read them:
+
+- **Environment allow list.** A process of the agent user gets only `PATH`, `LANG`, `LC_ALL`,
+  `TERM`, `TZ`, `TMPDIR`, the Go names (`GOCACHE`, `GOMODCACHE`, `GOFLAGS`, `GOTOOLCHAIN`,
+  `GOPROXY`, `GONOSUMDB`, `GOPRIVATE`), `NODE_OPTIONS`, `PILOT_EXECUTOR`, the names of the gh guard,
+  and the task names that the code sets. `HOME`, `CLAUDE_CONFIG_DIR`, `GOPATH`, `GOCACHE` and
+  `GOMODCACHE` point below the home of the agent user. Every other name is dropped, the GitHub names
+  included.
+- **Model names only for the model session.** The `CLAUDE_*` and `ANTHROPIC_*` names reach the model
+  session only. A gate, a hook, the lint program and an evidence command get none of them, so a test
+  that calls a model API from a gate gets no key.
+- **Own clone, no shared objects.** Each task run gets a clone that the agent user creates and owns.
+  It shares no `.git` directory, no alternates file and no object file with the repository of the
+  daemon, and the agent user never reads that repository.
+- **Firewall.** The host set-up script rejects the traffic of the agent user to the cloud metadata
+  address and to the gateway port (see [Host Set-up](#host-set-up)).
+- **gh guard.** With the option set and the gh guard on (`gh_guard`, default true), a run whose
+  shim cannot be set up does not start; it does not go on without the guard.
+
+With the option empty (the default) model processes run as the daemon user, as before.
+
+---
+
+## What the Daemon Does and What the Agent Does
+
+| Step | Who | What happens |
+|------|-----|--------------|
+| Fetch | Daemon | Fetches the base branch in its own repository and resolves the base to a commit SHA. |
+| Bundle | Daemon → agent | Runs `git bundle create` for the base commit and pipes it on standard input into a process of the agent user, which stores it as a bundle file. |
+| Workspace | Agent | `git init`, one fetch from the bundle, the task branch and `refs/remotes/origin/BASE` at the base commit, the origin URL without a user or password part, the bundle file removed. The daemon then checks the workspace (task branch at the SHA, no alternates file, no hard-linked object, no other ref). |
+| Session | Agent | The model session, the quality gates and the commits run in the workspace as the agent user. |
+| Hand-over | Agent → daemon | The agent user runs `git pack-objects --stdout` for the commits above the base. The daemon copies the stream into a quarantine object directory of its own repository, checks the pack header, runs `git index-pack --strict`, checks the tip and every object of the range, and only then moves the pack into its object store and sets `refs/pilot/handover/<task>`. |
+| Secret gate | Daemon | Scans the hand-over SHA with the settings of the project. |
+| Push | Daemon | Pushes `<handover SHA>:refs/heads/<branch>` with its own credentials. No git command of the daemon runs with the workspace as its directory, so the git config, hooks and remotes of the workspace have no effect. |
+| Pull request | Daemon | Opens the pull request, as in a run without the option. |
+
+Limits of the hand-over: the pack stream is at most 2 GB, one object at most 512 MB and all objects
+of the range together at most 4 GB. A branch with no commit above the base has nothing to hand over
+and takes the path of a run with no new commit. A daemon repository that is a partial clone is
+refused.
+
+The workspace is removed at the end of the run only when its commits are safe outside it (the push
+succeeded or a recovery ref holds them) or it has no commit above the base. Otherwise it stays, one
+Error line names its path, and the sweep at the next daemon start removes it.
+
+---
+
+## Host Set-up
+
+`scripts/box/setup-agent-user.sh` prepares a Linux host. Run it by hand as root; no daemon code
+calls it. Each step is skipped when it is already done.
+
+```bash
+# Print every command, change nothing
+sudo scripts/box/setup-agent-user.sh --daemon-user <daemon-user> --dry-run
+
+# Apply
+sudo scripts/box/setup-agent-user.sh --daemon-user <daemon-user> --confirm-root-path
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--daemon-user U` | `ec2-user` | The user the daemon runs as |
+| `--agent-user U` | `pilot-agent` | The agent user to create |
+| `--group G` | `pilot` | The shared group |
+| `--data-dir D` | `/var/lib/pilot` | Data directory of the daemon |
+| `--agent-root A` | `DATA_DIR/agent` | Root of the agent directories; must not hold the data dir |
+| `--dry-run` | | Print every command, change nothing |
+| `--undo` | | Remove the set-up (see [Turning It Off](#turning-it-off)) |
+| `--keep-daemon-sudo` | | Leave the cloud-init sudoers file alone |
+| `--confirm-root-path` | | You hold another root session; required when the cloud-init file still has a line to comment out |
+
+### Steps
+
+The steps run in this order; an apply stops at the first failed step.
+
+| Step | What it makes or checks |
+|------|-------------------------|
+| `daemon-private` | A check, changes no mode: the data dir gives group and others traverse at most (0711 or stricter), and no entry of it but the agent root is open to the agent user. On a failure it prints one `chmod` per path to run, and the apply passes once you ran them. |
+| `group` | A system group (`pilot`). |
+| `agent-user` | A system user (`pilot-agent`) with no login shell (`/usr/sbin/nologin`) and the home `AGENT_ROOT/home`. |
+| `daemon-membership` | The daemon user joins the group. A running daemon picks up the group at the next restart. |
+| `firewall-ipv4`, `firewall-ipv6` | A chain `PILOT_AGENT_EGRESS`, reached from `OUTPUT` by an owner match on the agent user. It rejects the metadata address (`169.254.169.254`, IPv6 `fd00:ec2::254`) and TCP to port `9091` on loopback and on every local address through `lo`, with a TCP reset. The IPv6 step is skipped when IPv6 is off on the host. |
+| `firewall-unit` | A oneshot systemd unit `pilot-agent-firewall.service` that applies the chain at boot. |
+| `directories` | The agent root (`root:root 0755`), below it `home` (agent user, `0750`) and `workspaces` (agent user, `2770`), and `go`, `go/cache`, `go/mod` below the home, made by the agent user. |
+| `sudoers-rule` | `/etc/sudoers.d/90-pilot-agent-runas` with `<daemon-user> ALL=(pilot-agent) NOPASSWD: SETENV: ALL`, validated with `visudo` before it is moved into place. |
+| `cloud-init-sudoers` | Comments out the lines that give the daemon user sudo to root in `/etc/sudoers.d/90-cloud-init-users` (numbered backups, validated), then proves that `sudo -n true` as the daemon user fails and `sudo -n -u <agent-user> true` succeeds. Needs `--confirm-root-path`; skipped with `--keep-daemon-sudo`. |
+| `agent-proof` | A check as the agent user: create and remove a file in its home and in the workspace root, and fail to list the data dir and each directory in it but the agent root. |
+
+<Callout type="warning">
+After the `cloud-init-sudoers` step the daemon user has no sudo to root. Keep a second root session
+open while the script runs; that is what `--confirm-root-path` confirms.
+</Callout>
+
+On success the summary ends with the values for the config:
+
+```
+== daemon config (executor section)
+  run_as_user: pilot-agent
+  run_as_group: pilot
+  run_as_workspace_dir: /var/lib/pilot/agent/workspaces
+  run_as_data_dir: /var/lib/pilot
+```
+
+<Callout type="warning">
+The firewall rules of the script reject TCP port `9091`, a fixed value of the script. The daemon
+start probes the gateway port of the config (`gateway.port`, default `9090`). With any port other
+than `9091` the probe reaches the port and the startup check fails. Set `gateway.port: 9091` on a
+host that uses the script's rules.
+</Callout>
+
+---
+
+## Configuration
+
+The keys live in the `claude_code` block of the `executor` section:
+
+```yaml
+executor:
+  use_worktree: true          # required with run_as_user
+  worktree_pool_size: 0       # required with run_as_user
+  claude_code:
+    run_as_user: "pilot-agent"
+    run_as_group: "pilot"
+    run_as_workspace_dir: "/var/lib/pilot/agent/workspaces"
+    run_as_data_dir: "/var/lib/pilot"
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `run_as_user` | `""` | Unix user for every model process, started through `sudo -n -u <user> [-g <group>]`. Empty = run as the daemon user. Linux only. |
+| `run_as_group` | `""` | Group passed as `sudo -g`; also owns the run guard files. Required when `run_as_user` is set. |
+| `run_as_workspace_dir` | `""` = `/var/lib/pilot/agent/workspaces` | Root of the agent workspaces. Absolute path only. Each task run gets its own clone here (`pilot-ws-*`), created and removed as the agent user. Must be owned by the agent user and must not be `/`, the daemon home, the Pilot home, the data dir or a parent of one of them. |
+| `run_as_data_dir` | `""` = `/var/lib/pilot` | Data directory of the daemon (the `--data-dir` of the script). Absolute path only. Its modes are checked at the start and before each agent workspace is created. |
+
+The `run_as_*` keys have no effect while `run_as_user` is empty.
+
+<Callout type="info">
+The `anthropic-api` and `openai-api` backends run the tools of the model inside the daemon process.
+With `run_as_user` set the daemon does not start with either of them.
+</Callout>
+
+---
+
+## Startup Checks
+
+The preflight runs at every entry point that can start a model process. The gateway part of the
+firewall probe runs at the daemon start only. The checks, in order:
+
+1. With a daemon start, the gateway port is above 0.
+2. `run_as_user` and `run_as_group` are not blank, the names are valid, the user is not `root`, and
+   `run_as_group` is set.
+3. `run_as_workspace_dir` and `run_as_data_dir` are absolute paths.
+4. The backend is not `anthropic-api` or `openai-api`.
+5. `GOPROXY` of the daemon (and a `GOPROXY=` in its `GOFLAGS`) holds no credentials.
+6. The host is Linux.
+7. User and group exist with uid and gid not 0, the user is not the daemon user, and the daemon user
+   is a member of the group.
+8. `sudo -n -u <user> -g <group> true` exits 0 within 5 seconds, and sudo gives the agent no
+   terminal (`use_pty`).
+9. The home of the agent user exists.
+10. `use_worktree` is true and `worktree_pool_size` is 0.
+11. With the environment of a gate, the agent user finds `sh` and `git` (and `make` and `go` when
+    the daemon finds them) and can make a file in its temporary directory.
+12. The workspace root is not `/`, the daemon home, the Pilot home, the data dir or a parent of one
+    of them; it exists, the agent user owns it, and the daemon user can list a directory that the
+    agent user creates in it.
+13. The data dir gives group and others no read or write bit; each top-level entry gives others no
+    bit, and no group bit when its group is `run_as_group`. The entry that holds the workspace root
+    is skipped.
+14. Firewall probe, as the agent user: a connection to a control listener on `127.0.0.1` connects;
+    connections to `169.254.169.254:80` and to the gateway port do not.
+
+When a check fails the daemon logs one Error line that names it:
+
+```
+run_as_user preflight failed: no model process and no tool of the model will run  check=<check>
+```
+
+From then on every model spawn is refused with `run_as_user preflight failed: <check>`, and no
+process starts. There is no fallback to the daemon user. A failed result is not kept: the next
+preflight runs the checks again.
+
+---
+
+## Limits
+
+- **No GitHub credential for the agent.** The agent user gets no GitHub token unless a GitHub App
+  is configured (`adapters.github.app`). Then each run gets a read-only installation token for the
+  repository of the project (`contents`, `issues`, `pull_requests`, `metadata`: read), used by the
+  gh guard and by a git credential helper for `https://github.com`. There is no fallback to the
+  token of the daemon. Without the App, inside a session the `gh` commands and a `git fetch` fail
+  for a private repository.
+- **Private dependencies.** A quality gate runs as the agent user with the allow-listed environment
+  and no git credentials. Private dependencies of a gate must be reachable without a credential of
+  the agent. A `GOPROXY` with credentials passes to the agent user, so the daemon start refuses it.
+- **Linux and sudo.** The option needs Linux and `sudo`; the host script needs root, `iptables`
+  (and `ip6tables` when IPv6 is on) and systemd.
+- **Worktree settings.** `use_worktree: true` and `worktree_pool_size: 0`.
+- **CLI backends only.** The API backends are refused.
+
+---
+
+## Turning It Off
+
+Remove `run_as_user` from the config, or set it to `""`, and restart the daemon. Model processes
+then run as the daemon user again.
+
+To remove the host set-up, stop the daemon first and run:
+
+```bash
+sudo scripts/box/setup-agent-user.sh --daemon-user <daemon-user> --undo
+```
+
+The undo removes the sudoers rule, stops every process of the agent user, stops and disables the
+boot unit, removes the firewall chain, and last restores the cloud-init sudoers file from its
+newest backup. The user, the group and the directories stay: the commands to delete them are
+printed, not run.
