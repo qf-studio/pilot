@@ -3449,6 +3449,22 @@
           "https://github.com/qf-studio/studio-sdk/issues/171",
           "https://github.com/qf-studio/pilot/issues/6722"
         ]
+      },
+      "TASK-659": {
+        "path": ".agent/tasks/TASK-659-sdk-credential-leak-tests.md",
+        "title": "SDK credential leak hardening \u2014 a leak test for each adapter HTTP client of the SDK, a redact helper, the Telegram token out of error text, a CI gate",
+        "status": "dispatched",
+        "concepts": [
+          "authentication",
+          "deployment",
+          "api",
+          "context",
+          "markers",
+          "testing"
+        ],
+        "issues": [
+          "https://github.com/qf-studio/studio-sdk/issues/173"
+        ]
       }
     },
     "memories": {
@@ -14386,6 +14402,36 @@
       "from": "TASK-658",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-659",
+      "to": "authentication",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-659",
+      "to": "deployment",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-659",
+      "to": "api",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-659",
+      "to": "context",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-659",
+      "to": "markers",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-659",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -14582,7 +14628,8 @@
       "TASK-656",
       "TASK-657",
       "mem-345",
-      "TASK-658"
+      "TASK-658",
+      "TASK-659"
     ],
     "approval": [
       "approvals-off-stage-auto-merge",
@@ -14673,7 +14720,8 @@
       "TASK-650",
       "TASK-657",
       "mem-346",
-      "TASK-658"
+      "TASK-658",
+      "TASK-659"
     ],
     "auto-merge": [
       "mem-103",
@@ -15018,7 +15066,8 @@
       "TASK-655",
       "TASK-656",
       "TASK-657",
-      "TASK-658"
+      "TASK-658",
+      "TASK-659"
     ],
     "conversational-bot": [
       "mem-036",
@@ -15339,7 +15388,8 @@
       "mem-347",
       "mem-348",
       "mem-351",
-      "TASK-658"
+      "TASK-658",
+      "TASK-659"
     ],
     "dispatch": [
       "auto-preserved-wip-recover-by-cherry-pick-continuation",
@@ -15953,7 +16003,8 @@
       "TASK-647",
       "TASK-651",
       "TASK-650",
-      "TASK-656"
+      "TASK-656",
+      "TASK-659"
     ],
     "memory": [
       "TASK-358",
@@ -16474,7 +16525,8 @@
       "mem-337",
       "mem-338",
       "mem-346",
-      "TASK-658"
+      "TASK-658",
+      "TASK-659"
     ],
     "testing-quality": [
       "TASK-384",
@@ -17207,10 +17259,10 @@
       "mem-353"
     ]
   },
-  "last_updated": "2026-11-25T14:20:10.785587+00:00",
+  "last_updated": "2026-11-27T09:24:56.161073+00:00",
   "stats": {
-    "total_nodes": 845,
-    "total_edges": 902,
+    "total_nodes": 846,
+    "total_edges": 908,
     "memory_count": 478
   },
   "metadata": {
