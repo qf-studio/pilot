@@ -10030,6 +10030,33 @@
         ],
         "created": "2026-11-27",
         "last_validated": "2026-11-27"
+      },
+      "mem-357": {
+        "type": "learning",
+        "summary": "Review after a merge, limits of a mutation run (2026-11-27): the session reviewed two SDK pull requests for a Plane poller option with mutations, each mutation failed the right test, and the verdict was no finding. The daemon's own review then found that the same tests gave their result by timing: the test helper cancelled the poller context at an early signal (the done label), before the last asserted request (the state update) left. A mutation that fails the right test one time does not prove that a test is free of timing. For a test that stops a loop or a poller by a signal, check that the signal comes after the last asserted effect in the code order, and run the test 20 times with the race detector. Two more rules of that day: a scripted mutation counts only when the script reports that it changed the file and the failed test is the intended one; and a ticket that adds an option must name the production caller path (the option was added to the poller, and the daemon builds the poller through the adapter, which made its own option list).",
+        "path": "memories/learnings/mem-357.md",
+        "confidence": 0.85,
+        "concepts": [
+          "testing",
+          "testing-quality",
+          "plane",
+          "sdk"
+        ],
+        "created": "2026-11-27",
+        "last_validated": "2026-11-27"
+      },
+      "mem-358": {
+        "type": "learning",
+        "summary": "Whole-package test runs in a review (2026-11-27): the Go default limit of 10 minutes for a package is too short for the executor test package on a laptop (842 s); the CI passes -timeout 20m. Pass -timeout 25m. To prove that tests leave nothing in the temporary directory, run the package with TMPDIR set to a fresh empty directory and list it after the run, on the merge commit and on its parent; a run that stops at the time limit proves nothing, because a killed test skips its clean-up.",
+        "path": "memories/learnings/mem-358.md",
+        "confidence": 0.85,
+        "concepts": [
+          "testing",
+          "temp-directories",
+          "testing-quality"
+        ],
+        "created": "2026-11-27",
+        "last_validated": "2026-11-27"
       }
     }
   },
@@ -16763,7 +16790,9 @@
       "TASK-659",
       "TASK-660",
       "TASK-661",
-      "TASK-662"
+      "TASK-662",
+      "mem-357",
+      "mem-358"
     ],
     "testing-quality": [
       "TASK-384",
@@ -16779,7 +16808,9 @@
       "mem-164",
       "mem-165",
       "unwired-config-field-validated-but-dead",
-      "mem-352"
+      "mem-352",
+      "mem-357",
+      "mem-358"
     ],
     "theory-of-mind": [
       "TASK-394",
@@ -17491,10 +17522,12 @@
     ],
     "plane": [
       "mem-352",
-      "mem-353"
+      "mem-353",
+      "mem-357"
     ],
     "sdk": [
-      "mem-352"
+      "mem-352",
+      "mem-357"
     ],
     "webhook": [
       "mem-353"
@@ -17521,14 +17554,15 @@
       "mem-356"
     ],
     "temp-directories": [
-      "mem-356"
+      "mem-356",
+      "mem-358"
     ]
   },
-  "last_updated": "2026-11-27T16:11:05.372269+00:00",
+  "last_updated": "2026-11-27T18:21:10.441433+00:00",
   "stats": {
-    "total_nodes": 859,
+    "total_nodes": 861,
     "total_edges": 924,
-    "memory_count": 481
+    "memory_count": 483
   },
   "metadata": {
     "last_updated": null
