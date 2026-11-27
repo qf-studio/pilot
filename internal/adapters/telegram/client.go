@@ -318,11 +318,16 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]*
 	return result.Result, nil
 }
 
-// Verify confirms the bot token is valid by making a lightweight getUpdates
-// call (offset=0, timeout=0 for an immediate, non-blocking response) —
-// mirrors the onboarding probe in cmd/pilot/onboard_notify.go.
+// Verify confirms the bot token is valid by asking for the bot identity
+// (getMe) — mirrors the onboarding probe in cmd/pilot/onboard_notify.go.
+//
+// Decision: getMe, not getUpdates. Telegram serves one getUpdates client per
+// bot at a time and answers a second one with 409 "Conflict: terminated by
+// other getUpdates request"; the poller of the same daemon holds a long
+// getUpdates request, so a getUpdates probe failed a working adapter. getMe
+// takes no part in that lock. GH-6734.
 func (c *Client) Verify(ctx context.Context) error {
-	if _, err := c.GetUpdates(ctx, 0, 0); err != nil {
+	if _, err := c.GetMe(ctx); err != nil {
 		return fmt.Errorf("telegram token invalid: %w", err)
 	}
 	return nil

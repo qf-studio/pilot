@@ -186,6 +186,10 @@ func validateSlackConn(token string) (string, error) {
 	return "pilot-bot", nil
 }
 
+// newTelegramClient builds the client validateTelegramConn probes with.
+// Injectable so tests can point it at a test server.
+var newTelegramClient = telegram.NewClient
+
 // validateTelegramConn validates a Telegram bot token and returns the bot username.
 func validateTelegramConn(token string) (string, error) {
 	// Basic format validation
@@ -193,17 +197,23 @@ func validateTelegramConn(token string) (string, error) {
 		return "", fmt.Errorf("invalid token format")
 	}
 
-	// Create client and get bot info
-	client := telegram.NewClient(token)
+	client := newTelegramClient(token)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Try to get updates (validates token) - offset=0, timeout=0 for quick check
-	_, err := client.GetUpdates(ctx, 0, 0)
+	// getMe validates the token and names the bot; unlike getUpdates it does
+	// not collide with a running poller of the same bot (409). GH-6734.
+	me, err := client.GetMe(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to validate token: %w", err)
 	}
 
-	// Return placeholder - in production this would call getMe
-	return "pilot_bot", nil
+	switch {
+	case me != nil && me.Username != "":
+		return me.Username, nil
+	case me != nil && me.FirstName != "":
+		return me.FirstName, nil
+	default:
+		return "pilot_bot", nil
+	}
 }
