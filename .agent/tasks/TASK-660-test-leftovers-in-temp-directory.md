@@ -46,7 +46,7 @@ The tests of Pilot leave nothing in the temporary directory after a normal run. 
 - [ ] 1. The executor tests remove the worktree and the two repository directories that they create; two more tests stop leaving a file (L1)
 
 ### Phase 2: The box
-- [ ] 2. The session removes the 1,279 old test worktrees and the other test leftovers older than 24 hours from the box (operator)
+- [x] 2. The session removes the 1,279 old test worktrees and the other test leftovers older than 24 hours from the box (operator) — done 11-27 16:12Z: 1,431 entries removed (1,276 GH-5399 test worktrees, each with a dead git pointer; 82 pilot-dispatcher-test; 50 pilot-empty-hooks; 23 of four other test prefixes); the entries of the temporary directory went from 2,348 to 917; 3 GH-5399 worktrees and 33 pairs of the helper directories are younger than 24 hours and stay; 80 entries with the prefix tmp. have no known source and stay
 - [ ] 3. The session counts the leftovers one day after the release with step 1 is on the box (operator, needs 1)
 
 ### Side tracks
