@@ -342,6 +342,12 @@ func setupTestRepoWithRemote(t *testing.T) (string, string) {
 		_ = os.RemoveAll(remoteDir)
 		t.Fatalf("failed to create local dir: %v", err)
 	}
+	// GH-6733: some callers drop a path with the blank identifier; the
+	// helper owns the removal so no repository is left in os.TempDir().
+	t.Cleanup(func() {
+		_ = os.RemoveAll(remoteDir)
+		_ = os.RemoveAll(localDir)
+	})
 
 	cmd = exec.Command("git", "init", "-b", "main")
 	cmd.Dir = localDir

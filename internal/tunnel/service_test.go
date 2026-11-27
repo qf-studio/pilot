@@ -94,7 +94,7 @@ func TestLaunchdPlistTemplate(t *testing.T) {
 		WorkingDir:      "/tmp",
 	}
 
-	tmpFile, err := os.CreateTemp("", "plist-test-*.plist")
+	tmpFile, err := os.CreateTemp(t.TempDir(), "plist-test-*.plist")
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
