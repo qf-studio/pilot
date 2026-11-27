@@ -228,6 +228,58 @@ func TestGitAskpassHelperPathIgnoresAForeignFileWithTheOldName(t *testing.T) {
 	}
 }
 
+// GH-6747: removeGitAskpassHelperDir removes the directory that
+// gitAskpassHelperPath made in this process, and a second removal is no
+// error. The test runs against a helper state of its own
+// (resetGitAskpassHelper), so the helper of the process stays for the tests
+// after it.
+func TestRemoveGitAskpassHelperDir(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	resetGitAskpassHelper(t)
+
+	path, err := gitAskpassHelperPath()
+	if err != nil {
+		t.Fatalf("gitAskpassHelperPath() error = %v", err)
+	}
+	dir := filepath.Dir(path)
+	if filepath.Dir(dir) != tmp {
+		t.Fatalf("helper %q is not in a directory directly below TMPDIR %q", path, tmp)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Fatalf("helper directory %q before the removal: stat err = %v, want a directory", dir, err)
+	}
+
+	if err := removeGitAskpassHelperDir(); err != nil {
+		t.Fatalf("removeGitAskpassHelperDir() error = %v", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("helper directory %q after the removal: stat err = %v, want not exist", dir, err)
+	}
+	if err := removeGitAskpassHelperDir(); err != nil {
+		t.Errorf("second removeGitAskpassHelperDir() error = %v, want nil", err)
+	}
+}
+
+// GH-6747: in a process that made no helper, removeGitAskpassHelperDir is
+// no error and removes nothing.
+func TestRemoveGitAskpassHelperDirWithoutHelper(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	resetGitAskpassHelper(t)
+
+	if err := removeGitAskpassHelperDir(); err != nil {
+		t.Fatalf("removeGitAskpassHelperDir() error = %v", err)
+	}
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatalf("read %s: %v", tmp, err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("TMPDIR %q has %d entries after the removal, want none", tmp, len(entries))
+	}
+}
+
 // tokenCommandKinds are the git commands that carry the token: the push, the
 // two ls-remote probes and the fetch of the count, by a part of their argv.
 var tokenCommandKinds = map[string]string{

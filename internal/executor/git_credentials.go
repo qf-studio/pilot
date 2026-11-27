@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -207,4 +208,29 @@ func gitAskpassHelperPath() (string, error) {
 		gitAskpassPath = path
 	})
 	return gitAskpassPath, gitAskpassErr
+}
+
+// errGitAskpassHelperRemoved is the error of gitAskpassHelperPath after
+// removeGitAskpassHelperDir ran in a process that had made no helper.
+var errGitAskpassHelperRemoved = errors.New("git askpass helper directory was removed")
+
+// removeGitAskpassHelperDir removes the private directory that
+// gitAskpassHelperPath made in this process, and does nothing when the
+// process made none. A second call is no error.
+//
+// Decision (GH-6747): the daemon is one long process and keeps its one
+// directory; a test binary is a new process for each run, so its TestMain
+// calls this after the tests, or each run leaves a pilot-askpass- directory
+// in the temporary directory. Only test code calls it. The path comes from
+// the package state, never from a search by name prefix, so the directory of
+// another process is never touched. The empty Do waits for a helper write in
+// progress and reads the path after it; when no helper was made, it marks the
+// once as done with an error, so no helper directory is made after the
+// removal. The process must not use the helper after this call.
+func removeGitAskpassHelperDir() error {
+	gitAskpassOnce.Do(func() { gitAskpassErr = errGitAskpassHelperRemoved })
+	if gitAskpassPath == "" {
+		return nil
+	}
+	return os.RemoveAll(filepath.Dir(gitAskpassPath))
 }
