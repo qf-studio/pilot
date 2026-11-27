@@ -181,6 +181,19 @@ On the poll path, Pilot applies labels to track issue status:
 | `pilot-done` | Execution succeeded |
 | `pilot-failed` | Execution failed |
 
+### Comments Posted
+
+On the poll path, Pilot posts one comment on the work item for each event:
+
+| Event | Comment |
+|-------|---------|
+| Task dispatched | `Pilot started working on this issue` |
+| Pull request opened | `PR created` with the number and the link (not posted again when a later run returns the same pull request) |
+| Execution failed | `Pilot execution failed` with the error |
+| Execution succeeded with no change | `Pilot execution completed but no changes were made` with the branch and the duration |
+
+A run that succeeds with a commit but no pull request, or an epic, posts `Pilot execution completed successfully` with the branch and the duration. A superseded or canceled run posts no comment.
+
 ## Task ID Format
 
 The task ID is built from the sequence number of the work item, the number of the work item in its project; the Plane project identifier is not used. The two paths give different task IDs:

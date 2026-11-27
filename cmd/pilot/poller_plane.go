@@ -57,16 +57,6 @@ func planePollerRegistration() PollerRegistration {
 					result, err := handlePlaneIssueWithResult(issueCtx, deps.Cfg, planeClient, ev, projectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
 					recordPlaneLink(links, ev, result, err)
 
-					// GH-2132: Link PR via notifier
-					if result != nil && result.PRNumber > 0 {
-						if linkErr := planeNotifier.LinkPR(issueCtx, ev.ProjectID, ev.IssueID, result.PRNumber, result.PRURL); linkErr != nil {
-							logging.WithComponent("plane").Warn("Failed to link PR",
-								slog.String("work_item_id", ev.IssueID),
-								slog.Any("error", linkErr),
-							)
-						}
-					}
-
 					return result, err
 				}),
 			}
