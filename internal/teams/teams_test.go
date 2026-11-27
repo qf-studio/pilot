@@ -11,7 +11,7 @@ import (
 func setupTestDB(t *testing.T) (*sql.DB, func()) {
 	t.Helper()
 
-	tmpFile, err := os.CreateTemp("", "pilot-teams-test-*.db")
+	tmpFile, err := os.CreateTemp(t.TempDir(), "pilot-teams-test-*.db")
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
 	}

@@ -193,6 +193,14 @@ func TestSuccessPath_TaskCtxExpired_GatesFail_NoPR_FailsNormally(t *testing.T) {
 // worktree isolation enabled, and asserts the worktree directory and its
 // local branch both survive on disk, and the needs-human comment names them.
 func TestBackendTimeoutSalvage_PushFailure_PreservesWorktreeAndBranch(t *testing.T) {
+	runGH5399PushFailurePreservesWorktree(t)
+}
+
+// runGH5399PushFailurePreservesWorktree is the body of
+// TestBackendTimeoutSalvage_PushFailure_PreservesWorktreeAndBranch, shared
+// with TestTempLeftovers_GH5399WorktreeIsRemoved (GH-6733).
+func runGH5399PushFailurePreservesWorktree(t *testing.T) {
+	t.Helper()
 	ghLogPath := filepath.Join(t.TempDir(), "gh-calls.log")
 	ghAppendLogScript(t, ghLogPath)
 
@@ -201,6 +209,18 @@ func TestBackendTimeoutSalvage_PushFailure_PreservesWorktreeAndBranch(t *testing
 
 	var mu sync.Mutex
 	var capturedWorktreePath string
+	// GH-6733: the test asserts the worktree survives the failed push, so
+	// production code never removes it; the test does, once it is done.
+	// Registered before the assertions so a failed one cannot skip it. The
+	// worktree's git metadata lives in dir, a t.TempDir(), so no git command
+	// is needed.
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if capturedWorktreePath != "" {
+			_ = os.RemoveAll(capturedWorktreePath)
+		}
+	})
 
 	taskCtx := newManualDeadlineCtx()
 	defer taskCtx.expire()
