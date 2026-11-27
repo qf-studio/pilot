@@ -177,3 +177,140 @@ func TestOnboardPlaneTickets(t *testing.T) {
 		})
 	}
 }
+
+// TestOnboardPlaneProjectPairing drives onboardPlaneProjectPairing with
+// scripted input (GH-6764).
+func TestOnboardPlaneProjectPairing(t *testing.T) {
+	tests := []struct {
+		name     string
+		projects []string          // project entry names, config order
+		planeIDs []string          // polled Plane project IDs
+		before   map[string]string // pairings of before: entry -> Plane ID
+		input    []string
+		want     map[string]string // pairings after: entry -> Plane ID
+		wantAsk  bool
+		wantOut  string
+	}{
+		{
+			name:     "one project entry",
+			projects: []string{"api"},
+			planeIDs: []string{"plane-a", "plane-b"},
+			input:    []string{"1"},
+			want:     map[string]string{},
+		},
+		{
+			name:     "two entries and one Plane project",
+			projects: []string{"api", "web"},
+			planeIDs: []string{"plane-a"},
+			input:    []string{"1", "1"},
+			want:     map[string]string{},
+		},
+		{
+			name:     "two valid choices",
+			projects: []string{"api", "web"},
+			planeIDs: []string{"plane-a", "plane-b"},
+			input:    []string{"2", "1"},
+			want:     map[string]string{"api": "plane-b", "web": "plane-a"},
+			wantAsk:  true,
+		},
+		{
+			name:     "taken project is not offered",
+			projects: []string{"api", "web"},
+			planeIDs: []string{"plane-a", "plane-b"},
+			input:    []string{"1", "1", "2"},
+			want:     map[string]string{"api": "plane-a", "web": "plane-b"},
+			wantAsk:  true,
+		},
+		{
+			name:     "first takes a project and second answers empty",
+			projects: []string{"api", "web"},
+			planeIDs: []string{"plane-a", "plane-b"},
+			input:    []string{"1", ""},
+			want:     map[string]string{"api": "plane-a"},
+			wantAsk:  true,
+		},
+		{
+			name:     "wrong answer two times",
+			projects: []string{"api", "web"},
+			planeIDs: []string{"plane-a", "plane-b"},
+			input:    []string{"x", "7", ""},
+			want:     map[string]string{},
+			wantAsk:  true,
+		},
+		{
+			name:     "pairing of before stays on empty answer",
+			projects: []string{"api", "web"},
+			planeIDs: []string{"plane-a", "plane-b"},
+			before:   map[string]string{"web": "plane-b"},
+			input:    []string{"", ""},
+			want:     map[string]string{"web": "plane-b"},
+			wantAsk:  true,
+			wantOut:  "web — Plane project (1, 2; empty keeps 2)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Adapters.Plane = plane.DefaultConfig()
+			cfg.Adapters.Plane.ProjectIDs = tt.planeIDs
+			for _, name := range tt.projects {
+				p := &config.ProjectConfig{Name: name, Path: "/tmp/" + name}
+				if id, ok := tt.before[name]; ok {
+					p.Plane = &config.ProjectPlaneConfig{ProjectID: id}
+				}
+				cfg.Projects = append(cfg.Projects, p)
+			}
+			state := &OnboardState{
+				Persona: PersonaEnterprise,
+				Config:  cfg,
+				Reader:  bufio.NewReader(strings.NewReader(strings.Join(tt.input, "\n") + "\n")),
+			}
+
+			out := captureStdout(func() {
+				onboardPlaneProjectPairing(state)
+			})
+
+			asked := strings.Contains(out, "Plane project (")
+			if asked != tt.wantAsk {
+				t.Errorf("asked = %v, want %v; output:\n%s", asked, tt.wantAsk, out)
+			}
+			if !tt.wantAsk && out != "" {
+				t.Errorf("output = %q, want none", out)
+			}
+
+			got := map[string]string{}
+			for _, p := range cfg.Projects {
+				if p.Plane != nil {
+					got[p.Name] = p.Plane.ProjectID
+				}
+			}
+			if len(got) != len(tt.want) {
+				t.Errorf("pairings = %v, want %v", got, tt.want)
+			}
+			for name, id := range tt.want {
+				if got[name] != id {
+					t.Errorf("pairing of %s = %q, want %q (all: %v)", name, got[name], id, got)
+				}
+			}
+			for name, id := range got {
+				polled := false
+				for _, pid := range tt.planeIDs {
+					polled = polled || pid == id
+				}
+				if !polled {
+					t.Errorf("pairing of %s = %q, not a polled ID", name, id)
+				}
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("Validate() error = %v", err)
+			}
+			if tt.wantOut != "" && !strings.Contains(out, tt.wantOut) {
+				t.Errorf("output lacks %q:\n%s", tt.wantOut, out)
+			}
+			if tt.wantAsk && !strings.Contains(out, "go to the default project (api)") {
+				t.Errorf("output lacks the default project line:\n%s", out)
+			}
+		})
+	}
+}
