@@ -1,6 +1,6 @@
 # TASK-660: Test leftovers in the temporary directory — the Pilot tests remove what they create, and the box is cleaned one time
 
-**Status**: 🚀 **L1 DISPATCHED 2026-11-27 16:10Z → [pilot#6733](https://github.com/qf-studio/pilot/issues/6733) (`pilot` + `no-decompose`): the executor tests remove the worktree and the repository directories that they create.** The box clean-up is a step of the session (the 1,279 old test worktrees and the other test leftovers older than 24 hours). A temporary directory for each run is held until the count one day after the release.
+**Status**: 🚀 **State 2026-11-27 17:25Z: the review of PR#6740 is done (comment on the PR). The whole executor package with a fresh, empty temporary directory (macOS, 842 s) leaves no directory of the three fixed kinds. It leaves ONE directory with the prefix pilot-askpass-: the function gitAskpassHelperPath makes it one time for each process and nothing removes it. A second ticket (L2) removes it at the end of the test binary.** One test of that run failed on the laptop and fails on the parent commit too (TestMemoryGraphBudgetCountsOnlyFailedReads, the case with the cancelled context); the CI is green; not from this change. **State 2026-11-27 17:15Z: the test fix merged ([pilot#6733](https://github.com/qf-studio/pilot/issues/6733) → PR#6740, 16:55Z). Review after the merge: the three tests of the ticket pass, a mutation of the helper clean-up fails the right test; a run of the whole executor package with a fresh temporary directory is in work (the first try stopped at the 10-minute default limit of Go and gave no result).** Earlier state: **L1 DISPATCHED 2026-11-27 16:10Z → [pilot#6733](https://github.com/qf-studio/pilot/issues/6733) (`pilot` + `no-decompose`): the executor tests remove the worktree and the repository directories that they create.** The box clean-up is a step of the session (the 1,279 old test worktrees and the other test leftovers older than 24 hours). A temporary directory for each run is held until the count one day after the release.
 **Created**: 2026-11-27
 **Assignee**: Pilot (one ticket) + the session (box clean-up, a count one day later)
 
@@ -43,7 +43,8 @@ The tests of Pilot leave nothing in the temporary directory after a normal run. 
 ## Route
 
 ### Phase 1: The tests clean up
-- [ ] 1. The executor tests remove the worktree and the two repository directories that they create; two more tests stop leaving a file (L1)
+- [x] 1. The executor tests remove the worktree and the two repository directories that they create; two more tests stop leaving a file (L1) — pilot#6733, merged 11-27 16:55Z; not released yet
+- [ ] 1a. The test binary of the executor package removes the askpass helper directory that the process made (L2)
 
 ### Phase 2: The box
 - [x] 2. The session removes the 1,279 old test worktrees and the other test leftovers older than 24 hours from the box (operator) — done 11-27 16:12Z: 1,431 entries removed (1,276 GH-5399 test worktrees, each with a dead git pointer; 82 pilot-dispatcher-test; 50 pilot-empty-hooks; 23 of four other test prefixes); the entries of the temporary directory went from 2,348 to 917; 3 GH-5399 worktrees and 33 pairs of the helper directories are younger than 24 hours and stay; 80 entries with the prefix tmp. have no known source and stay
@@ -153,9 +154,47 @@ Production code. A temporary directory for each run. A lint for os.MkdirTemp. Te
 
 - Navigator TASK-660 in this repo
 
+### LEG L2 — repo: qf-studio/pilot — title: test(executor): the test binary removes the askpass helper directory of its process — one more leftover of each test run
+
+probe: present qf-studio/pilot func[[:space:]]gitAskpassHelperPath\(\)
+probe: present qf-studio/pilot func[[:space:]]TestTempLeftovers_SetupTestRepoWithRemote\(
+probe: absent  qf-studio/pilot func[[:space:]]removeGitAskpassHelperDir\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-660. The quality gates run the Go tests on a host whose temporary directory is memory, and test leftovers collect there. Issue 6733 fixed three sources. A run of the whole executor test package with a fresh, empty TMPDIR then left exactly one entry: a directory with the name prefix pilot-askpass-.
+
+The source is production code that is correct for the daemon: gitAskpassHelperPath in `internal/executor/git_credentials.go` writes the askpass helper script one time for each process into a private directory made by os.MkdirTemp (decision GH-6694: a private directory, never a fixed name). The daemon is one long process, so one directory is right. A test binary is a new process for each run, so each run of the tests leaves one directory. The test entry point of the package is TestMain in `internal/executor/gitenv_testmain_test.go`; it ends with os.Exit, so a deferred call there does not run.
+
+## Scope
+
+1. `internal/executor/git_credentials.go`: a small unexported function removeGitAskpassHelperDir that removes the directory of the helper script when this process made one, and does nothing in the other case. It must remove only the directory that gitAskpassHelperPath made in this process (take the path from the package state; no search by name prefix). No production code calls it. Do not change gitAskpassHelperPath, except what the new function needs to read the path safely.
+2. `internal/executor/gitenv_testmain_test.go`: TestMain keeps the exit code of the run, calls removeGitAskpassHelperDir, and then exits with that code.
+3. A test in the directory of `internal/executor/git_credentials.go` (put it into the existing test file of the credentials code): TestRemoveGitAskpassHelperDir. It must not break other tests that use the helper after it in the same process: the test runs the two functions against a temporary state of its own (for example a helper that takes the state as a parameter, with the package functions as thin wrappers), makes the directory, asserts that it exists, removes it, and asserts that it is gone and that a second removal is no error.
+4. Check the other test packages whose code reaches gitAskpassHelperPath (search for callers; the daemon command package is a candidate). For each such package with its own TestMain, add the same removal. For a package with no TestMain, do NOT add one in this issue; list the package in the PR body.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/executor/ -run 'TestRemoveGitAskpassHelperDir|TestTempLeftovers'` passes; paste the output into the PR body.
+- [ ] `go build ./...` passes; paste the output into the PR body.
+- [ ] Make removeGitAskpassHelperDir do nothing -> TestRemoveGitAskpassHelperDir fails
+- [ ] The PR body shows the entries of a fresh, empty TMPDIR after a run of the git credentials tests of the package (the test names that match GitAskpass or Credential), before and after the change.
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The daemon and each other production caller. A fixed path for the helper script. A temporary directory for each run. Other leftover kinds.
+
+## Refs
+
+- Navigator TASK-660 in this repo
+
 ## Refs
 
 - L1 → https://github.com/qf-studio/pilot/issues/6733
+- L2 → https://github.com/qf-studio/pilot/issues/6747
 
 - Research of 2026-11-27 (session): a scan of the 317 test call sites of os.MkdirTemp and os.CreateTemp; a read of the box at 16:03Z (entries by owner and prefix, the git pointer of each GH-5399 directory).
 - Memory mem-356 (the incident of 11-27, corrected by this task).

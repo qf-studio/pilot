@@ -3524,7 +3524,8 @@
           "knowledge"
         ],
         "issues": [
-          "https://github.com/qf-studio/pilot/issues/6733"
+          "https://github.com/qf-studio/pilot/issues/6733",
+          "https://github.com/qf-studio/pilot/issues/6747"
         ]
       },
       "TASK-661": {
@@ -3545,7 +3546,9 @@
         "issues": [
           "https://github.com/qf-studio/pilot/issues/6734",
           "https://github.com/qf-studio/pilot/issues/6735",
-          "https://github.com/qf-studio/pilot/issues/6736"
+          "https://github.com/qf-studio/pilot/issues/6736",
+          "https://github.com/qf-studio/pilot/issues/6745",
+          "https://github.com/qf-studio/pilot/issues/6748"
         ]
       },
       "TASK-662": {
