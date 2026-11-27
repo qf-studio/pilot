@@ -1,6 +1,6 @@
 # TASK-661: First-run commands — the Telegram check stops its own conflict, and `pilot onboard`, `pilot doctor` and the config check know Plane and the agent user option
 
-**Status**: 🚀 **F1, F2, F3 DISPATCHED 2026-11-27 16:10Z (`pilot` + `no-decompose`): the Telegram check asks for the bot identity → [pilot#6734](https://github.com/qf-studio/pilot/issues/6734); the daemon checks the Plane key → [pilot#6735](https://github.com/qf-studio/pilot/issues/6735); the documentation page of the agent user option → [pilot#6736](https://github.com/qf-studio/pilot/issues/6736).** Held, written when the step before is merged: the Plane row of `pilot doctor`, the config check of the Plane block, Plane in `pilot onboard` (two steps), the agent user option in `pilot doctor` (two steps).
+**Status**: 🚀 **State 2026-11-27 16:55Z: the Telegram check merged ([pilot#6734](https://github.com/qf-studio/pilot/issues/6734) → PR#6738, 16:43Z; reviewed after the merge with two mutations, no finding; CheckSingleton has no change). It is not released yet; after the release, read the box log for three days.** Earlier state: **F1, F2, F3 DISPATCHED 2026-11-27 16:10Z (`pilot` + `no-decompose`): the Telegram check asks for the bot identity → [pilot#6734](https://github.com/qf-studio/pilot/issues/6734); the daemon checks the Plane key → [pilot#6735](https://github.com/qf-studio/pilot/issues/6735); the documentation page of the agent user option → [pilot#6736](https://github.com/qf-studio/pilot/issues/6736).** Held, written when the step before is merged: the Plane row of `pilot doctor`, the config check of the Plane block, Plane in `pilot onboard` (two steps), the agent user option in `pilot doctor` (two steps).
 **Created**: 2026-11-27
 **Assignee**: Pilot (one ticket at a time)
 
@@ -41,7 +41,7 @@ The daemon check of Telegram makes no conflict. A user can set up Plane in the w
 ## Route
 
 ### Phase 1: Checks (three tickets with no dependency)
-- [ ] 1. The Telegram check asks for the bot identity, not for updates; the wizard shows the real bot name (F1)
+- [x] 1. The Telegram check asks for the bot identity, not for updates; the wizard shows the real bot name (F1) — pilot#6734, merged 11-27 16:43Z
 - [ ] 2. The daemon checks the Plane key at the start and in the health loop (F2)
 - [ ] 3. A documentation page for the agent user option and its host script (F3)
 
