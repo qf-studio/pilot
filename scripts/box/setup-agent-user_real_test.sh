@@ -30,7 +30,10 @@
 # user is stopped), a second undo; with ip6tables hidden from PATH the apply
 # fails and no sudoers rule file exists; a full apply, then an apply with
 # ip6tables hidden: the sudoers rule file of the full apply is removed; then the
-# printed cleanup; invalid arguments.
+# printed cleanup; invalid arguments. After the second apply: an apply with
+# --gateway-port 9090 leaves the rules (chain and boot unit) of port 9090 only,
+# the agent user reaches 9091 then and not 9090; an apply with the default
+# brings 9091 back.
 #
 # Usage (CI): sudo --preserve-env=CI ./scripts/box/setup-agent-user_real_test.sh
 
@@ -75,6 +78,7 @@ RULES_FILE="/etc/sudoers.d/93-pilotrt-rules"
 OPS_GROUP="pilotrt-ops"
 METADATA="169.254.169.254"
 OTHER_PORT="18080"
+ALT_GATEWAY_PORT="9090"
 
 for name in "$DAEMON" "$AGENT"; do
     if id -u "$name" >/dev/null 2>&1; then
@@ -185,20 +189,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The rules the script must put in the chain, per family, as arguments for -C.
+# rules_of BIN [PORT] — the rules the script must put in the chain, per family,
+# as arguments for -C; PORT is the gateway port (default 9091).
 rules_of() {
-    local loopback=127.0.0.1 meta="$METADATA"
+    local loopback=127.0.0.1 meta="$METADATA" port="${2:-9091}"
     if [ "$1" = ip6tables ]; then
         loopback=::1
         meta="fd00:ec2::254"
     fi
     echo "-d ${meta} -j REJECT"
-    echo "-p tcp -d ${loopback} --dport 9091 -j REJECT --reject-with tcp-reset"
-    echo "-p tcp --dport 9091 -m addrtype --dst-type LOCAL -o lo -j REJECT --reject-with tcp-reset"
+    echo "-p tcp -d ${loopback} --dport ${port} -j REJECT --reject-with tcp-reset"
+    echo "-p tcp --dport ${port} -m addrtype --dst-type LOCAL -o lo -j REJECT --reject-with tcp-reset"
 }
 
-# firewall_in_place BIN — the chain with exactly the three rules, the jump first
-# in OUTPUT and the only one, no temporary chain. iptables -S prints the uid.
+# firewall_in_place BIN [PORT] — the chain with exactly the three rules (of the
+# gateway port PORT, default 9091), the jump first in OUTPUT and the only one,
+# no temporary chain. iptables -S prints the uid.
 firewall_in_place() {
     local bin="$1" rule
     "$bin" -w -C OUTPUT -m owner --uid-owner "$AGENT" -j "$CHAIN" || return 1
@@ -207,7 +213,7 @@ firewall_in_place() {
     while IFS= read -r rule; do
         # shellcheck disable=SC2086 # the rule is a list of words on purpose
         "$bin" -w -C "$CHAIN" $rule || return 1
-    done < <(rules_of "$bin")
+    done < <(rules_of "$bin" "${2:-9091}")
     [ "$("$bin" -w -S "$CHAIN" | grep -c '^-A ')" = 3 ] || return 1
     ! "$bin" -w -S | grep -qE "^-N ${CHAIN}_(NEW|ALT)\$"
 }
@@ -593,6 +599,51 @@ else
     fail_test "second apply: ${skipped} of 11 steps skipped"
 fi
 
+echo "=== real test: an apply with --gateway-port ${ALT_GATEWAY_PORT} on a host set up for 9091 ==="
+listen 127.0.0.1 "$ALT_GATEWAY_PORT"
+listen ::1 "$ALT_GATEWAY_PORT"
+check "the agent user reaches port ${ALT_GATEWAY_PORT} before (the test is not vacuous)" curl_ok "$AGENT" "http://127.0.0.1:${ALT_GATEWAY_PORT}/"
+if run_setup --gateway-port "$ALT_GATEWAY_PORT"; then
+    pass "apply with --gateway-port ${ALT_GATEWAY_PORT} exits 0"
+else
+    show_log
+    fail_test "apply with --gateway-port ${ALT_GATEWAY_PORT} exited non-zero"
+fi
+for s in firewall-ipv4 firewall-ipv6 firewall-unit; do
+    expect_step "$s" "done"
+done
+check "the summary names port ${ALT_GATEWAY_PORT}" grep -qxF "  gateway.port: ${ALT_GATEWAY_PORT}  # in the gateway section: the port the firewall rules protect" "$LOG"
+for bin in iptables ip6tables; do
+    check "${bin}: the chain holds the rules of port ${ALT_GATEWAY_PORT} only, the jump first" firewall_in_place "$bin" "$ALT_GATEWAY_PORT"
+    check_not "${bin}: no rule of port 9091 is left" bash -c "${bin} -w -S ${CHAIN} | grep -q -- '--dport 9091'"
+done
+check "the unit names port ${ALT_GATEWAY_PORT} only" test "$(grep -oE -- '--dport [0-9]+' "$UNIT_FILE" | sort -u)" = "--dport ${ALT_GATEWAY_PORT}"
+check "systemd-analyze verify accepts the unit file" systemd-analyze verify "$UNIT_FILE"
+for bin in iptables ip6tables; do
+    "$bin" -w -D OUTPUT -m owner --uid-owner "$AGENT" -j "$CHAIN"
+    "$bin" -w -F "$CHAIN"
+    "$bin" -w -X "$CHAIN"
+done
+check "systemctl restart ${UNIT}" systemctl restart "$UNIT"
+for bin in iptables ip6tables; do
+    check "${bin}: the boot unit puts back the rules of port ${ALT_GATEWAY_PORT}" firewall_in_place "$bin" "$ALT_GATEWAY_PORT"
+done
+check_not "the agent user cannot reach 127.0.0.1:${ALT_GATEWAY_PORT}" curl_ok "$AGENT" "http://127.0.0.1:${ALT_GATEWAY_PORT}/"
+check_not "the agent user cannot reach [::1]:${ALT_GATEWAY_PORT}" curl_ok "$AGENT" "http://[::1]:${ALT_GATEWAY_PORT}/"
+check "the daemon user reaches 127.0.0.1:${ALT_GATEWAY_PORT}" curl_ok "$DAEMON" "http://127.0.0.1:${ALT_GATEWAY_PORT}/"
+check "the agent user reaches 127.0.0.1:9091 now (no rule of the old port)" curl_ok "$AGENT" "http://127.0.0.1:9091/"
+if run_setup; then
+    pass "an apply with the default port again exits 0"
+else
+    show_log
+    fail_test "an apply with the default port again exited non-zero"
+fi
+for bin in iptables ip6tables; do
+    check "${bin}: back on the rules of port 9091" firewall_in_place "$bin"
+done
+check "the unit names port 9091 only again" test "$(grep -oE -- '--dport [0-9]+' "$UNIT_FILE" | sort -u)" = "--dport 9091"
+check_connections "after the switch back to 9091"
+
 echo "=== real test: undo with go/cache a link to a directory outside the data dir ==="
 as "$AGENT" bash -c 'rmdir "$1/go/cache" && ln -s "$2" "$1/go/cache"' _ "$AHOME" "$OUTSIDE"
 check "go/cache is a link outside the data dir" test -L "${AHOME}/go/cache"
@@ -749,7 +800,7 @@ check_not "after the printed cleanup: no agent root" test -e "$AROOT"
 check "nothing outside the data dir changed by the cleanup" test "$OUTSIDE_BEFORE" = "$(find "$OUTSIDE" -printf '%p %m %U:%G %s\n' | sort)"
 
 echo "=== real test: invalid arguments change nothing ==="
-for args in "--data-dir /usr" "--group wheel" "--group docker" "--agent-user root"; do
+for args in "--data-dir /usr" "--group wheel" "--group docker" "--agent-user root" "--gateway-port 0" "--gateway-port 70000" "--gateway-port abc"; do
     rc=0
     # shellcheck disable=SC2086 # the arguments are a word list on purpose
     CLOUD_INIT_SUDOERS="$CLOUD_INIT" "$SETUP" --daemon-user "$DAEMON" --data-dir "$DATA_DIR" $args --confirm-root-path >"$LOG" 2>&1 || rc=$?

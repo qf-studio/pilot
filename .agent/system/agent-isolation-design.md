@@ -69,7 +69,7 @@ The per-run guard directory, the settings file and the `gh` shim directory are c
 
 ### 4.5 Host rules (no daemon code)
 
-- Firewall, owner match on the agent user: reject the metadata address (IPv4 and IPv6) and local port 9091.
+- Firewall, owner match on the agent user: reject the metadata address (IPv4 and IPv6) and the local gateway port (`--gateway-port` of the set-up script, default 9091; it must match `gateway.port`).
 - Daemon home and daemon user home stay mode 0700.
 - Sudoers: one file for the rule of 4.1; the general rule of the daemon user is removed. Host maintenance uses a root session of the management channel, as it does today.
 

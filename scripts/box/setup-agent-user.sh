@@ -34,9 +34,12 @@
 #   agent-user        system user, no login shell, home AGENT_ROOT/home
 #   daemon-membership daemon user joins the group
 #   firewall-<family> dedicated chain, owner match on the agent user: reject the
-#                     metadata address and TCP to the gateway port on loopback; the
+#                     metadata address and TCP to the gateway port (--gateway-port)
+#                     on loopback; the
 #                     chain is rebuilt under a temporary name and switched in, so
-#                     the reject rules are never missing; a temporary chain that a
+#                     the reject rules are never missing (a run with another
+#                     --gateway-port leaves the rules of the new port only); a
+#                     temporary chain that a
 #                     failed run left is removed. A missing ip6tables fails the
 #                     IPv6 step, unless IPv6 is off on the host (disable_ipv6 is 1
 #                     for every entry of IPV6_CONF_DIR, "all" and "default" too);
@@ -86,15 +89,21 @@
 #
 # On success the summary ends with the values for the executor section of the
 # daemon config: run_as_user, run_as_group, run_as_workspace_dir and
-# run_as_data_dir.
+# run_as_data_dir, and the gateway port the rules protect (gateway.port).
 #
 # Usage: setup-agent-user.sh [--daemon-user U] [--agent-user U] [--group G]
-#                            [--data-dir D] [--agent-root A] [--dry-run] [--undo]
-#                            [--keep-daemon-sudo] [--confirm-root-path]
+#                            [--data-dir D] [--agent-root A] [--gateway-port P]
+#                            [--dry-run] [--undo] [--keep-daemon-sudo]
+#                            [--confirm-root-path]
 #
 #   --agent-root         default DATA_DIR/agent; a directory of root (made when
 #                        missing) whose parent is the data dir or a directory of
 #                        root; it must not hold the data dir
+#   --gateway-port       default 9091; the gateway port of the daemon config
+#                        (gateway.port, default 9090 there): the firewall rejects
+#                        TCP of the agent user to this port, and the startup check
+#                        of run_as_user probes gateway.port, so pass the same value.
+#                        A whole number from 1 to 65535, no leading zero
 #   --confirm-root-path  the operator holds another root session; required when
 #                        the cloud-init file still has a line to comment out (not
 #                        for --dry-run, --undo, --keep-daemon-sudo or a host that is
@@ -219,7 +228,7 @@ usage() {
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --daemon-user | --agent-user | --group | --data-dir | --agent-root)
+        --daemon-user | --agent-user | --group | --data-dir | --agent-root | --gateway-port)
             [ $# -ge 2 ] || die "$1 needs a value"
             case "$1" in
                 --daemon-user) DAEMON_USER="$2" ;;
@@ -227,6 +236,7 @@ while [ $# -gt 0 ]; do
                 --group) GROUP="$2" ;;
                 --data-dir) DATA_DIR="$2" ;;
                 --agent-root) AGENT_ROOT="$2" ;;
+                --gateway-port) GATEWAY_PORT="$2" ;;
             esac
             shift 2
             ;;
@@ -235,6 +245,7 @@ while [ $# -gt 0 ]; do
         --group=*) GROUP="${1#*=}"; shift ;;
         --data-dir=*) DATA_DIR="${1#*=}"; shift ;;
         --agent-root=*) AGENT_ROOT="${1#*=}"; shift ;;
+        --gateway-port=*) GATEWAY_PORT="${1#*=}"; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --undo) UNDO=1; shift ;;
         --keep-daemon-sudo) KEEP_DAEMON_SUDO=1; shift ;;
@@ -260,6 +271,11 @@ for pair in "daemon-user:$DAEMON_USER" "agent-user:$AGENT_USER" "group:$GROUP"; 
     [[ "$pair_value" =~ $NAME_RE ]] || die "--${pair%%:*} must match ${NAME_RE}: '${pair_value}'"
     [ "${#pair_value}" -le 32 ] || die "--${pair%%:*} is longer than 32 characters"
 done
+
+# A leading zero is refused: bash arithmetic reads 010 as octal.
+if ! [[ "$GATEWAY_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$GATEWAY_PORT" -gt 65535 ]; then
+    die "--gateway-port must be a whole number from 1 to 65535: '${GATEWAY_PORT}'"
+fi
 
 is_privileged_group() {
     case " ${PRIVILEGED_GROUPS} " in *" $1 "*) return 0 ;; esac
@@ -1662,7 +1678,9 @@ run_plan() {
     done
 }
 
-# print_config — the values for the executor section of the daemon config.
+# print_config — the values for the executor section of the daemon config, then
+# the gateway port the firewall rules protect: the startup check of run_as_user
+# probes gateway.port, so the config needs the same value.
 print_config() {
     echo
     echo "== daemon config (executor section)"
@@ -1670,6 +1688,7 @@ print_config() {
     printf '  run_as_group: %s\n' "$GROUP"
     printf '  run_as_workspace_dir: %s\n' "$WORKSPACES"
     printf '  run_as_data_dir: %s\n' "$DATA_DIR"
+    printf '  gateway.port: %s  # in the gateway section: the port the firewall rules protect\n' "$GATEWAY_PORT"
 }
 
 # print_mode_restore — the chmods that put back the modes daemon-private found,

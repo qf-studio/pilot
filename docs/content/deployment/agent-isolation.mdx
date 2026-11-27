@@ -72,10 +72,10 @@ calls it. Each step is skipped when it is already done.
 
 ```bash
 # Print every command, change nothing
-sudo scripts/box/setup-agent-user.sh --daemon-user <daemon-user> --dry-run
+sudo scripts/box/setup-agent-user.sh --daemon-user <daemon-user> --gateway-port <gateway.port> --dry-run
 
 # Apply
-sudo scripts/box/setup-agent-user.sh --daemon-user <daemon-user> --confirm-root-path
+sudo scripts/box/setup-agent-user.sh --daemon-user <daemon-user> --gateway-port <gateway.port> --confirm-root-path
 ```
 
 ### Flags
@@ -87,6 +87,7 @@ sudo scripts/box/setup-agent-user.sh --daemon-user <daemon-user> --confirm-root-
 | `--group G` | `pilot` | The shared group |
 | `--data-dir D` | `/var/lib/pilot` | Data directory of the daemon |
 | `--agent-root A` | `DATA_DIR/agent` | Root of the agent directories; must not hold the data dir |
+| `--gateway-port P` | `9091` | The gateway port of the daemon config (`gateway.port`); the firewall rejects TCP of the agent user to it. A whole number from 1 to 65535 |
 | `--dry-run` | | Print every command, change nothing |
 | `--undo` | | Remove the set-up (see [Turning It Off](#turning-it-off)) |
 | `--keep-daemon-sudo` | | Leave the cloud-init sudoers file alone |
@@ -102,7 +103,7 @@ The steps run in this order; an apply stops at the first failed step.
 | `group` | A system group (`pilot`). |
 | `agent-user` | A system user (`pilot-agent`) with no login shell (`/usr/sbin/nologin`) and the home `AGENT_ROOT/home`. |
 | `daemon-membership` | The daemon user joins the group. A running daemon picks up the group at the next restart. |
-| `firewall-ipv4`, `firewall-ipv6` | A chain `PILOT_AGENT_EGRESS`, reached from `OUTPUT` by an owner match on the agent user. It rejects the metadata address (`169.254.169.254`, IPv6 `fd00:ec2::254`) and TCP to port `9091` on loopback and on every local address through `lo`, with a TCP reset. The IPv6 step is skipped when IPv6 is off on the host. |
+| `firewall-ipv4`, `firewall-ipv6` | A chain `PILOT_AGENT_EGRESS`, reached from `OUTPUT` by an owner match on the agent user. It rejects the metadata address (`169.254.169.254`, IPv6 `fd00:ec2::254`) and TCP to the gateway port (`--gateway-port`, default `9091`) on loopback and on every local address through `lo`, with a TCP reset. A run with another `--gateway-port` leaves the rules of the new port only. The IPv6 step is skipped when IPv6 is off on the host. |
 | `firewall-unit` | A oneshot systemd unit `pilot-agent-firewall.service` that applies the chain at boot. |
 | `directories` | The agent root (`root:root 0755`), below it `home` (agent user, `0750`) and `workspaces` (agent user, `2770`), and `go`, `go/cache`, `go/mod` below the home, made by the agent user. |
 | `sudoers-rule` | `/etc/sudoers.d/90-pilot-agent-runas` with `<daemon-user> ALL=(pilot-agent) NOPASSWD: SETENV: ALL`, validated with `visudo` before it is moved into place. |
@@ -122,13 +123,15 @@ On success the summary ends with the values for the config:
   run_as_group: pilot
   run_as_workspace_dir: /var/lib/pilot/agent/workspaces
   run_as_data_dir: /var/lib/pilot
+  gateway.port: 9091  # in the gateway section: the port the firewall rules protect
 ```
 
 <Callout type="warning">
-The firewall rules of the script reject TCP port `9091`, a fixed value of the script. The daemon
-start probes the gateway port of the config (`gateway.port`, default `9090`). With any port other
-than `9091` the probe reaches the port and the startup check fails. Set `gateway.port: 9091` on a
-host that uses the script's rules.
+The firewall rules of the script reject the TCP port of `--gateway-port`; the default of the script
+is `9091`. The daemon start probes the gateway port of the config (`gateway.port`, default `9090`).
+When the two differ the probe reaches the port and the startup check fails. Pass the gateway port
+of the config with the flag (`--gateway-port 9090` for the default config), and check that the
+`gateway.port` line of the summary matches the config.
 </Callout>
 
 ---
