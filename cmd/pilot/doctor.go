@@ -23,6 +23,12 @@ Shows what's working, what's missing, and how to fix issues.
 Examples:
   pilot doctor           # Run all checks
   pilot doctor --verbose # Show detailed output`,
+		// GH-6772: in place of the root pre-run, which would run the
+		// run_as_user preflight a first time; doctorRunAsUserCheck runs it once,
+		// with the gateway of the config, so a failed check is logged once.
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			_ = setReadGuardConfigFromFile(cfgFile)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load config
 			cfg, err := loadConfig()
@@ -31,7 +37,7 @@ Examples:
 			}
 
 			// Run health checks
-			report := health.RunChecks(cfg, version)
+			report := doctorRunChecks(cfg, version)
 			// GH-6767: the run_as_user start check counts as a config row.
 			if c := doctorRunAsUserCheck(cfg); c != nil {
 				report.Config = append(report.Config, *c)
@@ -162,6 +168,10 @@ Examples:
 	return cmd
 }
 
+// doctorRunChecks is health.RunChecks; tests replace it to run pilot doctor
+// without the live checks.
+var doctorRunChecks = health.RunChecks
+
 // runAsUserPreflightError is executor.RunAsUserPreflightError; tests replace
 // it to give the result of the preflight.
 var runAsUserPreflightError = executor.RunAsUserPreflightError
@@ -169,9 +179,10 @@ var runAsUserPreflightError = executor.RunAsUserPreflightError
 // doctorRunAsUserCheck runs the run_as_user start check of the daemon for
 // cfg and returns its row, nil when executor.claude_code.run_as_user is
 // empty. The preflight gets the config path and the gateway port and host of
-// the config, but not the daemon start flag. A failed check is logged once by
-// the preflight; the row holds only the user name and the text of the check,
-// no secret (GH-6767).
+// the config, but not the daemon start flag. The pre-run of pilot doctor does
+// not run the preflight, so a failed check is logged once, by this run
+// (GH-6772); the row holds only the user name and the text of the check, no
+// secret (GH-6767).
 func doctorRunAsUserCheck(cfg *config.Config) *health.ConfigCheck {
 	if cfg == nil || cfg.Executor == nil || cfg.Executor.ClaudeCode == nil || cfg.Executor.ClaudeCode.RunAsUser == "" {
 		return nil

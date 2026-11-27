@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -9,6 +13,7 @@ import (
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
 	"github.com/qf-studio/pilot/internal/health"
+	"github.com/spf13/cobra"
 )
 
 // GH-6767: pilot doctor shows a row for run_as_user with the result of the
@@ -89,6 +94,61 @@ func TestDoctorRunAsUserCheck(t *testing.T) {
 				got.cfg.RunAsGatewayPort != 9345 || got.cfg.RunAsGatewayHost != "127.0.0.1" ||
 				got.cfg.RunAsGatewayRequired || got.cfg.ConfigPath == "" {
 				t.Errorf("preflight got %+v, want user pilot-agent, group pilot, gateway 127.0.0.1:9345, no daemon start and a config path", got.cfg)
+			}
+		})
+	}
+}
+
+// GH-6772: one pilot doctor run logs a failed run_as_user check once. The
+// test runs the real pre-run of the root command, the real doctor command and
+// the real preflight; only the live health checks are left out.
+// mutation pin: drop the PersistentPreRun of newDoctorCmd, so the root
+// pre-run runs the preflight a first time -> this test fails.
+func TestDoctorLogsFailedRunAsUserCheckOnce(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	body := "version: \"1.0\"\ngateway:\n  host: \"127.0.0.1\"\n  port: 9345\n" +
+		"executor:\n  claude_code:\n    run_as_user: pilot-no-such-user-6772\n    run_as_group: pilot\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	prevRunChecks := doctorRunChecks
+	doctorRunChecks = func(*config.Config, string) *health.HealthReport { return &health.HealthReport{} }
+	var buf bytes.Buffer
+	prevLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	prevCfgFile := cfgFile
+	t.Cleanup(func() {
+		doctorRunChecks = prevRunChecks
+		slog.SetDefault(prevLog)
+		cfgFile = prevCfgFile
+		executor.SetReadGuardConfig(nil)
+		executor.PreflightRunAsUser(nil, "", true, 0)
+	})
+
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{name: "pilot doctor", args: []string{"doctor"}},
+		// The root pre-run still runs the preflight for every other command.
+		{name: "other command", args: []string{"other"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			buf.Reset()
+			executor.PreflightRunAsUser(nil, "", true, 0)
+			root := &cobra.Command{Use: "pilot", SilenceErrors: true, SilenceUsage: true}
+			root.PersistentPreRun = rootPersistentPreRun
+			root.PersistentFlags().StringVar(&cfgFile, "config", "", "config file")
+			root.AddCommand(newDoctorCmd(), &cobra.Command{Use: "other", Run: func(*cobra.Command, []string) {}})
+			root.SetArgs(append(tt.args, "--config", cfgPath))
+			_ = root.Execute()
+
+			if n := strings.Count(buf.String(), "run_as_user preflight failed"); n != 1 {
+				t.Errorf("the failed check was logged %d time(s), want once:\n%s", n, buf.String())
+			}
+			if executor.RunAsUserPreflightError() == nil {
+				t.Error("preflight error nil, want the failed check")
 			}
 		})
 	}
