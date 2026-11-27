@@ -490,6 +490,7 @@ for want in "  run_as_user: pilot-agent" "  run_as_group: pilot" "  run_as_works
 done
 # mutation pin: the apply summary prints no run_as_data_dir line, so a custom --data-dir leaves the Go check on /var/lib/pilot -> this test fails
 check "the summary prints the config line for the custom --data-dir" has_line "$OUT" "  run_as_data_dir: ${DATA_DIR}"
+check "the summary names the default gateway port the rules protect" has_line "$OUT" "  gateway.port: 9091  # in the gateway section: the port the firewall rules protect"
 
 echo "=== test: second apply skips every step ==="
 : >"$MUT_LOG"
@@ -1260,6 +1261,118 @@ for f in iptables ip6tables; do
     else
         fail_test "${f}: no rule for port 9091 on the loopback interface"
     fi
+done
+teardown_sandbox
+
+# port_rules FAMILY PORT — the two rules of the gateway port, as the chain holds them.
+port_rules() {
+    local loopback=127.0.0.1
+    [ "$1" != ip6tables ] || loopback=::1
+    echo "-p tcp -d ${loopback} --dport $2 -j REJECT --reject-with tcp-reset"
+    echo "-p tcp --dport $2 -m addrtype --dst-type LOCAL -o lo -j REJECT --reject-with tcp-reset"
+}
+
+# fw_on_port PORT — for each family the chain holds the metadata rule and the two
+# rules of PORT and nothing else, the jump to it is first in OUTPUT, no temporary
+# chain is left, and the boot unit adds the rules of PORT and names no other port.
+# Called through check only.
+# shellcheck disable=SC2317,SC2329
+fw_on_port() {
+    local f rule unit="${SYSTEMD_DIR}/pilot-agent-firewall.service"
+    for f in iptables ip6tables; do
+        while IFS= read -r rule; do
+            grep -qFx -- "rule PILOT_AGENT_EGRESS ${rule}" "${STATE_DIR}/${f}.rules" || return 1
+            grep -qF -- "-A PILOT_AGENT_EGRESS_NEW ${rule}" "$unit" || return 1
+        done < <(port_rules "$f" "$1")
+        [ "$(grep -c '^rule PILOT_AGENT_EGRESS ' "${STATE_DIR}/${f}.rules")" = 3 ] || return 1
+        [ "$(grep -m1 '^rule OUTPUT ' "${STATE_DIR}/${f}.rules")" = "rule OUTPUT -m owner --uid-owner pilot-agent -j PILOT_AGENT_EGRESS" ] || return 1
+        ! grep -qE '^chain PILOT_AGENT_EGRESS_(NEW|ALT)$' "${STATE_DIR}/${f}.rules" || return 1
+    done
+    [ "$(grep -oE -- '--dport [0-9]+' "$unit" | sort -u)" = "--dport $1" ]
+}
+
+# mutation pin: firewall_rules uses the fixed value 9091 again when --gateway-port is set -> this test fails
+echo "=== test: --gateway-port 9090 gives rules and a boot unit for port 9090 and none for 9091 ==="
+setup_sandbox
+if run_setup -- --gateway-port 9090; then
+    pass "apply with --gateway-port 9090 exits 0"
+else
+    cat "$OUT"
+    fail_test "apply with --gateway-port 9090 exited non-zero"
+fi
+check "chain and unit hold the rules of port 9090 only" fw_on_port 9090
+check_not "no rule for port 9091 in either chain" grep -qF -- "--dport 9091" "${STATE_DIR}/iptables.rules" "${STATE_DIR}/ip6tables.rules"
+check_not "no rule for port 9091 in the boot unit" grep -qF -- "--dport 9091" "${SYSTEMD_DIR}/pilot-agent-firewall.service"
+check "the summary names port 9090" has_line "$OUT" "  gateway.port: 9090  # in the gateway section: the port the firewall rules protect"
+check_not "the summary names no port 9091" grep -qF "gateway.port: 9091" "$OUT"
+: >"$MUT_LOG"
+if run_setup -- --gateway-port=9090; then
+    pass "second apply with --gateway-port=9090 exits 0"
+else
+    cat "$OUT"
+    fail_test "second apply with --gateway-port=9090 exited non-zero"
+fi
+for s in firewall-ipv4 firewall-ipv6 firewall-unit; do
+    expect_step "$s" skipped
+done
+teardown_sandbox
+
+echo "=== test: --dry-run with --gateway-port 9090 prints the rules of port 9090, changes nothing ==="
+setup_sandbox
+before="$(tree_listing)"
+if run_setup -- --gateway-port 9090 --dry-run; then
+    pass "dry run with --gateway-port 9090 exits 0"
+else
+    cat "$OUT"
+    fail_test "dry run with --gateway-port 9090 exited non-zero"
+fi
+check "the dry run changes nothing" test ! -s "$MUT_LOG" -a "$before" = "$(tree_listing)"
+for f in iptables ip6tables; do
+    while IFS= read -r rule; do
+        check "prints: + ${f} -w -A PILOT_AGENT_EGRESS ${rule}" has_line "$OUT" "+ ${f} -w -A PILOT_AGENT_EGRESS ${rule}"
+        check "prints the unit line: ExecStart=.../${f} -w -A PILOT_AGENT_EGRESS_NEW ${rule}" grep -qE -- "^\|   ExecStart=[^ ]*/${f} -w -A PILOT_AGENT_EGRESS_NEW ${rule}\$" "$OUT"
+    done < <(port_rules "$f" 9090)
+done
+check_not "the dry run prints no port 9091" grep -qF -- "9091" "$OUT"
+teardown_sandbox
+
+# mutation pin: chain_complete no longer checks the rules of the port (only the count) -> this test fails
+echo "=== test: a second apply with another --gateway-port leaves the rules of the new port only ==="
+setup_sandbox
+run_setup -- >/dev/null || true
+check "first apply: chain and unit on port 9091" fw_on_port 9091
+rm -f "${STATE_DIR}/gap.log"
+if run_setup -- --gateway-port 9090; then
+    pass "apply with --gateway-port 9090 on a host set up for 9091 exits 0"
+else
+    cat "$OUT"
+    fail_test "apply with --gateway-port 9090 on a host set up for 9091 exited non-zero"
+fi
+for s in firewall-ipv4 firewall-ipv6 firewall-unit; do
+    expect_step "$s" "done"
+done
+check "chain and unit hold the rules of port 9090 only" fw_on_port 9090
+check_not "no rule of port 9091 is left in either chain" grep -qF -- "--dport 9091" "${STATE_DIR}/iptables.rules" "${STATE_DIR}/ip6tables.rules"
+check_not "the switch never left a moment without reject rules" test -e "${STATE_DIR}/gap.log"
+if run_setup -- ; then
+    pass "an apply with the default port again exits 0"
+else
+    cat "$OUT"
+    fail_test "an apply with the default port again exited non-zero"
+fi
+check "back on the default: chain and unit on port 9091 only" fw_on_port 9091
+teardown_sandbox
+
+echo "=== test: --gateway-port takes a whole number from 1 to 65535 only ==="
+setup_sandbox
+for port in abc 0 70000 65536 -1 09090 "90 90" 9090x ""; do
+    expect_refused "--gateway-port '${port}'" -- --gateway-port "$port"
+    check "the message names the bad value '${port}'" grep -qF -- "--gateway-port must be a whole number from 1 to 65535: '${port}'" "$OUT"
+done
+expect_refused "--gateway-port=70000" -- --gateway-port=70000
+expect_refused "--gateway-port with no value" -- --gateway-port
+for port in 1 65535; do
+    check "--gateway-port ${port} is accepted (dry run)" run_setup -- --gateway-port "$port" --dry-run
 done
 teardown_sandbox
 
