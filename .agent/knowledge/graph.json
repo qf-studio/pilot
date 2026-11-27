@@ -3486,9 +3486,9 @@
         ]
       },
       "TASK-659": {
-        "path": ".agent/tasks/TASK-659-sdk-credential-leak-tests.md",
+        "path": ".agent/tasks/archive/TASK-659-sdk-credential-leak-tests.md",
         "title": "SDK credential leak hardening \u2014 a leak test for each adapter HTTP client of the SDK, a redact helper, the Telegram token out of error text, a CI gate",
-        "status": "dispatched",
+        "status": "completed",
         "concepts": [
           "authentication",
           "deployment",
