@@ -674,52 +674,54 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 		Error:      hr.Error,
 	}
 
-	// Post-execution: add HTML comment
-	workspaceSlug := cfg.Adapters.Plane.WorkspaceSlug
-	projectID := ev.ProjectID
-	issueID := ev.IssueID
-	if execErr != nil {
-		comment := fmt.Sprintf("<p>❌ Pilot execution failed:</p><pre>%s</pre>", execErr.Error())
-		if err := client.AddComment(ctx, workspaceSlug, projectID, issueID, comment); err != nil {
-			logging.WithComponent("plane").Warn("Failed to add failure comment",
-				slog.String("issue_id", issueID),
-				slog.Any("error", err),
-			)
-		}
-	} else if hr.Result != nil && hr.Result.Success {
-		if !hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" { // GH-3053
-			comment := fmt.Sprintf("<p>⚠️ Pilot execution completed but no changes were made.</p><p>Duration: %s<br>Branch: <code>%s</code></p><p>No commits or PR were created. The task may need clarification or manual intervention.</p>",
-				hr.Result.Duration, branchName)
-			if err := client.AddComment(ctx, workspaceSlug, projectID, issueID, comment); err != nil {
-				logging.WithComponent("plane").Warn("Failed to add comment",
-					slog.String("issue_id", issueID),
-					slog.Any("error", err),
-				)
-			}
-			issueResult.Success = false
-		} else {
-			comment := buildPlaneExecutionComment(hr.Result, branchName)
-			if err := client.AddComment(ctx, workspaceSlug, projectID, issueID, comment); err != nil {
-				logging.WithComponent("plane").Warn("Failed to add success comment",
-					slog.String("issue_id", issueID),
-					slog.Any("error", err),
-				)
-			}
-		}
-	} else if hr.Result != nil && !hr.IsTerminalByDesign() {
-		// GH-4794/GH-4801: a superseded/canceled execution is the success path
-		// for "this work is no longer wanted" — don't post a failure comment
-		// on a closed/canceled work item for it (mirrors GitLab's gate below).
-		comment := fmt.Sprintf("<p>❌ Pilot execution failed:</p><pre>%s</pre>", hr.Result.Error)
-		if err := client.AddComment(ctx, workspaceSlug, projectID, issueID, comment); err != nil {
-			logging.WithComponent("plane").Warn("Failed to add failure comment",
-				slog.String("issue_id", issueID),
+	// Post-execution: one HTML comment for the event (TASK-658, GH-6741)
+	if planeNoChanges(execErr, hr) {
+		issueResult.Success = false
+	}
+	if comment, post := planeResultComment(execErr, hr, branchName); post {
+		if err := client.AddComment(ctx, cfg.Adapters.Plane.WorkspaceSlug, ev.ProjectID, ev.IssueID, comment); err != nil {
+			logging.WithComponent("plane").Warn("Failed to add result comment",
+				slog.String("issue_id", ev.IssueID),
 				slog.Any("error", err),
 			)
 		}
 	}
 
 	return issueResult, execErr
+}
+
+// planeNoChanges reports whether a successful run made no commit and no pull
+// request (and was not an epic); such a run counts as not successful (GH-3053).
+func planeNoChanges(execErr error, hr *HandlerResult) bool {
+	return execErr == nil && hr != nil && hr.Result != nil && hr.Result.Success &&
+		!hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == ""
+}
+
+// planeResultComment decides the comment the Plane handler posts after a run
+// and returns its HTML; post is false when no comment is posted.
+//
+// Decision: one comment for each event (TASK-658, GH-6741). A run with a pull
+// request posts no comment here: the SDK poller posts the "PR created" comment
+// (with a tracking ID, so a rerun does not repeat it) after the handler
+// returns. A superseded or canceled run posts nothing (GH-4794/GH-4801).
+func planeResultComment(execErr error, hr *HandlerResult, branchName string) (comment string, post bool) {
+	switch {
+	case execErr != nil:
+		return fmt.Sprintf("<p>❌ Pilot execution failed:</p><pre>%s</pre>", execErr.Error()), true
+	case hr == nil || hr.Result == nil:
+		return "", false
+	case planeNoChanges(execErr, hr):
+		return fmt.Sprintf("<p>⚠️ Pilot execution completed but no changes were made.</p><p>Duration: %s<br>Branch: <code>%s</code></p><p>No commits or PR were created. The task may need clarification or manual intervention.</p>",
+			hr.Result.Duration, branchName), true
+	case hr.Result.Success && hr.Result.PRUrl != "":
+		return "", false
+	case hr.Result.Success:
+		return buildPlaneExecutionComment(hr.Result, branchName), true
+	case hr.IsTerminalByDesign():
+		return "", false
+	default:
+		return fmt.Sprintf("<p>❌ Pilot execution failed:</p><pre>%s</pre>", hr.Result.Error), true
+	}
 }
 
 // buildPlaneExecutionComment creates an HTML comment for a successful Plane.so execution.
