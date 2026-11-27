@@ -1,6 +1,6 @@
 # TASK-662: The agent user in a private repository — prove the run, then decide if the agent needs a read token
 
-**Status**: 🚧 **Planned 2026-11-27 17:00Z. No ticket yet: the first step is a test run on the box, and it waits for the founder's choice of a private repository.** The design options for a read token are written below; the choice comes after the test.
+**Status**: ✅ **State 2026-11-27 16:55Z: a run as the agent user in a PRIVATE repository is proven by a real ticket.** The console repository of Pilot Cloud is private and is a project of the box. Its ticket 536 ran on 11-27 from 15:42Z as the agent user: the daemon log has the line "run_as_user: no GitHub read token for the agent", an agent workspace under the agent data directory, a run of 22 minutes (complex, Go), three quality gates passed in 10 seconds, the push by the daemon, pull request 537 at 16:04Z, merged by the daemon at 16:12Z. No Warn or Error line of the option, no failed gate. Since the option went on (11-26 09:10Z) the box has 26 runs as the agent user: 15 in the SDK repository, 10 in the Pilot repository (both public), 1 in a private repository. So no test repository is necessary. Open: the session did not read which gh or git commands of the agent failed in that run (step 3), and the founder's choice on a read token (recommendation: no token, option A).
 **Created**: 2026-11-27
 **Assignee**: the session (test run on the box) + the founder (two decisions) + Pilot (tickets after the decisions)
 
@@ -47,8 +47,8 @@ A run as the agent user in a private repository is proven on the box, with a wri
 ## Route
 
 ### Phase 1: Prove the run
-- [ ] 1. The founder names a private repository of the box for one small test ticket (waits for the founder)
-- [ ] 2. The session files one small ticket there (a text change), watches the run, and records each step: workspace, commits, gates, hand-over, push, pull request (operator, needs 1)
+- [x] 1. A private repository for the proof — not necessary: a real ticket of a private project of the box ran on 11-27 (founder 11-27: "we might need to create one or pick from the org"; the session read the box first)
+- [x] 2. One ticket in a private repository ran as the agent user from pickup to a merged pull request (console ticket 536 → pull request 537, 11-27 15:42Z to 16:12Z; read from the daemon log through SSM)
 - [ ] 3. The session reads the run log for each failed gh or git command of the agent and records what the agent did then (operator, needs 2)
 
 ### Phase 2: Decide the read token
@@ -59,7 +59,7 @@ A run as the agent user in a private repository is proven on the box, with a wri
 - [ ] The limits of the option are in the public documentation (TASK-661, the documentation page ticket)
 
 ### Waits for you
-- [ ] The name of a private repository for the test ticket (step 1). The cheapest safe case: a repository with no private dependency, and a ticket that changes one text file.
+- [x] The name of a private repository for the test ticket — not necessary (see step 2)
 - [ ] The choice of step 4, after the test.
 
 ---
