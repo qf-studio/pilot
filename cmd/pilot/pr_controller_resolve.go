@@ -15,8 +15,10 @@ import (
 
 // prRegistrar is the slice of *autopilot.Controller a non-GitHub poller's
 // OnPRCreated callback needs. It exists so tests can count calls.
+// SetPlaneLink is called only by the Plane callback (GH-6739).
 type prRegistrar interface {
 	OnPRCreated(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string)
+	SetPlaneLink(prNumber int, projectID, workItemID string) bool
 }
 
 // githubPRURLRe matches only a GitHub PR URL: github.com/<owner>/<repo>/pull/<n>.
@@ -77,24 +79,30 @@ func newLinearOnPRCreated(cfg *config.Config, defaultCtrl *autopilot.Controller,
 }
 
 // newRoutedOnPRCreated builds an OnPRCreated callback for a non-GitHub poller
-// whose tasks can land in several repos (Linear GH-5584, Plane GH-6707): the
-// PR is registered with the controller of the repo parsed from its URL.
+// whose tasks can land in several repos (Linear GH-5584): the PR is registered
+// with the controller of the repo parsed from its URL. Plane (GH-6707) routes
+// the same way but builds its own callback (planeRoutedOnPRCreated, GH-6739).
 func newRoutedOnPRCreated(component string, cfg *config.Config, defaultCtrl *autopilot.Controller, ctrls map[string]*autopilot.Controller) func(sdkcore.PRCreatedEvent) {
-	var def prRegistrar
+	defaultRepo, def, byRepo := routedRegistrars(cfg, defaultCtrl, ctrls)
+	return routedOnPRCreated(component, defaultRepo, def, byRepo)
+}
+
+// routedRegistrars converts the daemon's controllers into the inputs of
+// resolvePRController: the default repo, its controller and the per-repo map.
+func routedRegistrars(cfg *config.Config, defaultCtrl *autopilot.Controller, ctrls map[string]*autopilot.Controller) (defaultRepo string, def prRegistrar, byRepo map[string]prRegistrar) {
 	if defaultCtrl != nil {
 		def = defaultCtrl
 	}
-	byRepo := make(map[string]prRegistrar, len(ctrls))
+	byRepo = make(map[string]prRegistrar, len(ctrls))
 	for k, c := range ctrls {
 		if c != nil {
 			byRepo[k] = c
 		}
 	}
-	defaultRepo := ""
 	if cfg != nil && cfg.Adapters != nil && cfg.Adapters.GitHub != nil {
 		defaultRepo = cfg.Adapters.GitHub.Repo
 	}
-	return routedOnPRCreated(component, defaultRepo, def, byRepo)
+	return defaultRepo, def, byRepo
 }
 
 func linearOnPRCreated(defaultRepo string, def prRegistrar, byRepo map[string]prRegistrar) func(sdkcore.PRCreatedEvent) {
@@ -103,10 +111,18 @@ func linearOnPRCreated(defaultRepo string, def prRegistrar, byRepo map[string]pr
 
 func routedOnPRCreated(component, defaultRepo string, def prRegistrar, byRepo map[string]prRegistrar) func(sdkcore.PRCreatedEvent) {
 	return func(prEv sdkcore.PRCreatedEvent) {
-		ctrl, n := resolvePRController(logging.WithComponent(component), prEv.IssueID, prEv.PRURL, defaultRepo, def, byRepo)
-		if ctrl == nil {
-			return
-		}
-		ctrl.OnPRCreated(n, prEv.PRURL, 0, prEv.HeadSHA, prEv.BranchName, "")
+		registerRoutedPR(component, defaultRepo, def, byRepo, prEv)
 	}
+}
+
+// registerRoutedPR registers the PR of prEv with the controller of its repo
+// and returns that controller and the PR number (nil, 0 when nothing was
+// registered), so a caller can address the same controller again.
+func registerRoutedPR(component, defaultRepo string, def prRegistrar, byRepo map[string]prRegistrar, prEv sdkcore.PRCreatedEvent) (prRegistrar, int) {
+	ctrl, n := resolvePRController(logging.WithComponent(component), prEv.IssueID, prEv.PRURL, defaultRepo, def, byRepo)
+	if ctrl == nil {
+		return nil, 0
+	}
+	ctrl.OnPRCreated(n, prEv.PRURL, 0, prEv.HeadSHA, prEv.BranchName, "")
+	return ctrl, n
 }

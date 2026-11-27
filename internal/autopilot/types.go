@@ -1455,6 +1455,21 @@ type PRState struct {
 	// this PR. Same attempt-once, persisted-immediately semantics as
 	// JiraDoneNotified (GH-4999). Persisted.
 	LinearDoneNotified bool
+	// PlaneProjectID is the Plane project UUID of the work item this PR
+	// implements (GH-6739). Set by SetPlaneLink when the Plane poller
+	// registers the PR: a Plane branch name holds only the sequence number,
+	// so the merge step cannot recover the work item from the branch as the
+	// Linear and Jira legs do. Empty for PRs of other adapters. Persisted.
+	PlaneProjectID string
+	// PlaneWorkItemID is the Plane work item UUID this PR implements
+	// (GH-6739). Set together with PlaneProjectID. Persisted.
+	PlaneWorkItemID string
+	// PlaneDoneNotified is true once the Plane merge-side done leg has
+	// attempted to move the work item to the completed state for this PR.
+	// Same attempt-once, persisted-immediately semantics as
+	// LinearDoneNotified. Stored ahead of the merge leg (GH-6739); not read
+	// yet. Persisted.
+	PlaneDoneNotified bool
 	// PostMergeReviewPosted is true once the GH-5861 post-merge reviewer has
 	// been started for this PR. Set (and persisted) before the review goroutine
 	// launches, so a re-entry into handleMerged or a daemon restart cannot run
@@ -1695,6 +1710,9 @@ func (ps *PRState) snapshot() *PRState {
 		MergeFollowupPosted:          ps.MergeFollowupPosted,
 		JiraDoneNotified:             ps.JiraDoneNotified,
 		LinearDoneNotified:           ps.LinearDoneNotified,
+		PlaneProjectID:               ps.PlaneProjectID,
+		PlaneWorkItemID:              ps.PlaneWorkItemID,
+		PlaneDoneNotified:            ps.PlaneDoneNotified,
 		PostMergeReviewPosted:        ps.PostMergeReviewPosted,
 		InfraRerunCount:              ps.InfraRerunCount,
 		InfraRerunSHA:                ps.InfraRerunSHA,

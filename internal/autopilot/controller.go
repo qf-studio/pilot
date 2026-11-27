@@ -3050,6 +3050,38 @@ func (c *Controller) OnPRCreatedForFixIssue(prNumber int, prURL string, fixIssue
 	c.registerPR(prNumber, prURL, fixIssue, headSHA, branchName, issueNodeID, true)
 }
 
+// SetPlaneLink records the Plane project and work item of a tracked PR's
+// task (GH-6739) and persists it, so the merge step can find the work item
+// after a daemon restart — a Plane branch name holds only the sequence
+// number. Returns false (and changes nothing) when the PR is not tracked or
+// either ID is empty; true once the link is stored.
+func (c *Controller) SetPlaneLink(prNumber int, projectID, workItemID string) bool {
+	if projectID == "" || workItemID == "" {
+		return false
+	}
+	c.mu.Lock()
+	prState, ok := c.activePRs[prNumber]
+	c.mu.Unlock()
+	if !ok {
+		return false
+	}
+
+	// TASK-324: persistPRState requires prState.mu; c.mu is released first so
+	// the prState.mu -> c.mu ordering holds.
+	prState.mu.Lock()
+	prState.PlaneProjectID = projectID
+	prState.PlaneWorkItemID = workItemID
+	c.persistPRState(prState)
+	prState.mu.Unlock()
+
+	c.log.Info("Plane work item linked to PR",
+		"pr", prNumber,
+		"plane_project_id", projectID,
+		"plane_work_item_id", workItemID,
+	)
+	return true
+}
+
 // registerPR holds the shared registration body for OnPRCreated and
 // OnPRCreatedForFixIssue (GH-5413) — every check below applies identically
 // regardless of which caller verified issueNumber is correct for this PR.
