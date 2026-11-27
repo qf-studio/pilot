@@ -206,6 +206,15 @@ From then on every model spawn is refused with `run_as_user preflight failed: <c
 process starts. There is no fallback to the daemon user. A failed result is not kept: the next
 preflight runs the checks again.
 
+### Check with pilot doctor
+
+`pilot doctor` runs the same checks with the gateway port and host of the config and shows a
+`run_as_user` row under **Configuration**: ✓ with the agent user when every check passes, ✗ with
+`run_as_user preflight failed: <check>` when one fails. A failed row counts as an error, so the
+command exits non-zero, and `pilot doctor --verbose` points to `scripts/box/setup-agent-user.sh`.
+The firewall probe listens on the gateway port, so run `pilot doctor` while the daemon is stopped:
+a running daemon holds the port and the row then names the gateway check.
+
 ---
 
 ## Limits

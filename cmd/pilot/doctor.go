@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/health"
 	"github.com/spf13/cobra"
 )
@@ -31,6 +32,11 @@ Examples:
 
 			// Run health checks
 			report := health.RunChecks(cfg, version)
+			// GH-6767: the run_as_user start check counts as a config row.
+			if c := doctorRunAsUserCheck(cfg); c != nil {
+				report.Config = append(report.Config, *c)
+				report.HasErrors = report.HasErrors || c.Status == health.StatusError
+			}
 
 			// Header
 			fmt.Println()
@@ -154,4 +160,43 @@ Examples:
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show detailed output with fix suggestions")
 
 	return cmd
+}
+
+// runAsUserPreflightError is executor.RunAsUserPreflightError; tests replace
+// it to give the result of the preflight.
+var runAsUserPreflightError = executor.RunAsUserPreflightError
+
+// doctorRunAsUserCheck runs the run_as_user start check of the daemon for
+// cfg and returns its row, nil when executor.claude_code.run_as_user is
+// empty. The preflight gets the config path and the gateway port and host of
+// the config, but not the daemon start flag. A failed check is logged once by
+// the preflight; the row holds only the user name and the text of the check,
+// no secret (GH-6767).
+func doctorRunAsUserCheck(cfg *config.Config) *health.ConfigCheck {
+	if cfg == nil || cfg.Executor == nil || cfg.Executor.ClaudeCode == nil || cfg.Executor.ClaudeCode.RunAsUser == "" {
+		return nil
+	}
+	user := strings.TrimSpace(cfg.Executor.ClaudeCode.RunAsUser)
+	configPath := cfgFile
+	if configPath == "" {
+		configPath = config.DefaultConfigPath()
+	}
+	gatewayPort, gatewayHost := 0, ""
+	if cfg.Gateway != nil {
+		gatewayPort, gatewayHost = cfg.Gateway.Port, cfg.Gateway.Host
+	}
+	setReadGuardConfig(cfg.Executor, configPath, gatewayPort, gatewayHost, false)()
+	if err := runAsUserPreflightError(); err != nil {
+		return &health.ConfigCheck{
+			Name:    "run_as_user",
+			Status:  health.StatusError,
+			Message: err.Error(),
+			Fix:     "set up the host with sudo scripts/box/setup-agent-user.sh, see the page Agent Isolation (docs/content/deployment/agent-isolation.mdx)",
+		}
+	}
+	return &health.ConfigCheck{
+		Name:    "run_as_user",
+		Status:  health.StatusOK,
+		Message: fmt.Sprintf("agent user %s: the start check passed", user),
+	}
 }
