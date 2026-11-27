@@ -1,6 +1,6 @@
 # TASK-660: Test leftovers in the temporary directory — the Pilot tests remove what they create, and the box is cleaned one time
 
-**Status**: 🚀 **L1 DISPATCHED 2026-11-27 16:10Z → [pilot#6733](https://github.com/qf-studio/pilot/issues/6733) (`pilot` + `no-decompose`): the executor tests remove the worktree and the repository directories that they create.** The box clean-up is a step of the session (the 1,279 old test worktrees and the other test leftovers older than 24 hours). A temporary directory for each run is held until the count one day after the release.
+**Status**: 🚀 **State 2026-11-27 17:15Z: the test fix merged ([pilot#6733](https://github.com/qf-studio/pilot/issues/6733) → PR#6740, 16:55Z). Review after the merge: the three tests of the ticket pass, a mutation of the helper clean-up fails the right test; a run of the whole executor package with a fresh temporary directory is in work (the first try stopped at the 10-minute default limit of Go and gave no result).** Earlier state: **L1 DISPATCHED 2026-11-27 16:10Z → [pilot#6733](https://github.com/qf-studio/pilot/issues/6733) (`pilot` + `no-decompose`): the executor tests remove the worktree and the repository directories that they create.** The box clean-up is a step of the session (the 1,279 old test worktrees and the other test leftovers older than 24 hours). A temporary directory for each run is held until the count one day after the release.
 **Created**: 2026-11-27
 **Assignee**: Pilot (one ticket) + the session (box clean-up, a count one day later)
 
@@ -43,7 +43,7 @@ The tests of Pilot leave nothing in the temporary directory after a normal run. 
 ## Route
 
 ### Phase 1: The tests clean up
-- [ ] 1. The executor tests remove the worktree and the two repository directories that they create; two more tests stop leaving a file (L1)
+- [x] 1. The executor tests remove the worktree and the two repository directories that they create; two more tests stop leaving a file (L1) — pilot#6733, merged 11-27 16:55Z; not released yet
 
 ### Phase 2: The box
 - [x] 2. The session removes the 1,279 old test worktrees and the other test leftovers older than 24 hours from the box (operator) — done 11-27 16:12Z: 1,431 entries removed (1,276 GH-5399 test worktrees, each with a dead git pointer; 82 pilot-dispatcher-test; 50 pilot-empty-hooks; 23 of four other test prefixes); the entries of the temporary directory went from 2,348 to 917; 3 GH-5399 worktrees and 33 pairs of the helper directories are younger than 24 hours and stay; 80 entries with the prefix tmp. have no known source and stay

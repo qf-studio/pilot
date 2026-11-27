@@ -1,6 +1,6 @@
 # TASK-661: First-run commands — the Telegram check stops its own conflict, and `pilot onboard`, `pilot doctor` and the config check know Plane and the agent user option
 
-**Status**: 🚀 **State 2026-11-27 16:55Z: the Telegram check merged ([pilot#6734](https://github.com/qf-studio/pilot/issues/6734) → PR#6738, 16:43Z; reviewed after the merge with two mutations, no finding; CheckSingleton has no change). It is not released yet; after the release, read the box log for three days.** Earlier state: **F1, F2, F3 DISPATCHED 2026-11-27 16:10Z (`pilot` + `no-decompose`): the Telegram check asks for the bot identity → [pilot#6734](https://github.com/qf-studio/pilot/issues/6734); the daemon checks the Plane key → [pilot#6735](https://github.com/qf-studio/pilot/issues/6735); the documentation page of the agent user option → [pilot#6736](https://github.com/qf-studio/pilot/issues/6736).** Held, written when the step before is merged: the Plane row of `pilot doctor`, the config check of the Plane block, Plane in `pilot onboard` (two steps), the agent user option in `pilot doctor` (two steps).
+**Status**: 🚀 **State 2026-11-27 17:15Z: the Plane key check merged ([pilot#6735](https://github.com/qf-studio/pilot/issues/6735) → PR#6743, 17:12Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot doctor` shows the Plane key check and the errors of the Plane block (F4).** **State 2026-11-27 16:55Z: the Telegram check merged ([pilot#6734](https://github.com/qf-studio/pilot/issues/6734) → PR#6738, 16:43Z; reviewed after the merge with two mutations, no finding; CheckSingleton has no change). It is not released yet; after the release, read the box log for three days.** Earlier state: **F1, F2, F3 DISPATCHED 2026-11-27 16:10Z (`pilot` + `no-decompose`): the Telegram check asks for the bot identity → [pilot#6734](https://github.com/qf-studio/pilot/issues/6734); the daemon checks the Plane key → [pilot#6735](https://github.com/qf-studio/pilot/issues/6735); the documentation page of the agent user option → [pilot#6736](https://github.com/qf-studio/pilot/issues/6736).** Held, written when the step before is merged: the Plane row of `pilot doctor`, the config check of the Plane block, Plane in `pilot onboard` (two steps), the agent user option in `pilot doctor` (two steps).
 **Created**: 2026-11-27
 **Assignee**: Pilot (one ticket at a time)
 
@@ -42,13 +42,13 @@ The daemon check of Telegram makes no conflict. A user can set up Plane in the w
 
 ### Phase 1: Checks (three tickets with no dependency)
 - [x] 1. The Telegram check asks for the bot identity, not for updates; the wizard shows the real bot name (F1) — pilot#6734, merged 11-27 16:43Z
-- [ ] 2. The daemon checks the Plane key at the start and in the health loop (F2)
+- [x] 2. The daemon checks the Plane key at the start and in the health loop (F2) — pilot#6735, merged 11-27 17:12Z
 - [ ] 3. A documentation page for the agent user option and its host script (F3)
 
 ### Phase 2: Plane in the first-run commands
-- [ ] 4. `pilot doctor` shows a row for the Plane key (needs 2)
-- [ ] 5. The config check refuses an enabled Plane block with an empty key, slug or project list, and a project entry whose Plane project is not polled
-- [ ] 6. `pilot onboard` offers Plane as a ticket source and tests the key (needs 2, 5)
+- [ ] 4. `pilot doctor` shows a row for the Plane key and a row for the errors of the Plane block: an empty key, slug or project list, and a project entry whose Plane project is not polled (F4, needs 2)
+- [x] 5. The errors of the Plane block — joined with step 4 on 11-27: they are a row of `pilot doctor`, not a refusal at the start of the daemon. Reason: a refusal stops a daemon whose config works today with a half-filled Plane block.
+- [ ] 6. `pilot onboard` offers Plane as a ticket source and tests the key (needs 2, 4)
 - [ ] 7. `pilot onboard` asks which Plane project belongs to the repository (needs 6)
 
 ### Phase 3: The agent user option in `pilot doctor`
@@ -57,7 +57,7 @@ The daemon check of Telegram makes no conflict. A user can set up Plane in the w
 
 ### Side tracks
 - [ ] The wizard tests the credential of Linear, Jira, GitLab, Azure DevOps and Asana (one ticket for each; not planned yet)
-- [ ] The hint of `pilot doctor` names `pilot onboard`, not the deprecated `pilot setup`
+- [ ] The hint of `pilot doctor` names `pilot onboard`, not the deprecated `pilot setup` — part of F4
 
 ### Waits for you
 - Nothing for phase 1.
@@ -247,11 +247,63 @@ Code changes. A `pilot doctor` row for the option. A new token source for the ag
 
 - Navigator TASK-661 in this repo
 
+### LEG F4 — repo: qf-studio/pilot — title: feat(doctor): pilot doctor checks the Plane key live and reports the errors of the Plane block — an empty key, slug or project list, a paired Plane project that is not polled
+
+probe: present qf-studio/pilot func[[:space:]]checkTelegramTokenLive\(cfg[[:space:]]\*config\.Config
+probe: present qf-studio/pilot func[[:space:]]NewVerifier\(cfg[[:space:]]\*Config,[[:space:]]opts
+probe: present qf-studio/pilot func[[:space:]]checkAdapterVerify\(checkName,[[:space:]]tokenSource[[:space:]]string
+probe: absent  qf-studio/pilot func[[:space:]]checkPlaneLive\(
+probe: absent  qf-studio/pilot func[[:space:]]checkPlaneConfig\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-661. The command `pilot doctor` runs RunChecks in `internal/health/health.go`. For Telegram and Slack it adds a live check of the token: checkTelegramTokenLive takes the config and a constructor of a verifier, returns nil when the adapter is off or has no token, and calls checkAdapterVerify, which gives a row with the status OK or Error. The constructors are package variables (newTelegramVerifier), so a test can give a fake verifier.
+
+Plane has a verifier since issue 6735: NewVerifier in `internal/adapters/plane/verify.go` makes one labels request for the first polled project. The daemon uses it at the start and in the health loop. `pilot doctor` does not: for Plane it only lists the adapter as enabled.
+
+No code checks the Plane block of the config. A user can enable Plane with an empty key, an empty workspace slug or an empty project list, and the poller then finds nothing with no clear message. A project entry can name a Plane project (the field plane.project_id of a project, GH-6707) that is not in the polled list project_ids of the adapter; such a project never gets a ticket. The config type is in `internal/adapters/plane/types.go`; the project pairing is in `internal/config/config.go` (validateProjectPlane checks only an empty ID and a double use).
+
+These errors must be rows of `pilot doctor`. They must NOT become errors of the Validate method of the config: a daemon whose config loads today must still start after this change.
+
+## Scope
+
+1. `internal/health/health.go`: a new function checkPlaneLive in the form of checkTelegramTokenLive. It returns nil when Plane is off or the key is empty. In the other case it returns the row of checkAdapterVerify with the check name plane.key.live and a verifier from a new package variable (name it newPlaneVerifier) that calls NewVerifier of the Plane adapter package. RunChecks adds the row beside the Telegram and Slack rows.
+2. `internal/health/health.go`: a new function checkPlaneConfig that returns nil when Plane is off. With Plane on it returns one row with the check name plane.config:
+   - status Error with a message that names each problem found, in this order: api_key is empty; workspace_slug is empty; project_ids is empty; a project entry names a Plane project ID that is not in project_ids (name the project entry and the ID);
+   - status OK with a short message (the workspace slug and the count of polled projects) when there is no problem.
+   The row has a Fix text that names the config keys to set. The message must not hold the key. RunChecks adds the row.
+3. `internal/health/health.go`: the Fix text of the row "no issue source enabled" says to run pilot onboard (the command pilot setup is deprecated). Change only that word.
+4. Tests in the directory of `internal/health/health.go` (a new test file, name it plane_check_test.go):
+   - TestCheckPlaneLive: Plane off gives nil; an empty key gives nil; a fake verifier that returns nil gives status OK; a fake verifier that returns an error gives status Error with the error text in the message.
+   - TestCheckPlaneConfig as a table: Plane off (nil); a full valid block (OK); an empty key; an empty slug; an empty project list; a project entry with a Plane project ID outside the list (the message names the entry and the ID); two problems at once (the message names both).
+   - TestCheckPlaneConfig_NoKeyInMessage: with a marker key of the style in `internal/testutil/tokens.go` and an invalid block, the message and the Fix text do not hold the marker.
+5. No change of the Validate method and of validateProjectPlane.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./internal/health/ -run 'TestCheckPlane'` passes; paste the output into the PR body.
+- [ ] `go test -race -count=1 ./internal/health/... ./internal/config/...` passes; paste the output into the PR body.
+- [ ] Remove the check of project_ids from checkPlaneConfig -> TestCheckPlaneConfig fails
+- [ ] Remove the checkPlaneLive row from RunChecks -> a test of this issue fails; name the test in the PR body
+- [ ] The PR body shows that the Validate method has no change (the diff stat of the config package is empty).
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The wizard (`pilot onboard`). The daemon start. The Validate method of the config. The SDK. A check of each polled project. Other adapters.
+
+## Refs
+
+- Navigator TASK-661 in this repo
+
 ## Refs
 
 - F1 → https://github.com/qf-studio/pilot/issues/6734
 - F2 → https://github.com/qf-studio/pilot/issues/6735
 - F3 → https://github.com/qf-studio/pilot/issues/6736
+- F4 → https://github.com/qf-studio/pilot/issues/6745
 
 - Research of 2026-11-27 (session): the first-run commands (`cmd/pilot/onboard.go`, `cmd/pilot/onboard_ticket.go`, `cmd/pilot/doctor.go`, `internal/health/health.go`), the callers of each Telegram getUpdates request, the box log of the 409 lines by day.
 - TASK-658 (Plane integration), TASK-651 (agent isolation), TASK-379 (doctor live probes, archived).
