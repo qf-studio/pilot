@@ -1,6 +1,6 @@
 # TASK-661: First-run commands — the Telegram check stops its own conflict, and `pilot onboard`, `pilot doctor` and the config check know Plane and the agent user option
 
-**Status**: 🚀 **State 2026-11-27 17:25Z: the documentation page of the agent user option merged ([pilot#6736](https://github.com/qf-studio/pilot/issues/6736) → PR#6744, 17:23Z; reviewed against the code, no finding in the page). The page states a product gap: the host script rejects the fixed TCP port 9091, and the default gateway port of the config is 9090, so a host with the default port fails the startup check of the option. A ticket (F5) gives the script a flag for the port.** **State 2026-11-27 17:15Z: the Plane key check merged ([pilot#6735](https://github.com/qf-studio/pilot/issues/6735) → PR#6743, 17:12Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot doctor` shows the Plane key check and the errors of the Plane block (F4).** **State 2026-11-27 16:55Z: the Telegram check merged ([pilot#6734](https://github.com/qf-studio/pilot/issues/6734) → PR#6738, 16:43Z; reviewed after the merge with two mutations, no finding; CheckSingleton has no change). It is not released yet; after the release, read the box log for three days.** Earlier state: **F1, F2, F3 DISPATCHED 2026-11-27 16:10Z (`pilot` + `no-decompose`): the Telegram check asks for the bot identity → [pilot#6734](https://github.com/qf-studio/pilot/issues/6734); the daemon checks the Plane key → [pilot#6735](https://github.com/qf-studio/pilot/issues/6735); the documentation page of the agent user option → [pilot#6736](https://github.com/qf-studio/pilot/issues/6736).** Held, written when the step before is merged: the Plane row of `pilot doctor`, the config check of the Plane block, Plane in `pilot onboard` (two steps), the agent user option in `pilot doctor` (two steps).
+**Status**: 🚀 **State 2026-11-27 17:56Z: the Plane rows of `pilot doctor` merged ([pilot#6745](https://github.com/qf-studio/pilot/issues/6745) → PR#6750, 17:53Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot onboard` offers Plane and tests the key (F6).** **State 2026-11-27 17:25Z: the documentation page of the agent user option merged ([pilot#6736](https://github.com/qf-studio/pilot/issues/6736) → PR#6744, 17:23Z; reviewed against the code, no finding in the page). The page states a product gap: the host script rejects the fixed TCP port 9091, and the default gateway port of the config is 9090, so a host with the default port fails the startup check of the option. A ticket (F5) gives the script a flag for the port.** **State 2026-11-27 17:15Z: the Plane key check merged ([pilot#6735](https://github.com/qf-studio/pilot/issues/6735) → PR#6743, 17:12Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot doctor` shows the Plane key check and the errors of the Plane block (F4).** **State 2026-11-27 16:55Z: the Telegram check merged ([pilot#6734](https://github.com/qf-studio/pilot/issues/6734) → PR#6738, 16:43Z; reviewed after the merge with two mutations, no finding; CheckSingleton has no change). It is not released yet; after the release, read the box log for three days.** Earlier state: **F1, F2, F3 DISPATCHED 2026-11-27 16:10Z (`pilot` + `no-decompose`): the Telegram check asks for the bot identity → [pilot#6734](https://github.com/qf-studio/pilot/issues/6734); the daemon checks the Plane key → [pilot#6735](https://github.com/qf-studio/pilot/issues/6735); the documentation page of the agent user option → [pilot#6736](https://github.com/qf-studio/pilot/issues/6736).** Held, written when the step before is merged: the Plane row of `pilot doctor`, the config check of the Plane block, Plane in `pilot onboard` (two steps), the agent user option in `pilot doctor` (two steps).
 **Created**: 2026-11-27
 **Assignee**: Pilot (one ticket at a time)
 
@@ -46,9 +46,9 @@ The daemon check of Telegram makes no conflict. A user can set up Plane in the w
 - [x] 3. A documentation page for the agent user option and its host script (F3) — pilot#6736, merged 11-27 17:23Z
 
 ### Phase 2: Plane in the first-run commands
-- [ ] 4. `pilot doctor` shows a row for the Plane key and a row for the errors of the Plane block: an empty key, slug or project list, and a project entry whose Plane project is not polled (F4, needs 2)
+- [x] 4. `pilot doctor` shows a row for the Plane key and a row for the errors of the Plane block: an empty key, slug or project list, and a project entry whose Plane project is not polled (F4, needs 2) — pilot#6745, merged 11-27 17:53Z
 - [x] 5. The errors of the Plane block — joined with step 4 on 11-27: they are a row of `pilot doctor`, not a refusal at the start of the daemon. Reason: a refusal stops a daemon whose config works today with a half-filled Plane block.
-- [ ] 6. `pilot onboard` offers Plane as a ticket source and tests the key (needs 2, 4)
+- [ ] 6. `pilot onboard` offers Plane as a ticket source and tests the key (F6, needs 2, 4)
 - [ ] 7. `pilot onboard` asks which Plane project belongs to the repository (needs 6)
 
 ### Phase 3: The agent user option in `pilot doctor`
@@ -339,6 +339,50 @@ Go code. The startup check of the option. A change of the default gateway port o
 
 - Navigator TASK-661 in this repo
 
+### LEG F6 — repo: qf-studio/pilot — title: feat(onboard): pilot onboard offers Plane as a ticket source — it asks for the server, the key, the workspace and the projects, and tests them with one live request
+
+probe: present qf-studio/pilot func[[:space:]]getTicketSourcesForPersona\(persona[[:space:]]Persona\)
+probe: present qf-studio/pilot func[[:space:]]onboardAsanaTickets\(state[[:space:]]\*OnboardState\)
+probe: present qf-studio/pilot func[[:space:]]hasTicketSource\(cfg[[:space:]]\*config\.Config\)
+probe: present qf-studio/pilot func[[:space:]]NewVerifier\(cfg[[:space:]]\*Config,[[:space:]]opts
+probe: absent  qf-studio/pilot func[[:space:]]onboardPlaneTickets\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-661. The command `pilot onboard` is the main set-up wizard. Its ticket source step is in `cmd/pilot/onboard_ticket.go`: getTicketSourcesForPersona holds a list of sources (GitHub Issues, Linear, Jira, GitLab Issues, Azure DevOps, Asana), each with a name, a description, a set-up function and a function that says if the source is on. The persona decides how much of the list is shown, by a slice of the list: the first entry for Solo, the first three for Team, all for Enterprise. A set-up function such as onboardAsanaTickets starts from the default config of the adapter, reads the answers with readOnboardLine, tests the connection, calls handleValidationFailure when the test fails, and sets the polling block and the enabled flag at the end. The function hasTicketSource in `cmd/pilot/onboard.go` says if the config has a ticket source; it knows GitHub, Linear, Jira and Asana.
+
+Plane is not in the list. A user must write the Plane block by hand. The config type and its default are in `internal/adapters/plane/types.go` (base URL, key, webhook secret, workspace slug, project IDs, Pilot label, polling). The adapter package has a verifier (NewVerifier in `internal/adapters/plane/verify.go`) that tests the key, the slug and the first project ID with one labels request; it takes an option for the HTTP client. The command `pilot doctor` reports a wrong Plane block with the row plane.config (`internal/health/health.go`).
+
+The test TestPersonaRouting in `cmd/pilot/onboard_test.go` expects 6 ticket sources for Enterprise.
+
+## Scope
+
+1. `cmd/pilot/onboard_ticket.go`: a new entry for Plane at the END of the list in getTicketSourcesForPersona (so the slices for Solo and Team do not change), with the set-up function onboardPlaneTickets.
+2. onboardPlaneTickets asks, in this order: the base URL (the default of the adapter config is shown and kept on an empty answer; a self-hosted server gives its own URL); the API key (an empty answer skips Plane with the same message form as Asana and leaves the block off); the workspace slug (required; an empty answer asks one more time, then skips); the project IDs as one line with commas (at least one is required); the Pilot label (default pilot). Trim each value; drop empty project IDs.
+3. The connection test: a new function validatePlaneConn that takes the Plane config and runs the verifier of the adapter package with a time limit of 10 seconds. It is reached through a package variable, so that a test can give a fake. On an error the wizard shows the error text and calls handleValidationFailure with a retry of onboardPlaneTickets. The key must NOT appear in any text that the wizard prints.
+4. On success the function sets the polling block (enabled, the default interval of the example config) and the enabled flag, and prints one line that says how many projects are polled.
+5. `cmd/pilot/onboard.go`: hasTicketSource returns true for an enabled Plane block.
+6. Tests in `cmd/pilot/onboard_test.go` (or a new test file beside it): TestPersonaRouting expects 7 sources for Enterprise and the counts of Solo and Team stay 1 and 3; TestHasTicketSource gets a Plane case; TestOnboardPlaneTickets with scripted input and a fake connection test: a full run (the block is enabled, the values are trimmed, two project IDs from one line, the label default); an empty key (the block is not enabled, the connection test is not called); a failed connection test followed by the answer that skips (the block is not enabled). One more case asserts that the captured output of a failed run does not hold the key (a marker key of the style in `internal/testutil/tokens.go`).
+7. `docs/content/integrations/plane.mdx`: one short paragraph says that `pilot onboard` can write the Plane block for the Enterprise persona, and that the project pairing key is still set by hand.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./cmd/pilot/ -run 'TestPersonaRouting|TestHasTicketSource|TestOnboardPlaneTickets'` passes; paste the output into the PR body.
+- [ ] `go build ./...` passes; paste the output into the PR body.
+- [ ] Remove the Plane case from hasTicketSource -> TestHasTicketSource fails
+- [ ] Enable the block also when the connection test failed and the user skipped -> TestOnboardPlaneTickets fails
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The question for the Plane project of each repository (the pairing key of a project entry; next issue). The webhook secret. The other ticket sources and their connection tests. The deprecated command pilot setup. The SDK.
+
+## Refs
+
+- Navigator TASK-661 in this repo
+
 ## Refs
 
 - F1 → https://github.com/qf-studio/pilot/issues/6734
@@ -346,6 +390,7 @@ Go code. The startup check of the option. A change of the default gateway port o
 - F3 → https://github.com/qf-studio/pilot/issues/6736
 - F4 → https://github.com/qf-studio/pilot/issues/6745
 - F5 → https://github.com/qf-studio/pilot/issues/6748
+- F6 → https://github.com/qf-studio/pilot/issues/6755
 
 - Research of 2026-11-27 (session): the first-run commands (`cmd/pilot/onboard.go`, `cmd/pilot/onboard_ticket.go`, `cmd/pilot/doctor.go`, `internal/health/health.go`), the callers of each Telegram getUpdates request, the box log of the 409 lines by day.
 - TASK-658 (Plane integration), TASK-651 (agent isolation), TASK-379 (doctor live probes, archived).
