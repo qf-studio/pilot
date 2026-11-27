@@ -1,6 +1,6 @@
 # TASK-661: First-run commands — the Telegram check stops its own conflict, and `pilot onboard`, `pilot doctor` and the config check know Plane and the agent user option
 
-**Status**: 🚀 **State 2026-11-27 19:15Z: the gateway port flag of the host script merged ([pilot#6748](https://github.com/qf-studio/pilot/issues/6748) → PR#6759, 18:55Z; reviewed: 923 script tests pass, a mutation fails four of them) and the two minors of the Plane doctor rows merged ([pilot#6754](https://github.com/qf-studio/pilot/issues/6754) → PR#6757, 18:31Z; reviewed). In the queue: Plane in `pilot onboard` ([pilot#6755](https://github.com/qf-studio/pilot/issues/6755)).** **State 2026-11-27 18:21Z: the daemon's review of PR#6750 found two minors that the session's review did not find (a project list of only blank entries passes the config row; a key of only spaces gives two rows); its ticket [pilot#6754](https://github.com/qf-studio/pilot/issues/6754) has the open PR#6757. In work: the gateway port flag of the host script ([pilot#6748](https://github.com/qf-studio/pilot/issues/6748)); in the queue: Plane in `pilot onboard` ([pilot#6755](https://github.com/qf-studio/pilot/issues/6755)).** **State 2026-11-27 17:56Z: the Plane rows of `pilot doctor` merged ([pilot#6745](https://github.com/qf-studio/pilot/issues/6745) → PR#6750, 17:53Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot onboard` offers Plane and tests the key (F6).** **State 2026-11-27 17:25Z: the documentation page of the agent user option merged ([pilot#6736](https://github.com/qf-studio/pilot/issues/6736) → PR#6744, 17:23Z; reviewed against the code, no finding in the page). The page states a product gap: the host script rejects the fixed TCP port 9091, and the default gateway port of the config is 9090, so a host with the default port fails the startup check of the option. A ticket (F5) gives the script a flag for the port.** **State 2026-11-27 17:15Z: the Plane key check merged ([pilot#6735](https://github.com/qf-studio/pilot/issues/6735) → PR#6743, 17:12Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot doctor` shows the Plane key check and the errors of the Plane block (F4).** **State 2026-11-27 16:55Z: the Telegram check merged ([pilot#6734](https://github.com/qf-studio/pilot/issues/6734) → PR#6738, 16:43Z; reviewed after the merge with two mutations, no finding; CheckSingleton has no change). It is not released yet; after the release, read the box log for three days.** Earlier state: **F1, F2, F3 DISPATCHED 2026-11-27 16:10Z (`pilot` + `no-decompose`): the Telegram check asks for the bot identity → [pilot#6734](https://github.com/qf-studio/pilot/issues/6734); the daemon checks the Plane key → [pilot#6735](https://github.com/qf-studio/pilot/issues/6735); the documentation page of the agent user option → [pilot#6736](https://github.com/qf-studio/pilot/issues/6736).** Held, written when the step before is merged: the Plane row of `pilot doctor`, the config check of the Plane block, Plane in `pilot onboard` (two steps), the agent user option in `pilot doctor` (two steps).
+**Status**: 🚀 **State 2026-11-27 19:46Z: `pilot onboard` offers Plane ([pilot#6755](https://github.com/qf-studio/pilot/issues/6755) → PR#6763, 19:44Z; reviewed after the merge, no finding). Next ticket written: the wizard pairs the polled Plane projects with the repositories (F7). After it only the agent user option in `pilot doctor` is left (steps 8 and 9).** **State 2026-11-27 19:15Z: the gateway port flag of the host script merged ([pilot#6748](https://github.com/qf-studio/pilot/issues/6748) → PR#6759, 18:55Z; reviewed: 923 script tests pass, a mutation fails four of them) and the two minors of the Plane doctor rows merged ([pilot#6754](https://github.com/qf-studio/pilot/issues/6754) → PR#6757, 18:31Z; reviewed). In the queue: Plane in `pilot onboard` ([pilot#6755](https://github.com/qf-studio/pilot/issues/6755)).** **State 2026-11-27 18:21Z: the daemon's review of PR#6750 found two minors that the session's review did not find (a project list of only blank entries passes the config row; a key of only spaces gives two rows); its ticket [pilot#6754](https://github.com/qf-studio/pilot/issues/6754) has the open PR#6757. In work: the gateway port flag of the host script ([pilot#6748](https://github.com/qf-studio/pilot/issues/6748)); in the queue: Plane in `pilot onboard` ([pilot#6755](https://github.com/qf-studio/pilot/issues/6755)).** **State 2026-11-27 17:56Z: the Plane rows of `pilot doctor` merged ([pilot#6745](https://github.com/qf-studio/pilot/issues/6745) → PR#6750, 17:53Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot onboard` offers Plane and tests the key (F6).** **State 2026-11-27 17:25Z: the documentation page of the agent user option merged ([pilot#6736](https://github.com/qf-studio/pilot/issues/6736) → PR#6744, 17:23Z; reviewed against the code, no finding in the page). The page states a product gap: the host script rejects the fixed TCP port 9091, and the default gateway port of the config is 9090, so a host with the default port fails the startup check of the option. A ticket (F5) gives the script a flag for the port.** **State 2026-11-27 17:15Z: the Plane key check merged ([pilot#6735](https://github.com/qf-studio/pilot/issues/6735) → PR#6743, 17:12Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot doctor` shows the Plane key check and the errors of the Plane block (F4).** **State 2026-11-27 16:55Z: the Telegram check merged ([pilot#6734](https://github.com/qf-studio/pilot/issues/6734) → PR#6738, 16:43Z; reviewed after the merge with two mutations, no finding; CheckSingleton has no change). It is not released yet; after the release, read the box log for three days.** Earlier state: **F1, F2, F3 DISPATCHED 2026-11-27 16:10Z (`pilot` + `no-decompose`): the Telegram check asks for the bot identity → [pilot#6734](https://github.com/qf-studio/pilot/issues/6734); the daemon checks the Plane key → [pilot#6735](https://github.com/qf-studio/pilot/issues/6735); the documentation page of the agent user option → [pilot#6736](https://github.com/qf-studio/pilot/issues/6736).** Held, written when the step before is merged: the Plane row of `pilot doctor`, the config check of the Plane block, Plane in `pilot onboard` (two steps), the agent user option in `pilot doctor` (two steps).
 **Created**: 2026-11-27
 **Assignee**: Pilot (one ticket at a time)
 
@@ -48,8 +48,8 @@ The daemon check of Telegram makes no conflict. A user can set up Plane in the w
 ### Phase 2: Plane in the first-run commands
 - [x] 4. `pilot doctor` shows a row for the Plane key and a row for the errors of the Plane block: an empty key, slug or project list, and a project entry whose Plane project is not polled (F4, needs 2) — pilot#6745, merged 11-27 17:53Z
 - [x] 5. The errors of the Plane block — joined with step 4 on 11-27: they are a row of `pilot doctor`, not a refusal at the start of the daemon. Reason: a refusal stops a daemon whose config works today with a half-filled Plane block.
-- [ ] 6. `pilot onboard` offers Plane as a ticket source and tests the key (F6, needs 2, 4)
-- [ ] 7. `pilot onboard` asks which Plane project belongs to the repository (needs 6)
+- [x] 6. `pilot onboard` offers Plane as a ticket source and tests the key (F6, needs 2, 4) — pilot#6755, merged 11-27 19:44Z
+- [ ] 7. `pilot onboard` asks which Plane project belongs to the repository (F7, needs 6)
 
 ### Phase 3: The agent user option in `pilot doctor`
 - [x] 7a. The host script takes the gateway port as a flag; the firewall rule, the boot unit and the printed config follow it (F5) — pilot#6748, merged 11-27 18:55Z
@@ -383,6 +383,48 @@ The question for the Plane project of each repository (the pairing key of a proj
 
 - Navigator TASK-661 in this repo
 
+### LEG F7 — repo: qf-studio/pilot — title: feat(onboard): the Plane step of pilot onboard pairs each polled Plane project with a repository — the pairing key is no longer a hand edit
+
+probe: present qf-studio/pilot func[[:space:]]onboardPlaneTickets\(state[[:space:]]\*OnboardState\)
+probe: present qf-studio/pilot func[[:space:]]splitPlaneProjectIDs\(
+probe: present qf-studio/pilot func[[:space:]]\(c[[:space:]]\*Config\)[[:space:]]validateProjectPlane\(\)
+probe: absent  qf-studio/pilot func[[:space:]]onboardPlaneProjectPairing\(
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-661. The wizard `pilot onboard` runs its stages in this order: project, backend, ticket sources, notifications. The project stage (`cmd/pilot/onboard_project.go`) fills the project entries of the config before the ticket stage starts. The Plane step of the ticket stage is onboardPlaneTickets in `cmd/pilot/onboard_ticket.go` (issue 6755): it asks for the server, the key, the workspace slug, the polled project IDs and the label, tests the connection, and enables the block.
+
+A project entry of the config can name the Plane project whose work items it takes: the field Plane of the project config with the field ProjectID (`internal/config/config.go`, GH-6707). The poller routes a work item of that Plane project to that repository; a work item of a Plane project with no pairing goes to the default project. validateProjectPlane in the same file refuses an empty ID and the same ID on two project entries. The command `pilot doctor` reports a pairing with an ID that is not polled (row plane.config in `internal/health/health.go`).
+
+The wizard does not ask for the pairing. A user with two repositories and two Plane projects must add the key by hand.
+
+## Scope
+
+1. `cmd/pilot/onboard_ticket.go`: a new function onboardPlaneProjectPairing, called by onboardPlaneTickets after the connection test passed and the block is enabled. It does nothing (and prints nothing) when the config has fewer than two project entries or fewer than two polled Plane project IDs: with one of each, each work item goes to the default project and no pairing is necessary.
+2. In the other case it prints the polled Plane project IDs with numbers, and asks for each project entry (by its name, in config order) which Plane project it takes: a number of the list, or an empty answer for none. A Plane project that one entry took is not offered to the next entries. An answer that is not a number of the offered list asks one more time, then counts as none. The function sets the Plane field of the project entry for each choice and leaves the entry alone for none. It does not remove a pairing that the entry already has when the answer is empty; it shows the current pairing as the default in that case.
+3. After the loop it prints one line for each pairing and one line that says where the work items of the other Plane projects go (the default project).
+4. The result must pass validateProjectPlane, and each paired ID must be in the polled list.
+5. Tests in `cmd/pilot/onboard_plane_test.go` with scripted input: TestOnboardPlaneProjectPairing with the cases: one project entry (no question, no change); two entries and one Plane project (no question); two entries and two Plane projects with two valid choices (both entries are paired, the IDs differ); the first entry takes a project and the second answers empty (one pairing); a wrong answer two times (none); an entry with a pairing of before and an empty answer (the pairing stays). Each case runs the Validate method of the config, or validateProjectPlane, on the result and expects no error.
+6. `docs/content/integrations/plane.mdx`: the paragraph about the wizard says that the wizard asks for the pairing when the config has several repositories and several Plane projects.
+
+## Acceptance
+
+- [ ] `go test -race -count=1 ./cmd/pilot/ -run 'TestOnboardPlaneProjectPairing|TestOnboardPlaneTickets'` passes; paste the output into the PR body.
+- [ ] `go build ./...` passes; paste the output into the PR body.
+- [ ] Offer a Plane project that another entry took -> TestOnboardPlaneProjectPairing fails
+- [ ] Ask the questions also with one project entry -> TestOnboardPlaneProjectPairing fails
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+The project stage of the wizard. Names of Plane projects from the server (the wizard shows the IDs that the user typed). The config check and `pilot doctor`. Other ticket sources.
+
+## Refs
+
+- Navigator TASK-661 in this repo
+
 ## Refs
 
 - F1 → https://github.com/qf-studio/pilot/issues/6734
@@ -391,6 +433,7 @@ The question for the Plane project of each repository (the pairing key of a proj
 - F4 → https://github.com/qf-studio/pilot/issues/6745
 - F5 → https://github.com/qf-studio/pilot/issues/6748
 - F6 → https://github.com/qf-studio/pilot/issues/6755
+- F7 → https://github.com/qf-studio/pilot/issues/6764
 
 - Research of 2026-11-27 (session): the first-run commands (`cmd/pilot/onboard.go`, `cmd/pilot/onboard_ticket.go`, `cmd/pilot/doctor.go`, `internal/health/health.go`), the callers of each Telegram getUpdates request, the box log of the 409 lines by day.
 - TASK-658 (Plane integration), TASK-651 (agent isolation), TASK-379 (doctor live probes, archived).
