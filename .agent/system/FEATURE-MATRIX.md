@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-11-25 (GH-5217)
+**Last Updated:** 2026-11-27 (GH-5217)
 
 ## Legend
 
