@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
 	planeSDK "github.com/qf-studio/studio-sdk/sdk/integrations/plane"
 
 	"github.com/qf-studio/pilot/internal/adapters/plane"
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/logging"
 )
@@ -30,6 +32,15 @@ func planePollerRegistration() PollerRegistration {
 			)
 			planeNotifier := planeSDK.NewNotifier(planeClient, deps.Cfg.Adapters.Plane.WorkspaceSlug)
 
+			// GH-6739: the PR-created event has no Plane project ID, so the
+			// handler records it for the callback. nil when no callback is
+			// wired, so nothing is recorded that no one would take.
+			links := newPlaneWorkItemLinks()
+			onPRCreated := planeOnPRCreated(deps.Cfg, deps.AutopilotController, deps.AutopilotControllers, links)
+			if onPRCreated == nil {
+				links = nil
+			}
+
 			pollerDeps := sdkcore.PollerDeps{
 				Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
 					// GH-2132: Notify task started
@@ -44,6 +55,7 @@ func planePollerRegistration() PollerRegistration {
 					projectPath := resolvePlaneProjectPath(deps.Cfg, ev, deps.ProjectPath)
 
 					result, err := handlePlaneIssueWithResult(issueCtx, deps.Cfg, planeClient, ev, projectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+					recordPlaneLink(links, ev, result, err)
 
 					// GH-2132: Link PR via notifier
 					if result != nil && result.PRNumber > 0 {
@@ -65,18 +77,8 @@ func planePollerRegistration() PollerRegistration {
 			if deps.Cfg.Orchestrator.MaxConcurrent > 0 {
 				pollerDeps.MaxConcurrent = deps.Cfg.Orchestrator.MaxConcurrent
 			}
-			if planeHasProjectPairing(deps.Cfg) {
-				// GH-6707: work items can land in several repos, so the PR is
-				// registered with the controller of the repo it was opened in
-				// (same routing as Linear, GH-5584), not the default repo's.
-				if deps.AutopilotController != nil || len(deps.AutopilotControllers) > 0 {
-					pollerDeps.OnPRCreated = newRoutedOnPRCreated("plane", deps.Cfg, deps.AutopilotController, deps.AutopilotControllers)
-				}
-			} else if deps.AutopilotController != nil {
-				ctrl := deps.AutopilotController
-				pollerDeps.OnPRCreated = func(prEv sdkcore.PRCreatedEvent) {
-					ctrl.OnPRCreated(prEv.PRNumber, prEv.PRURL, 0, prEv.HeadSHA, prEv.BranchName, "")
-				}
+			if onPRCreated != nil {
+				pollerDeps.OnPRCreated = onPRCreated
 			}
 
 			planePoller := planeSDK.New(sdkCfg).NewPoller(pollerDeps)
@@ -92,6 +94,107 @@ func planePollerRegistration() PollerRegistration {
 			})
 		},
 	}
+}
+
+// planeOnPRCreated builds the Plane poller's OnPRCreated callback, or nil when
+// no autopilot controller can take the PR. With a project pairing, work items
+// can land in several repos, so the PR is registered with the controller of
+// the repo it was opened in (same routing as Linear, GH-5584/GH-6707); with no
+// pairing the default controller takes it. In both branches the same
+// controller then gets the Plane link of the PR (GH-6739).
+func planeOnPRCreated(cfg *config.Config, defaultCtrl *autopilot.Controller, ctrls map[string]*autopilot.Controller, links *planeWorkItemLinks) func(sdkcore.PRCreatedEvent) {
+	if planeHasProjectPairing(cfg) {
+		if defaultCtrl == nil && len(ctrls) == 0 {
+			return nil
+		}
+		defaultRepo, def, byRepo := routedRegistrars(cfg, defaultCtrl, ctrls)
+		return planeRoutedOnPRCreated(defaultRepo, def, byRepo, links)
+	}
+	if defaultCtrl == nil {
+		return nil
+	}
+	return planeDefaultOnPRCreated(defaultCtrl, links)
+}
+
+// planeRoutedOnPRCreated registers the PR with the controller of its repo and
+// stores the Plane link on that controller.
+func planeRoutedOnPRCreated(defaultRepo string, def prRegistrar, byRepo map[string]prRegistrar, links *planeWorkItemLinks) func(sdkcore.PRCreatedEvent) {
+	return func(prEv sdkcore.PRCreatedEvent) {
+		projectID := links.take(prEv.IssueID)
+		ctrl, n := registerRoutedPR("plane", defaultRepo, def, byRepo, prEv)
+		if ctrl == nil {
+			return
+		}
+		setPlaneLink(ctrl, n, projectID, prEv.IssueID)
+	}
+}
+
+// planeDefaultOnPRCreated registers the PR with the default controller (no
+// project pairing) and stores the Plane link on it.
+func planeDefaultOnPRCreated(ctrl prRegistrar, links *planeWorkItemLinks) func(sdkcore.PRCreatedEvent) {
+	return func(prEv sdkcore.PRCreatedEvent) {
+		projectID := links.take(prEv.IssueID)
+		ctrl.OnPRCreated(prEv.PRNumber, prEv.PRURL, 0, prEv.HeadSHA, prEv.BranchName, "")
+		setPlaneLink(ctrl, prEv.PRNumber, projectID, prEv.IssueID)
+	}
+}
+
+// setPlaneLink stores the Plane link of a just-registered PR. No call when the
+// handler recorded no project for the work item.
+func setPlaneLink(ctrl prRegistrar, prNumber int, projectID, workItemID string) {
+	if projectID == "" || workItemID == "" {
+		return
+	}
+	if !ctrl.SetPlaneLink(prNumber, projectID, workItemID) {
+		logging.WithComponent("plane").Warn("Plane link not stored: the controller does not track the PR",
+			slog.Int("pr_number", prNumber),
+			slog.String("work_item_id", workItemID),
+		)
+	}
+}
+
+// planeWorkItemLinks maps a work item UUID to its Plane project UUID between
+// the handler (which knows both) and the OnPRCreated callback (whose event
+// has only the work item) (GH-6739). Safe for parallel runs; a nil receiver
+// records nothing and takes nothing.
+type planeWorkItemLinks struct {
+	mu sync.Mutex
+	m  map[string]string
+}
+
+func newPlaneWorkItemLinks() *planeWorkItemLinks {
+	return &planeWorkItemLinks{m: make(map[string]string)}
+}
+
+func (l *planeWorkItemLinks) record(workItemID, projectID string) {
+	if l == nil || workItemID == "" || projectID == "" {
+		return
+	}
+	l.mu.Lock()
+	l.m[workItemID] = projectID
+	l.mu.Unlock()
+}
+
+// take returns the project recorded for workItemID and removes the entry.
+func (l *planeWorkItemLinks) take(workItemID string) string {
+	if l == nil {
+		return ""
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	projectID := l.m[workItemID]
+	delete(l.m, workItemID)
+	return projectID
+}
+
+// recordPlaneLink records the work item's project when the run returned a PR,
+// under the same condition on which the SDK poller fires OnPRCreated (no
+// error, PR number above zero), so every entry is taken by the callback.
+func recordPlaneLink(links *planeWorkItemLinks, ev sdkcore.IssueEvent, result *sdkcore.IssueResult, err error) {
+	if err != nil || result == nil || result.PRNumber <= 0 {
+		return
+	}
+	links.record(ev.IssueID, ev.ProjectID)
 }
 
 // planeSDKConfig maps the internal Plane config to the SDK config (field

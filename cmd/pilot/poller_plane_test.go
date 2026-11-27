@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -374,4 +375,127 @@ func TestPlanePollerAgainstFakePlaneServer(t *testing.T) {
 	if !containsString(listCursors[projA], cursorPage2) {
 		t.Errorf("work item list of project %s did not ask for the second page (cursors %q)", projA, listCursors[projA])
 	}
+}
+
+// TestPlaneOnPRCreated_StoresLink covers GH-6739: after the handler path
+// recorded the work item's project and the SDK fired OnPRCreated, the
+// controller that registered the PR also gets SetPlaneLink with the PR
+// number, the project ID and the work item ID — in the routed branch (project
+// pairing) and in the default branch (no pairing).
+func TestPlaneOnPRCreated_StoresLink(t *testing.T) {
+	const (
+		projectID  = "plane-project-uuid"
+		workItemID = "plane-work-item-uuid"
+		prURL      = "https://github.com/acme/other/pull/42"
+	)
+	issueEv := sdkcore.IssueEvent{IssueID: workItemID, ProjectID: projectID}
+	prEv := sdkcore.PRCreatedEvent{PRNumber: 42, PRURL: prURL, IssueID: workItemID, BranchName: "pilot/PLANE-7"}
+
+	tests := []struct {
+		name     string
+		routed   bool
+		record   bool
+		wantLink bool
+	}{
+		{name: "routed branch", routed: true, record: true, wantLink: true},
+		{name: "default branch", routed: false, record: true, wantLink: true},
+		{name: "routed branch, no recorded pair", routed: true, record: false, wantLink: false},
+		{name: "default branch, no recorded pair", routed: false, record: false, wantLink: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			def := &fakePRRegistrar{}
+			other := &fakePRRegistrar{}
+			links := newPlaneWorkItemLinks()
+			if tt.record {
+				recordPlaneLink(links, issueEv, &sdkcore.IssueResult{Success: true, PRNumber: 42, PRURL: prURL}, nil)
+			}
+
+			var cb func(sdkcore.PRCreatedEvent)
+			target := def
+			if tt.routed {
+				cb = planeRoutedOnPRCreated("acme/default", def, map[string]prRegistrar{"acme/other": other}, links)
+				target = other
+			} else {
+				cb = planeDefaultOnPRCreated(def, links)
+			}
+			cb(prEv)
+
+			if len(target.calls) != 1 || target.calls[0] != 42 {
+				t.Fatalf("OnPRCreated calls = %v, want [42]", target.calls)
+			}
+			if !tt.wantLink {
+				if len(target.planeLinks) != 0 {
+					t.Fatalf("SetPlaneLink called with no recorded pair: %v", target.planeLinks)
+				}
+				return
+			}
+			want := []fakePlaneLink{{prNumber: 42, projectID: projectID, workItemID: workItemID}}
+			if len(target.planeLinks) != 1 || target.planeLinks[0] != want[0] {
+				t.Fatalf("SetPlaneLink calls = %v, want %v", target.planeLinks, want)
+			}
+			if got := strings.Join(target.order, ","); got != "register,plane-link" {
+				t.Fatalf("call order = %q, want OnPRCreated then SetPlaneLink", got)
+			}
+			if tt.routed && (len(def.calls) != 0 || len(def.planeLinks) != 0) {
+				t.Fatalf("default controller touched for a foreign repo PR: calls=%v links=%v", def.calls, def.planeLinks)
+			}
+			if got := links.take(workItemID); got != "" {
+				t.Fatalf("entry left in the map after the callback: %q", got)
+			}
+		})
+	}
+}
+
+// TestPlaneOnPRCreated_RecordOnlyWhenPRReturned: the handler records the pair
+// only when the SDK will fire OnPRCreated (no error, PR number above zero),
+// so no entry stays in the map with no callback to take it.
+func TestPlaneOnPRCreated_RecordOnlyWhenPRReturned(t *testing.T) {
+	ev := sdkcore.IssueEvent{IssueID: "wi", ProjectID: "proj"}
+	tests := []struct {
+		name   string
+		result *sdkcore.IssueResult
+		err    error
+		want   string
+	}{
+		{"PR returned", &sdkcore.IssueResult{Success: true, PRNumber: 5}, nil, "proj"},
+		{"no PR", &sdkcore.IssueResult{Success: true}, nil, ""},
+		{"nil result", nil, nil, ""},
+		{"run error", &sdkcore.IssueResult{PRNumber: 5}, errors.New("boom"), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			links := newPlaneWorkItemLinks()
+			recordPlaneLink(links, ev, tt.result, tt.err)
+			if got := links.take("wi"); got != tt.want {
+				t.Fatalf("take = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	// A nil map (no callback wired) records and takes nothing.
+	var nilLinks *planeWorkItemLinks
+	recordPlaneLink(nilLinks, ev, &sdkcore.IssueResult{PRNumber: 5}, nil)
+	if got := nilLinks.take("wi"); got != "" {
+		t.Fatalf("nil links take = %q, want empty", got)
+	}
+}
+
+// TestPlaneOnPRCreated_LinksParallelRuns: parallel runs record and take
+// their own entries without a race (run with -race).
+func TestPlaneOnPRCreated_LinksParallelRuns(t *testing.T) {
+	links := newPlaneWorkItemLinks()
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := "wi-" + strconv.Itoa(i)
+			links.record(id, "proj-"+strconv.Itoa(i))
+			if got := links.take(id); got != "proj-"+strconv.Itoa(i) {
+				t.Errorf("take(%s) = %q", id, got)
+			}
+		}(i)
+	}
+	wg.Wait()
 }

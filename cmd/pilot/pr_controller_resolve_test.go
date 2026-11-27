@@ -10,13 +10,29 @@ import (
 )
 
 type fakePRRegistrar struct {
-	calls []int
-	urls  []string
+	calls      []int
+	urls       []string
+	planeLinks []fakePlaneLink
+	// order records "register" and "plane-link" in call order.
+	order []string
+}
+
+type fakePlaneLink struct {
+	prNumber   int
+	projectID  string
+	workItemID string
 }
 
 func (f *fakePRRegistrar) OnPRCreated(prNumber int, prURL string, _ int, _ string, _ string, _ string) {
 	f.calls = append(f.calls, prNumber)
 	f.urls = append(f.urls, prURL)
+	f.order = append(f.order, "register")
+}
+
+func (f *fakePRRegistrar) SetPlaneLink(prNumber int, projectID, workItemID string) bool {
+	f.planeLinks = append(f.planeLinks, fakePlaneLink{prNumber, projectID, workItemID})
+	f.order = append(f.order, "plane-link")
+	return true
 }
 
 func TestResolvePRController(t *testing.T) {
@@ -100,5 +116,10 @@ func TestLinearOnPRCreated_NeverRegistersForeignRepoWithDefault(t *testing.T) {
 	cb(sdkcore.PRCreatedEvent{PRNumber: 7, PRURL: "https://github.com/acme/default/pull/7", IssueID: "i4"})
 	if len(def.calls) != 1 || def.calls[0] != 7 {
 		t.Fatalf("default controller calls = %v, want [7]", def.calls)
+	}
+
+	// GH-6739: the Plane link is Plane-only; the Linear callback never sets it.
+	if len(def.planeLinks) != 0 || len(other.planeLinks) != 0 {
+		t.Fatalf("Linear callback called SetPlaneLink: default=%v other=%v", def.planeLinks, other.planeLinks)
 	}
 }
