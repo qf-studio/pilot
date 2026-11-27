@@ -67,7 +67,7 @@ adapters:
       interval: 30s
 ```
 
-With the Enterprise persona, `pilot onboard` can write this block for you: pick **Plane** in the ticket source step, give the base URL, the API key, the workspace slug, the project IDs (one line, comma-separated) and the Pilot label, and the wizard tests them with one live request before it enables the block. The `plane.project_id` of each project entry (see [Several Plane projects](#several-plane-projects)) is still set by hand.
+With the Enterprise persona, `pilot onboard` can write this block for you: pick **Plane** in the ticket source step, give the base URL, the API key, the workspace slug, the project IDs (one line, comma-separated) and the Pilot label, and the wizard tests them with one live request before it enables the block. When the config has several project entries and you give several Plane project IDs, the wizard then lists the IDs with numbers and asks, for each project entry, which Plane project it takes (a number, or empty for none); a Plane project that one entry took is not offered to the next. It sets the `plane.project_id` of each paired entry (see [Several Plane projects](#several-plane-projects)), keeps a pairing of before on an empty answer, and the work items of the other Plane projects go to the default project.
 
 ## Configuration Reference
 

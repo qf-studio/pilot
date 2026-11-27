@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -792,7 +793,116 @@ func onboardPlaneTickets(state *OnboardState) error {
 	cfg.Enabled = true
 	fmt.Printf("  ✓ Plane configured — polling %d project(s)\n", len(projectIDs))
 
+	onboardPlaneProjectPairing(state)
+
 	return nil
+}
+
+// onboardPlaneProjectPairing asks each project entry which polled Plane
+// project it takes and sets its plane.project_id (GH-6764). With fewer than
+// two project entries or fewer than two polled Plane projects it does nothing:
+// every work item goes to the default project and no pairing is needed.
+func onboardPlaneProjectPairing(state *OnboardState) {
+	cfg := state.Config
+	if cfg.Adapters == nil || cfg.Adapters.Plane == nil {
+		return
+	}
+	planeIDs := cfg.Adapters.Plane.ProjectIDs
+	var entries []*config.ProjectConfig
+	for _, p := range cfg.Projects {
+		if p != nil {
+			entries = append(entries, p)
+		}
+	}
+	if len(entries) < 2 || len(planeIDs) < 2 {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("  Pair each repository with the Plane project whose work items it takes:")
+	for i, id := range planeIDs {
+		fmt.Printf("    %d  %s\n", i+1, id)
+	}
+
+	taken := make(map[string]bool, len(planeIDs))
+	for _, p := range entries {
+		var offered []int
+		for i, id := range planeIDs {
+			if !taken[id] {
+				offered = append(offered, i)
+			}
+		}
+
+		// Decision: an earlier pairing is the default only while its ID is
+		// still offered — a stale ID (not polled, or taken by an earlier entry)
+		// would fail validateProjectPlane or route nothing, so it is dropped.
+		current := -1
+		if p.Plane != nil {
+			for _, i := range offered {
+				if planeIDs[i] == strings.TrimSpace(p.Plane.ProjectID) {
+					current = i
+				}
+			}
+			if current < 0 {
+				fmt.Printf("  ! %s: pairing %q is not offered — removed\n", p.Name, p.Plane.ProjectID)
+				p.Plane = nil
+			}
+		}
+		if len(offered) == 0 {
+			continue
+		}
+
+		choice := askPlanePairing(state, p.Name, offered, current)
+		if choice < 0 {
+			continue
+		}
+		p.Plane = &config.ProjectPlaneConfig{ProjectID: planeIDs[choice]}
+		taken[planeIDs[choice]] = true
+	}
+
+	fmt.Println()
+	for _, p := range entries {
+		if p.Plane != nil {
+			fmt.Printf("  ✓ %s takes the work items of Plane project %s\n", p.Name, p.Plane.ProjectID)
+		}
+	}
+	defaultName := ""
+	if def := cfg.GetDefaultProject(); def != nil {
+		defaultName = def.Name
+	}
+	fmt.Printf("  ✓ Work items of the other Plane projects go to the default project (%s)\n", defaultName)
+}
+
+// askPlanePairing asks which offered Plane project (an index of the polled
+// list) the entry name takes. current is the index of the entry's pairing, or
+// -1; an empty answer returns current. An answer that is not an offered number
+// is asked one more time, then counts as none (current). It returns -1 for none.
+func askPlanePairing(state *OnboardState, name string, offered []int, current int) int {
+	nums := make([]string, len(offered))
+	for i, idx := range offered {
+		nums[i] = strconv.Itoa(idx + 1)
+	}
+	hint := strings.Join(nums, ", ") + "; empty for none"
+	if current >= 0 {
+		hint = fmt.Sprintf("%s; empty keeps %d", strings.Join(nums, ", "), current+1)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		fmt.Printf("  %s — Plane project (%s): ", name, hint)
+		answer := readOnboardLine(state.Reader)
+		if answer == "" {
+			return current
+		}
+		if n, err := strconv.Atoi(answer); err == nil {
+			for _, idx := range offered {
+				if idx == n-1 {
+					return idx
+				}
+			}
+		}
+		fmt.Printf("  ! %q is not a number of the list\n", answer)
+	}
+	return current
 }
 
 // splitPlaneProjectIDs splits a comma-separated line into trimmed, non-empty IDs.
