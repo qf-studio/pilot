@@ -1,6 +1,6 @@
 # TASK-659: SDK credential leak hardening — a leak test for each adapter HTTP client of the SDK, a redact helper, the Telegram token out of error text, a CI gate
 
-**Status**: 🚀 **State 2026-11-27 09:48Z. With Pilot: [studio-sdk#175](https://github.com/qf-studio/studio-sdk/issues/175) (a masked error no longer hands out its unmasked cause; the leak test helper reads the whole error chain; leg C6, dispatched 09:48Z).** Done: [studio-sdk#173](https://github.com/qf-studio/studio-sdk/issues/173) merged as SDK pull request 174 at 09:39Z (the helpers in `sdk/testutil`, the redact package, the Telegram client masks the token in the text of each error). The review by the session after the merge found one defect, which came from the ticket text ("still unwraps to the cause"): the masked error kept Unwrap, and the cause chain holds a `*url.Error` whose URL holds the token; the helper ErrText read only the top text, so the leak test did not see it. Leg C6 closes that. The daemon's own review did not run for pull request 174 (not in its sample). **Next, in this order, on the founder's "dispatch" of 11-27 (no new word needed):** (1) after the merge of #175: review, then dispatch the two test legs C2 and C3 together; (2) after both merge: the gate leg C4; (3) an SDK release by hand (the next free patch number after v0.39.2); (4) write and dispatch the pin leg in Pilot (C5, held). Before each dispatch: fetch the SDK clone, read the legs C2 to C4 against the merged code (the helper names: CanaryToken, AssertNoCanaryLeak, FailingTransport, EchoServer, ErrText, CaptureSlog in the file leak.go of `sdk/testutil`; the redact package below `sdk/util/text`), and correct a leg that names something else.
+**Status**: 🚀 **State 2026-11-27 10:00Z. With Pilot, both dispatched at 10:00Z: [studio-sdk#177](https://github.com/qf-studio/studio-sdk/issues/177) (leak tests for the Asana, Azure DevOps, GitLab, Jira and Plane clients) and [studio-sdk#178](https://github.com/qf-studio/studio-sdk/issues/178) (the Discord, Linear and Slack clients mask a response body in an error; leak tests for them and the GitHub client).** Done: [studio-sdk#173](https://github.com/qf-studio/studio-sdk/issues/173) merged as SDK pull request 174 at 09:39Z; [studio-sdk#175](https://github.com/qf-studio/studio-sdk/issues/175) merged as SDK pull request 176 at 09:57Z (the masked error has no Unwrap method; Is and As answer on the cause; a `*url.Error` from As is a masked copy; ErrText reads the whole chain). The review by the session after the merge of pull request 176 (comment on the PR; tests and a probe run on the merge commit) found one defect: the As method masks only a `*url.Error`. An interface target that a wrapper of the cause chain satisfies, or an error type of a client that holds a response text, comes out with the secret. No caller in the SDK does this today. The two test tickets got one more scope item for it before the dispatch: a client's own error type is masked where the value is built, and the leak test reads that value through errors.As. A follow-up ticket for the redact package itself (As refuses a match whose text holds a secret when the match is not a `*url.Error`) is not written yet: the daemon's review of pull request 176 runs, and its ticket comes first. **Next, in this order, on the founder's "dispatch" of 11-27 (no new word needed):** (1) after the merge of #177 and #178: a review of each; (2) the follow-up for the As method, after the daemon's review; (3) the gate leg C4; (4) an SDK release by hand (the next free patch number after v0.39.2); (5) write and dispatch the pin leg in Pilot (C5, held).
 **Created**: 2026-11-27
 **Assignee**: Pilot (one leg at a time) + one operator step (SDK release)
 **Parent**: TASK-650 (secret exposure hardening), leg L3 (the canary tests of Pilot's own adapter clients)
@@ -46,11 +46,11 @@ Each HTTP client of the SDK has a test that drives it with a marker credential t
 
 ### Phase 1: The tools and the real leak
 - [x] 1. The SDK gets the leak test helpers and a redact helper; the Telegram token is masked in each error of the Telegram client, with its leak test (qf-studio/studio-sdk#173)
-- [ ] 2. A masked error no longer gives out its unmasked cause, and the test helper reads the full chain of an error (qf-studio/studio-sdk#175, needs 1)
+- [x] 2. A masked error no longer gives out its unmasked cause, and the test helper reads the full chain of an error (qf-studio/studio-sdk#175, needs 1)
 
 ### Phase 2: A leak test for each client
-- [ ] 3. Leak tests for the Asana, Azure DevOps, GitLab, Jira and Plane clients; a leak that a test finds is fixed in the same change (needs 2)
-- [ ] 4. Leak tests for the Discord, Linear, Slack and GitHub clients; the three response bodies in errors are masked (needs 2)
+- [ ] 3. Leak tests for the Asana, Azure DevOps, GitLab, Jira and Plane clients; a leak that a test finds is fixed in the same change (qf-studio/studio-sdk#177, needs 2)
+- [ ] 4. Leak tests for the Discord, Linear, Slack and GitHub clients; the three response bodies in errors are masked (qf-studio/studio-sdk#178, needs 2)
 
 ### Phase 3: The gate and the release
 - [ ] 5. A CI gate of the SDK refuses an integration package with an HTTP client and no leak test (needs 3, 4)
@@ -205,7 +205,8 @@ The package of `sdk/testutil/tokens.go` has leak test helpers (CanaryToken, Asse
 
 1. In the client test file of each of the five packages, a test TestCanary_ClientDoesNotLeakCredential: build the client with CanaryToken as the credential (for a basic credential: the marker is the secret part); call one read method and one write method through FailingTransport, and through EchoServer with the status 401 and 500; collect each error text with ErrText and the captured log; AssertNoCanaryLeak with the marker. For a basic credential also assert that the base64 form of the user and the marker is in no text.
 2. When a client has no way to set the base URL or the transport for a test, add an option in the style of the package (the GitLab and Plane clients have WithHTTPClient; four packages have NewClientWithBaseURL; the Jira client has neither).
-3. When a leak test fails, mask the credential with the redact package at the request helper of that client (the error of the transport and each text from the response), and keep the error chain. Name each such fix in the PR body.
+3. When a leak test fails, mask the credential with the redact package at the request helper of that client (the error of the transport and each text from the response). An error from redact.Error has no Unwrap method; errors.Is and errors.As on it must keep their results, and they do. Name each such fix in the PR body.
+5. A caller must NOT be able to get the credential from a value that errors.As hands out. redact.Error masks only a `*url.Error` there; a value of another type comes out as it is. Two of the five packages return an error type of their own (`sdk/integrations/asana/types.go`: APIError; `sdk/integrations/jira/errors.go`: RateLimitError, AuthError). When such a value can hold a response text, mask the text where the value is built. The leak test of these two packages also gets the value with errors.As from the error of the EchoServer call (when the client returns that type there) and asserts that its text and its string fields hold no marker.
 4. An existing test that asserts the full text of an error that changes here is adjusted in the same change.
 
 ## Acceptance
@@ -235,11 +236,12 @@ The package of `sdk/testutil/tokens.go` has leak test helpers (CanaryToken, Asse
 
 ## Scope
 
-1. The Discord, Linear and Slack socket mode clients mask their credential with the redact package in each response text that enters an error, and in the transport error; the error chain stays.
+1. The Discord, Linear and Slack socket mode clients mask their credential with the redact package in each response text that enters an error, and in the transport error. An error from redact.Error has no Unwrap method; errors.Is and errors.As on it must keep their results, and they do.
 2. In the client test file of the Discord, Linear and GitHub packages, and in the test files of the two Slack clients, a test TestCanary_ClientDoesNotLeakCredential (for the socket mode client: TestCanary_SocketModeDoesNotLeakCredential): build the client with CanaryToken as the credential; call one read method and one write method (for the socket mode client: the connection open call) through FailingTransport, and through EchoServer with the status 401 and 500; collect each error text with ErrText and the captured log; AssertNoCanaryLeak with the marker.
 3. When a client has no way to set the base URL or the transport for a test, add an option in the style of the package.
 4. When a leak test finds a leak that item 1 does not name, fix it in the same way and name it in the PR body.
 5. An existing test that asserts the full text of an error that changes here is adjusted in the same change.
+6. A caller must NOT be able to get the credential from a value that errors.As hands out. redact.Error masks only a `*url.Error` there; a value of another type comes out as it is. The Linear client (`sdk/integrations/linear/client.go`: GraphQLError) and the GitHub client (`sdk/integrations/github/client.go`: GraphQLError, PartialGraphQLError; `sdk/integrations/github/errors.go`: RateLimitError, AuthError) return error types of their own. When such a value can hold a response text, mask the text where the value is built. The leak test of these two packages also gets the value with errors.As from the error of the EchoServer call (when the client returns that type there) and asserts that its text and its string fields hold no marker.
 
 ## Acceptance
 
@@ -304,3 +306,5 @@ A change of a client or of a leak test. The secret pattern check. Go analyzers.
 
 - C1 → https://github.com/qf-studio/studio-sdk/issues/173
 - C6 → https://github.com/qf-studio/studio-sdk/issues/175
+- C2 → https://github.com/qf-studio/studio-sdk/issues/177
+- C3 → https://github.com/qf-studio/studio-sdk/issues/178
