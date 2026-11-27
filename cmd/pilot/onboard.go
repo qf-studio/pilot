@@ -204,6 +204,9 @@ func hasTicketSource(cfg *config.Config) bool {
 	if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled {
 		return true
 	}
+	if cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled {
+		return true
+	}
 	return false
 }
 

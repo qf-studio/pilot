@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/adapters/plane"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/testutil"
@@ -163,7 +164,7 @@ func TestPersonaRouting(t *testing.T) {
 			name:              "Enterprise persona",
 			persona:           PersonaEnterprise,
 			wantStagesTotal:   5,
-			wantTicketSources: 6, // All sources
+			wantTicketSources: 7, // All sources (Plane last, GH-6755)
 		},
 	}
 
@@ -651,6 +652,24 @@ func TestHasTicketSource(t *testing.T) {
 			name:   "empty adapters",
 			config: &config.Config{Adapters: &config.AdaptersConfig{}},
 			want:   false,
+		},
+		{
+			name: "Plane enabled",
+			config: &config.Config{
+				Adapters: &config.AdaptersConfig{
+					Plane: &plane.Config{Enabled: true},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "Plane disabled",
+			config: &config.Config{
+				Adapters: &config.AdaptersConfig{
+					Plane: &plane.Config{Enabled: false},
+				},
+			},
+			want: false,
 		},
 	}
 

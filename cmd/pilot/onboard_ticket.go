@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/gitlab"
 	"github.com/qf-studio/pilot/internal/adapters/jira"
 	"github.com/qf-studio/pilot/internal/adapters/linear"
+	"github.com/qf-studio/pilot/internal/adapters/plane"
 	"github.com/qf-studio/pilot/internal/config"
 )
 
@@ -66,6 +68,13 @@ func getTicketSourcesForPersona(persona Persona) []TicketSource {
 			Description: "Task and project management",
 			SetupFunc:   onboardAsanaTickets,
 			IsEnabled:   func(cfg *config.Config) bool { return cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled },
+		},
+		// GH-6755: Plane stays last so the Solo and Team slices do not change.
+		{
+			Name:        "Plane",
+			Description: "Open-source project tracking (cloud or self-hosted)",
+			SetupFunc:   onboardPlaneTickets,
+			IsEnabled:   func(cfg *config.Config) bool { return cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled },
 		},
 	}
 
@@ -677,6 +686,124 @@ func onboardAsanaTickets(state *OnboardState) error {
 	fmt.Println("  ✓ Asana configured")
 
 	return nil
+}
+
+// planeValidateTimeout bounds the one live request of the Plane connection test.
+const planeValidateTimeout = 10 * time.Second
+
+// planeConnValidator runs the Plane connection test; a test swaps in a fake.
+var planeConnValidator = validatePlaneConn
+
+// validatePlaneConn tests the key, the workspace slug and the first project ID
+// of cfg with the verifier of the adapter package (one labels request).
+func validatePlaneConn(cfg *plane.Config) error {
+	ctx, cancel := context.WithTimeout(context.Background(), planeValidateTimeout)
+	defer cancel()
+	return plane.NewVerifier(cfg).Verify(ctx)
+}
+
+// onboardPlaneTickets sets up Plane as a ticket source (GH-6755).
+func onboardPlaneTickets(state *OnboardState) error {
+	fmt.Println()
+	fmt.Println("Plane Setup")
+	fmt.Println("─────────────────────────")
+
+	// Initialize config if needed
+	if state.Config.Adapters.Plane == nil {
+		state.Config.Adapters.Plane = plane.DefaultConfig()
+	}
+	cfg := state.Config.Adapters.Plane
+
+	// Base URL — a self-hosted server gives its own URL
+	defaultURL := cfg.BaseURL
+	if defaultURL == "" {
+		defaultURL = plane.DefaultConfig().BaseURL
+	}
+	fmt.Printf("  Base URL [%s]: ", defaultURL)
+	baseURL := readOnboardLine(state.Reader)
+	if baseURL == "" {
+		baseURL = defaultURL
+	}
+
+	// API key
+	fmt.Println()
+	fmt.Println("  Create a key at: Workspace settings > API tokens")
+	fmt.Print("  API key: ")
+	apiKey := readOnboardLine(state.Reader)
+	if apiKey == "" {
+		fmt.Println("  ○ Skipped - no API key provided")
+		return nil
+	}
+
+	// Workspace slug — required, asked one more time on an empty answer
+	fmt.Println("  Example: https://app.plane.so/my-team/ → workspace slug is 'my-team'")
+	fmt.Print("  Workspace slug: ")
+	slug := readOnboardLine(state.Reader)
+	if slug == "" {
+		fmt.Print("  Workspace slug is required: ")
+		slug = readOnboardLine(state.Reader)
+	}
+	if slug == "" {
+		fmt.Println("  ○ Skipped - no workspace slug provided")
+		return nil
+	}
+
+	// Project IDs — one line, comma-separated, at least one
+	fmt.Print("  Project IDs (comma-separated): ")
+	projectIDs := splitPlaneProjectIDs(readOnboardLine(state.Reader))
+	if len(projectIDs) == 0 {
+		fmt.Println("  ○ Skipped - no project ID provided")
+		return nil
+	}
+
+	// Pilot label
+	fmt.Print("  Pilot label [pilot]: ")
+	label := readOnboardLine(state.Reader)
+	if label == "" {
+		label = "pilot"
+	}
+
+	cfg.BaseURL = baseURL
+	cfg.APIKey = apiKey
+	cfg.WorkspaceSlug = slug
+	cfg.ProjectIDs = projectIDs
+	cfg.PilotLabel = label
+
+	// Validate connection
+	fmt.Print("  Validating... ")
+	if err := planeConnValidator(cfg); err != nil {
+		// Decision: the verifier already keeps the key out of its errors; the
+		// wizard masks it again so no future error path can print it.
+		fmt.Printf("✗ %s\n", strings.ReplaceAll(err.Error(), apiKey, "***"))
+		return handleValidationFailure(state, "Plane", func() error {
+			return onboardPlaneTickets(state)
+		})
+	}
+	fmt.Println("✓ Connected")
+
+	// Enable polling (interval of configs/pilot.example.yaml)
+	if cfg.Polling == nil {
+		cfg.Polling = &plane.PollingConfig{
+			Interval: 30 * time.Second,
+		}
+	}
+	cfg.Polling.Enabled = true
+
+	cfg.Enabled = true
+	fmt.Printf("  ✓ Plane configured — polling %d project(s)\n", len(projectIDs))
+
+	return nil
+}
+
+// splitPlaneProjectIDs splits a comma-separated line into trimmed, non-empty IDs.
+func splitPlaneProjectIDs(line string) []string {
+	var ids []string
+	for _, id := range strings.Split(line, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // handleValidationFailure presents options when validation fails
