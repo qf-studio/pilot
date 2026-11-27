@@ -12,6 +12,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/adapters/gitlab"
 	"github.com/qf-studio/pilot/internal/adapters/linear"
+	"github.com/qf-studio/pilot/internal/adapters/plane"
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
 	"github.com/qf-studio/pilot/internal/alerts"
@@ -46,6 +47,7 @@ func TestBuildAdapterVerifiers(t *testing.T) {
 			GitHub:   &github.Config{Enabled: true, Token: "gh-token"},
 			Linear:   &linear.Config{Enabled: true, APIKey: ""}, // no key — skipped
 			GitLab:   &gitlab.Config{Enabled: true, Token: "gl-token", Project: "group/proj"},
+			Plane:    &plane.Config{Enabled: true, APIKey: "plane-key", WorkspaceSlug: "acme", ProjectIDs: []string{"proj-1"}},
 		},
 	}
 
@@ -56,7 +58,7 @@ func TestBuildAdapterVerifiers(t *testing.T) {
 		names[v.Name()] = true
 	}
 
-	for _, want := range []string{"telegram", "github", "gitlab"} {
+	for _, want := range []string{"telegram", "github", "gitlab", "plane"} {
 		if !names[want] {
 			t.Errorf("expected verifier %q to be built, got %v", want, names)
 		}
@@ -64,6 +66,18 @@ func TestBuildAdapterVerifiers(t *testing.T) {
 	for _, notWant := range []string{"slack", "linear"} {
 		if names[notWant] {
 			t.Errorf("did not expect verifier %q (disabled or no credential), got %v", notWant, names)
+		}
+	}
+
+	// GH-6735: Plane on with an empty key — nothing to verify.
+	noKey := &config.Config{
+		Adapters: &config.AdaptersConfig{
+			Plane: &plane.Config{Enabled: true, APIKey: "", WorkspaceSlug: "acme", ProjectIDs: []string{"proj-1"}},
+		},
+	}
+	for _, v := range buildAdapterVerifiers(noKey) {
+		if v.Name() == "plane" {
+			t.Error("did not expect a plane verifier with an empty key")
 		}
 	}
 }

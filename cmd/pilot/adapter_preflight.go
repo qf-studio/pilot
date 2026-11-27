@@ -14,6 +14,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/gitlab"
 	"github.com/qf-studio/pilot/internal/adapters/jira"
 	"github.com/qf-studio/pilot/internal/adapters/linear"
+	"github.com/qf-studio/pilot/internal/adapters/plane"
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
 	"github.com/qf-studio/pilot/internal/alerts"
@@ -71,6 +72,9 @@ func buildAdapterVerifiers(cfg *config.Config) []verify.Verifiable {
 	}
 	if a.Asana != nil && a.Asana.Enabled && a.Asana.AccessToken != "" {
 		verifiers = append(verifiers, asana.NewClient(a.Asana.AccessToken, a.Asana.WorkspaceID))
+	}
+	if a.Plane != nil && a.Plane.Enabled && a.Plane.APIKey != "" {
+		verifiers = append(verifiers, plane.NewVerifier(a.Plane))
 	}
 
 	return verifiers
