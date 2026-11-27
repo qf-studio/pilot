@@ -34,7 +34,8 @@ func planePollerRegistration() PollerRegistration {
 			// handler records it for the callback. nil when no callback is
 			// wired, so nothing is recorded that no one would take.
 			links := newPlaneWorkItemLinks()
-			onPRCreated := planeOnPRCreated(deps.Cfg, deps.AutopilotController, deps.AutopilotControllers, links)
+			planeDone := newPlaneDoneNotifier(planeClient, deps.Cfg.Adapters.Plane.WorkspaceSlug)
+			onPRCreated := planeOnPRCreated(deps.Cfg, deps.AutopilotController, deps.AutopilotControllers, links, planeDone)
 			if onPRCreated == nil {
 				links = nil
 			}
@@ -43,7 +44,7 @@ func planePollerRegistration() PollerRegistration {
 			// merge leg of the controller that takes the PR — the poller only
 			// sets the done label at the end of the run.
 			sdkCfg, interval := planeSDKConfig(deps.Cfg.Adapters.Plane, onPRCreated != nil)
-			registerPlaneDoneNotifier(newPlaneDoneNotifier(planeClient, deps.Cfg.Adapters.Plane.WorkspaceSlug), deps.AutopilotController, deps.AutopilotControllers)
+			registerPlaneDoneNotifier(planeDone, deps.AutopilotController, deps.AutopilotControllers)
 
 			pollerDeps := sdkcore.PollerDeps{
 				Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
@@ -95,14 +96,15 @@ func planePollerRegistration() PollerRegistration {
 // can land in several repos, so the PR is registered with the controller of
 // the repo it was opened in (same routing as Linear, GH-5584/GH-6707); with no
 // pairing the default controller takes it. In both branches the same
-// controller then gets the Plane link of the PR (GH-6739).
-func planeOnPRCreated(cfg *config.Config, defaultCtrl *autopilot.Controller, ctrls map[string]*autopilot.Controller, links *planeWorkItemLinks) func(sdkcore.PRCreatedEvent) {
+// controller then gets the Plane link of the PR (GH-6739). completer completes
+// a work item whose PR no controller takes in the routed branch (GH-6761).
+func planeOnPRCreated(cfg *config.Config, defaultCtrl *autopilot.Controller, ctrls map[string]*autopilot.Controller, links *planeWorkItemLinks, completer planeWorkItemCompleter) func(sdkcore.PRCreatedEvent) {
 	if planeHasProjectPairing(cfg) {
 		if defaultCtrl == nil && len(ctrls) == 0 {
 			return nil
 		}
 		defaultRepo, def, byRepo := routedRegistrars(cfg, defaultCtrl, ctrls)
-		return planeRoutedOnPRCreated(defaultRepo, def, byRepo, links)
+		return planeRoutedOnPRCreated(defaultRepo, def, byRepo, links, completer)
 	}
 	if defaultCtrl == nil {
 		return nil
@@ -111,15 +113,60 @@ func planeOnPRCreated(cfg *config.Config, defaultCtrl *autopilot.Controller, ctr
 }
 
 // planeRoutedOnPRCreated registers the PR with the controller of its repo and
-// stores the Plane link on that controller.
-func planeRoutedOnPRCreated(defaultRepo string, def prRegistrar, byRepo map[string]prRegistrar, links *planeWorkItemLinks) func(sdkcore.PRCreatedEvent) {
+// stores the Plane link on that controller. When no controller takes the PR,
+// the work item is completed at once (GH-6761).
+func planeRoutedOnPRCreated(defaultRepo string, def prRegistrar, byRepo map[string]prRegistrar, links *planeWorkItemLinks, completer planeWorkItemCompleter) func(sdkcore.PRCreatedEvent) {
 	return func(prEv sdkcore.PRCreatedEvent) {
 		projectID := links.take(prEv.IssueID)
 		ctrl, n := registerRoutedPR("plane", defaultRepo, def, byRepo, prEv)
 		if ctrl == nil {
+			completePlaneWorkItemWithoutController(completer, projectID, prEv)
 			return
 		}
 		setPlaneLink(ctrl, n, projectID, prEv.IssueID)
+	}
+}
+
+// planeWorkItemCompleter moves a Plane work item to the completed state with
+// no comment; *planeDoneNotifier implements it.
+type planeWorkItemCompleter interface {
+	CompleteWorkItem(ctx context.Context, projectID, workItemID string) error
+}
+
+// planeCompleteTimeout bounds the Plane calls of the OnPRCreated callback,
+// whose event carries no context.
+const planeCompleteTimeout = 30 * time.Second
+
+// completePlaneWorkItemWithoutController completes the work item of a PR that
+// no autopilot controller takes (a GitLab merge request, or a repo with no
+// controller) (GH-6761). CompletedStateAtMerge is set for the whole poller, so
+// the SDK left the state alone, and no merge leg will ever see this PR: with
+// no call here the work item would stay started for ever. No merge comment —
+// the PR did not merge, and the SDK poller already posted the PR comment. No
+// call when the handler recorded no Plane project; an error is a warning.
+func completePlaneWorkItemWithoutController(completer planeWorkItemCompleter, projectID string, prEv sdkcore.PRCreatedEvent) {
+	if completer == nil || projectID == "" || prEv.IssueID == "" {
+		return
+	}
+	reason := "not a GitHub PR URL"
+	if repo, _, ok := parseGitHubPRURL(prEv.PRURL); ok {
+		reason = "no autopilot controller for repo " + repo
+	}
+	log := logging.WithComponent("plane")
+	log.Info("Completing Plane work item at the PR: no autopilot controller takes the PR",
+		slog.String("work_item_id", prEv.IssueID),
+		slog.String("pr_url", prEv.PRURL),
+		slog.String("reason", reason),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), planeCompleteTimeout)
+	defer cancel()
+	if err := completer.CompleteWorkItem(ctx, projectID, prEv.IssueID); err != nil {
+		log.Warn("Failed to complete Plane work item with no autopilot controller",
+			slog.String("work_item_id", prEv.IssueID),
+			slog.String("pr_url", prEv.PRURL),
+			slog.Any("error", err),
+		)
 	}
 }
 

@@ -174,7 +174,7 @@ On the poll path, Pilot updates issue state groups as it works:
 | Execution succeeded with no pull request | `completed` |
 | Execution failed | State unchanged (manual triage) |
 
-A work item whose run opens a pull request stays in the `started` group until the pull request merges. At the merge, Pilot moves the work item to the first state of the `completed` group and posts one comment with the link of the pull request. This merge step is done by autopilot, for a merge by autopilot and for a merge by hand. Without autopilot nothing sees the merge, so Pilot moves the work item to the `completed` group at the end of the run, as for a run with no pull request. When the project has no state of the `completed` group, the state does not change and Pilot logs a warning.
+A work item whose run opens a pull request stays in the `started` group until the pull request merges. At the merge, Pilot moves the work item to the first state of the `completed` group and posts one comment with the link of the pull request. This merge step is done by autopilot, for a merge by autopilot and for a merge by hand. Without autopilot nothing sees the merge, so Pilot moves the work item to the `completed` group at the end of the run, as for a run with no pull request. A work item whose pull request Pilot does not watch (for example a GitLab merge request) is completed when the pull request opens. When the project has no state of the `completed` group, the state does not change and Pilot logs a warning.
 
 A pull request that closes with no merge leaves the work item in the `started` group.
 

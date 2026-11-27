@@ -33,6 +33,25 @@ func newPlaneDoneNotifier(client planeDoneAPI, workspaceSlug string) *planeDoneN
 
 // NotifyMerged implements autopilot.PlaneDoneNotifier.
 func (n *planeDoneNotifier) NotifyMerged(ctx context.Context, projectID, workItemID, prURL string) error {
+	// The comment follows the state change: a failed change posts no comment.
+	if err := n.CompleteWorkItem(ctx, projectID, workItemID); err != nil {
+		return err
+	}
+
+	// The external ID is per work item, so a second attempt posts no second comment.
+	commentHTML := fmt.Sprintf(`<p>🔀 Pull request merged: <a href="%s">%s</a></p>`,
+		html.EscapeString(prURL), html.EscapeString(prURL))
+	if err := n.client.AddCommentWithTracking(ctx, n.workspaceSlug, projectID, workItemID,
+		commentHTML, "pilot", "pilot-merged-"+workItemID); err != nil {
+		return fmt.Errorf("post merge comment on Plane work item %s: %w", workItemID, err)
+	}
+	return nil
+}
+
+// CompleteWorkItem moves the work item to the first state of the completed
+// group and posts no comment. NotifyMerged uses it at the merge; the routed
+// OnPRCreated callback uses it alone for a PR no controller takes (GH-6761).
+func (n *planeDoneNotifier) CompleteWorkItem(ctx context.Context, projectID, workItemID string) error {
 	states, err := n.client.ListStates(ctx, n.workspaceSlug, projectID)
 	if err != nil {
 		return fmt.Errorf("list states of Plane project %s: %w", projectID, err)
@@ -48,17 +67,8 @@ func (n *planeDoneNotifier) NotifyMerged(ctx context.Context, projectID, workIte
 		return fmt.Errorf("plane project %s has no state of the %s group", projectID, planeSDK.StateGroupCompleted)
 	}
 
-	// The comment follows the state change: a failed change posts no comment.
 	if err := n.client.UpdateIssueState(ctx, n.workspaceSlug, projectID, workItemID, stateID); err != nil {
 		return fmt.Errorf("move Plane work item %s to the completed state: %w", workItemID, err)
-	}
-
-	// The external ID is per work item, so a second attempt posts no second comment.
-	commentHTML := fmt.Sprintf(`<p>🔀 Pull request merged: <a href="%s">%s</a></p>`,
-		html.EscapeString(prURL), html.EscapeString(prURL))
-	if err := n.client.AddCommentWithTracking(ctx, n.workspaceSlug, projectID, workItemID,
-		commentHTML, "pilot", "pilot-merged-"+workItemID); err != nil {
-		return fmt.Errorf("post merge comment on Plane work item %s: %w", workItemID, err)
 	}
 	return nil
 }
