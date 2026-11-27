@@ -3463,7 +3463,8 @@
           "testing"
         ],
         "issues": [
-          "https://github.com/qf-studio/studio-sdk/issues/173"
+          "https://github.com/qf-studio/studio-sdk/issues/173",
+          "https://github.com/qf-studio/studio-sdk/issues/175"
         ]
       }
     },
