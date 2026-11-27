@@ -1,6 +1,6 @@
 # TASK-661: First-run commands — the Telegram check stops its own conflict, and `pilot onboard`, `pilot doctor` and the config check know Plane and the agent user option
 
-**Status**: 🚀 **State 2026-11-27 17:15Z: the Plane key check merged ([pilot#6735](https://github.com/qf-studio/pilot/issues/6735) → PR#6743, 17:12Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot doctor` shows the Plane key check and the errors of the Plane block (F4).** **State 2026-11-27 16:55Z: the Telegram check merged ([pilot#6734](https://github.com/qf-studio/pilot/issues/6734) → PR#6738, 16:43Z; reviewed after the merge with two mutations, no finding; CheckSingleton has no change). It is not released yet; after the release, read the box log for three days.** Earlier state: **F1, F2, F3 DISPATCHED 2026-11-27 16:10Z (`pilot` + `no-decompose`): the Telegram check asks for the bot identity → [pilot#6734](https://github.com/qf-studio/pilot/issues/6734); the daemon checks the Plane key → [pilot#6735](https://github.com/qf-studio/pilot/issues/6735); the documentation page of the agent user option → [pilot#6736](https://github.com/qf-studio/pilot/issues/6736).** Held, written when the step before is merged: the Plane row of `pilot doctor`, the config check of the Plane block, Plane in `pilot onboard` (two steps), the agent user option in `pilot doctor` (two steps).
+**Status**: 🚀 **State 2026-11-27 17:25Z: the documentation page of the agent user option merged ([pilot#6736](https://github.com/qf-studio/pilot/issues/6736) → PR#6744, 17:23Z; reviewed against the code, no finding in the page). The page states a product gap: the host script rejects the fixed TCP port 9091, and the default gateway port of the config is 9090, so a host with the default port fails the startup check of the option. A ticket (F5) gives the script a flag for the port.** **State 2026-11-27 17:15Z: the Plane key check merged ([pilot#6735](https://github.com/qf-studio/pilot/issues/6735) → PR#6743, 17:12Z; reviewed after the merge with two mutations, no finding). Next ticket written: `pilot doctor` shows the Plane key check and the errors of the Plane block (F4).** **State 2026-11-27 16:55Z: the Telegram check merged ([pilot#6734](https://github.com/qf-studio/pilot/issues/6734) → PR#6738, 16:43Z; reviewed after the merge with two mutations, no finding; CheckSingleton has no change). It is not released yet; after the release, read the box log for three days.** Earlier state: **F1, F2, F3 DISPATCHED 2026-11-27 16:10Z (`pilot` + `no-decompose`): the Telegram check asks for the bot identity → [pilot#6734](https://github.com/qf-studio/pilot/issues/6734); the daemon checks the Plane key → [pilot#6735](https://github.com/qf-studio/pilot/issues/6735); the documentation page of the agent user option → [pilot#6736](https://github.com/qf-studio/pilot/issues/6736).** Held, written when the step before is merged: the Plane row of `pilot doctor`, the config check of the Plane block, Plane in `pilot onboard` (two steps), the agent user option in `pilot doctor` (two steps).
 **Created**: 2026-11-27
 **Assignee**: Pilot (one ticket at a time)
 
@@ -43,7 +43,7 @@ The daemon check of Telegram makes no conflict. A user can set up Plane in the w
 ### Phase 1: Checks (three tickets with no dependency)
 - [x] 1. The Telegram check asks for the bot identity, not for updates; the wizard shows the real bot name (F1) — pilot#6734, merged 11-27 16:43Z
 - [x] 2. The daemon checks the Plane key at the start and in the health loop (F2) — pilot#6735, merged 11-27 17:12Z
-- [ ] 3. A documentation page for the agent user option and its host script (F3)
+- [x] 3. A documentation page for the agent user option and its host script (F3) — pilot#6736, merged 11-27 17:23Z
 
 ### Phase 2: Plane in the first-run commands
 - [ ] 4. `pilot doctor` shows a row for the Plane key and a row for the errors of the Plane block: an empty key, slug or project list, and a project entry whose Plane project is not polled (F4, needs 2)
@@ -52,6 +52,7 @@ The daemon check of Telegram makes no conflict. A user can set up Plane in the w
 - [ ] 7. `pilot onboard` asks which Plane project belongs to the repository (needs 6)
 
 ### Phase 3: The agent user option in `pilot doctor`
+- [ ] 7a. The host script takes the gateway port as a flag; the firewall rule, the boot unit and the printed config follow it (F5)
 - [ ] 8. The preflight of the option becomes a function with a result and no package state (needs a read of its production caller first)
 - [ ] 9. `pilot doctor` shows a row for the option (needs 8)
 
@@ -298,12 +299,53 @@ The wizard (`pilot onboard`). The daemon start. The Validate method of the confi
 
 - Navigator TASK-661 in this repo
 
+### LEG F5 — repo: qf-studio/pilot — title: fix(box): the agent user set-up script takes the gateway port as a flag — a host with the default port 9090 passes the startup check of run_as_user
+
+probe: present qf-studio/pilot ^GATEWAY_PORT="9091"
+probe: present qf-studio/pilot PILOT_AGENT_EGRESS
+probe: absent  qf-studio/pilot gateway-port\)[[:space:]]
+
+## Context
+
+This issue is for this repository (qf-studio/pilot); the code is in the working tree.
+
+Navigator TASK-661. The script `scripts/box/setup-agent-user.sh` prepares a Linux host for the option run_as_user: it makes the agent user and a firewall chain (PILOT_AGENT_EGRESS) that rejects the traffic of the agent user to the cloud metadata address and to the gateway port of the daemon. The gateway port is a fixed value of the script: GATEWAY_PORT="9091". The boot unit that the script installs applies the same rules.
+
+The startup check of the option (the firewall probe in `internal/executor/agent_command.go`) connects as the agent user to the gateway port of the config and expects that the connection fails. The default gateway port of the config is 9090 (`configs/pilot.example.yaml`). On a host with the default port the script protects port 9091, the probe reaches port 9090, and the daemon refuses each model process. The documentation page `docs/content/deployment/agent-isolation.mdx` tells the user to set the gateway port to 9091 as a workaround.
+
+Tests of the script: `scripts/box/setup-agent-user_test.sh` (runs with fake commands) and `scripts/box/setup-agent-user_real_test.sh` (real iptables and systemd in CI). The CI jobs for them are named Box Scripts.
+
+## Scope
+
+1. `scripts/box/setup-agent-user.sh`: a new flag with the form --gateway-port and one value. The default stays 9091, so a host that was set up before gets the same rules from a new run. The value must be a whole number from 1 to 65535; another value is a usage error before any change. Each place that uses the port follows the flag: the IPv4 and IPv6 rules, the boot unit and what it applies, the dry-run output, the undo path when it names the port, and the header comment with the usage text.
+2. The summary that the script prints for the daemon config gets one more line that names the gateway port which the rules protect, in the form of the config key (gateway, port), so that the operator sets the same value.
+3. A second run with another port on a host that already has the chain must leave rules for the new port only (no rule for the old port stays in the chain). When the script cannot do that safely, it must stop with a message that names the undo step; say in the PR body which of the two you built.
+4. Tests in `scripts/box/setup-agent-user_test.sh`: the default port gives the rules of today; the flag with 9090 gives rules and a unit for 9090 and none for 9091; a value that is not a number, 0 and 70000 are usage errors with no change; the summary names the port. Extend `scripts/box/setup-agent-user_real_test.sh` with one case for a port that is not the default when the form of that file allows it.
+5. `docs/content/deployment/agent-isolation.mdx`: the flag table gets the new flag; the warning about port 9091 says to pass the gateway port of the config with the flag (and that the default of the script is 9091). `configs/pilot.example.yaml`: when the comment block of the option names the port, make it match.
+
+## Acceptance
+
+- [ ] The test file of the script passes when run with bash; paste its output (the last 30 lines) into the PR body.
+- [ ] ShellCheck reports nothing new for the script; paste the output into the PR body.
+- [ ] Make the rules use the fixed value 9091 again when the flag is set -> a test of this issue fails; name the test in the PR body.
+- [ ] The PR body shows the dry-run output of the script with the flag set to 9090 (the lines with the port).
+- [ ] Do not re-run make build, make test or make lint as evidence.
+
+## Out of scope
+
+Go code. The startup check of the option. A change of the default gateway port of the config. A read of the daemon config by the script. Other scripts.
+
+## Refs
+
+- Navigator TASK-661 in this repo
+
 ## Refs
 
 - F1 → https://github.com/qf-studio/pilot/issues/6734
 - F2 → https://github.com/qf-studio/pilot/issues/6735
 - F3 → https://github.com/qf-studio/pilot/issues/6736
 - F4 → https://github.com/qf-studio/pilot/issues/6745
+- F5 → https://github.com/qf-studio/pilot/issues/6748
 
 - Research of 2026-11-27 (session): the first-run commands (`cmd/pilot/onboard.go`, `cmd/pilot/onboard_ticket.go`, `cmd/pilot/doctor.go`, `internal/health/health.go`), the callers of each Telegram getUpdates request, the box log of the 409 lines by day.
 - TASK-658 (Plane integration), TASK-651 (agent isolation), TASK-379 (doctor live probes, archived).
