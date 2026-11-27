@@ -328,7 +328,9 @@ func checkPlaneLive(cfg *config.Config, newClient func(pc *plane.Config) verify.
 	if cfg.Adapters == nil || cfg.Adapters.Plane == nil || !cfg.Adapters.Plane.Enabled {
 		return nil
 	}
-	if cfg.Adapters.Plane.APIKey == "" {
+	// Same emptiness test as checkPlaneConfig, so a whitespace-only key gives
+	// one "api_key is empty" row and no second live-probe Error (GH-6754).
+	if strings.TrimSpace(cfg.Adapters.Plane.APIKey) == "" {
 		return nil
 	}
 	check := checkAdapterVerify("plane.key.live", "", newClient(cfg.Adapters.Plane))
@@ -359,12 +361,15 @@ func checkPlaneConfig(cfg *config.Config) *ConfigCheck {
 	if strings.TrimSpace(pc.WorkspaceSlug) == "" {
 		problems = append(problems, "workspace_slug is empty")
 	}
-	if len(pc.ProjectIDs) == 0 {
-		problems = append(problems, "project_ids is empty")
-	}
+	// Blank entries do not count: project_ids: [""] polls nothing (GH-6754).
 	polled := make(map[string]bool, len(pc.ProjectIDs))
 	for _, id := range pc.ProjectIDs {
-		polled[strings.TrimSpace(id)] = true
+		if id = strings.TrimSpace(id); id != "" {
+			polled[id] = true
+		}
+	}
+	if len(polled) == 0 {
+		problems = append(problems, "project_ids is empty")
 	}
 	for i, p := range cfg.Projects {
 		if p == nil || p.Plane == nil {

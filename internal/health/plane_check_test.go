@@ -240,3 +240,38 @@ func TestCheckPlaneConfig_NoKeyInMessage(t *testing.T) {
 		t.Errorf("fix holds the key: %q", got.Fix)
 	}
 }
+
+// mutation pin: a project_ids list of only blank entries passes plane.config as OK -> this test fails
+func TestCheckPlaneConfig_BlankProjectIDsAreEmpty(t *testing.T) {
+	pc := validPlaneBlock()
+	pc.ProjectIDs = []string{"", "  "}
+
+	got := checkPlaneConfig(planeCfg(pc))
+	if got == nil || got.Status != StatusError {
+		t.Fatalf("expected plane.config StatusError, got %+v", got)
+	}
+	if !strings.Contains(got.Message, "project_ids is empty") {
+		t.Errorf("message %q does not contain %q", got.Message, "project_ids is empty")
+	}
+}
+
+// mutation pin: checkPlaneLive probes a whitespace-only key that plane.config already reports as empty -> this test fails
+func TestCheckPlaneLive_WhitespaceKeyGivesNil(t *testing.T) {
+	pc := validPlaneBlock()
+	pc.APIKey = "   "
+
+	called := false
+	got := checkPlaneLive(planeCfg(pc), func(c *plane.Config) verify.Verifiable {
+		called = true
+		return &fakeVerifiable{name: "plane", err: errFakeInvalidToken}
+	})
+	if got != nil {
+		t.Fatalf("expected nil for a whitespace-only key, got %+v", got)
+	}
+	if called {
+		t.Error("verifier was built for a whitespace-only key")
+	}
+	if cfgRow := checkPlaneConfig(planeCfg(pc)); cfgRow == nil || !strings.Contains(cfgRow.Message, "api_key is empty") {
+		t.Errorf("expected plane.config to report the empty key, got %+v", cfgRow)
+	}
+}
