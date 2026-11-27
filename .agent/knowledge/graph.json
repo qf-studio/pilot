@@ -1355,6 +1355,41 @@
         "name": "Pagination",
         "aliases": [],
         "domain": "general"
+      },
+      "decision-records": {
+        "name": "Decision-Records",
+        "aliases": [],
+        "domain": "general"
+      },
+      "run-as-user": {
+        "name": "Run-As-User",
+        "aliases": [],
+        "domain": "general"
+      },
+      "agent-isolation": {
+        "name": "Agent-Isolation",
+        "aliases": [],
+        "domain": "general"
+      },
+      "private-repositories": {
+        "name": "Private-Repositories",
+        "aliases": [],
+        "domain": "general"
+      },
+      "evidence": {
+        "name": "Evidence",
+        "aliases": [],
+        "domain": "general"
+      },
+      "tests": {
+        "name": "Tests",
+        "aliases": [],
+        "domain": "general"
+      },
+      "temp-directories": {
+        "name": "Temp-Directories",
+        "aliases": [],
+        "domain": "general"
       }
     },
     "tasks": {
@@ -9896,6 +9931,48 @@
         ],
         "created": "2026-11-25",
         "last_validated": "2026-11-25"
+      },
+      "mem-354": {
+        "type": "pitfall",
+        "summary": "GitHub App and the founder box (2026-11-27): Pilot in the terminal needs no GitHub App; the daemon works with a normal token. The only GitHub App that exists belongs to Pilot Cloud (console plan), and its key must never go onto the founder box: the key can mint a token for each customer installation and the box runs agent code. Founder decision of 11-24, confirmed 11-27: no private App for the founder box. On 11-27 a session told the founder to write the App key to a Parameter Store path of the founder box, because a shared request list asked for that path and the infrastructure owner had answered it; the sandbox pool shares the role of the box and can read the path. Rule: before a step that moves a key, read the recorded decision for that key in the task document (TASK-657, section 'Which GitHub App'), not only the last request list.",
+        "path": "memories/pitfalls/mem-354.md",
+        "confidence": 0.85,
+        "concepts": [
+          "github-app",
+          "credentials",
+          "founder-box",
+          "decision-records"
+        ],
+        "created": "2026-11-27",
+        "last_validated": "2026-11-27"
+      },
+      "mem-355": {
+        "type": "learning",
+        "summary": "run_as_user proof limit (2026-11-27): each of the 19 ticket runs with the option on the founder box (11-26 and 11-27) was in a public repository (the Pilot repository and the SDK repository). The agent user has no GitHub credential: the read token for a run comes only from a GitHub App in the daemon config, and the daemon logs the Warn 'no GitHub read token for the agent'. A run as the agent user in a private repository is not proven. Say 'N runs, all public' in a report, not only 'N runs, no failure'; a customer box of Pilot Cloud runs private repositories, so the first proof there is one ticket in the private repository of the canary.",
+        "path": "memories/learnings/mem-355.md",
+        "confidence": 0.85,
+        "concepts": [
+          "run-as-user",
+          "agent-isolation",
+          "private-repositories",
+          "evidence"
+        ],
+        "created": "2026-11-27",
+        "last_validated": "2026-11-27"
+      },
+      "mem-356": {
+        "type": "pitfall",
+        "summary": "Go tests of Pilot leave directories in the temporary directory of the host (found 2026-11-27 on the founder box): about 5,700 top-level entries in one month, with the prefixes worktree-local-, worktree-remote- and wire-fields, plus the set-up script test; about 70 new entries each day from the quality gate runs, owned by the daemon user and since 11-26 by the agent user. On the box the temporary directory is tmpfs, so the leftovers use memory. A hand clean-up removed the entries older than 24 hours; the cause (tests that make a directory with os.MkdirTemp and do not remove it, where t.TempDir removes it) has no ticket yet. About 1,280 worktree directories of one old ticket (GH-5399) are a second, different leftover: daemon worktrees, not test output.",
+        "path": "memories/pitfalls/mem-356.md",
+        "confidence": 0.85,
+        "concepts": [
+          "founder-box",
+          "ci",
+          "tests",
+          "temp-directories"
+        ],
+        "created": "2026-11-27",
+        "last_validated": "2026-11-27"
       }
     }
   },
@@ -14872,7 +14949,8 @@
       "mem-282",
       "mem-299",
       "mem-326",
-      "mem-332"
+      "mem-332",
+      "mem-356"
     ],
     "ci-gates": [
       "hand-file-the-ci-fix-issue-in-autopilot-fix-shape-when-the-size-guard-declines"
@@ -17030,7 +17108,8 @@
     ],
     "credentials": [
       "mem-208",
-      "mem-210"
+      "mem-210",
+      "mem-354"
     ],
     "branch-protection": [
       "mem-208"
@@ -17243,14 +17322,17 @@
       "mem-353"
     ],
     "founder-box": [
-      "mem-326"
+      "mem-326",
+      "mem-354",
+      "mem-356"
     ],
     "agent-uid-isolation": [
       "mem-339",
       "mem-341"
     ],
     "github-app": [
-      "mem-341"
+      "mem-341",
+      "mem-354"
     ],
     "plane": [
       "mem-352",
@@ -17264,13 +17346,34 @@
     ],
     "pagination": [
       "mem-353"
+    ],
+    "decision-records": [
+      "mem-354"
+    ],
+    "run-as-user": [
+      "mem-355"
+    ],
+    "agent-isolation": [
+      "mem-355"
+    ],
+    "private-repositories": [
+      "mem-355"
+    ],
+    "evidence": [
+      "mem-355"
+    ],
+    "tests": [
+      "mem-356"
+    ],
+    "temp-directories": [
+      "mem-356"
     ]
   },
-  "last_updated": "2026-11-27T09:24:56.161073+00:00",
+  "last_updated": "2026-11-27T14:02:58.516693+00:00",
   "stats": {
-    "total_nodes": 846,
+    "total_nodes": 856,
     "total_edges": 908,
-    "memory_count": 478
+    "memory_count": 481
   },
   "metadata": {
     "last_updated": null
