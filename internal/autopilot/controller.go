@@ -187,6 +187,18 @@ type LinearDoneNotifier interface {
 	NotifyMerged(ctx context.Context, issueIdentifier, prURL string) error
 }
 
+// PlaneDoneNotifier fires the merge-side "done" leg for a Plane-originated
+// task (GH-6751): the work item moves to its completed-group state when its
+// PR merges. Implemented by cmd/pilot's planeDoneNotifier and wired in via
+// SetPlaneDoneNotifier; the narrow interface keeps studio-sdk out of
+// internal/autopilot's import graph, like LinearDoneNotifier above.
+type PlaneDoneNotifier interface {
+	// NotifyMerged moves the work item workItemID of the Plane project
+	// projectID (both from SetPlaneLink) to its completed state and posts one
+	// comment with prURL.
+	NotifyMerged(ctx context.Context, projectID, workItemID, prURL string) error
+}
+
 // TaskMonitor allows autopilot to update task display state.
 // GH-1336: Sync monitor state when autopilot merges PR so dashboard shows correct status.
 type TaskMonitor interface {
@@ -522,6 +534,7 @@ type Controller struct {
 	notifier            Notifier
 	jiraDoneNotifier    JiraDoneNotifier   // GH-4987: merge-side done leg for JIRA-* tasks (optional, nil = no Jira notify)
 	linearDoneNotifier  LinearDoneNotifier // GH-5701: merge-side done leg for LIN-* tasks (optional, nil = no Linear notify)
+	planeDoneNotifier   PlaneDoneNotifier  // GH-6751: merge-side done leg for Plane work items (optional, nil = no Plane notify)
 	monitor             TaskMonitor        // GH-1336: sync dashboard state on merge
 	dispatcherLive      DispatcherLiveness // GH-4412: always-on live-worker signal (unlike monitor, dashboard-only)
 	laneQueueStatus     LaneQueueStatus    // GH-4454: project-scoped queued/running count for lane-starvation detection
@@ -1426,6 +1439,13 @@ func (c *Controller) SetJiraDoneNotifier(n JiraDoneNotifier) {
 // state transition.
 func (c *Controller) SetLinearDoneNotifier(n LinearDoneNotifier) {
 	c.linearDoneNotifier = n
+}
+
+// SetPlaneDoneNotifier wires the merge-side Plane done leg (GH-6751).
+// This is optional; if not set, a PR with a Plane link gets no merge-side
+// Plane state transition.
+func (c *Controller) SetPlaneDoneNotifier(n PlaneDoneNotifier) {
+	c.planeDoneNotifier = n
 }
 
 // SetMonitor sets the task monitor for dashboard state sync.
@@ -6219,6 +6239,38 @@ func (c *Controller) notifyLinearDone(ctx context.Context, prState *PRState) {
 	c.persistPRState(prState)
 }
 
+// notifyPlaneDone fires the Plane merge-side done leg (GH-6751): the work
+// item moves to its completed-group state for a merged PR that carries a
+// Plane link (SetPlaneLink, GH-6739). A Plane branch name holds only the
+// sequence number, so the leg is gated on the stored link, not on the branch.
+// No-op when planeDoneNotifier isn't wired or the PR has no Plane link.
+// Failure is WARN-only and never blocks the merge.
+//
+// Called from the same two sites as notifyLinearDone, with the same
+// attempt-once semantics: PlaneDoneNotified is set after the first attempt
+// (also a failed one) and persisted immediately.
+func (c *Controller) notifyPlaneDone(ctx context.Context, prState *PRState) {
+	if c.planeDoneNotifier == nil {
+		return
+	}
+	if prState.PlaneProjectID == "" || prState.PlaneWorkItemID == "" {
+		return
+	}
+	if prState.PlaneDoneNotified {
+		return
+	}
+	if err := c.planeDoneNotifier.NotifyMerged(ctx, prState.PlaneProjectID, prState.PlaneWorkItemID, prState.PRURL); err != nil {
+		c.log.Warn("failed to move Plane work item to completed",
+			"plane_project_id", prState.PlaneProjectID,
+			"plane_work_item_id", prState.PlaneWorkItemID,
+			"pr", prState.PRNumber,
+			"error", err,
+		)
+	}
+	prState.PlaneDoneNotified = true
+	c.persistPRState(prState)
+}
+
 func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error {
 	// GH-4792 (TASK-458 part 2): suppress merges while the platform-outage
 	// breaker is open — CI signal itself is untrustworthy during a platform
@@ -6645,6 +6697,9 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	// GH-5701: merge-side Linear done leg, gated on the pilot/LIN-* branch
 	// prefix (linearIssueIdentifierFromBranch returns "" for everything else).
 	c.notifyLinearDone(ctx, prState)
+
+	// GH-6751: merge-side Plane done leg, gated on the stored Plane link.
+	c.notifyPlaneDone(ctx, prState)
 
 	// GH-4164: PRs gated by human approval (Telegram/Slack) get a short
 	// "🔀 Merged <sha>" follow-up in the same chat the approval decision was
@@ -11437,6 +11492,9 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 
 		// GH-5701: same for a human/externally merged pilot/LIN-* PR.
 		c.notifyLinearDone(ctx, prState)
+
+		// GH-6751: same for a human/externally merged PR with a Plane link.
+		c.notifyPlaneDone(ctx, prState)
 
 		// GH-1486: Close associated issue and add pilot-done label on external merge
 		if prState.IssueNumber > 0 {

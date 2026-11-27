@@ -23,8 +23,6 @@ func planePollerRegistration() PollerRegistration {
 				cfg.Adapters.Plane.Polling != nil && cfg.Adapters.Plane.Polling.Enabled
 		},
 		CreateAndStart: func(ctx context.Context, deps *PollerDeps) {
-			sdkCfg, interval := planeSDKConfig(deps.Cfg.Adapters.Plane)
-
 			// Separate client for notifier calls (adapter creates its own internally).
 			planeClient := planeSDK.NewClient(
 				deps.Cfg.Adapters.Plane.BaseURL,
@@ -40,6 +38,12 @@ func planePollerRegistration() PollerRegistration {
 			if onPRCreated == nil {
 				links = nil
 			}
+
+			// GH-6751: a work item with a PR is completed at the merge, by the
+			// merge leg of the controller that takes the PR — the poller only
+			// sets the done label at the end of the run.
+			sdkCfg, interval := planeSDKConfig(deps.Cfg.Adapters.Plane, onPRCreated != nil)
+			registerPlaneDoneNotifier(newPlaneDoneNotifier(planeClient, deps.Cfg.Adapters.Plane.WorkspaceSlug), deps.AutopilotController, deps.AutopilotControllers)
 
 			pollerDeps := sdkcore.PollerDeps{
 				Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
@@ -189,7 +193,14 @@ func recordPlaneLink(links *planeWorkItemLinks, ev sdkcore.IssueEvent, result *s
 
 // planeSDKConfig maps the internal Plane config to the SDK config (field
 // names differ: PilotLabel vs TriggerLabel) and returns the poll interval.
-func planeSDKConfig(cfg *plane.Config) (*planeSDK.Config, time.Duration) {
+//
+// mergeStep reports whether an autopilot controller takes the PRs of the
+// poller (planeOnPRCreated is not nil). Only then is CompletedStateAtMerge
+// set (GH-6751): the merge leg of that controller completes the work item.
+// With no controller nothing observes the merge, so the poller must complete
+// the work item at the end of the run as before — else a work item with a PR
+// would never reach the completed state.
+func planeSDKConfig(cfg *plane.Config, mergeStep bool) (*planeSDK.Config, time.Duration) {
 	interval := 30 * time.Second
 	if cfg.Polling != nil && cfg.Polling.Interval > 0 {
 		interval = cfg.Polling.Interval
@@ -211,6 +222,7 @@ func planeSDKConfig(cfg *plane.Config) (*planeSDK.Config, time.Duration) {
 			Enabled:  true,
 			Interval: interval,
 		},
+		CompletedStateAtMerge: mergeStep,
 	}, interval
 }
 

@@ -143,6 +143,7 @@
 | Plane.so webhooks | ✅ | adapters/plane | - | - | Webhook handler with HMAC-SHA256 signature verification (v2.25.0, PR #1842) |
 | Plane.so ProcessedStore | ✅ | studio-sdk plane (cmd/pilot) | - | - | Persistent dedup for Plane.so in autopilot StateStore, passed to the SDK poller (v2.25.0, PR #1839) |
 | Plane.so project pairing | ✅ | cmd/pilot + config | - | `projects[].plane.project_id` | Polled Plane work items route to the project entry paired with their Plane project; unknown ID → default project (WARN when any plane block exists); duplicate/empty IDs fail at load; PR registered with the matching repo's autopilot controller (v2.316.x, GH-6707) |
+| Plane.so completed state at merge | ✅ | autopilot + cmd/pilot | - | - | A Plane work item with a PR reaches the completed-group state when the PR merges (autopilot or by hand), with one tracked comment; the SDK poller's `CompletedStateAtMerge` is set only when an autopilot controller takes the PR; no PR / no controller → completed at the end of the run (v2.316.x, GH-6751) |
 | Discord adapter wiring | ✅ | main | `--discord` | `adapters.discord` | Wire Discord poller, config, and CLI flag in main.go (v2.30.0, PR #1882) |
 | Asana CompleteTask callback | ✅ | adapters/asana | - | - | Wire Asana CompleteTask on successful PR creation (v2.10.0, PR #1720) |
 | Telegram memory store | ✅ | adapters/telegram | - | - | Wire memory store to Telegram HandlerConfig (v2.25.0, PR #1754) |

@@ -17,6 +17,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/plane"
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
 )
 
@@ -284,7 +285,7 @@ func TestPlanePollerAgainstFakePlaneServer(t *testing.T) {
 		WorkspaceSlug: workspace,
 		ProjectIDs:    []string{projA, projB},
 		Polling:       &plane.PollingConfig{Enabled: true, Interval: time.Hour},
-	})
+	}, false)
 	if interval != time.Hour {
 		t.Fatalf("planeSDKConfig interval = %v, want %v", interval, time.Hour)
 	}
@@ -498,4 +499,48 @@ func TestPlaneOnPRCreated_LinksParallelRuns(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+// TestPlaneSDKConfig_CompletedStateAtMerge covers GH-6751: the SDK poller
+// leaves the completed state to the merge leg only when an autopilot
+// controller takes the PR (the condition under which planeOnPRCreated is not
+// nil). With no controller nothing sees the merge, so the field stays false
+// and the poller completes the work item at the end of the run.
+func TestPlaneSDKConfig_CompletedStateAtMerge(t *testing.T) {
+	ctrl := autopilot.NewController(autopilot.DefaultConfig(), nil, nil, "acme", "web")
+	unpaired := &config.Config{Projects: []*config.ProjectConfig{{Name: "web", Path: "/srv/web"}}}
+	paired := &config.Config{Projects: []*config.ProjectConfig{
+		{Name: "web", Path: "/srv/web", Plane: &config.ProjectPlaneConfig{ProjectID: "plane-proj-web"}},
+	}}
+
+	tests := []struct {
+		name  string
+		cfg   *config.Config
+		def   *autopilot.Controller
+		ctrls map[string]*autopilot.Controller
+		want  bool
+	}{
+		{name: "default controller", cfg: unpaired, def: ctrl, want: true},
+		{name: "controller of a repository, paired", cfg: paired, ctrls: map[string]*autopilot.Controller{"acme/web": ctrl}, want: true},
+		{name: "no controller", cfg: unpaired, want: false},
+		{name: "no controller, paired", cfg: paired, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mergeStep := planeOnPRCreated(tt.cfg, tt.def, tt.ctrls, newPlaneWorkItemLinks()) != nil
+			sdkCfg, _ := planeSDKConfig(&plane.Config{Enabled: true, WorkspaceSlug: "ws"}, mergeStep)
+			if sdkCfg.CompletedStateAtMerge != tt.want {
+				t.Errorf("CompletedStateAtMerge = %v, want %v", sdkCfg.CompletedStateAtMerge, tt.want)
+			}
+		})
+	}
+
+	// The live call site passes the same condition and wires the merge leg.
+	body := githubFuncBody(t, "poller_plane.go", "func planePollerRegistration() PollerRegistration {")
+	if !strings.Contains(body, "planeSDKConfig(deps.Cfg.Adapters.Plane, onPRCreated != nil)") {
+		t.Error("planePollerRegistration must set CompletedStateAtMerge from onPRCreated != nil")
+	}
+	if !strings.Contains(body, "registerPlaneDoneNotifier(newPlaneDoneNotifier(planeClient, deps.Cfg.Adapters.Plane.WorkspaceSlug), deps.AutopilotController, deps.AutopilotControllers)") {
+		t.Error("the Plane merge-leg notifier must be registered on the default and every per-repo autopilot controller")
+	}
 }

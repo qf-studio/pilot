@@ -1467,8 +1467,8 @@ type PRState struct {
 	// PlaneDoneNotified is true once the Plane merge-side done leg has
 	// attempted to move the work item to the completed state for this PR.
 	// Same attempt-once, persisted-immediately semantics as
-	// LinearDoneNotified. Stored ahead of the merge leg (GH-6739); not read
-	// yet. Persisted.
+	// LinearDoneNotified. Stored ahead of the merge leg (GH-6739); read and
+	// set by notifyPlaneDone (GH-6751). Persisted.
 	PlaneDoneNotified bool
 	// PostMergeReviewPosted is true once the GH-5861 post-merge reviewer has
 	// been started for this PR. Set (and persisted) before the review goroutine
