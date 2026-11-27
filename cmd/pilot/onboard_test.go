@@ -430,6 +430,64 @@ func TestValidateTelegramConn(t *testing.T) {
 	}
 }
 
+// TestValidateTelegramConn_ReturnsBotUsername: the wizard probe asks getMe,
+// names the bot from its answer, and makes no getUpdates request (which
+// would collide with a running poller of the same bot). GH-6734.
+func TestValidateTelegramConn_ReturnsBotUsername(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  string
+		wantBot string
+	}{
+		{"username", `{"id":1,"first_name":"Pilot","username":"pilot_test_bot"}`, "pilot_test_bot"},
+		{"first name when no username", `{"id":1,"first_name":"Pilot"}`, "Pilot"},
+		{"placeholder when both empty", `{"id":1}`, "pilot_bot"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var getUpdates int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/getMe"):
+					_, _ = w.Write([]byte(`{"ok":true,"result":` + tt.result + `}`))
+				case strings.HasSuffix(r.URL.Path, "/getUpdates"):
+					getUpdates++
+					w.WriteHeader(http.StatusConflict)
+					_, _ = w.Write([]byte(`{"ok":false,"error_code":409,"description":"Conflict: terminated by other getUpdates request"}`))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+
+			orig := newTelegramClient
+			newTelegramClient = func(token string) *telegram.Client {
+				return telegram.NewClientWithBaseURL(token, srv.URL)
+			}
+			defer func() { newTelegramClient = orig }()
+
+			botName, err := validateTelegramConn("123:" + testutil.FakeTelegramBotToken)
+			if err != nil {
+				t.Fatalf("validateTelegramConn() error = %v", err)
+			}
+			if botName != tt.wantBot {
+				t.Errorf("validateTelegramConn() botName = %q, want %q", botName, tt.wantBot)
+			}
+			if getUpdates != 0 {
+				t.Errorf("getUpdates requests = %d, want 0", getUpdates)
+			}
+		})
+	}
+}
+
+func TestValidateTelegramConn_NoColon(t *testing.T) {
+	_, err := validateTelegramConn(testutil.FakeTelegramBotToken)
+	if err == nil || !strings.Contains(err.Error(), "invalid token format") {
+		t.Errorf("validateTelegramConn() error = %v, want invalid token format", err)
+	}
+}
+
 // TestIdempotency tests that onboard detects already-configured states.
 func TestIdempotency(t *testing.T) {
 	tests := []struct {

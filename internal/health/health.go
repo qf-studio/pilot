@@ -277,7 +277,7 @@ func checkAdapterVerify(checkName, tokenSource string, v verify.Verifiable) Conf
 	}
 }
 
-// checkTelegramTokenLive makes one live getUpdates call to confirm the
+// checkTelegramTokenLive makes one live getMe call to confirm the
 // configured Telegram bot token actually works, mirroring
 // checkGitHubTokenLive for the Telegram adapter (GH-3769). Returns nil when
 // Telegram isn't enabled or has no token — those cases are already covered
