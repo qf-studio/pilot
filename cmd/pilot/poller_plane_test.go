@@ -415,7 +415,7 @@ func TestPlaneOnPRCreated_StoresLink(t *testing.T) {
 			var cb func(sdkcore.PRCreatedEvent)
 			target := def
 			if tt.routed {
-				cb = planeRoutedOnPRCreated("acme/default", def, map[string]prRegistrar{"acme/other": other}, links)
+				cb = planeRoutedOnPRCreated("acme/default", def, map[string]prRegistrar{"acme/other": other}, links, nil)
 				target = other
 			} else {
 				cb = planeDefaultOnPRCreated(def, links)
@@ -527,7 +527,7 @@ func TestPlaneSDKConfig_CompletedStateAtMerge(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mergeStep := planeOnPRCreated(tt.cfg, tt.def, tt.ctrls, newPlaneWorkItemLinks()) != nil
+			mergeStep := planeOnPRCreated(tt.cfg, tt.def, tt.ctrls, newPlaneWorkItemLinks(), nil) != nil
 			sdkCfg, _ := planeSDKConfig(&plane.Config{Enabled: true, WorkspaceSlug: "ws"}, mergeStep)
 			if sdkCfg.CompletedStateAtMerge != tt.want {
 				t.Errorf("CompletedStateAtMerge = %v, want %v", sdkCfg.CompletedStateAtMerge, tt.want)
@@ -540,7 +540,137 @@ func TestPlaneSDKConfig_CompletedStateAtMerge(t *testing.T) {
 	if !strings.Contains(body, "planeSDKConfig(deps.Cfg.Adapters.Plane, onPRCreated != nil)") {
 		t.Error("planePollerRegistration must set CompletedStateAtMerge from onPRCreated != nil")
 	}
-	if !strings.Contains(body, "registerPlaneDoneNotifier(newPlaneDoneNotifier(planeClient, deps.Cfg.Adapters.Plane.WorkspaceSlug), deps.AutopilotController, deps.AutopilotControllers)") {
+	if !strings.Contains(body, "planeDone := newPlaneDoneNotifier(planeClient, deps.Cfg.Adapters.Plane.WorkspaceSlug)") ||
+		!strings.Contains(body, "registerPlaneDoneNotifier(planeDone, deps.AutopilotController, deps.AutopilotControllers)") {
 		t.Error("the Plane merge-leg notifier must be registered on the default and every per-repo autopilot controller")
+	}
+}
+
+// fakePlaneStateAPI is an in-memory planeDoneAPI: it serves fixed states and
+// records the state changes and comments.
+type fakePlaneStateAPI struct {
+	states   []planeSDK.State
+	stateErr error
+
+	mu           sync.Mutex
+	stateChanges []string // "<project>/<work item>=<state>"
+	comments     []string
+}
+
+func (f *fakePlaneStateAPI) ListStates(_ context.Context, _, _ string) ([]planeSDK.State, error) {
+	return f.states, nil
+}
+
+func (f *fakePlaneStateAPI) UpdateIssueState(_ context.Context, _, projectID, workItemID, stateID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stateChanges = append(f.stateChanges, projectID+"/"+workItemID+"="+stateID)
+	return f.stateErr
+}
+
+func (f *fakePlaneStateAPI) AddCommentWithTracking(_ context.Context, _, _, workItemID, commentHTML, _, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.comments = append(f.comments, workItemID+": "+commentHTML)
+	return nil
+}
+
+// TestPlaneOnPRCreated_NoControllerCompletesNow covers GH-6761: in the routed
+// branch, a PR no controller takes (a URL that is not a GitHub PR URL, or a
+// repo with no controller) completes the work item at once with one state
+// change to the first completed-group state and no comment. A PR a controller
+// takes changes no state at that time; a work item with no recorded Plane
+// project gives no call; a failed state change is logged, not a panic.
+func TestPlaneOnPRCreated_NoControllerCompletesNow(t *testing.T) {
+	const (
+		projectID  = "plane-project-uuid"
+		workItemID = "plane-work-item-uuid"
+	)
+	states := []planeSDK.State{
+		{ID: "state-started", Name: "In Progress", Group: "started"},
+		{ID: "state-done", Name: "Done", Group: planeSDK.StateGroupCompleted},
+		{ID: "state-shipped", Name: "Shipped", Group: planeSDK.StateGroupCompleted},
+	}
+	issueEv := sdkcore.IssueEvent{IssueID: workItemID, ProjectID: projectID}
+
+	tests := []struct {
+		name        string
+		prURL       string
+		record      bool
+		stateErr    error
+		wantChanges []string
+		wantLog     []string
+	}{
+		{
+			name:        "GitLab merge request",
+			prURL:       "https://gitlab.com/acme/other/-/merge_requests/42",
+			record:      true,
+			wantChanges: []string{projectID + "/" + workItemID + "=state-done"},
+			wantLog:     []string{"level=INFO", "work_item_id=" + workItemID, "pr_url=https://gitlab.com/acme/other/-/merge_requests/42", `reason="not a GitHub PR URL"`},
+		},
+		{
+			name:        "repository with no controller",
+			prURL:       "https://github.com/acme/unknown/pull/42",
+			record:      true,
+			wantChanges: []string{projectID + "/" + workItemID + "=state-done"},
+			wantLog:     []string{"level=INFO", "work_item_id=" + workItemID, `reason="no autopilot controller for repo acme/unknown"`},
+		},
+		{
+			name:   "repository with a controller",
+			prURL:  "https://github.com/acme/other/pull/42",
+			record: true,
+		},
+		{
+			name:  "no recorded Plane project",
+			prURL: "https://gitlab.com/acme/other/-/merge_requests/42",
+		},
+		{
+			name:        "state change error",
+			prURL:       "https://gitlab.com/acme/other/-/merge_requests/42",
+			record:      true,
+			stateErr:    errors.New("plane is down"),
+			wantChanges: []string{projectID + "/" + workItemID + "=state-done"},
+			wantLog:     []string{"level=WARN", "plane is down", "work_item_id=" + workItemID},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			read := captureLogs(t)
+			api := &fakePlaneStateAPI{states: states, stateErr: tt.stateErr}
+			completer := newPlaneDoneNotifier(api, "test-workspace")
+			def := &fakePRRegistrar{}
+			other := &fakePRRegistrar{}
+			links := newPlaneWorkItemLinks()
+			if tt.record {
+				recordPlaneLink(links, issueEv, &sdkcore.IssueResult{Success: true, PRNumber: 42, PRURL: tt.prURL}, nil)
+			}
+
+			cb := planeRoutedOnPRCreated("acme/default", def, map[string]prRegistrar{"acme/other": other}, links, completer)
+			cb(sdkcore.PRCreatedEvent{PRNumber: 42, PRURL: tt.prURL, IssueID: workItemID, BranchName: "pilot/PLANE-7"})
+
+			api.mu.Lock()
+			defer api.mu.Unlock()
+			if strings.Join(api.stateChanges, ";") != strings.Join(tt.wantChanges, ";") {
+				t.Fatalf("state changes = %v, want %v", api.stateChanges, tt.wantChanges)
+			}
+			if len(api.comments) != 0 {
+				t.Fatalf("comments = %v, want none: the PR did not merge", api.comments)
+			}
+			out := read()
+			for _, want := range tt.wantLog {
+				if !strings.Contains(out, want) {
+					t.Errorf("log missing %q:\n%s", want, out)
+				}
+			}
+			if len(def.calls) != 0 {
+				t.Fatalf("default controller registered a foreign PR: %v", def.calls)
+			}
+		})
+	}
+
+	// The live call site wires the done notifier as the completer.
+	body := githubFuncBody(t, "poller_plane.go", "func planePollerRegistration() PollerRegistration {")
+	if !strings.Contains(body, "planeOnPRCreated(deps.Cfg, deps.AutopilotController, deps.AutopilotControllers, links, planeDone)") {
+		t.Error("planePollerRegistration must pass the Plane done notifier to planeOnPRCreated as the completer")
 	}
 }
